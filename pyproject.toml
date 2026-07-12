@@ -22,6 +22,12 @@ dependencies = [
     "certifi",
 ]
 
+[project.urls]
+Homepage = "https://github.com/johnnyh1975/roombapy-prime"
+Repository = "https://github.com/johnnyh1975/roombapy-prime"
+Issues = "https://github.com/johnnyh1975/roombapy-prime/issues"
+Changelog = "https://github.com/johnnyh1975/roombapy-prime/blob/main/CHANGELOG.md"
+
 [project.scripts]
 roombapy-prime-validate = "roombapy_prime.diagnostics:main"
 

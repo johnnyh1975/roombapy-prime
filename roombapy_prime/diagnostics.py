@@ -48,10 +48,9 @@ Redaktionsstufe: jedes woertliche Auftreten von Benutzername oder
 Passwort in irgendeinem Fehlertext wird durch "[REDACTED]" ersetzt --
 Verteidigung in der Tiefe, falls eine tieferliegende Exception (z.B.
 aus aiohttp) versehentlich Zugangsdaten in eine Fehlermeldung
-einbettet. Der Ziel-Repo-Pfad fuer den Issue-Link ist ueber
-ISSUE_TRACKER_REPO unten konfigurierbar -- solange das Repo noch nicht
-oeffentlich ist, zeigt der Link auf einen Platzhalter; einfach die
-Konstante anpassen, sobald ein echtes GitHub-Repo existiert.
+einbettet. Der Ziel-Repo-Pfad ist ueber ISSUE_TRACKER_REPO unten
+konfigurierbar -- aktuell auf das echte Repo gesetzt
+(github.com/johnnyh1975/roombapy-prime, siehe Konstante).
 """
 
 from __future__ import annotations
@@ -71,9 +70,9 @@ import aiohttp
 
 from .prime_factory import PrimeFactory
 
-#: Platzhalter -- auf das echte GitHub-Repo umstellen, sobald es existiert
-#: (siehe Modul-Docstring). Format: "owner/repo".
-ISSUE_TRACKER_REPO = "OWNER/roombapy-prime"
+#: Repo fuer den vorausgefuellten "Neues Issue"-Link (siehe Modul-Docstring).
+#: Aktualisiert (19. Sitzung) auf das echte GitHub-Repo.
+ISSUE_TRACKER_REPO = "johnnyh1975/roombapy-prime"
 
 
 @dataclass
@@ -359,9 +358,7 @@ def build_issue_url(report: Report, repo: str = ISSUE_TRACKER_REPO) -> str:
     """Baut eine vorausgefuellte "Neues Issue"-URL fuer GitHub (Titel +
     Bericht als Body, URL-kodiert). Funktioniert unabhaengig davon, ob
     das Repo schon existiert -- der Link ist einfach nur ein Klick,
-    kein API-Aufruf, daher kein Fehlschlagen moeglich, nur ein evtl.
-    nicht existierendes Ziel, falls ISSUE_TRACKER_REPO noch der
-    Platzhalter ist."""
+    kein API-Aufruf, daher kein Fehlschlagen moeglich."""
     ok, failed, skipped = report.summary()
     title = f"Live-Validierung: {ok} OK, {failed} fehlgeschlagen, {skipped} uebersprungen"
     body = report.to_markdown()
@@ -420,12 +417,6 @@ def main() -> None:
         print("\n== Rueckmeldung an die Maintainer ==")
         print("Falls du diesen Bericht teilen moechtest (hilft der Bibliothek enorm):")
         print(f"  {issue_url}")
-        if ISSUE_TRACKER_REPO.startswith("OWNER/"):
-            print(
-                "  (Hinweis: Platzhalter-Repo-Pfad -- falls dieser Link nicht funktioniert, "
-                "den Bericht stattdessen manuell in ein Issue/Discord/E-Mail einfuegen. "
-                "Der vollstaendige Bericht steht oben bzw. in der --output-Datei.)"
-            )
         if args.open_browser:
             webbrowser.open(issue_url)
 

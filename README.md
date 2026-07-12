@@ -1,10 +1,12 @@
 # roombapy-prime
 
+[![CI](https://github.com/johnnyh1975/roombapy-prime/actions/workflows/ci.yml/badge.svg)](https://github.com/johnnyh1975/roombapy-prime/actions/workflows/ci.yml)
+
 An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: draft, Pre-Alpha.** Runs, is tested (150+ unit tests), builds
+> **Status: draft, Pre-Alpha.** Runs, is tested (200+ unit tests), builds
 > and installs cleanly — but has **never been run against a real
 > Prime/V4 account or device.** Everything here comes from APK
 > decompilation and native library analysis, not live testing. See
@@ -29,7 +31,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from source:
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/johnnyh1975/roombapy-prime.git
 cd roombapy-prime
 pip install -e .
 ```
@@ -134,7 +136,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-150+ tests, all passing — structural checks against decompiled source,
+200+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
