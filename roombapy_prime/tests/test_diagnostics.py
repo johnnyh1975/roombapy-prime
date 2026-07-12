@@ -109,3 +109,90 @@ def test_to_markdown_includes_version_and_platform_info() -> None:
 
     assert "roombapy-prime" in markdown
     assert "Python" in markdown
+
+
+def test_report_device_info_extracts_known_candidates() -> None:
+    """NEU (21. Sitzung)."""
+    from roombapy_prime.diagnostics import Report, _report_device_info
+    from roombapy_prime.mqtt_client import ShadowResponse
+
+    report = Report()
+    state = ShadowResponse(topic="t", payload={"sku": "i7", "softwareVer": "3.2.1", "extraField": "x"})
+    _report_device_info(report, state)
+
+    assert len(report.results) == 1
+    assert report.results[0].status == "OK"
+    assert "'sku': 'i7'" in report.results[0].detail
+    assert "softwareVer" in report.results[0].detail or "3.2.1" in report.results[0].detail
+    assert "extraField" in report.results[0].detail  # Top-Level-Schluessel-Liste enthaelt auch Unbekanntes
+
+
+def test_report_device_info_handles_no_state() -> None:
+    from roombapy_prime.diagnostics import Report, _report_device_info
+
+    report = Report()
+    _report_device_info(report, None)
+
+    assert len(report.results) == 0
+
+
+def test_report_device_info_handles_no_known_candidates() -> None:
+    from roombapy_prime.diagnostics import Report, _report_device_info
+    from roombapy_prime.mqtt_client import ShadowResponse
+
+    report = Report()
+    state = ShadowResponse(topic="t", payload={"somethingElse": 1})
+    _report_device_info(report, state)
+
+    assert "keine der vermuteten Kandidaten-Felder" in report.results[0].detail
+    assert "somethingElse" in report.results[0].detail
+
+
+def test_report_tier_inference_smart_when_settings_succeeded() -> None:
+    from roombapy_prime.diagnostics import Report, _report_tier_inference
+    from roombapy_prime.mqtt_client import ShadowResponse
+
+    report = Report()
+    _report_tier_inference(report, ShadowResponse(topic="t", payload={}))
+
+    assert "SMART" in report.results[0].detail
+
+
+def test_report_tier_inference_ephemeral_when_settings_failed() -> None:
+    from roombapy_prime.diagnostics import Report, _report_tier_inference
+
+    report = Report()
+    _report_tier_inference(report, None)
+
+    assert "EPHEMERAL" in report.results[0].detail
+
+
+def test_shallow_summary_dict_shows_keys_and_types() -> None:
+    from roombapy_prime.diagnostics import _shallow_summary
+
+    result = _shallow_summary({"foo": "bar", "count": 5})
+    assert result == {"foo": "str", "count": "int"}
+
+
+def test_shallow_summary_list_shows_length_and_first_element() -> None:
+    from roombapy_prime.diagnostics import _shallow_summary
+
+    result = _shallow_summary([{"id": "a1"}, {"id": "a2"}])
+    assert result == "Liste[2] erstes Element: {'id': '...'}"
+
+
+def test_shallow_summary_empty_list() -> None:
+    from roombapy_prime.diagnostics import _shallow_summary
+
+    assert _shallow_summary([]) == "[] (leere Liste)"
+
+
+def test_shallow_summary_never_leaks_actual_values() -> None:
+    """Sicherheitsrelevant: darf nie den tatsaechlichen Wert zeigen,
+    nur den Typ -- Schutz vor versehentlichem Leak sensibler Daten in
+    einem geteilten Bericht."""
+    from roombapy_prime.diagnostics import _shallow_summary
+
+    result = _shallow_summary({"address": "123 Secret Street", "email": "user@example.com"})
+    assert "123 Secret Street" not in str(result)
+    assert "user@example.com" not in str(result)

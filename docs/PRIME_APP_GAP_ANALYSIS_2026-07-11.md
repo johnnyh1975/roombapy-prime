@@ -172,7 +172,80 @@ diesmal eindeutig als Intra-Event-Positionsangabe innerhalb der `upcoming`-Liste
 Kommando-Sequenzierung. Zusaetzlicher, unabhaengiger Beleg fuer die von ha_roomba_plus schon
 frueher korrigierte Lesart von `RoutineCommand.ordered` (siehe Nachtrag elfte Sitzung).
 
-205/205 Tests gruen (25 neue), ruff sauber.
+205/205 Tests weiterhin gruen (25 neue), ruff sauber.
+
+## Nachtrag (zwanzigste Sitzung): ERSTER erfolgreicher Live-Lauf ueberhaupt
+
+Ein Nutzer (johnnyh1975 selbst, echtes Prime-Konto, BLID 80B2841450310780) hat
+`roombapy-prime-validate` zum ersten Mal in der Geschichte dieses Projekts gegen einen echten
+Server laufen lassen. Ergebnis: **7 OK, 1 fehlgeschlagen, 4 uebersprungen.**
+
+**Bestaetigt live, zum ersten Mal ueberhaupt:**
+- Die komplette Login-Kette (Discovery -> Gigya -> iRobot-Auth) funktioniert gegen einen echten Server
+- MQTT-Verbindung (AWS-IoT-Custom-Authorizer) funktioniert
+- `get_state()` (klassischer Shadow) funktioniert
+- `get_favorites()`, `get_mission_history()`, `get_user_households()`, `get_active_map_versions()`
+  funktionieren alle REST-seitig
+
+**Eine Fehlermeldung, aber keine neue Erkenntnis noetig -- sie bestaetigt eine bereits
+dokumentierte Vorhersage:** `get_settings()` (der benannte "rw-settings"-Shadow) lief in den
+Timeout. Der Docstring dieser Methode sagte bereits vorher: "antwortet nur auf SMART-Tier, laeuft
+auf EPHEMERAL in den Timeout (kein Fehler)". Falls der Testnutzer ein EPHEMERAL-Tier-Geraet hat
+(aeltere Prime-Generation), ist das die erste LIVE-Bestaetigung dieser strukturellen Vorhersage,
+kein Bug.
+
+**Ein echter, konkreter Bug gefunden und behoben:** Der Nutzer meldete, sein Roboter reinige seit
+Monaten nach Zeitplan -- die Diagnose "keine aktive Kartenversion gefunden" konnte also nicht
+stimmen. Ursache gefunden: `diagnostics.py` suchte nach den Feldern `p2mapId`/`id` in der
+`get_active_map_versions()`-Antwort -- aber `rest_client.py`s EIGENER Docstring fuer dieselbe
+Methode dokumentierte bereits seit der allerersten Sitzung, dass die Antwort mindestens `mapId`
+und `mapVersionId` enthaelt. Reiner Eigenfehler im Diagnoseskript, nicht im REST-Client selbst.
+Behoben: `mapId` als primaeres Feld ergaenzt, zusaetzliche Debug-Ausgabe (zeigt die tatsaechlichen
+Schluessel der Antwort), falls kuenftig wieder kein bekanntes Feld greift.
+
+Das ist der erste Beweis, dass das Diagnoseskript selbst als Werkzeug funktioniert -- es hat
+sofort einen echten, konkreten, behebbaren Fehler aufgedeckt, genau wie beabsichtigt.
+
+## Nachtrag (einundzwanzigste Sitzung): Diagnoseskript erweitert, auf Nachfrage
+
+Direkt nach dem ersten Live-Ergebnis um vier Dinge ergaenzt, die beim naechsten Lauf mehr
+Information liefern sollen:
+
+1. **Drei neue, sichere Lesezugriffe** (seit ihrer Einfuehrung nie ins Diagnoseskript
+   aufgenommen): `get_robot_parts()`, `get_serial_number_data()`, `get_notifications()`.
+2. **Automatische Geraeteinfo-Extraktion** (`_report_device_info()`): versucht, Modell/SKU,
+   Firmware-Version, Name und Faehigkeiten-Feld aus `get_state()`s Antwort zu lesen (Kandidaten-
+   Feldnamen sind Vermutungen, nie an einer echten Antwort verifiziert) -- meldet IMMER
+   zusaetzlich alle tatsaechlich vorhandenen Top-Level-Schluessel der Antwort, damit ein falscher
+   Kandidat beim naechsten Lauf korrigiert werden kann, statt stillschweigend nichts zu finden.
+3. **Explizite Tier-Vermutung** (`_report_tier_inference()`): macht die "SMART vs. EPHEMERAL"-
+   Ableitung aus `get_settings()`s Erfolg/Fehlschlag als eigenen, klar lesbaren Bericht-Eintrag
+   sichtbar, statt nur implizit aus einem FEHLGESCHLAGEN-Eintrag ablesbar zu sein.
+
+Direkter Auslöser: der erste Live-Nutzer musste manuell nach seinem Robotermodell gefragt werden,
+um die Tier-Vermutung zu pruefen -- das sollte das Skript kuenftig selbst herausfinden.
+
+210/210 Tests gruen (16 neue fuer die beiden neuen Hilfsfunktionen), ruff sauber. Rauchtest mit
+ungueltigen Zugangsdaten weiterhin sauber (Login-Gate greift vor den neuen Pruefungen, kein
+Regressionsrisiko).
+
+## Nachtrag (zweiundzwanzigste Sitzung): dieselbe Luecke bei household_id gefunden und behoben
+
+Auf Nachfrage ("brauchen wir noch weitere Diagnose-Details?") systematisch geprueft, wo sonst noch
+dieselbe Art Fehler wie beim Karten-Bug lauern koennte: geratene Feldnamen ohne Debug-Fallback bei
+Fehlschlag. Gefunden: `household_id = _extract_first_id(households, ["householdId", "id"])` fuer
+den Zeitplan-/DND-Pfad hat exakt dasselbe Risiko -- `get_user_households()` ist selbst als
+Analogie/unbestaetigt dokumentiert, die Feldnamen sind reine Vermutung.
+
+Behoben mit einer neuen, wiederverwendbaren `_shallow_summary()`-Hilfsfunktion: fasst eine
+unbekannte Antwortstruktur fuer die Debug-Ausgabe zusammen (Schluessel + Werttypen, NIE
+tatsaechliche Werte -- bewusst so, damit auch bei unerwarteten Antwortformen keine potenziell
+sensiblen Daten wie Adressen oder Namen in einem geteilten Bericht landen). Sowohl die
+Karten-ID- als auch die household_id-Extraktion nutzen jetzt denselben Mechanismus, statt
+zweier leicht unterschiedlicher Ad-hoc-Loesungen.
+
+214/214 Tests gruen (4 neue fuer `_shallow_summary`, davon einer explizit gegen Werte-Leckage),
+ruff sauber. Rauchtest weiterhin unauffaellig.
 
 ## Nachtrag (siebzehnte Sitzung): priorisierte Roadmap -- was als Naechstes
 

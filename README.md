@@ -158,8 +158,11 @@ roombapy-prime-validate --username you@example.com --country-code US
 # or without installing: python -m roombapy_prime.diagnostics --username you@example.com --country-code US
 ```
 
-Read-only by default (login, REST reads, shadow state, map bundle
-download) — nothing here can change anything on your account or robot.
+Read-only by default (login, REST reads including parts/serial/
+notifications, shadow state, map bundle download) — nothing here can
+change anything on your account or robot. Also reports a best-effort
+device/firmware summary and an explicit tier guess (SMART vs.
+EPHEMERAL, inferred from whether the named settings shadow responds).
 Pass `--allow-writes` to additionally run a self-cleaning favorite
 create/verify/delete round trip. Mission commands and map edits are
 never run automatically, with or without that flag — see the module

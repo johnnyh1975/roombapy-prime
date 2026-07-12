@@ -156,6 +156,57 @@ def _skip(report: Report, name: str, reason: str) -> None:
     report.add(name, "UEBERSPRUNGEN", reason)
 
 
+def _report_device_info(report: Report, state: Any) -> None:
+    """NEU (21. Sitzung) -- extrahiert Modell-/Firmware-/Faehigkeits-
+    Infos aus get_state()'s Antwort, wo vorhanden. Kandidaten-Feldnamen
+    sind Vermutungen (nie an einer echten Antwort verifiziert, bis zum
+    ersten Live-Lauf) -- daher wird IMMER zusaetzlich die Liste der
+    tatsaechlich vorhandenen Top-Level-Schluessel gemeldet, damit ein
+    falscher Kandidat beim naechsten Lauf korrigiert werden kann, statt
+    stillschweigend nichts zu finden."""
+    if state is None or not isinstance(getattr(state, "payload", None), dict):
+        return
+    payload = state.payload
+    candidates = {
+        "sku": ["sku", "mdl"],
+        "firmware": ["softwareVer", "ver", "firmwareVersion"],
+        "name": ["name", "robotName"],
+        "capabilities": ["cap"],
+    }
+    found = {}
+    for label, keys in candidates.items():
+        for key in keys:
+            if key in payload:
+                found[label] = payload[key]
+                break
+    top_level_keys = sorted(payload.keys())
+    detail = f"gefunden: {found}" if found else "keine der vermuteten Kandidaten-Felder gefunden"
+    detail += f" -- alle Top-Level-Schluessel der Antwort: {top_level_keys}"
+    report.add("Geraeteinfo aus get_state() extrahiert", "OK", detail)
+
+
+def _report_tier_inference(report: Report, settings_result: Any) -> None:
+    """NEU (21. Sitzung) -- macht die Tier-Vermutung explizit statt nur
+    implizit aus einem FEHLGESCHLAGEN-Eintrag ablesbar. Basiert auf der
+    dokumentierten, jetzt erstmals live teilbestaetigten Regel:
+    rw-settings antwortet nur auf SMART-Tier, EPHEMERAL laeuft in den
+    Timeout (kein Fehler des Roboters oder der Bibliothek)."""
+    if settings_result is not None:
+        report.add(
+            "Tier-Vermutung (aus get_settings()-Ergebnis)",
+            "OK",
+            "rw-settings hat geantwortet -> vermutlich SMART-Tier (i/s/j-Serie o.ae.)",
+        )
+    else:
+        report.add(
+            "Tier-Vermutung (aus get_settings()-Ergebnis)",
+            "OK",
+            "rw-settings hat NICHT geantwortet (Timeout) -> vermutlich EPHEMERAL-Tier "
+            "(900-Serie-aehnliche, aeltere Prime-Generation) -- dies ist die dokumentierte, "
+            "erwartete Auswirkung, kein Fehler",
+        )
+
+
 async def run(
     username: str,
     password: str,
@@ -182,8 +233,11 @@ async def run(
         except Exception as exc:  # noqa: BLE001
             report.add("MQTT-Verbindung", "FEHLGESCHLAGEN", f"{type(exc).__name__}: {exc}")
 
-        await _try(report, "Shadow-Zustand abrufen (get_state)", robot.get_state())
-        await _try(report, "Shadow-Einstellungen abrufen (get_settings)", robot.get_settings())
+        state = await _try(report, "Shadow-Zustand abrufen (get_state)", robot.get_state())
+        _report_device_info(report, state)
+
+        settings_result = await _try(report, "Shadow-Einstellungen abrufen (get_settings)", robot.get_settings())
+        _report_tier_inference(report, settings_result)
 
         print("\n== REST-Lesezugriffe (Favoriten/Missionshistorie/Zeitplaene/...) ==")
         await _try(report, "Favoriten abrufen (get_favorites)", robot.get_favorites())
@@ -193,6 +247,9 @@ async def run(
             robot.get_mission_history(robot.blid, max_reports=5),
         )
         await _try(report, "Haushaltsliste abrufen (get_user_households)", robot.get_user_households())
+        await _try(report, "Verschleissteile abrufen (get_robot_parts)", robot.get_robot_parts())
+        await _try(report, "Seriennummer/Geraetedaten abrufen (get_serial_number_data)", robot.get_serial_number_data())
+        await _try(report, "Benachrichtigungen abrufen (get_notifications)", robot.get_notifications())
 
         map_versions = await _try(
             report, "Aktive Kartenversionen abrufen (get_active_map_versions)", robot.get_active_map_versions()
@@ -201,9 +258,22 @@ async def run(
         p2map_id: str | None = None
         if map_versions:
             try:
-                p2map_id = map_versions[0].get("p2mapId") or map_versions[0].get("id")
+                first = map_versions[0]
+                p2map_id = (
+                    first.get("mapId")
+                    or first.get("p2mapId")
+                    or first.get("id")
+                    or first.get("map_id")
+                )
             except (AttributeError, IndexError, TypeError):
                 p2map_id = None
+            if p2map_id is None:
+                report.add(
+                    "Karten-ID-Extraktion",
+                    "FEHLGESCHLAGEN",
+                    f"get_active_map_versions() lieferte Daten, aber kein bekanntes ID-Feld "
+                    f"gefunden. Antwortstruktur: {_shallow_summary(map_versions)}",
+                )
 
         if p2map_id:
             await _try(report, "Kartenmetadaten abrufen (get_map_metadata)", robot.get_map_metadata(p2map_id))
@@ -237,8 +307,20 @@ async def run(
             if household_id:
                 await _try(report, "Zeitplaene abrufen (get_schedules)", robot.get_schedules(household_id))
                 await _try(report, "DND-Einstellungen abrufen (get_dnd_settings)", robot.get_dnd_settings(household_id))
+            elif households:
+                report.add(
+                    "household_id-Extraktion",
+                    "FEHLGESCHLAGEN",
+                    f"get_user_households() lieferte Daten, aber weder 'householdId' noch 'id' "
+                    f"gefunden. Antwortstruktur: {_shallow_summary(households)}",
+                )
+                _skip(report, "Zeitplaene/DND abrufen", "household_id-Extraktion fehlgeschlagen, siehe oben")
             else:
-                _skip(report, "Zeitplaene/DND abrufen", "keine household_id ermittelbar (siehe Haushaltsliste oben)")
+                _skip(
+                    report,
+                    "Zeitplaene/DND abrufen",
+                    "get_user_households() lieferte keine Daten (leere Antwort oder Fehler)",
+                )
 
             await _try(
                 report,
@@ -293,6 +375,25 @@ async def _try_silent(coro: Any) -> Any:
         return await coro
     except Exception:  # noqa: BLE001
         return None
+
+
+def _shallow_summary(data: Any, _depth: int = 0) -> Any:
+    """NEU (21. Sitzung) -- fasst eine unbekannte Antwortstruktur fuer
+    die Debug-Ausgabe zusammen: STRUKTUR (Schluessel/Typen/Laenge), NIE
+    tatsaechliche Werte -- damit auch bei unerwarteten Formen kein
+    potenziell sensibler Inhalt (Adressen, Namen, IDs) im geteilten
+    Bericht landet, nur die Form der Antwort. Absichtlich flach (max.
+    2 Ebenen) -- fuer Feldnamen-Debugging reicht das, ein tieferer Dump
+    waere nur Rauschen."""
+    if _depth >= 2:
+        return "..."
+    if isinstance(data, dict):
+        return {k: _shallow_summary(v, _depth + 1) for k, v in data.items()}
+    if isinstance(data, list):
+        if not data:
+            return "[] (leere Liste)"
+        return f"Liste[{len(data)}] erstes Element: {_shallow_summary(data[0], _depth + 1)}"
+    return type(data).__name__
 
 
 def _extract_first_id(data: Any, keys: list[str]) -> str | None:
