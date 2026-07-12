@@ -1,0 +1,14 @@
+{
+  "state": {
+    "desired": {
+      "binPause": false
+    }
+  },
+  "metadata": {
+    "desired": {
+      "binPause": {"timestamp": 1783704212}
+    }
+  },
+  "version": 90132,
+  "timestamp": 1783704212
+}

@@ -1,0 +1,29 @@
+{
+  "state": {
+    "reported": {
+      "migrated": true,
+      "cap": {
+        "binFullDetect": 2, "oMode": 2, "dockComm": 1, "wDevLoc": 2,
+        "bleDevLoc": 1, "edge": 0, "maps": 3, "pmaps": 9, "mc": 2,
+        "tLine": 2, "area": 1, "eco": 1, "multiPass": 2, "team": 1,
+        "pp": 0, "lang": 2, "hm": 0, "5ghz": 1, "prov": 3, "sched": 2,
+        "svcConf": 1, "ota": 2, "log": 2, "langOta": 0, "tileScan": 1,
+        "ns": 1, "pose": 2, "addOnHw": 3
+      },
+      "sku": "i755640",
+      "svcEndpoints": {"svcDeplId": "v007"},
+      "nsmip": 2,
+      "digiCap": {"appVer": 0}
+    },
+    "desired": {
+      "tz": {
+        "events": [
+          {"dt": 1664625600, "off": 120},
+          {"dt": 1667091601, "off": 60},
+          {"dt": 1679792401, "off": 120}
+        ],
+        "ver": 16
+      }
+    }
+  }
+}

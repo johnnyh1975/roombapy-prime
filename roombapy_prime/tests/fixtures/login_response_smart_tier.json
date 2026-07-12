@@ -1,0 +1,45 @@
+{
+  "_fixture_note": "Anonymized, structurally faithful to real captured responses from two SMART-tier robots (i7-series, i755640/i755840 SKUs) via field testers. BLID, tokens, names replaced with placeholders. Real field names and real capability values (notably cap.pose=2, differing from EPHEMERAL's cap.pose=1) preserved.",
+  "credentials": {
+    "AccessKeyId": "ASIAFAKEFAKEFAKEFAKE",
+    "SecretKey": "FAKEsecretFAKEsecretFAKEsecretFAKEsecretFA",
+    "SessionToken": "FAKE_SESSION_TOKEN_BASE64_PLACEHOLDER_VALUE_TRUNCATED_FOR_FIXTURE",
+    "Expiration": "2026-07-11T12:00:00+00:00",
+    "CognitoId": "us-east-1:11111111-1111-1111-1111-111111111111"
+  },
+  "push_info": {
+    "push_token": "0000000000000000000000000000000000000000000000000000000000000000",
+    "push_settings": {
+      "cr": true, "te": true, "pm": true, "bf": true, "ae": true, "cse": true, "dt": true
+    }
+  },
+  "robots": {
+    "1111111111111111": {
+      "password": ":1:0000000000:FAKEPASSWORDPLACEHOLDER",
+      "sku": "i755640",
+      "softwareVer": "v2.x.x-fixture",
+      "name": "Roomba",
+      "cap": {
+        "binFullDetect": 2, "oMode": 2, "dockComm": 1, "wDevLoc": 2, "bleDevLoc": 1,
+        "edge": 0, "maps": 3, "pmaps": 9, "mc": 2, "tLine": 2, "area": 1, "eco": 1,
+        "multiPass": 2, "team": 1, "pp": 0, "lang": 2, "hm": 0, "5ghz": 1, "prov": 3,
+        "sched": 2, "svcConf": 1, "ota": 2, "log": 2, "langOta": 0, "tileScan": 1,
+        "ns": 1, "pose": 2, "addOnHw": 3
+      },
+      "digiCap": {"appVer": 0},
+      "svcDeplId": "v007",
+      "user_cert": false
+    }
+  },
+  "connection_tokens": [
+    {
+      "client_id": "app-IOS-fixture-example-11111111",
+      "expires": 1783704579,
+      "devices": ["1111111111111111"],
+      "iot_token": "FAKE_BASE64_IOT_TOKEN_PLACEHOLDER",
+      "iot_signature": "FAKE_BASE64_SIGNATURE_PLACEHOLDER",
+      "iot_authorizer_name": "ElPaso256Login-AspenIoTAuthorizer-FAKESUFFIX"
+    }
+  ],
+  "mtu": false
+}

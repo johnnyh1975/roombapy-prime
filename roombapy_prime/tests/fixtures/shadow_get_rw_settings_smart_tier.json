@@ -1,0 +1,31 @@
+{
+  "state": {
+    "desired": {
+      "binTypeDetect": 2
+    },
+    "reported": {
+      "nsmip": 2,
+      "svcEndpoints": {"svcDeplId": "v007"},
+      "audio": {"volume": 100},
+      "binPause": true,
+      "bleDevLoc": false,
+      "carpetBoost": false,
+      "childLock": false,
+      "chrgLrPtrn": 0,
+      "cloudEnv": "prod",
+      "country": "DE",
+      "evacAllowed": true,
+      "ecoCharge": false,
+      "langs2": {
+        "sVer": "1.0",
+        "dLangs": {
+          "ver": "0.37",
+          "langs": [
+            "ar-SA_1", "ar-SA_2", "cs-CZ_1", "cs-CZ_2", "da-DK_1", "da-DK_2",
+            "de-DE_1", "de-DE_2", "en-GB_1", "en-GB_2", "en-US_1", "en-US_2"
+          ]
+        }
+      }
+    }
+  }
+}

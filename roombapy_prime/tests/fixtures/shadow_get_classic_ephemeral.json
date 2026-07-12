@@ -1,0 +1,59 @@
+{
+  "state": {
+    "reported": {
+      "passwordHash": "FAKE_PASSWORD_HASH_PLACEHOLDER",
+      "migrated": true,
+      "cleanMissionStatus": {
+        "cycle": "none", "phase": "charge", "expireM": 0, "rechrgM": 0,
+        "error": 0, "notReady": 0, "mssnM": 0, "sqft": 0,
+        "initiator": "schedule", "nMssn": 432, "mssnStrtTm": 0,
+        "expireTm": 0, "rechrgTm": 0
+      },
+      "connected": true,
+      "deploymentState": 0,
+      "country": "DE",
+      "svcEndpoints": {"svcDeplId": "v007"},
+      "cloudEnv": "prod",
+      "mapUploadAllowed": true,
+      "batPct": 80,
+      "dock": {"known": false},
+      "bin": {"present": true, "full": false},
+      "audio": {"active": false},
+      "language": 4,
+      "noAutoPasses": false,
+      "noPP": false,
+      "ecoCharge": false,
+      "vacHigh": false,
+      "binPause": false,
+      "carpetBoost": true,
+      "openOnly": false,
+      "twoPass": false,
+      "schedHold": false,
+      "lastCommand": {"command": "start", "time": 1783666800, "initiator": "schedule"},
+      "langs": [
+        {"en-UK": 0}, {"fr-FR": 1}, {"es-ES": 2}, {"it-IT": 3}, {"de-DE": 4}, {"ru-RU": 5}
+      ],
+      "cap": {
+        "pose": 1, "ota": 2, "multiPass": 2, "carpetBoost": 1, "pp": 1,
+        "binFullDetect": 1, "langOta": 1, "maps": 1, "edge": 1, "eco": 1, "svcConf": 1
+      },
+      "hardwareRev": 3,
+      "sku": "R980040",
+      "batteryType": "nimh",
+      "softwareVer": "v2.4.17-138",
+      "tz": {
+        "events": [
+          {"dt": 1782907200, "off": 120},
+          {"dt": 1792890001, "off": 60},
+          {"dt": 1806195601, "off": 120}
+        ],
+        "ver": 31
+      },
+      "timezone": "Europe/Berlin",
+      "name": "Roomba",
+      "digiCap": {"appVer": 0}
+    }
+  },
+  "version": 90131,
+  "timestamp": 1783704212
+}

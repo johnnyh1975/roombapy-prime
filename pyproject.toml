@@ -1,0 +1,39 @@
+[project]
+name = "roombapy-prime"
+version = "0.1.0.dev0"
+description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Typing :: Typed",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "paho-mqtt>=2.0,<3.0",
+    "certifi",
+]
+
+[project.scripts]
+roombapy-prime-validate = "roombapy_prime.diagnostics:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+roombapy_prime = ["py.typed"]

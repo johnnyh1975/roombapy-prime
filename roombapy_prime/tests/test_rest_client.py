@@ -1,0 +1,791 @@
+"""Tests for roombapy_prime.rest_client.
+
+No aioresponses here: the installed aioresponses (0.7.9) is incompatible
+with the installed aiohttp (3.14.1) in this environment -- its internal
+ClientResponse construction is missing a now-required stream_writer
+kwarg. Rather than pin/downgrade a dependency just for tests, this uses
+the same hand-rolled fake-double style as test_mqtt_client.py: a minimal
+stand-in for aiohttp.ClientSession that records calls and returns a
+canned response, no real sockets.
+
+Verifies URL construction, query params, request bodies, and SigV4
+signature headers match what's confirmed (see aws_sigv4.py, FINDINGS).
+Response handling is only checked against synthetic bodies, since no
+real p2maps REST response was ever captured live.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from roombapy_prime.auth import CloudCredentials
+from roombapy_prime.models import HouseholdSchedule, MergeRooms, ScheduleFrequency, ScheduleOptions
+from roombapy_prime.rest_client import PrimeRestClient, RestError
+
+HTTP_BASE_AUTH = "https://fake-http-base-auth.example.invalid"
+
+
+def _dummy_credentials() -> CloudCredentials:
+    return CloudCredentials(
+        access_key_id="AKIDEXAMPLE", secret_key="secretkey123",
+        session_token="sessiontoken456", cognito_id="us-east-1:0",
+    )
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body: str, url: str, raw_bytes: bytes | None = None) -> None:
+        self.status = status
+        self._body = body
+        self.url = url
+        self._raw_bytes = raw_bytes
+
+    async def text(self) -> str:
+        return self._body
+
+    async def read(self) -> bytes:
+        return self._raw_bytes if self._raw_bytes is not None else self._body.encode()
+
+    async def __aenter__(self) -> "_FakeResponse":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+
+class _RecordedCall:
+    def __init__(self, method: str, url: str, params: dict | None, data: bytes | None, headers: dict | None) -> None:
+        self.method = method
+        self.url = url
+        self.params = params
+        self.data = data
+        self.headers = headers
+
+    @property
+    def body_json(self) -> dict:
+        assert self.data is not None
+        return json.loads(self.data)
+
+
+class _FakeSession:
+    """Stand-in for aiohttp.ClientSession. Queue up responses with
+    .queue_response(...), call get()/post() exactly like PrimeRestClient
+    does, inspect .calls afterwards."""
+
+    def __init__(self) -> None:
+        self.calls: list[_RecordedCall] = []
+        self._responses: list[_FakeResponse] = []
+
+    def queue_response(
+        self, status: int = 200, payload: dict | None = None, raw_body: str | None = None,
+        raw_bytes: bytes | None = None,
+    ) -> None:
+        body = raw_body if raw_body is not None else json.dumps(payload if payload is not None else {})
+        self._responses.append(_FakeResponse(status=status, body=body, url="", raw_bytes=raw_bytes))
+
+    def get(self, url: str, params: dict | None = None, headers: dict | None = None, data: bytes | None = None) -> _FakeResponse:
+        self.calls.append(_RecordedCall("GET", url, params, data, headers))
+        return self._responses.pop(0)
+
+    def post(self, url: str, params: dict | None = None, headers: dict | None = None, data: bytes | None = None) -> _FakeResponse:
+        self.calls.append(_RecordedCall("POST", url, params, data, headers))
+        return self._responses.pop(0)
+
+    def put(self, url: str, params: dict | None = None, headers: dict | None = None, data: bytes | None = None) -> _FakeResponse:
+        self.calls.append(_RecordedCall("PUT", url, params, data, headers))
+        return self._responses.pop(0)
+
+    def delete(self, url: str, params: dict | None = None, headers: dict | None = None, data: bytes | None = None) -> _FakeResponse:
+        self.calls.append(_RecordedCall("DELETE", url, params, data, headers))
+        return self._responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_get_map_metadata_url_and_response() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"id": "map123"})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_map_metadata("map123")
+
+    assert result == {"id": "map123"}
+    assert session.calls[0].method == "GET"
+    assert session.calls[0].url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123"
+
+
+@pytest.mark.asyncio
+async def test_requests_are_signed_with_sigv4() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_map_metadata("map123")
+
+    headers = session.calls[0].headers
+    assert headers["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+    assert headers["x-amz-security-token"] == "sessiontoken456"
+    assert "x-amz-date" in headers
+
+
+@pytest.mark.asyncio
+async def test_set_map_name_body_and_query() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"ok": True})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.set_map_name("map123", "Erdgeschoss")
+
+    call = session.calls[0]
+    assert result == {"ok": True}
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123/settings"
+    assert call.params == {"trigger_fast_updates": "true"}
+    assert call.body_json == {"type": "Erdgeschoss"}
+
+
+@pytest.mark.asyncio
+async def test_set_map_orientation_clamps_angle() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.set_map_orientation("map123", 4.0)  # > pi, needs clamping
+
+    sent_angle = session.calls[0].body_json["user_orientation_rad"]
+    assert -3.141592653589793 < sent_angle <= 3.141592653589793
+
+
+@pytest.mark.asyncio
+async def test_set_map_orientation_already_in_range_is_unchanged() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.set_map_orientation("map123", 1.0)
+
+    sent_angle = session.calls[0].body_json["user_orientation_rad"]
+    assert sent_angle == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_delete_map_is_soft_delete_via_settings_endpoint() -> None:
+    """NEU (11. Juli, dritte Sitzung) -- bestaetigt aus DeleteMapRequest.java:
+    trotz des Namens kein HTTP DELETE, sondern POST .../settings mit
+    {"visible": false}, siehe delete_map()'s Docstring."""
+    session = _FakeSession()
+    session.queue_response(payload={"ok": True})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.delete_map("map123")
+
+    call = session.calls[0]
+    assert result == {"ok": True}
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123/settings"
+    assert call.params == {"trigger_fast_updates": "true"}
+    assert call.body_json == {"visible": False}
+
+
+# --- Favoriten (FavoriteV1) -- NEU, vierte Sitzung -----------------------
+
+@pytest.mark.asyncio
+async def test_get_favorites_url_and_query() -> None:
+    """BESTAETIGT: GET /v1/user/favorites?app_edition=1, httpMethod aus
+    FetchFavoriteRequest.java."""
+    from roombapy_prime.models import MissionCommandType
+
+    session = _FakeSession()
+    session.queue_response(payload=[
+        {
+            "favorite_id": "fav1",
+            "name": "Kitchen clean",
+            "default": False,
+            "deleted": False,
+            "hidden": False,
+            "commanddefs": [{"command": "clean", "robot_id": "BLID123", "ordered": 0, "select_all": True}],
+        }
+    ])
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_favorites()
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/user/favorites"
+    assert call.params == {"app_edition": "1"}
+    assert len(result) == 1
+    assert result[0].favorite_id == "fav1"
+    assert result[0].name == "Kitchen clean"
+    assert len(result[0].command_defs) == 1
+    assert result[0].command_defs[0].command_type == MissionCommandType.CLEAN
+    assert result[0].command_defs[0].clean_all is True
+
+
+@pytest.mark.asyncio
+async def test_get_favorites_non_list_response_is_empty() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"unexpected": "shape"})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_favorites()
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_create_favorite_sends_body_and_query() -> None:
+    """ANGENOMMEN, nicht bestaetigt (POST-Methode) -- siehe
+    create_favorite()'s Docstring."""
+    from roombapy_prime.models import FavoriteV1, MissionCommandType, RoutineCommand
+
+    session = _FakeSession()
+    session.queue_response(payload={"favorite_id": "new1"})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    favorite = FavoriteV1(
+        name="Living room",
+        command_defs=[RoutineCommand(command_type=MissionCommandType.CLEAN, asset_id="BLID123")],
+    )
+    result = await client.create_favorite(favorite)
+
+    call = session.calls[0]
+    assert result == {"favorite_id": "new1"}
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/user/favorites"
+    assert call.params == {"app_edition": "1"}
+    assert call.body_json["name"] == "Living room"
+    assert call.body_json["commanddefs"][0]["command"] == "clean"
+
+
+@pytest.mark.asyncio
+async def test_update_favorite_uses_put_and_favorite_id_in_url() -> None:
+    from roombapy_prime.models import FavoriteV1
+
+    session = _FakeSession()
+    session.queue_response(payload={"favorite_id": "fav1"})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    favorite = FavoriteV1(name="Renamed")
+    await client.update_favorite("fav1", favorite)
+
+    call = session.calls[0]
+    assert call.method == "PUT"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/user/favorites/fav1"
+    assert call.body_json["name"] == "Renamed"
+
+
+@pytest.mark.asyncio
+async def test_delete_favorite_uses_delete_method() -> None:
+    """BESTAETIGT aus DeleteFavoriteRequest.java (httpMethod = "DELETE")."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.delete_favorite("fav1")
+
+    call = session.calls[0]
+    assert call.method == "DELETE"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/user/favorites/fav1"
+    assert call.params == {"app_edition": "1"}
+
+
+@pytest.mark.asyncio
+async def test_order_favorite_uses_put_and_order_suffix() -> None:
+    """BESTAETIGT aus OrderFavoriteRequest.java (httpMethod = "PUT",
+    urlString + "/order", insert_at/insert_before/insert_after als
+    Query-Parameter -- KORRIGIERT, siehe order_favorite()'s Docstring)."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.order_favorite("fav1", insert_before="fav0")
+
+    call = session.calls[0]
+    assert call.method == "PUT"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/user/favorites/fav1/order"
+    assert call.params == {"app_edition": "1", "insert_before": "fav0"}
+
+
+@pytest.mark.asyncio
+async def test_get_mission_history_url_and_query() -> None:
+    """BESTAETIGT aus FetchMissionHistoryRequest.java."""
+    session = _FakeSession()
+    session.queue_response(payload={"missions": []})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_mission_history(
+        "blid123", max_reports=10, max_age=30, supported_done_codes=["OK", "C"]
+    )
+
+    assert result == {"missions": []}
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/blid123/missionhistory"
+    assert call.params == {"maxReports": "10", "maxAge": "30", "supportedDoneCodes": "OK,C"}
+
+
+@pytest.mark.asyncio
+async def test_get_mission_history_no_params() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"missions": []})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_mission_history("blid123")
+
+    call = session.calls[0]
+    assert call.params == {}
+
+
+@pytest.mark.asyncio
+async def test_get_schedules_url() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"schedules": []})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_schedules("hh1")
+
+    assert session.calls[0].url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule"
+    assert session.calls[0].method == "GET"
+
+
+@pytest.mark.asyncio
+async def test_delete_schedule_url() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.delete_schedule("hh1", "sched1")
+
+    call = session.calls[0]
+    assert call.method == "DELETE"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule/sched1"
+
+
+@pytest.mark.asyncio
+async def test_create_schedules_posts_body() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.create_schedules(
+        "hh1", [ScheduleOptions(asset_id="asset1", name="Morning", frequency=ScheduleFrequency.WEEKLY)]
+    )
+
+    call = session.calls[0]
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule"
+    assert call.body_json == {
+        "schedules": [{"assetId": "asset1", "name": "Morning", "frequency": "WEEKLY"}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_schedules_puts_body() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    options = ScheduleOptions(asset_id="asset1", name="Evening")
+    await client.update_schedules("hh1", "sched1", [HouseholdSchedule(schedule_id="sched1", options=options)])
+
+    call = session.calls[0]
+    assert call.method == "PUT"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule/sched1"
+    assert call.body_json == {
+        "schedules": [{"scheduleId": "sched1", "options": {"assetId": "asset1", "name": "Evening"}}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_user_households_url() -> None:
+    """HTTP-Methode reine REST-Konvention, nicht aus einer Request-Klasse
+    bestaetigt -- siehe get_user_households()'s Docstring."""
+    session = _FakeSession()
+    session.queue_response(payload={"households": []})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_user_households()
+
+    assert result == {"households": []}
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/user/households"
+
+
+@pytest.mark.asyncio
+async def test_get_dnd_settings_url() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_dnd_settings("hh1")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/dnd"
+
+
+@pytest.mark.asyncio
+async def test_set_dnd_settings_puts_body() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.set_dnd_settings("hh1", {"enabled": True})
+
+    call = session.calls[0]
+    assert call.method == "PUT"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/dnd"
+    assert call.body_json == {"enabled": True}
+
+
+@pytest.mark.asyncio
+async def test_get_cleaning_profiles_query() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_cleaning_profiles("asset1", "map1")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/profiles"
+    assert call.params == {"assetId": "asset1", "p2mapId": "map1"}
+
+
+@pytest.mark.asyncio
+async def test_get_default_routines_url() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_default_routines("map1")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map1/routines/defaults"
+
+
+@pytest.mark.asyncio
+async def test_get_robot_parts_url() -> None:
+    """Bestaetigt aus base_roomba_config.json (commandId "GetRobotParts"),
+    nicht aus Bytecode-Interpretation."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_robot_parts("BLID123")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/robots/BLID123/parts"
+
+
+@pytest.mark.asyncio
+async def test_reset_robot_parts_url() -> None:
+    """Bestaetigt aus base_roomba_config.json (commandId "ResetRobotParts")."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.reset_robot_parts("BLID123")
+
+    call = session.calls[0]
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/robots/BLID123/parts"
+
+
+@pytest.mark.asyncio
+async def test_get_serial_number_data_query() -> None:
+    """Bestaetigt aus base_roomba_config.json (commandId "GetSerialNumberData")."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_serial_number_data("BLID123")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/robots"
+    assert call.params == {"robot_id": "BLID123"}
+
+
+@pytest.mark.asyncio
+async def test_edit_map_v2_sends_command_envelope() -> None:
+    """edit_map_v2() -- der unbenutzte Pfad, siehe rest_client.py's
+    Docstring. Bleibt getestet, da der Endpunkt weiterhin existiert."""
+    session = _FakeSession()
+    session.queue_response(payload={"updated": True})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.edit_map_v2("map123", MergeRooms(room_ids=["a", "b"]))
+
+    call = session.calls[0]
+    assert result == {"updated": True}
+    assert call.url == f"{HTTP_BASE_AUTH}/v2/p2maps/map123/versions"
+    assert call.body_json == {"command": "merge_rooms", "params": {"ids": ["a", "b"]}}
+
+
+@pytest.mark.asyncio
+async def test_edit_map_v1_sends_command_envelope() -> None:
+    """edit_map() -- NEU (11. Juli, vierte Sitzung), der tatsaechlich
+    aktive Pfad (siehe PRIME_APP_GAP_ANALYSIS)."""
+    from roombapy_prime.models import MergeRoomsV1
+
+    session = _FakeSession()
+    session.queue_response(payload={"updated": True})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.edit_map("map123", MergeRoomsV1(ids=["a", "b"]))
+
+    call = session.calls[0]
+    assert result == {"updated": True}
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123/versions"
+    assert call.body_json == {"command": "MergeRooms", "ids": ["a", "b"]}
+
+
+@pytest.mark.asyncio
+async def test_get_live_map_stream_parses_response() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"mqtt_topic": "some/topic", "livemap_url": "https://example.invalid/m.png"})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_live_map_stream("BLID123")
+
+    call = session.calls[0]
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/livemap"
+    assert call.params == {"robotId": "BLID123"}
+    assert result.mqtt_topic == "some/topic"
+    assert result.initial_map_url == "https://example.invalid/m.png"
+
+
+@pytest.mark.asyncio
+async def test_error_response_raises_rest_error() -> None:
+    session = _FakeSession()
+    session.queue_response(status=404, raw_body="not found")
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestError) as exc_info:
+        await client.get_map_metadata("map123")
+
+    assert exc_info.value.status == 404
+    assert exc_info.value.raw_response == "not found"
+
+
+@pytest.mark.asyncio
+async def test_non_json_success_response_raises_rest_error() -> None:
+    """SYNTHETIC edge case -- confirms a malformed/HTML success response
+    doesn't silently return garbage."""
+    session = _FakeSession()
+    session.queue_response(status=200, raw_body="<html>not json</html>")
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestError, match="Non-JSON"):
+        await client.get_map_metadata("map123")
+
+
+# --- reactive 403 -> relogin -> retry (ported from cloud_api.py's _aws_get) --
+
+@pytest.mark.asyncio
+async def test_get_active_map_versions_url_and_query() -> None:
+    """NEU (11. Juli) -- Endpunkt aus der inneren Coroutine-Klasse
+    P2MapAPIFetching$fetchActiveVersions$2 bestaetigt, siehe
+    PRIME_APP_GAP_ANALYSIS."""
+    session = _FakeSession()
+    session.queue_response(payload=[{"mapId": "m1", "mapVersionId": "v1"}])
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_active_map_versions("BLID123")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps"
+    assert call.params == {"robotId": "BLID123", "visible": "true"}
+    assert result == [{"mapId": "m1", "mapVersionId": "v1"}]
+
+
+@pytest.mark.asyncio
+async def test_get_active_map_versions_non_list_response_is_empty() -> None:
+    """SYNTHETIC defensive check -- no real non-list response ever seen."""
+    session = _FakeSession()
+    session.queue_response(payload={"unexpected": "shape"})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_active_map_versions("BLID123")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_get_map_geojson_link_url_and_query() -> None:
+    """NEU (11. Juli, dritte Sitzung) -- Endpunkt aus P2MapGeoJSONRequest.java
+    bestaetigt, siehe PRIME_APP_GAP_ANALYSIS Punkt C2. Response-Form
+    selbst bleibt unbestaetigt -- dieser Test prueft nur URL/Query,
+    nicht welcher JSON-Schluessel die URL traegt."""
+    session = _FakeSession()
+    session.queue_response(payload={"some_unconfirmed_key": "https://example.invalid/bundle.tar.gz"})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_map_geojson_link("map123", "v1")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123/versions/v1/geojson"
+    assert call.params == {"response_type": "link"}
+    assert result == {"some_unconfirmed_key": "https://example.invalid/bundle.tar.gz"}
+
+
+@pytest.mark.asyncio
+async def test_download_map_bundle_returns_raw_bytes() -> None:
+    """NEU (11. Juli, fuenfte Sitzung) -- bewusst OHNE SigV4-Signierung,
+    siehe download_map_bundle()'s Docstring."""
+    session = _FakeSession()
+    fake_bundle_bytes = b"\x1f\x8b\x08\x00fake-gzip-bytes-not-a-real-archive"
+    session.queue_response(raw_bytes=fake_bundle_bytes)
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz?sig=abc")
+
+    assert result == fake_bundle_bytes
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == "https://presigned.example.invalid/bundle.tar.gz?sig=abc"
+    # KEIN SigV4-Header -- bewusst, siehe Docstring
+    assert call.headers is None
+
+
+@pytest.mark.asyncio
+async def test_download_map_bundle_error_response_raises() -> None:
+    session = _FakeSession()
+    session.queue_response(status=403, raw_body="access denied, link expired")
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestError) as exc_info:
+        await client.download_map_bundle("https://presigned.example.invalid/expired.tar.gz")
+
+    assert exc_info.value.status == 403
+
+
+@pytest.mark.asyncio
+async def test_403_without_relogin_raises_immediately() -> None:
+    session = _FakeSession()
+    session.queue_response(status=403, raw_body="forbidden")
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())  # no relogin
+
+    with pytest.raises(RestError) as exc_info:
+        await client.get_map_metadata("map123")
+
+    assert exc_info.value.status == 403
+    assert len(session.calls) == 1  # no retry attempted
+
+
+@pytest.mark.asyncio
+async def test_403_with_relogin_retries_once_with_new_credentials() -> None:
+    session = _FakeSession()
+    session.queue_response(status=403, raw_body="forbidden")
+    session.queue_response(payload={"ok": True})  # the retry succeeds
+
+    new_credentials = CloudCredentials(
+        access_key_id="NEW_KEY", secret_key="new_secret",
+        session_token="new_token", cognito_id="eu-west-1:1",
+    )
+    relogin_calls = []
+
+    async def fake_relogin():
+        relogin_calls.append(1)
+        result = type("FakeLoginResult", (), {"credentials": new_credentials})()
+        return result
+
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials(), relogin=fake_relogin)
+
+    result = await client.get_map_metadata("map123")
+
+    assert result == {"ok": True}
+    assert relogin_calls == [1]
+    assert len(session.calls) == 2
+    # the retried request must be signed with the NEW credentials
+    assert session.calls[1].headers["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=NEW_KEY/")
+
+
+@pytest.mark.asyncio
+async def test_403_retry_only_happens_once_not_infinitely() -> None:
+    """SYNTHETIC -- confirms _retry=False on the second attempt prevents
+    an infinite loop if the new credentials also get a 403."""
+    session = _FakeSession()
+    session.queue_response(status=403, raw_body="forbidden")
+    session.queue_response(status=403, raw_body="still forbidden")
+
+    async def fake_relogin():
+        result = type("FakeLoginResult", (), {"credentials": _dummy_credentials()})()
+        return result
+
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials(), relogin=fake_relogin)
+
+    with pytest.raises(RestError) as exc_info:
+        await client.get_map_metadata("map123")
+
+    assert exc_info.value.status == 403
+    assert len(session.calls) == 2  # exactly one retry, not more
+
+
+@pytest.mark.asyncio
+async def test_poll_echo_value_url() -> None:
+    """Bestaetigt aus base_roomba_config.json (commandId "PollEchoValueCommand,Set")."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.poll_echo_value("BLID123")
+
+    call = session.calls[0]
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/robots/BLID123/echo"
+
+
+@pytest.mark.asyncio
+async def test_get_time_estimates_sends_body() -> None:
+    """Bestaetigt aus base_roomba_config.json (commandId "GetTimeEstimates")."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_time_estimates({"assetId": "BLID123"})
+
+    call = session.calls[0]
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/time-estimates"
+    assert call.body_json == {"assetId": "BLID123"}
+
+
+@pytest.mark.asyncio
+async def test_reset_robot_url() -> None:
+    """Bestaetigt aus base_roomba_config.json (commandId "ResetRobotCommand")."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.reset_robot("BLID123")
+
+    call = session.calls[0]
+    assert call.method == "POST"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/BLID123/reset"
+
+
+@pytest.mark.asyncio
+async def test_get_notifications_query() -> None:
+    """Bestaetigt aus base_roomba_config.json (commandId "GetNotifications")."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_notifications("BLID123", app_version="2.5.0")
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/robots/BLID123/timeline"
+    assert call.params == {
+        "event_type": "HKC",
+        "details_type_filter": "all",
+        "app_version": "2.5.0",
+        "limit": "50",
+    }

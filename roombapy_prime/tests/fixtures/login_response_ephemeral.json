@@ -1,0 +1,51 @@
+{
+  "_fixture_note": "Anonymized, structurally faithful to a real captured response from an EPHEMERAL-tier robot (900-series, R980040 SKU) via the Classic app's /v2/login. BLID, tokens, and account-specific values replaced with clearly-fake placeholders. Real field names and real capability values preserved.",
+  "credentials": {
+    "AccessKeyId": "ASIAFAKEFAKEFAKEFAKE",
+    "SecretKey": "FAKEsecretFAKEsecretFAKEsecretFAKEsecretFA",
+    "SessionToken": "FAKE_SESSION_TOKEN_BASE64_PLACEHOLDER_VALUE_TRUNCATED_FOR_FIXTURE",
+    "Expiration": "2026-07-10T17:29:39+00:00",
+    "CognitoId": "us-east-1:00000000-0000-0000-0000-000000000000"
+  },
+  "push_info": {
+    "push_token": "0000000000000000000000000000000000000000000000000000000000000000",
+    "push_settings": {
+      "cr": true, "te": true, "pm": true, "bf": true, "ae": true, "cse": true, "dt": true
+    }
+  },
+  "robots": {
+    "0000000000000000": {
+      "password": ":1:0000000000:FAKEPASSWORDPLACEHOLDER",
+      "sku": "R980040",
+      "softwareVer": "v2.4.17-138",
+      "name": "Roomba",
+      "cap": {
+        "pose": 1,
+        "ota": 2,
+        "multiPass": 2,
+        "carpetBoost": 1,
+        "pp": 1,
+        "binFullDetect": 1,
+        "langOta": 1,
+        "maps": 1,
+        "edge": 1,
+        "eco": 1,
+        "svcConf": 1
+      },
+      "digiCap": {"appVer": 0},
+      "svcDeplId": "v007",
+      "user_cert": false
+    }
+  },
+  "connection_tokens": [
+    {
+      "client_id": "app-IOS-fixture-example-00000000",
+      "expires": 1783704579,
+      "devices": ["0000000000000000"],
+      "iot_token": "FAKE_BASE64_IOT_TOKEN_PLACEHOLDER_DECODES_TO_JSON_WITH_cognito_id_clientid_expires_ts_devices",
+      "iot_signature": "FAKE_BASE64_SIGNATURE_PLACEHOLDER_TRUNCATED_FOR_FIXTURE",
+      "iot_authorizer_name": "ElPaso256Login-AspenIoTAuthorizer-FAKESUFFIX"
+    }
+  ],
+  "mtu": false
+}
