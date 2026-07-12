@@ -160,7 +160,7 @@ def test_cloud_credentials_from_real_ephemeral_fixture(fixtures_dir: Path) -> No
     data = _load(fixtures_dir, "login_response_ephemeral.json")
     creds = CloudCredentials.from_json(data["credentials"])
 
-    assert creds.access_key_id == "ASIAFAKEFAKEFAKEFAKE"
+    assert creds.access_key_id == "test-access-key-id-not-a-real-aws-key"
     assert creds.cognito_id == "us-east-1:00000000-0000-0000-0000-000000000000"
     assert creds.region == "us-east-1"
     assert creds.expiration is not None

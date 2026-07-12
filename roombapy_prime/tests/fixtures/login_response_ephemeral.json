@@ -1,7 +1,7 @@
 {
   "_fixture_note": "Anonymized, structurally faithful to a real captured response from an EPHEMERAL-tier robot (900-series, R980040 SKU) via the Classic app's /v2/login. BLID, tokens, and account-specific values replaced with clearly-fake placeholders. Real field names and real capability values preserved.",
   "credentials": {
-    "AccessKeyId": "ASIAFAKEFAKEFAKEFAKE",
+    "AccessKeyId": "test-access-key-id-not-a-real-aws-key",
     "SecretKey": "FAKEsecretFAKEsecretFAKEsecretFAKEsecretFA",
     "SessionToken": "FAKE_SESSION_TOKEN_BASE64_PLACEHOLDER_VALUE_TRUNCATED_FOR_FIXTURE",
     "Expiration": "2026-07-10T17:29:39+00:00",

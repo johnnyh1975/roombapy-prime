@@ -1,7 +1,7 @@
 {
   "_fixture_note": "Anonymized, structurally faithful to real captured responses from two SMART-tier robots (i7-series, i755640/i755840 SKUs) via field testers. BLID, tokens, names replaced with placeholders. Real field names and real capability values (notably cap.pose=2, differing from EPHEMERAL's cap.pose=1) preserved.",
   "credentials": {
-    "AccessKeyId": "ASIAFAKEFAKEFAKEFAKE",
+    "AccessKeyId": "test-access-key-id-not-a-real-aws-key",
     "SecretKey": "FAKEsecretFAKEsecretFAKEsecretFAKEsecretFA",
     "SessionToken": "FAKE_SESSION_TOKEN_BASE64_PLACEHOLDER_VALUE_TRUNCATED_FOR_FIXTURE",
     "Expiration": "2026-07-11T12:00:00+00:00",
