@@ -184,15 +184,22 @@ class PrimeRobot:
         return await asyncio.to_thread(self._mqtt.get_shadow, None, timeout)
 
     async def get_settings(self, timeout: float = 8.0) -> ShadowResponse:
-        """Benannter "rw-settings"-Shadow. SMART-Tier-Seite jetzt LIVE
-        bestaetigt (23. Sitzung, echter Nutzertest: Roomba 405/SKU
-        G185020 antwortet erfolgreich). EPHEMERAL-Seite ("laeuft in den
-        Timeout, kein Fehler") weiterhin nur strukturell hergeleitet,
-        noch nie an einem echten EPHEMERAL-Geraet bestaetigt -- ein
-        erster Testlauf schien das zu zeigen, stellte sich aber als
-        falsches BLID (stillgelegtes Altgeraet) heraus, nicht als
-        echte Tier-Bestaetigung. Siehe mqtt_client.py get_shadow-
-        Docstring."""
+        """Benannter "rw-settings"-Shadow. WICHTIGE KORREKTUR (25.
+        Sitzung): die vorherige "SMART-Tier live bestaetigt"-Meldung war
+        VERFRUEHT. Derselbe Nutzer (chairstacker), dasselbe Geraet
+        (SKU G185020, gleiche BLID), zwei aufeinanderfolgende Laeufe --
+        einmal ERFOLGREICH, einmal TIMEOUT. Das ist kein stabiles
+        Tier-Signal, sondern zeigt entweder:
+        (a) eine echte Inkonsistenz/Race-Condition in dieser Bibliothek
+            beim Anfordern des benannten Shadows, oder
+        (b) einen echten, geraeteseitigen Zustand (z.B. muss der
+            Roboter selbst aktiv mit AWS IoT verbunden sein, damit ein
+            GET auf einen benannten Shadow beantwortet wird -- anders
+            als der klassische Shadow, der eventuell aus einem Cache
+            bedient wird, unabhaengig vom Online-Status des Roboters).
+        Die urspruengliche "EPHEMERAL vs. SMART"-Unterscheidung bleibt
+        bestehen, ist aber NICHT die alleinige Erklaerung fuer jeden
+        einzelnen Timeout -- siehe mqtt_client.py get_shadow-Docstring."""
         return await asyncio.to_thread(self._mqtt.get_shadow, "rw-settings", timeout)
 
     async def set_setting(self, key: str, value: object, timeout: float = 8.0) -> ShadowResponse:

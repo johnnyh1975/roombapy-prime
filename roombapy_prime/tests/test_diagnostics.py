@@ -114,19 +114,24 @@ def test_to_markdown_includes_version_and_platform_info() -> None:
 
 
 def test_report_device_info_extracts_known_candidates() -> None:
-    """NEU (21. Sitzung)."""
+    """AKTUALISIERT (25. Sitzung) -- nutzt jetzt die per Live-Daten
+    (chairstacker) bestaetigte echte Verschachtelung
+    payload["state"]["reported"], nicht mehr die urspruengliche
+    (falsche) Top-Level-Annahme."""
     from roombapy_prime.diagnostics import Report, _report_device_info
     from roombapy_prime.mqtt_client import ShadowResponse
 
     report = Report()
-    state = ShadowResponse(topic="t", payload={"sku": "i7", "softwareVer": "3.2.1", "extraField": "x"})
+    state = ShadowResponse(
+        topic="t",
+        payload={"state": {"reported": {"sku": "G185020", "soldAsSku": "G185020", "extraField": "x"}}},
+    )
     _report_device_info(report, state)
 
     assert len(report.results) == 1
     assert report.results[0].status == "OK"
-    assert "'sku': 'i7'" in report.results[0].detail
-    assert "softwareVer" in report.results[0].detail or "3.2.1" in report.results[0].detail
-    assert "extraField" in report.results[0].detail  # Top-Level-Schluessel-Liste enthaelt auch Unbekanntes
+    assert "'sku': 'G185020'" in report.results[0].detail
+    assert "extraField" in report.results[0].detail  # state.reported-Schluesselliste enthaelt auch Unbekanntes
 
 
 def test_report_device_info_handles_no_state() -> None:
@@ -143,11 +148,25 @@ def test_report_device_info_handles_no_known_candidates() -> None:
     from roombapy_prime.mqtt_client import ShadowResponse
 
     report = Report()
-    state = ShadowResponse(topic="t", payload={"somethingElse": 1})
+    state = ShadowResponse(topic="t", payload={"state": {"reported": {"somethingElse": 1}}})
     _report_device_info(report, state)
 
     assert "keine der vermuteten Kandidaten-Felder" in report.results[0].detail
     assert "somethingElse" in report.results[0].detail
+
+
+def test_report_device_info_handles_missing_state_key_gracefully() -> None:
+    """Verteidigung falls payload kein 'state'-Feld hat (z.B. eine ganz
+    andere Antwortform) -- darf nicht abstuerzen."""
+    from roombapy_prime.diagnostics import Report, _report_device_info
+    from roombapy_prime.mqtt_client import ShadowResponse
+
+    report = Report()
+    state = ShadowResponse(topic="t", payload={"somethingUnexpected": True})
+    _report_device_info(report, state)
+
+    assert len(report.results) == 1
+    assert "keine der vermuteten Kandidaten-Felder" in report.results[0].detail
 
 
 def test_report_tier_inference_smart_when_settings_succeeded() -> None:
@@ -294,3 +313,22 @@ def test_redact_raw_capture_preserves_non_sensitive_structure() -> None:
     result = _redact_raw_capture(data, [])
 
     assert result == data
+
+
+def test_extract_first_id_finds_confirmed_household_id_field() -> None:
+    """Regressionstest gegen den in dieser Sitzung gefundenen Bug:
+    _extract_first_id suchte nur nach householdId/id, echte Daten
+    (chairstacker) zeigen household_id (snake_case)."""
+    from roombapy_prime.diagnostics import _extract_first_id
+
+    real_households = [
+        {
+            "household_id": "c4714a01-f6ad-4ace-b111-d326d83867a5",
+            "owner_cognito_id": "us-east-1:abc",
+            "household_robots": [],
+            "household_users": [],
+        }
+    ]
+    result = _extract_first_id(real_households, ["household_id", "householdId", "id"])
+
+    assert result == "c4714a01-f6ad-4ace-b111-d326d83867a5"

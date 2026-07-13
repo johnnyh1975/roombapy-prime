@@ -192,18 +192,30 @@ def _skip(report: Report, name: str, reason: str) -> None:
 
 
 def _report_device_info(report: Report, state: Any) -> None:
-    """NEU (21. Sitzung) -- extrahiert Modell-/Firmware-/Faehigkeits-
-    Infos aus get_state()'s Antwort, wo vorhanden. Kandidaten-Feldnamen
-    sind Vermutungen (nie an einer echten Antwort verifiziert, bis zum
-    ersten Live-Lauf) -- daher wird IMMER zusaetzlich die Liste der
-    tatsaechlich vorhandenen Top-Level-Schluessel gemeldet, damit ein
-    falscher Kandidat beim naechsten Lauf korrigiert werden kann, statt
-    stillschweigend nichts zu finden."""
+    """NEU (21. Sitzung), KORRIGIERT (25./27. Sitzung): erste Live-Antwort
+    (chairstacker) zeigte die tatsaechliche Struktur --
+    payload["state"]["reported"] enthaelt sku/svcEndpoints/soldAsSku,
+    NICHT auf Top-Level wie urspruenglich vermutet.
+
+    WICHTIGE KORREKTUR (27. Sitzung, detailliertes Review): die
+    vollstaendige echte Antwort zeigt, dass "reported" GAR KEIN
+    Firmware-/softwareVer-Feld enthaelt -- weder auf Top-Level noch
+    verschachtelt. Firmware-Info kommt stattdessen aus
+    get_serial_number_data() oder aus einzelnen Missionshistorie-
+    Eintraegen (beide fuehren "softwareVer"). Der "firmware"-Kandidat
+    wird hier trotzdem beibehalten (falls ein anderes Geraet/Tier es
+    doch im Shadow fuehrt), aber es sollte NICHT ueberraschen, wenn er
+    hier leer bleibt -- das ist erwartet, kein Fehlerzeichen.
+
+    Kandidaten-Feldnamen bleiben ansonsten Vermutungen -- daher weiterhin
+    IMMER zusaetzlich die tatsaechlichen Top-Level-Schluessel melden,
+    falls sich die Verschachtelung nochmal aendert."""
     if state is None or not isinstance(getattr(state, "payload", None), dict):
         return
     payload = state.payload
+    reported = payload.get("state", {}).get("reported", {}) if isinstance(payload.get("state"), dict) else {}
     candidates = {
-        "sku": ["sku", "mdl"],
+        "sku": ["sku", "soldAsSku", "mdl"],
         "firmware": ["softwareVer", "ver", "firmwareVersion"],
         "name": ["name", "robotName"],
         "capabilities": ["cap"],
@@ -211,34 +223,45 @@ def _report_device_info(report: Report, state: Any) -> None:
     found = {}
     for label, keys in candidates.items():
         for key in keys:
+            if key in reported:
+                found[label] = reported[key]
+                break
             if key in payload:
                 found[label] = payload[key]
                 break
     top_level_keys = sorted(payload.keys())
+    reported_keys = sorted(reported.keys()) if reported else []
     detail = f"gefunden: {found}" if found else "keine der vermuteten Kandidaten-Felder gefunden"
-    detail += f" -- alle Top-Level-Schluessel der Antwort: {top_level_keys}"
+    detail += f" -- Top-Level-Schluessel: {top_level_keys}"
+    if reported_keys:
+        detail += f" -- state.reported-Schluessel: {reported_keys}"
     report.add("Geraeteinfo aus get_state() extrahiert", "OK", detail)
 
 
 def _report_tier_inference(report: Report, settings_result: Any) -> None:
-    """NEU (21. Sitzung) -- macht die Tier-Vermutung explizit statt nur
-    implizit aus einem FEHLGESCHLAGEN-Eintrag ablesbar. Basiert auf der
-    dokumentierten, jetzt erstmals live teilbestaetigten Regel:
-    rw-settings antwortet nur auf SMART-Tier, EPHEMERAL laeuft in den
-    Timeout (kein Fehler des Roboters oder der Bibliothek)."""
+    """NEU (21. Sitzung), ABGESCHWAECHT (25. Sitzung) -- dieselbe
+    Geraete-BLID lieferte in zwei aufeinanderfolgenden Laeufen
+    UNTERSCHIEDLICHE Ergebnisse (einmal Erfolg, einmal Timeout). Das
+    ist kein stabiles Tier-Signal -- entweder eine Race-Condition in
+    dieser Bibliothek oder ein echter, wechselnder Geraetezustand
+    (Roboter online/offline gegenueber AWS IoT). Formulierung
+    entsprechend vorsichtiger: "deutet auf" statt "ist"."""
     if settings_result is not None:
         report.add(
             "Tier-Vermutung (aus get_settings()-Ergebnis)",
             "OK",
-            "rw-settings hat geantwortet -> vermutlich SMART-Tier (i/s/j-Serie o.ae.)",
+            "rw-settings hat geantwortet -> deutet auf SMART-Tier hin. HINWEIS: bei demselben "
+            "Geraet wurde in einem anderen Lauf auch ein Timeout beobachtet -- dieses Signal "
+            "ist nicht zuverlaessig stabil, siehe get_settings()'s Docstring.",
         )
     else:
         report.add(
             "Tier-Vermutung (aus get_settings()-Ergebnis)",
             "OK",
-            "rw-settings hat NICHT geantwortet (Timeout) -> vermutlich EPHEMERAL-Tier "
-            "(900-Serie-aehnliche, aeltere Prime-Generation) -- dies ist die dokumentierte, "
-            "erwartete Auswirkung, kein Fehler",
+            "rw-settings hat NICHT geantwortet (Timeout) -> koennte EPHEMERAL-Tier bedeuten, "
+            "koennte aber auch ein voruebergehender Zustand sein (z.B. Roboter aktuell nicht "
+            "aktiv mit AWS IoT verbunden) -- bei demselben Geraet wurde in einem anderen Lauf "
+            "auch ein Erfolg beobachtet. Kein verlaesslicher Tier-Beweis fuer sich allein.",
         )
 
 
@@ -318,7 +341,8 @@ async def run(
             try:
                 first = map_versions[0]
                 p2map_id = (
-                    first.get("mapId")
+                    first.get("p2map_id")
+                    or first.get("mapId")
                     or first.get("p2mapId")
                     or first.get("id")
                     or first.get("map_id")
@@ -371,7 +395,7 @@ async def run(
                         "kein erkennbarer URL-Schluessel in der Antwort (Antwortform unbestaetigt)",
                     )
             households = await _try_silent(robot.get_user_households())
-            household_id = _extract_first_id(households, ["householdId", "id"])
+            household_id = _extract_first_id(households, ["household_id", "householdId", "id"])
             if household_id:
                 await _try(
                     report, "Zeitplaene abrufen (get_schedules)", robot.get_schedules(household_id), capture=raw_capture

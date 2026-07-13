@@ -121,7 +121,7 @@ fields (`velocity_left`/`velocity_right`). `Region` pairs a `RegionType`
 
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.get_active_map_versions() -> list[dict]` | 🟢 | |
+| `robot.get_active_map_versions() -> list[dict]` | 🟢 | Confirmed field names from a real response (26th session): `p2map_id`, `active_p2mapv_id` (the map version), `name`, `state`, `visible`, `rooms_metadata`. For a typed result use `models.py::parse_active_map_versions()` — includes per-room `operating_mode_defaults`, which reuse `CommandParams` directly. |
 | `robot.get_map_metadata(p2map_id) -> dict` | 🟢 | |
 | `robot.set_map_name(p2map_id, name) -> dict` | 🟢 | |
 | `robot.set_map_orientation(p2map_id, orientation_rad) -> dict` | 🟢 | Clamped to (-π, π]. |
@@ -169,7 +169,7 @@ analogy to favorites, not generically confirmable from bytecode), and
 | `robot.get_default_routines(p2map_id) -> dict` | 🟢 | Auto-generated per-map cleaning suggestions. See `parse_default_routines()`. |
 | `robot.get_robot_parts() -> dict` | 🟢 | Consumable part status (filter/brush/battery wear, unconfirmed which). Confirmed from `res/raw/base_roomba_config.json` (a primary-source config file bundled in the APK), not decompiled logic — see `docs/base_roomba_config_REFERENCE.json`. |
 | `robot.reset_robot_parts() -> dict` | 🟢 (method), 🔴 (body shape) | Same source as above; presumably resets a part's wear counter after replacement. |
-| `robot.get_serial_number_data() -> dict` | 🟢 | Same source; likely serial number / hardware identification data. |
+| `robot.get_serial_number_data() -> dict` | 🟢 | Confirmed structure (26th session): serial number, user-assigned robot name, `family` (e.g. `"Roomba Combo"`), `series`. For a typed result use `models.py::RobotSerialInfo.from_json()`. |
 | `robot.poll_echo_value() -> dict` | 🟢 (method), 🔴 (body/response shape) | "Find my robot" — triggers the device's echo/chirp. Confirmed from the same config file (`"PollEchoValueCommand,Set"`); matches the `SetRoombaEchoAwsIotSerializer` found during native analysis. No body sent by default. |
 | `robot.get_time_estimates(body: dict) -> dict` | 🟢 (method/URL), 🔴 (body shape) | `POST` despite being read-only in the config (`"read": true`) — the body presumably specifies which mission/rooms to estimate. Caller supplies the body directly; shape not reverse-engineered. |
 | `robot.reset_robot() -> dict` | 🟢 (method/URL), ⚠️ | Confirmed from the config file, but the name and `"write": true` strongly suggest a real, consequential reset — treat as destructive until proven otherwise. |

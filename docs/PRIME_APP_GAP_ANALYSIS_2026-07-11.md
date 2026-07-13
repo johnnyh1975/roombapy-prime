@@ -297,6 +297,271 @@ eine neue `_redact_raw_capture()`-Funktion.
 221/221 Tests gruen (7 neue), ruff sauber. Rauchtest mit `--dump-config` bestaetigt: kein Absturz,
 korrekte (leere) JSON-Datei bei fehlgeschlagenem Login.
 
+## Nachtrag (fuenfundzwanzigste Sitzung): erste --dump-config-Datei ausgewertet -- mehrere echte Bugs UND Modellkorrekturen
+
+chairstacker hat die aktualisierte Skriptversion inklusive `--dump-config` gegen denselben (jetzt
+bestaetigt korrekten) Roomba 405 laufen lassen und die vollstaendige, echte JSON-Rohantwort
+geteilt (per privater Nachricht, nicht oeffentlich, wie in `--dump-config`s Warnung empfohlen).
+Das ist die ergiebigste einzelne Datenquelle seit `base_roomba_config.json` selbst.
+
+**Definitiv geloest: der Kartenversions-Bug.** Die echte `get_active_map_versions()`-Antwort
+zeigt die tatsaechlichen Feldnamen: `p2map_id`, `entity_type`, `create_time`, `robot_id`, `sku`,
+`active_p2mapv_id`, `last_p2mapv_ts`, `state`, `visible`, `name`, `rooms_metadata` -- KEINS davon
+war `mapId`/`mapVersionId`, der urspruenglichen (falschen) Dokumentationsannahme aus der ersten
+Sitzung. `diagnostics.py` und `rest_client.py`s Docstring korrigiert.
+
+**Geraeteinfo-Extraktion war strukturell falsch.** Die echte `get_state()`-Antwort zeigt: `sku`
+liegt unter `payload["state"]["reported"]["sku"]`, nicht auf Top-Level. `_report_device_info()`
+entsprechend korrigiert (liest jetzt zusaetzlich `state.reported`, meldet bei Fehlschlag beide
+Ebenen an Schluesseln).
+
+**Zwei echte Korrekturen am Kernmodell, beide aus echten Missionshistorie-Daten:**
+- `RegionType`s Werte sind KLEINGESCHRIEBEN ("rid"/"zid"), nicht gross wie urspruenglich aus
+  Bytecode gelesen ("RID"/"ZID") -- die Konstantennamen im Bytecode stimmten, die tatsaechliche
+  Serialisierung nicht. Korrigiert, Python-Member-Namen bleiben gross (nur Werte geaendert).
+- `CommandParams.scrub`s Wire-Schluessel ist tatsaechlich `"swScrub"`, nicht `"scrub"` --
+  ebenfalls korrigiert (Python-Attributname bleibt "scrub" fuer Abwaertskompatibilitaet).
+
+**Zwei neue Felder ergaenzt**, beide aus echten Daten, vorher unbekannt:
+- `CommandParams.operating_mode` (Wire: "operatingMode", beobachtete Werte 2/32)
+- `RoutineCommand.initiator` (Wire: "initiator", beobachtete Werte "cloud"/"rmtApp" -- wer/was
+  die Mission ausgeloest hat)
+
+**Ein wichtiger Ruecknahme: die "SMART-Tier live bestaetigt"-Behauptung aus der dreiundzwanzigsten
+Sitzung war verfrueht.** Derselbe Nutzer, dasselbe Geraet (SKU G185020), zwei Laeufe kurz
+hintereinander -- einmal `get_settings()` erfolgreich, einmal Timeout. Das ist kein stabiles
+Tier-Signal. Docstrings und die automatische Tier-Vermutungsausgabe in `diagnostics.py`
+entsprechend vorsichtiger formuliert ("deutet auf" statt "ist", mit explizitem Hinweis auf die
+beobachtete Inkonsistenz). Offene Hypothese, nicht Code-Fix: moeglicherweise muss der Roboter
+selbst aktiv mit AWS IoT verbunden sein, damit ein benannter Shadow antwortet, waehrend der
+klassische Shadow eventuell aus einem Cache bedient wird -- ungeklaert.
+
+**Ein neuer, echter, ungeloester Bug:** `get_notifications()` schlaegt live mit HTTP 400 fehl. Die
+URL selbst stimmt mit `base_roomba_config.json` ueberein -- vermutlich liegt es am
+Platzhalter-`app_version`-Wert ("1.0") oder einem fehlenden, in der Konfigurationsdatei nicht
+sichtbaren Parameter. Docstring aktualisiert, als bekannter offener Fehler markiert, kein Fix
+versucht ohne weitere Daten.
+
+**Reichhaltige Missionshistorie-Rohdaten bestaetigen zusaetzlich** (ohne Code-Aenderung noetig,
+nur zur Kenntnisnahme): `RoutineCommand`s bestehende Feldzuordnungen (`command`, `p2map_id`,
+`ordered`, `user_p2mapv_id`, `regions[].region_id`/`type`) sowie mehrere `CommandParams`-Felder
+(`twoPass`, `suctionLevel`, `carpetBoost`) stimmen 1:1 mit der Dokumentation ueberein -- ein gutes
+Zeichen fuer die Zuverlaessigkeit der urspruenglichen nativen Analyse insgesamt, trotz der oben
+genannten Einzelkorrekturen.
+
+228/228 Tests gruen (12 neue/aktualisiert), ruff sauber.
+
+## Nachtrag (sechsundzwanzigste Sitzung): der Rest der --dump-config-Datei -- vollstaendige Modelle fuer zwei bisher rohe Endpunkte
+
+chairstacker hatte die 38k-Zeichen-Datei ueber zwei private Nachrichten geteilt; der erste Teil
+wurde in der fuenfundzwanzigsten Sitzung ausgewertet, der zweite Teil (ab der Mitte der
+Verschleissteile-Liste) hier. Enthielt die vollstaendigen, echten Antworten fuer
+`get_serial_number_data()` und `get_active_map_versions()` -- beide bisher nur als rohes JSON
+durchgereicht, jetzt vollstaendig typisiert.
+
+**`get_active_map_versions()`**: Neue Modelle `P2MapVersion` und `RoomMetadataEntry` plus
+`parse_active_map_versions()`. Bestaetigt: ein Account kann mehrere Karten haben (im
+beobachteten Fall zwei: "Whole House" und "Master_Bathroom"). Der wertvollste Einzelfund dabei:
+`rooms_metadata[].room_metadata.operating_mode_defaults` ist ein Dict (Schluessel = Operating-
+Mode-ID als String, z.B. "512"/"32"/"2"), dessen WERTE direkt CommandParams-foermig sind --
+`CommandParams.from_json()` laesst sich unveraendert wiederverwenden. Bestaetigt ausserdem, dass
+`region_type` konsistent kleingeschrieben ist ("rid"/"zid", passend zum Fix aus der letzten
+Sitzung) und dass manche Raeume einen nutzervergebenen Namen haben (z.B. "Bathroom"), andere
+nicht.
+
+**`get_serial_number_data()`**: Neues Modell `RobotSerialInfo`. Bestaetigt u.a. `family: "Roomba
+Combo"` (ein Saug+Wisch-Kombigeraet), `series: "G1"`, sowie den nutzervergebenen Robotername
+("House_Bot").
+
+**Nebenbei eine unvollstaendige Verdrahtung entdeckt und geschlossen:** `CommandParams.routine_type`
+existierte bereits als Feld (samt Docstring, der bereits auf chairstackers Daten verwies), war
+aber nie an `to_json()`/`from_json()` angebunden -- vervollstaendigt.
+
+235/235 Tests gruen (7 neue), ruff sauber.
+
+## Nachtrag (siebenundzwanzigste Sitzung): detailliertes Review auf Nachfrage -- ein grosser, bisher uebersehener Fund
+
+Auf die Frage "hast du alles verarbeitet, nochmal im Detail reviewen" wurde `MissionHistoryEntry`
+und `MissionCommandRecord` systematisch gegen dieselbe echte Missionshistorie erneut geprueft, die
+schon in der fuenfundzwanzigsten Sitzung vorlag -- dort war der Fokus auf den NEUEN Modellen
+(P2MapVersion etc.), die eigenen, laengst bestehenden Feldzuordnungen wurden nicht erneut
+gegengeprueft. Ergebnis: **fast alle Feldnamen in beiden Klassen waren falsch geraten.**
+
+**`MissionHistoryEntry`, korrigiert:**
+- `robotId` -> `robot_id`
+- `minutesRunning`/`minutesPaused`/`minutesCharging`/`minutesDone` -> `runM`/`pauseM`/`chrgM`/`doneM`
+- `squareFeetCovered` -> `sqft`
+- `numberOfEvacuations` -> `evacs`
+- `endedOnDock` -> `eDock`
+- `doneCode`/`doneRaw` -> `done`/`done_raw` (beide scheinen denselben Wert doppelt zu fuehren)
+- Der Missionsbefehl selbst steht unter dem Schluessel `cmd`, nicht `command`
+
+**`MissionCommandRecord`, korrigiert:**
+- `mapId` -> `p2map_id`, `mapVersionId` -> `user_p2mapv_id`
+- `regions` von roher Liste auf `list[Region]` umgestellt (Struktur inzwischen bekannt)
+
+**`Region.from_json()` fehlte komplett** (nur `to_json()` existierte, da urspruenglich nur fuers
+Senden gebaut) -- ergaenzt. Echte Daten zeigen beim Lesen den Schluessel `region_id`, nicht `id`
+wie beim Senden ueber `to_json()` -- moeglicherweise zwei unterschiedliche Wire-Formen fuer
+denselben Zweck, beide werden jetzt akzeptiert.
+
+**Ein zweites Vorkommen desselben Gross-/Kleinschreibungs-Musters wie bei `RegionType`:**
+`DoneCode.OK` war als `"OK"` bestaetigt (androguard-Konstantenname), echte Daten zeigen `"ok"`
+(kleingeschrieben). Alle 19 Werte auf Kleinschreibung umgestellt -- nur "ok" ist direkt bestaetigt,
+der Rest folgt demselben, jetzt zweimal beobachteten Muster (durchgaengige Kleinschreibung
+wahrscheinlicher als gemischte Schreibung innerhalb eines Enums). **Methodische Konsequenz:**
+saemtliche andere ueber androguard "bestaetigten" Enums in dieser Bibliothek (CleaningMode,
+VacuumPowerLevel, PadCategory, RankOverlap, CoverageStrategy, PlanType, PlanUpcoming,
+TravelDestination, TraversalType) tragen jetzt dasselbe Risiko einer Gross-/Kleinschreibungs-
+Abweichung, bis echte Daten dafuer vorliegen -- `_enum_or_none()` faengt das zwar ab (kein Absturz,
+Fallback auf rohen String), aber niemand sollte sich derzeit auf die exakte Gross-/Kleinschreibung
+dieser konkreten Enum-Werte verlassen.
+
+**Zwei kleinere Ergaenzungen aus demselben Datensatz:**
+- `CommandParams.no_auto_passes` (Wire: "noAutoPasses") -- gefunden an einer ungewoehnlichen
+  Stelle: eingebettet als string-serialisiertes (Python-repr-artiges, kein direktes JSON)
+  `cmdStr`-Feld in `get_state()`s `cleanSchedule2`-Liste.
+- Neue Modelle `RobotPart`/`RobotPartsInfo` fuer `get_robot_parts()` (bisher rohes JSON).
+
+**Bewusst weiterhin NICHT modelliert**, zur Kenntnisnahme fuer kuenftige Sitzungen:
+- `get_state()`s `cap`-Objekt (35 Faehigkeits-Flags/-Stufen wie `carpetBoost: 3`, `suctionLvl: 4`,
+  `maps: 6`) -- reichhaltig, aber ein eigenes Modell waere ein groesseres Vorhaben fuer sich
+- `cleanSchedule2` selbst als Ganzes (die im Shadow eingebettete Zeitplanform, separat von den
+  REST-basierten `get_schedules()`/`ScheduleOptions`) -- nur das einzelne `no_auto_passes`-Feld
+  daraus wurde uebernommen
+- Diverse MissionHistoryEntry-Felder ohne erkennbaren Mehrwert fuer eine Home-Automation-
+  Bibliothek (`wlBars`, `startEndWlBars`, `oModeStats`, `saves`, `wifiChannel`, `flags`, `chrgs`,
+  `pauseId`, `nMssn`) -- bleiben ueber `.raw` weiterhin zugaenglich
+
+242/242 Tests gruen (14 neue), ruff sauber.
+
+## Nachtrag (achtundzwanzigste Sitzung): noch einmal Zeichen fuer Zeichen geprueft, auf explizite Nachfrage
+
+Zwei weitere, kleinere aber echte Funde beim erneuten, diesmal zeichenweisen Durchgehen der
+kompletten Antwort:
+
+**`get_state()` enthaelt entgegen meiner bisherigen Annahme GAR KEIN Firmware-Feld.** Die
+vollstaendige `reported`-Struktur hat genau acht Schluessel (`digiCap`, `nsmip`, `cap`,
+`cleanSchedule2`, `schedHold`, `sku`, `svcEndpoints`, `soldAsSku`) -- keiner davon ist eine
+Firmware-/Softwareversion. `_report_device_info()`s "firmware"-Kandidatensuche wird hier also
+zuverlaessig leer bleiben, nicht weil etwas falsch waere, sondern weil das Feld schlicht nicht in
+dieser Antwort steckt. Firmware kommt stattdessen aus `get_serial_number_data()` oder aus
+Missionshistorie-Eintraegen (beide fuehren `softwareVer`). Docstring entsprechend klargestellt,
+damit ein leeres Ergebnis hier nicht als Fehler missverstanden wird.
+
+**Eine bestaetigte Querverbindung, rein informativ:** `get_state()`s `svcEndpoints.svcDeplId`
+("v007") stimmt exakt mit dem Praefix in `get_live_map_stream()`s MQTT-Topic ueberein
+("v007-irbthbu/things/.../livemap/update"). Bestaetigt, dass dieses Praefix kein Zufallswert ist,
+sondern aus der "Deployment-ID" des Accounts/Geraets stammt -- nuetzlich, falls das Live-Map-Topic
+jemals fuer ein anderes Geraet/Deployment konstruiert werden muss, statt es woertlich zu
+uebernehmen.
+
+**Zusaetzlich bemerkt, bewusst nicht geaendert:** Die in `cleanSchedule2[].cmdStr` eingebettete
+Kommandostruktur nutzt `pmap_id`/`user_pmapv_id` (OHNE die "2"), waehrend ueberall sonst bestaetigt
+`p2map_id`/`user_p2mapv_id` gilt. Da `cleanSchedule2` ohnehin als Ganzes unmodelliert bleibt (siehe
+vorheriger Nachtrag), keine Code-Aenderung noetig -- aber falls diese Struktur spaeter doch
+modelliert wird, ist das ein wichtiger, eigener Namenskonvention-Unterschied, keine Tippfehler-
+Verwechslung.
+
+**Ehrliche Einschaetzung nach zwei Durchgaengen:** Kein weiterer, aehnlich grosser Fund wie die
+Feldnamen-Korrekturen der siebenundzwanzigsten Sitzung aufgetaucht. Die verbleibenden, bewusst
+unmodellierten Bereiche (cap-Objekt, cleanSchedule2 als Ganzes, diverse Missionshistorie-
+Nebenfelder) sind bereits benannt, nicht uebersehen. Sicher sein kann ich trotzdem nicht zu
+100% -- die einzige Methode, die bisher tatsaechlich Bugs gefunden hat, war der Abgleich gegen
+echte Daten, nicht das erneute Lesen des eigenen Codes; weitere echte Antworten (andere
+Endpunkte, andere Geraete) wuerden vermutlich weitere, aehnliche Fehler aufdecken, so wie es
+bisher bei jeder neuen Datenquelle der Fall war.
+
+242/242 Tests weiterhin gruen, ruff sauber.
+
+## Nachtrag (neunundzwanzigste Sitzung): derselbe Bugtyp bei household_id gefunden -- trotz laengst vorliegender Daten uebersehen
+
+Auf nochmalige Nachfrage ("kannst du noch etwas finden") den Haushaltslisten-Teil der laengst
+vorliegenden echten Antwort erneut geprueft -- diesmal gezielt, nicht nur oberflaechlich als
+"bleibt roh" abgehakt. Ergebnis: **derselbe Fehlertyp wie beim Karten-Bug, diesmal bei
+`household_id`**, und er war die ganze Zeit sichtbar, wurde aber nicht mit derselben Sorgfalt
+gegengeprueft wie die Missionshistorie-Felder.
+
+`diagnostics.py`s `_extract_first_id(households, ["householdId", "id"])` sucht nach zwei
+camelCase-/generischen Kandidaten -- die tatsaechliche, laengst bekannte Antwort zeigt
+`"household_id"` (snake_case), keiner der beiden Kandidaten passt. Das haette den Zeitplan-/DND-
+Pruefungspfad im Diagnoseskript genauso stillschweigend blockiert wie zuvor bei den Karten.
+Behoben: `"household_id"` als erster Kandidat ergaenzt.
+
+**Bei der Gelegenheit ein vollstaendiges Modell fuer `get_user_households()` gebaut**
+(`Household`/`HouseholdRobot`/`HouseholdUser` + `parse_user_households()`), da die Struktur jetzt
+ohnehin vollstaendig bekannt ist. Nebenbei die Docstring-Einschaetzung korrigiert: der Endpunkt
+war als "im aktuellen App-Code totes Gewebe, HTTP-Methode nur Konvention" dokumentiert --
+funktioniert aber live einwandfrei. "Im App-Code unbenutzt" bedeutete hier tatsaechlich nur "diese
+App-Version braucht es nicht", nicht "der Server unterstuetzt es nicht mehr".
+
+246/246 Tests gruen (4 neue), ruff sauber.
+
+## Nachtrag (dreissigste Sitzung): ein fehlendes Feld, kein falscher Name diesmal
+
+Auf nochmalige Nachfrage ("und was noch") gefunden: `MissionCommandRecord` hatte kein
+Top-Level-`params`-Feld -- getrennt von `regions[].params`, in der echten Missionshistorie mal
+gesetzt (z.B. `{"profile": "light"}`, beobachtet bei `initiator: "rmtApp"`-Eintraegen), mal
+explizit `null` (bei mehreren `initiator: "cloud"`-Eintraegen). Anders als die bisherigen Funde
+dieser Sitzungsreihe war das kein falsch geratener Feldname, sondern ein komplett fehlendes Feld
+-- die Daten dafuer lagen die ganze Zeit vor, wurden aber nie einzeln herausgezogen. Ergaenzt,
+nutzt `CommandParams.from_json()` wie das analoge `regions[].params`.
+
+247/247 Tests gruen (1 neu), ruff sauber.
+
+## Nachtrag (einunddreissigste Sitzung): programmatischer Vollabgleich statt manuellem Lesen -- der bisher groesste Fund
+
+Auf explizite Kritik ("das ist zu iterativ, hast du wirklich die vollen Informationen geprueft")
+wurde die Methode geaendert: statt die Daten nochmal von Auge zu lesen, wurden ALLE Feldnamen aus
+der kompletten `diagnose.json` (beide Nachrichten, als echtes Python-Objekt rekonstruiert)
+programmatisch rekursiv extrahiert und gegen jeden `.get()`-Aufruf im Code gehalten. Ergebnis: der
+bisher folgenreichste Fund der gesamten Untersuchung.
+
+**Die komplette MissionTimelineEvent-Verarbeitung aus der achtzehnten Sitzung war bis zu diesem
+Zeitpunkt komplett wirkungslos.** `parse_mission_timeline()` suchte nach dem Schluessel `"events"`
+innerhalb von `timeline` -- dieser Schluessel existiert in echten Daten schlicht nicht. Die
+tatsaechlichen, reichen Unterereignisse stehen unter `"finEvents"`; eine separate, sparsame
+`"event"`-Liste (nur `type`+`ts`, kein Zusatzobjekt) existiert daneben und enthaelt keine
+zusaetzliche Information. Jede einzelne Mission haette bei jedem bisherigen Nutzer eine leere
+`.timeline`-Liste geliefert, ohne Fehler -- der Bug war vollstaendig stumm.
+
+**Zusaetzlich, an fast jedem Unterereignistyp: systematisch falsche Feldnamen**, alle demselben
+Muster folgend (Wire-Format nutzt kurze `p2map`-praefigierte Formen, nicht die verboseren
+camelCase-Vermutungen):
+- `RoomEvent`: `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`, `regionId`->`rid`
+- `TravelEvent`: `destination`->`dest`, `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`,
+  `regionId`->`rid`, `zoneId`->`zid`
+- `TraversalEvent`: `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`, `regionId`->`rid`,
+  `zoneId`->`zid`
+- `ZoneEvent`: `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`, `zoneId`->`zid`
+- `TentativeLocationEvent`: `confirmedMapId`->`confp2mapId`, `confirmedMapVersion`->`confp2mapvId`,
+  `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`. Zusaetzlich: der MissionTimelineEvent-Schluessel
+  selbst ist `"reloc"`, nicht `"relocalizing"` oder `"tentativeLocation"` wie urspruenglich
+  angenommen -- ergaenzt, ohne die beiden alten (unbestaetigten) Feldnamen zu entfernen.
+- `PadWashEvent`: `fluidAmount`->`flAmt`, `padWashState`->`pwState`
+- `MissionTimelineEvent.start_time`/`end_time` selbst: `startTime`/`endTime` existieren nicht,
+  echte Schluessel sind `ts`/`ets`
+
+**Zwei weitere, dabei entdeckte Enum-Fehlschreibungen** (dasselbe Gross-/Kleinschreibungsmuster
+wie RegionType/DoneCode zuvor): `TravelDestination` und `TraversalType` waren grossgeschrieben,
+echte Daten zeigen Kleinschreibung ("dock"/"zone"/"room", "region"). Beide korrigiert.
+
+**Ende-zu-Ende gegen die vollstaendige echte Missionshistorie verifiziert** (nicht nur einzelne
+Unit-Tests): alle drei echten Missionen liefern jetzt korrekt befuellte Timelines (8/10/7
+Ereignisse), mit korrekt aufgeloesten Karten-IDs, Zonen- und Raum-Referenzen -- vorher ueberall
+`0`.
+
+**Ehrliche Einordnung:** Dieser Fund waere durch die vorherige Methode (Feld-fuer-Feld-Lesen mit
+gelegentlichen Stichproben) wahrscheinlich nicht aufgefallen -- er lag mehrere Verschachtelungs-
+ebenen tief (timeline -> finEvents -> Unterereignis -> Feld) und betraf einen Schluessel, dessen
+Abwesenheit keinen Fehler wirft, nur eine leere Liste. Die programmatische Methode (alle
+Feldnamen rekursiv extrahieren, gegen alle `.get()`-Aufrufe abgleichen) ist damit die einzige
+bisher gefundene Vorgehensweise, die diese Art von stillem, tief verschachteltem Bug zuverlaessig
+aufdeckt -- fuer kuenftige Live-Daten-Auswertungen sollte sie der Standardansatz sein, nicht die
+Ausnahme.
+
+247/247 Tests gruen (1 neu, mehrere korrigiert), ruff sauber.
+
 ## Nachtrag (siebzehnte Sitzung): priorisierte Roadmap -- was als Naechstes
 
 Auf die Frage "was muessen wir an der Library noch machen" systematisch beantwortet. Bei der

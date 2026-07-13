@@ -104,10 +104,16 @@ class PrimeRestClient:
         drei fetchPersistentMap/fetchLatestPersistentMap/fetchMissionMap
         -Aequivalente, siehe PRIME_APP_GAP_ANALYSIS Punkt C2).
 
-        Rueckgabe ist eine Liste von Eintraegen mit mindestens "mapId"
-        und "mapVersionId" (P2MapData -> P2MapIdentifier im Original) --
-        hier als rohes JSON durchgereicht, kein eigenes Modell noch
-        gebaut."""
+        KORRIGIERT (25. Sitzung): die urspruengliche Vermutung
+        "mindestens 'mapId' und 'mapVersionId'" war FALSCH -- echte
+        Live-Antwort (chairstacker) zeigt die tatsaechlichen Felder:
+        `p2map_id`, `entity_type`, `create_time`, `robot_id`, `sku`,
+        `active_p2mapv_id` (das ist die Kartenversion-ID),
+        `last_p2mapv_ts`, `state`, `visible`, `name`, `rooms_metadata`.
+        Hier weiterhin als rohes JSON durchgereicht -- fuer ein
+        typisiertes Ergebnis models.py::parse_active_map_versions()
+        verwenden (NEU, 26. Sitzung, inkl. Raum-Metadaten mit
+        wiederverwendbaren CommandParams-Presets pro Operating-Mode)."""
         url = f"{self._http_base_auth}/v1/p2maps"
         data = await self._request("GET", url, query={"robotId": blid, "visible": "true"})
         return data if isinstance(data, list) else []
@@ -394,16 +400,21 @@ class PrimeRestClient:
         return await self._request("PUT", url, body={"schedules": [s.to_json() for s in schedules]})
 
     async def get_user_households(self) -> dict[str, Any]:
-        """GET (angenommen, NICHT bestaetigt) /v1/user/households -- NEU
-        (11. Juli, siebte Sitzung). WICHTIG: dieser Endpunkt wird von der
-        aktuellen App-Version (2.2.4) NIRGENDS aufgerufen -- die
-        Konstante HOUSEHOLDS_TEMPLATE existiert in NetworkConstants.java,
-        aber keine einzige Request-Klasse nutzt sie. Trotzdem
-        implementiert: eine unbenutzte App-interne Referenz heisst nicht,
-        dass der Endpunkt serverseitig nicht existiert -- nur, dass diese
-        App-Version ihn (noch) nicht braucht. HTTP-Methode und Antwortform
-        daher reine REST-Konvention, nicht aus einer Request-Klasse
-        bestaetigt wie bei den anderen Endpunkten hier."""
+        """GET /v1/user/households -- NEU (11. Juli, siebte Sitzung).
+        HTTP-Methode war reine REST-Konvention (dieser Endpunkt wird von
+        der App-Version 2.2.4 nirgends aufgerufen -- die Konstante
+        HOUSEHOLDS_TEMPLATE existiert, aber keine Request-Klasse nutzt
+        sie). TROTZDEM LIVE BESTAETIGT (28. Sitzung, chairstacker):
+        funktioniert einwandfrei, liefert eine echte, klar strukturierte
+        Antwort -- "im aktuellen App-Code unbenutzt" bedeutete hier
+        tatsaechlich nur "diese Version braucht es nicht", nicht "der
+        Server unterstuetzt es nicht mehr".
+
+        Response-Form bestaetigt: household_id, owner_cognito_id,
+        household_name (beobachtet: "#AUTO_GENERATED_HOUSEHOLD#"),
+        has_precise_location, household_robots, household_users. Fuer
+        ein typisiertes Ergebnis models.py::parse_user_households()
+        verwenden."""
         url = f"{self._http_base_auth}/v1/user/households"
         return await self._request("GET", url)
 
@@ -451,9 +462,15 @@ class PrimeRestClient:
         (res/raw/base_roomba_config.json, commandId "GetRobotParts":
         httpMethod=GET, urlPath="/v1/robots/%s/parts",
         networkList=["awsApiGateway"]) -- eine Primaerquelle, keine
-        Bytecode-Interpretation. Liefert vermutlich Verschleissteil-
-        Zustaende (Filter/Buerste/Akku-Nutzungsdauer o.ae.) -- Response-
-        Form nicht weiter untersucht, rohes JSON."""
+        Bytecode-Interpretation.
+
+        Response-Form JETZT bestaetigt (27. Sitzung, echte Live-Antwort
+        von chairstacker): robot_id, num_parts, parts (Liste mit
+        part_id, counter, minutes_remaining, count_type z.B.
+        "combo_missions"/"pad_washes_used"/"minutes"/"evacs",
+        count_remaining, count_used, counter_category, reset_by). Rohes
+        JSON hier durchgereicht -- fuer ein typisiertes Ergebnis
+        models.py::RobotPartsInfo.from_json() verwenden."""
         url = f"{self._http_base_auth}/v1/robots/{blid}/parts"
         return await self._request("GET", url)
 
@@ -470,9 +487,17 @@ class PrimeRestClient:
     async def get_serial_number_data(self, blid: str) -> dict[str, Any]:
         """GET /v1/robots?robot_id={blid} -- NEU (15. Sitzung). BESTAETIGT
         aus derselben Konfigurationsdatei (commandId "GetSerialNumberData",
-        httpMethod=GET, urlPath="/v1/robots?robot_id=%s"). Liefert
-        vermutlich Seriennummer/Hardware-Identifikationsdaten -- Response-
-        Form nicht weiter untersucht, rohes JSON."""
+        httpMethod=GET, urlPath="/v1/robots?robot_id=%s").
+
+        Response-Form JETZT bestaetigt (26. Sitzung, echte Live-Antwort
+        von chairstacker): RobotID, SerialNumber, built_as_sku,
+        family_variant, is_raas, is_refurbished, is_smartcare,
+        min_utc_reg_date, name (nutzervergebener Robotername, z.B.
+        "House_Bot"), sku, series (z.B. "G1"), family (z.B.
+        "Roomba Combo" -- bestaetigt ein Kombigeraet fuer Saugen+
+        Wischen), serial_history. Rohes JSON hier durchgereicht -- fuer
+        ein typisiertes Ergebnis models.py::RobotSerialInfo.from_json()
+        verwenden."""
         url = f"{self._http_base_auth}/v1/robots"
         return await self._request("GET", url, query={"robot_id": blid})
 
@@ -519,9 +544,17 @@ class PrimeRestClient:
         details_type_filter=all&app_version=%s&limit=50"). "HKC" als
         event_type-Wert nicht aufgeloest (Abkuerzung unbekannt) --
         1:1 aus der Konfigurationsdatei uebernommen, nicht geraten.
-        app_version wird von der echten App mitgeschickt, vermutlich
-        fuer Kompatibilitaets-/Feature-Flags server-seitig -- ein
-        Platzhalterwert sollte funktionieren, aber unbestaetigt."""
+
+        BEKANNTER, UNGELOESTER FEHLER (25. Sitzung): live gegen einen
+        echten Account (chairstacker) schlaegt dieser Aufruf mit
+        HTTP 400 fehl. Die URL selbst stimmt mit der Konfigurationsdatei
+        ueberein -- der Fehler liegt vermutlich am `app_version`-
+        Platzhalterwert ("1.0"), den der Server evtl. als ungueltig
+        zurueckweist (die echte App schickt vermutlich ihre tatsaechliche
+        Versionsnummer mit, kein generischer Platzhalter), oder an einem
+        fehlenden Header/Parameter, der in der Konfigurationsdatei nicht
+        sichtbar ist. NICHT als funktionierend behandeln, bis das
+        aufgeloest ist."""
         url = f"{self._http_base_auth}/v1/robots/{blid}/timeline"
         return await self._request(
             "GET",

@@ -330,7 +330,7 @@ def test_region_to_json() -> None:
     region = Region(region_id="r1", region_type=RegionType.RID, name="Kitchen", params=CommandParams(speed=2))
     body = region.to_json()
 
-    assert body == {"id": "r1", "type": "RID", "name": "Kitchen", "params": {"speed": 2}}
+    assert body == {"id": "r1", "type": "rid", "name": "Kitchen", "params": {"speed": 2}}
 
 
 def test_command_polygon_to_json() -> None:
@@ -358,7 +358,7 @@ def test_routine_command_with_typed_regions_and_params() -> None:
     )
     body = cmd.to_json()
 
-    assert body["regions"] == [{"id": "r1", "type": "RID"}]
+    assert body["regions"] == [{"id": "r1", "type": "rid"}]
     assert body["params"] == {"suctionLevel": 2}
 
 
@@ -388,12 +388,12 @@ def test_parse_mission_history_entry() -> None:
         "missions": [
             {
                 "missionId": "m1",
-                "robotId": "BLID123",
+                "robot_id": "BLID123",
                 "startTime": 1000,
                 "durationM": 45,
-                "doneCode": "OK",
-                "squareFeetCovered": 500,
-                "command": {"command": "clean", "robotId": "BLID123", "cleanAll": True},
+                "done": "ok",
+                "sqft": 500,
+                "cmd": {"command": "clean", "robot_id": "BLID123", "cleanAll": True},
             }
         ]
     }
@@ -421,7 +421,7 @@ def test_parse_mission_history_unknown_done_code_falls_back_to_raw_string() -> N
     """Server kann neue doneCode-Werte einfuehren -- soll nicht crashen."""
     from roombapy_prime.models import parse_mission_history
 
-    entries = parse_mission_history([{"missionId": "m1", "doneCode": "SOME_NEW_CODE"}])
+    entries = parse_mission_history([{"missionId": "m1", "done": "SOME_NEW_CODE"}])
     assert entries[0].done_code == "SOME_NEW_CODE"
 
 
@@ -650,30 +650,40 @@ def test_tentative_location_event_from_json() -> None:
 
 
 def test_travel_event_from_json() -> None:
+    """AKTUALISIERT (31. Sitzung) -- echte Feldnamen (p2mapId/p2mapvId/
+    rid/zid/dest) und Kleinschreibung bei destination bestaetigt."""
     from roombapy_prime.models import TravelDestination, TravelEvent
 
     e = TravelEvent.from_json(
         {
-            "destination": "DOCK",
-            "mapId": "m1",
-            "mapVersion": "v1",
+            "dest": "dock",
+            "p2mapId": "m1",
+            "p2mapvId": "v1",
             "polyId": "p1",
             "reason": 0,
-            "regionId": "r1",
+            "rid": "r1",
             "status": 1,
             "waypointId": "w1",
-            "zoneId": "z1",
+            "zid": "z1",
         }
     )
     assert e.destination == TravelDestination.DOCK
+    assert e.map_id == "m1"
+    assert e.map_version == "v1"
+    assert e.region_id == "r1"
+    assert e.zone_id == "z1"
     assert e.waypoint_id == "w1"
 
 
 def test_traversal_event_from_json() -> None:
+    """AKTUALISIERT (31. Sitzung) -- echte Feldnamen und Kleinschreibung
+    bestaetigt."""
     from roombapy_prime.models import TraversalEvent, TraversalType
 
-    e = TraversalEvent.from_json({"mapId": "m1", "mapVersion": "v1", "regionId": "r1", "type": "ZONE", "zoneId": "z1"})
+    e = TraversalEvent.from_json({"p2mapId": "m1", "p2mapvId": "v1", "rid": "r1", "type": "zone", "zid": "z1"})
     assert e.traversal_type == TraversalType.ZONE
+    assert e.map_id == "m1"
+    assert e.region_id == "r1"
     assert e.zone_id == "z1"
 
 
@@ -760,9 +770,12 @@ def test_parse_mission_timeline_none_returns_empty_list() -> None:
 
 
 def test_mission_history_entry_populates_timeline_field() -> None:
-    """Integrationstest: MissionHistoryEntry.from_json() befuellt jetzt
-    .timeline mit typisierten MissionTimelineEvent-Objekten statt rohem
-    JSON (18. Sitzung -- schliesst die fruehere Aufwandsgrenze)."""
+    """KORRIGIERT (31. Sitzung): der urspruengliche Test nutzte den
+    Schluessel "events", der in echten Daten nie existiert -- der
+    Fix war bis dahin unbemerkt komplett wirkungslos (timeline war bei
+    JEDER echten Mission leer). Test jetzt gegen den bestaetigten
+    echten Schluessel "finEvents" und die echten Feldnamen (rid/zid
+    statt regionId/zoneId)."""
     from roombapy_prime.models import MissionHistoryEntry
 
     entry = MissionHistoryEntry.from_json(
@@ -770,9 +783,9 @@ def test_mission_history_entry_populates_timeline_field() -> None:
             "missionId": "m1",
             "timeline": {
                 "coverageStrategy": "ROOM_SEGMENTATION",
-                "events": [
-                    {"type": "room", "room": {"regionId": "r1", "status": 1}},
-                    {"type": "zone", "zone": {"zoneId": "z1", "status": 1}},
+                "finEvents": [
+                    {"type": "room", "room": {"rid": "r1", "status": 1}},
+                    {"type": "zone", "zone": {"zid": "z1", "status": 1}},
                 ],
             },
         }
@@ -780,3 +793,415 @@ def test_mission_history_entry_populates_timeline_field() -> None:
     assert len(entry.timeline) == 2
     assert entry.timeline[0].room.region_id == "r1"
     assert entry.timeline[1].zone.zone_id == "z1"
+
+
+def test_command_params_uses_swscrub_wire_key() -> None:
+    """KORRIGIERT (25. Sitzung) -- echter Wire-Schluessel ist "swScrub",
+    bestaetigt aus echter Missionshistorie (chairstacker), nicht die
+    urspruengliche Bytecode-Vermutung "scrub"."""
+    from roombapy_prime.models import CommandParams
+
+    params = CommandParams(scrub=1)
+    body = params.to_json()
+
+    assert body == {"swScrub": 1}
+    assert "scrub" not in body  # alter, falscher Schluessel darf nicht mehr auftauchen
+
+
+def test_command_params_swscrub_roundtrip() -> None:
+    from roombapy_prime.models import CommandParams
+
+    original = CommandParams(scrub=1, operating_mode=32)
+    restored = CommandParams.from_json(original.to_json())
+
+    assert restored == original
+
+
+def test_command_params_operating_mode() -> None:
+    """NEU (25. Sitzung) -- bestaetigt aus echter Missionshistorie."""
+    from roombapy_prime.models import CommandParams
+
+    params = CommandParams.from_json({"operatingMode": 32})
+    assert params.operating_mode == 32
+    assert params.to_json() == {"operatingMode": 32}
+
+
+def test_region_type_values_are_lowercase() -> None:
+    """KORRIGIERT (25. Sitzung) -- echte Wire-Werte sind kleingeschrieben,
+    bestaetigt aus echter Missionshistorie (chairstacker: "rid"/"zid")."""
+    from roombapy_prime.models import RegionType
+
+    assert RegionType.RID.value == "rid"
+    assert RegionType.ZID.value == "zid"
+
+
+def test_routine_command_initiator_field() -> None:
+    """NEU (25. Sitzung) -- bestaetigt aus echter Missionshistorie
+    (Werte "cloud"/"rmtApp" beobachtet)."""
+    from roombapy_prime.models import MissionCommandType, RoutineCommand
+
+    cmd = RoutineCommand(command_type=MissionCommandType.CLEAN, asset_id="BLID123", initiator="rmtApp")
+    body = cmd.to_json()
+
+    assert body["initiator"] == "rmtApp"
+
+
+def test_routine_command_initiator_omitted_when_none() -> None:
+    from roombapy_prime.models import MissionCommandType, RoutineCommand
+
+    cmd = RoutineCommand(command_type=MissionCommandType.CLEAN, asset_id="BLID123")
+    body = cmd.to_json()
+
+    assert "initiator" not in body
+
+
+# =========================================================================
+# P2MapVersion / RoomMetadataEntry / RobotSerialInfo (26. Sitzung)
+# =========================================================================
+
+
+def test_routine_type_field_roundtrip() -> None:
+    """Vervollstaendigt eine unvollstaendige Verdrahtung von routine_type
+    (Feld existierte, war aber nicht an to_json/from_json angebunden)."""
+    from roombapy_prime.models import CommandParams
+
+    original = CommandParams(replay_of="01KRQ4S1RP493P1WKCG71C90D9", routine_type="REPLAY")
+    restored = CommandParams.from_json(original.to_json())
+
+    assert restored == original
+    assert original.to_json()["routine_type"] == "REPLAY"
+
+
+def test_room_metadata_entry_parses_operating_mode_defaults_as_command_params() -> None:
+    """Kern des Fundes: operating_mode_defaults-Werte sind CommandParams-
+    foermig und lassen sich direkt wiederverwenden."""
+    from roombapy_prime.models import CommandParams, RegionType, RoomMetadataEntry
+
+    entry = RoomMetadataEntry.from_json(
+        {
+            "room_id": "15",
+            "room_metadata": {
+                "last_operating_mode": 512,
+                "operating_mode_defaults": {
+                    "512": {"twoPass": True, "suctionLevel": 4, "swScrub": 1, "profile": "deep", "carpetBoost": True},
+                    "32": {"twoPass": False, "suctionLevel": 2, "swScrub": 0, "carpetBoost": False, "profile": "light"},
+                },
+                "region_type": "rid",
+            },
+        }
+    )
+
+    assert entry.room_id == "15"
+    assert entry.last_operating_mode == 512
+    assert entry.region_type == RegionType.RID
+    assert set(entry.operating_mode_defaults.keys()) == {"512", "32"}
+    preset_512 = entry.operating_mode_defaults["512"]
+    assert isinstance(preset_512, CommandParams)
+    assert preset_512.suction_level == 4
+    assert preset_512.scrub == 1
+    assert preset_512.cleaning_profile == "deep"  # bestaetigt: "profile" mappt korrekt auf cleaning_profile
+
+
+def test_room_metadata_entry_optional_name() -> None:
+    """Manche Raeume haben einen nutzervergebenen Namen (z.B. "Bathroom"),
+    andere nicht -- bestaetigt aus echten Daten."""
+    from roombapy_prime.models import RoomMetadataEntry
+
+    named = RoomMetadataEntry.from_json(
+        {"room_id": "10", "room_metadata": {"name": "Bathroom", "region_type": "rid"}}
+    )
+    unnamed = RoomMetadataEntry.from_json({"room_id": "15", "room_metadata": {"region_type": "rid"}})
+
+    assert named.name == "Bathroom"
+    assert unnamed.name is None
+
+
+def test_p2map_version_from_json_with_multiple_rooms() -> None:
+    from roombapy_prime.models import P2MapVersion
+
+    m = P2MapVersion.from_json(
+        {
+            "p2map_id": "BLID-123",
+            "entity_type": "p2map",
+            "create_time": 1758329351,
+            "robot_id": "BLID",
+            "sku": "G185020",
+            "active_p2mapv_id": "260518T135521.119",
+            "last_p2mapv_ts": 1783951462,
+            "state": "active",
+            "visible": True,
+            "name": "Whole House",
+            "rooms_metadata": [
+                {"room_id": "15", "room_metadata": {"region_type": "rid"}},
+                {"room_id": "100", "room_metadata": {"region_type": "zid"}},
+            ],
+        }
+    )
+
+    assert m.p2map_id == "BLID-123"
+    assert m.name == "Whole House"
+    assert m.active_p2mapv_id == "260518T135521.119"
+    assert len(m.rooms_metadata) == 2
+    assert m.rooms_metadata[0].room_id == "15"
+    assert m.rooms_metadata[1].room_id == "100"
+
+
+def test_parse_active_map_versions_multiple_maps() -> None:
+    """Bestaetigt: ein Account kann mehrere P2MapVersion-Eintraege haben
+    (echte Daten zeigten "Whole House" + "Master_Bathroom")."""
+    from roombapy_prime.models import parse_active_map_versions
+
+    maps = parse_active_map_versions(
+        [
+            {"p2map_id": "map1", "name": "Whole House", "rooms_metadata": []},
+            {"p2map_id": "map2", "name": "Master_Bathroom", "rooms_metadata": []},
+        ]
+    )
+
+    assert len(maps) == 2
+    assert maps[0].name == "Whole House"
+    assert maps[1].name == "Master_Bathroom"
+
+
+def test_parse_active_map_versions_handles_none_and_empty() -> None:
+    from roombapy_prime.models import parse_active_map_versions
+
+    assert parse_active_map_versions(None) == []
+    assert parse_active_map_versions([]) == []
+
+
+def test_robot_serial_info_from_json() -> None:
+    """Bestaetigt aus echter get_serial_number_data()-Antwort
+    (chairstacker) -- inkl. "family": "Roomba Combo", bestaetigt ein
+    Saug+Wisch-Kombigeraet."""
+    from roombapy_prime.models import RobotSerialInfo
+
+    info = RobotSerialInfo.from_json(
+        {
+            "RobotID": "BLID123",
+            "SerialNumber": "G185020H250311N105749",
+            "built_as_sku": "g185020",
+            "family_variant": "g1",
+            "is_raas": False,
+            "is_refurbished": False,
+            "is_smartcare": False,
+            "min_utc_reg_date": 1758240000,
+            "name": "House_Bot",
+            "sku": "g185020",
+            "series": "G1",
+            "family": "Roomba Combo",
+            "serial_history": [{"serial_number": "G185020H250311N105749", "effective_from": 1741727474}],
+        }
+    )
+
+    assert info.robot_id == "BLID123"
+    assert info.serial_number == "G185020H250311N105749"
+    assert info.name == "House_Bot"
+    assert info.family == "Roomba Combo"
+    assert info.series == "G1"
+    assert len(info.serial_history) == 1
+
+
+# =========================================================================
+# Korrekturen aus dem zweiten diagnose.json-Teil (27. Sitzung)
+# =========================================================================
+
+
+def test_mission_history_entry_uses_confirmed_real_field_names() -> None:
+    """Regressionstest gegen den in dieser Sitzung gefundenen Bug:
+    fast alle Feldnamen waren falsch geraten (minutesRunning->runM,
+    minutesPaused->pauseM, minutesCharging->chrgM, minutesDone->doneM,
+    squareFeetCovered->sqft, numberOfEvacuations->evacs,
+    endedOnDock->eDock, robotId->robot_id, "command"->"cmd")."""
+    from roombapy_prime.models import parse_mission_history
+
+    real_shaped = {
+        "missionId": "m1",
+        "robot_id": "BLID123",
+        "runM": 2,
+        "pauseM": 1,
+        "chrgM": 3,
+        "doneM": 4,
+        "sqft": 23,
+        "evacs": 1,
+        "eDock": 0,
+        "done": "ok",
+        "done_raw": "ok",
+        "cmd": {"command": "start", "p2map_id": "map-1", "user_p2mapv_id": "v1", "initiator": "cloud"},
+    }
+    entry = parse_mission_history([real_shaped])[0]
+
+    assert entry.robot_id == "BLID123"
+    assert entry.minutes_running == 2
+    assert entry.minutes_paused == 1
+    assert entry.minutes_charging == 3
+    assert entry.minutes_done == 4
+    assert entry.square_feet_covered == 23
+    assert entry.number_of_evacuations == 1
+    assert entry.ended_on_dock == 0
+    assert entry.command is not None
+    assert entry.command.map_id == "map-1"
+    assert entry.command.map_version_id == "v1"
+
+
+def test_done_code_matches_real_lowercase_value() -> None:
+    """UEBERARBEITET (27. Sitzung) -- Werte sind kleingeschrieben,
+    bestaetigt aus echter Missionshistorie."""
+    from roombapy_prime.models import DoneCode
+
+    assert DoneCode.OK.value == "ok"
+    assert DoneCode.STUCK.value == "stuck"
+
+
+def test_mission_command_record_regions_are_typed() -> None:
+    """NEU (27. Sitzung) -- regions ist jetzt list[Region] statt roher
+    Liste, params darin ist CommandParams-foermig."""
+    from roombapy_prime.models import CommandParams, MissionCommandRecord, Region, RegionType
+
+    record = MissionCommandRecord.from_json(
+        {
+            "command": "start",
+            "p2map_id": "map-1",
+            "regions": [
+                {"params": {"suctionLevel": 3, "swScrub": 0, "carpetBoost": False}, "region_id": "100", "type": "zid"}
+            ],
+        }
+    )
+
+    assert len(record.regions) == 1
+    region = record.regions[0]
+    assert isinstance(region, Region)
+    assert region.region_id == "100"
+    assert region.region_type == RegionType.ZID
+    assert isinstance(region.params, CommandParams)
+    assert region.params.suction_level == 3
+
+
+def test_region_from_json_uses_region_id_key() -> None:
+    """NEU (27. Sitzung) -- Region.from_json() fehlte komplett; echte
+    Daten zeigen "region_id" als Schluessel beim Lesen (anders als
+    "id" beim Senden ueber to_json())."""
+    from roombapy_prime.models import Region, RegionType
+
+    region = Region.from_json({"region_id": "15", "type": "rid"})
+
+    assert region.region_id == "15"
+    assert region.region_type == RegionType.RID
+
+
+def test_command_params_no_auto_passes() -> None:
+    """NEU (27. Sitzung) -- bestaetigt aus get_state()s eingebettetem
+    cleanSchedule2[].cmdStr."""
+    from roombapy_prime.models import CommandParams
+
+    params = CommandParams.from_json({"noAutoPasses": True})
+    assert params.no_auto_passes is True
+    assert params.to_json() == {"noAutoPasses": True}
+
+
+def test_robot_part_from_json() -> None:
+    from roombapy_prime.models import RobotPart
+
+    part = RobotPart.from_json(
+        {
+            "part_id": "148",
+            "counter": 30,
+            "minutes_remaining": -1,
+            "count_type": "combo_missions",
+            "count_remaining": 21,
+            "count_used": 9,
+            "counter_category": "replacement",
+            "reset_by": "user",
+        }
+    )
+
+    assert part.part_id == "148"
+    assert part.count_type == "combo_missions"
+    assert part.count_remaining == 21
+
+
+def test_robot_parts_info_from_json_with_multiple_parts() -> None:
+    from roombapy_prime.models import RobotPartsInfo
+
+    info = RobotPartsInfo.from_json(
+        {
+            "robot_id": "BLID123",
+            "num_parts": 2,
+            "parts": [
+                {"part_id": "148", "count_type": "combo_missions"},
+                {"part_id": "67", "count_type": "minutes", "minutes_remaining": 4680},
+            ],
+        }
+    )
+
+    assert info.robot_id == "BLID123"
+    assert info.num_parts == 2
+    assert len(info.parts) == 2
+    assert info.parts[1].minutes_remaining == 4680
+
+
+# =========================================================================
+# Household / HouseholdRobot / HouseholdUser (28. Sitzung)
+# =========================================================================
+
+
+def test_household_from_json_with_robots_and_users() -> None:
+    """Bestaetigt aus echter get_user_households()-Antwort (chairstacker)
+    -- Endpunkt war als "im App-Code unbenutzt" dokumentiert, antwortet
+    aber tatsaechlich korrekt."""
+    from roombapy_prime.models import Household
+
+    h = Household.from_json(
+        {
+            "household_id": "hh-1",
+            "owner_cognito_id": "us-east-1:abc",
+            "household_name": "#AUTO_GENERATED_HOUSEHOLD#",
+            "has_precise_location": False,
+            "household_robots": [
+                {"household_id": "hh-1", "entity_id": "robot#BLID123", "robot_id": "BLID123", "creation_timestamp": 111}
+            ],
+            "household_users": [
+                {"household_id": "hh-1", "entity_id": "user#abc", "cognito_id": "abc", "creation_timestamp": 222}
+            ],
+        }
+    )
+
+    assert h.household_id == "hh-1"
+    assert h.household_name == "#AUTO_GENERATED_HOUSEHOLD#"
+    assert h.has_precise_location is False
+    assert len(h.household_robots) == 1
+    assert h.household_robots[0].entity_id == "robot#BLID123"
+    assert h.household_robots[0].robot_id == "BLID123"
+    assert len(h.household_users) == 1
+    assert h.household_users[0].cognito_id == "abc"
+
+
+def test_parse_user_households_multiple_entries() -> None:
+    from roombapy_prime.models import parse_user_households
+
+    households = parse_user_households([{"household_id": "hh-1"}, {"household_id": "hh-2"}])
+
+    assert len(households) == 2
+    assert households[0].household_id == "hh-1"
+    assert households[1].household_id == "hh-2"
+
+
+def test_parse_user_households_handles_none_and_empty() -> None:
+    from roombapy_prime.models import parse_user_households
+
+    assert parse_user_households(None) == []
+    assert parse_user_households([]) == []
+
+
+def test_mission_command_record_top_level_params() -> None:
+    """NEU (30. Sitzung) -- cmd.params ist ein eigenes Top-Level-Feld,
+    getrennt von regions[].params, bestaetigt aus echter
+    Missionshistorie (mal gesetzt z.B. {"profile": "light"}, mal null)."""
+    from roombapy_prime.models import MissionCommandRecord
+
+    with_params = MissionCommandRecord.from_json({"command": "start", "params": {"profile": "light"}})
+    without_params = MissionCommandRecord.from_json({"command": "start", "params": None})
+
+    assert with_params.params is not None
+    assert with_params.params.cleaning_profile == "light"
+    assert without_params.params is None
