@@ -247,6 +247,56 @@ zweier leicht unterschiedlicher Ad-hoc-Loesungen.
 214/214 Tests gruen (4 neue fuer `_shallow_summary`, davon einer explizit gegen Werte-Leckage),
 ruff sauber. Rauchtest weiterhin unauffaellig.
 
+## Nachtrag (dreiundzwanzigste Sitzung): zweiter Live-Lauf -- Tier-Vermutung live bestaetigt
+
+chairstacker hat nach Entfernen eines alten Roomba 675 vom Account erneut getestet: **8 OK, 0
+fehlgeschlagen, 4 uebersprungen** -- ein sauberer Lauf. Wichtigste Bestaetigung: `get_settings()`
+(der benannte "rw-settings"-Shadow) hat diesmal geantwortet -- der vorherige Timeout lag also
+tatsaechlich am falschen (alten, stillgelegten) BLID, nicht an einer echten Tier-Einschraenkung
+des aktuellen Geraets. Die vorher zurueckgenommene Tier-Vermutung fuer DIESES konkrete Geraet
+(Roomba 405, SKU G185020, Firmware p25-405+9.3.7+I4.6.150 -- via dorita980 bestaetigt, nicht aus
+roombapy-prime selbst) ist damit gegenstandslos -- es antwortet, ist also SMART-Tier-faehig.
+
+**Kartenversions-Problem besteht weiterhin, trotz des Feldnamen-Fixes aus der letzten Sitzung.**
+Wahrscheinlichste Erklaerung: chairstacker hat vermutlich noch die Version VOR dem Fix laufen
+lassen (kein `git pull`/Neuinstallation zwischen den Laeufen). Um das fuer den naechsten Lauf in
+JEDEM Fall aufzuklaeren (auch falls `get_active_map_versions()` tatsaechlich eine leere Liste
+liefert, was der Feldnamen-Fix nicht beheben wuerde), wurde die Debug-Ausgabe erweitert: der
+Skip-Text bei "keine aktive Kartenversion gefunden" zeigt jetzt IMMER die tatsaechliche
+Antwortstruktur (leere Liste vs. Daten mit unbekannten Feldern sind jetzt unterscheidbar).
+
+214/214 Tests weiterhin gruen, ruff sauber.
+
+## Nachtrag (vierundzwanzigste Sitzung): Diagnoseskript-Abdeckung geprueft, echte Luecken geschlossen
+
+Auf Nachfrage ("testen wir eigentlich die volle Funktionalitaet?") systematisch mit `comm` gegen
+`prime_robot.py`s gesamten Methoden-Katalog abgeglichen. Ergebnis: NEIN, nicht vollstaendig --
+aber die Luecken waren zum Teil beabsichtigt (alle schreibenden/destruktiven Operationen: Zeitplan-
+CRUD, `set_dnd_settings`, `set_setting`, `reset_robot`, `edit_map`, `send_mission_command` --
+bleiben bewusst aussen vor, siehe Sicherheitsprinzip) und zum Teil reines Versehen:
+`get_live_map_stream()` und `watch_state()` sind beide rein lesend, wurden aber nie einbezogen.
+Beide jetzt ergaenzt -- `watch_state()` zeitlich auf 3 Sekunden begrenzt (kein Delta zu bekommen
+gilt als OK, nicht als Fehler, da der Roboter sich dafuer aktiv aendern muesste).
+
+**Groessere Ergaenzung: `--dump-config PATH`.** Auf die Frage "koennen wir nicht auch eine
+Diagnose-Config-Datei wie bei einer Integration zurueckmelden" hin umgesetzt -- direkt inspiriert
+von Home Assistants "Diagnose herunterladen"-Funktion. Anders als der normale Bericht (der nur
+Pass/Fail zeigt und automatisch in den Issue-Link einfliesst) speichert diese Datei die
+TATSAECHLICHEN Rohantworten aller Lese-Endpunkte als JSON -- echte Feldnamen UND echte Werte,
+genau das, was beim chairstacker-Kartenbug gefehlt hat. Zweistufige Redaktion (Zugangsdaten +
+offensichtlich sensible Feldnamen wie Adresse/GPS/WLAN-Zugangsdaten), aber bewusst NICHT so
+umfassend wie beim normalen Bericht -- diese Datei wird deshalb NIE automatisch Teil des
+Issue-Links, sondern muss bewusst einzeln angehaengt werden. Kartenbuendel-Inhalte werden nie
+mitgeschrieben (nur Dateinamen) -- ein Wohnungsgrundriss ist persoenlicher als die meisten anderen
+hier erfassten Daten.
+
+Umgesetzt ueber eine kleine Erweiterung von `_try()` (optionaler `capture`-Parameter, der
+erfolgreiche Rohergebnisse in ein separates dict ablegt, getrennt vom eigentlichen Bericht) plus
+eine neue `_redact_raw_capture()`-Funktion.
+
+221/221 Tests gruen (7 neue), ruff sauber. Rauchtest mit `--dump-config` bestaetigt: kein Absturz,
+korrekte (leere) JSON-Datei bei fehlgeschlagenem Login.
+
 ## Nachtrag (siebzehnte Sitzung): priorisierte Roadmap -- was als Naechstes
 
 Auf die Frage "was muessen wir an der Library noch machen" systematisch beantwortet. Bei der

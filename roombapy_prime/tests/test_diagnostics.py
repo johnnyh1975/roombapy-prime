@@ -5,6 +5,8 @@ echten Prime-Account getestet werden -- das ist der ganze Punkt des
 Skripts. Diese Tests stellen nur sicher, dass die Berichtslogik und
 die Best-Effort-Hilfsfunktionen selbst korrekt sind."""
 
+import pytest
+
 from roombapy_prime.diagnostics import Report, _extract_first_id
 
 
@@ -196,3 +198,99 @@ def test_shallow_summary_never_leaks_actual_values() -> None:
     result = _shallow_summary({"address": "123 Secret Street", "email": "user@example.com"})
     assert "123 Secret Street" not in str(result)
     assert "user@example.com" not in str(result)
+
+
+# =========================================================================
+# Raw-Capture + Redaktion fuer --dump-config (24. Sitzung)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_try_captures_raw_result_when_capture_dict_given() -> None:
+    from roombapy_prime.diagnostics import Report, _try
+
+    report = Report()
+    capture: dict = {}
+
+    async def fake_call():
+        return {"foo": "bar"}
+
+    result = await _try(report, "Test-Check", fake_call(), capture=capture)
+
+    assert result == {"foo": "bar"}
+    assert capture == {"Test-Check": {"foo": "bar"}}
+    assert report.results[0].status == "OK"
+
+
+@pytest.mark.asyncio
+async def test_try_does_not_capture_on_failure() -> None:
+    from roombapy_prime.diagnostics import Report, _try
+
+    report = Report()
+    capture: dict = {}
+
+    async def failing_call():
+        raise ValueError("boom")
+
+    await _try(report, "Test-Check", failing_call(), capture=capture)
+
+    assert capture == {}
+    assert report.results[0].status == "FEHLGESCHLAGEN"
+
+
+@pytest.mark.asyncio
+async def test_try_without_capture_param_behaves_as_before() -> None:
+    """Abwaertskompatibilitaet: capture ist optional, Standardverhalten
+    unveraendert."""
+    from roombapy_prime.diagnostics import Report, _try
+
+    report = Report()
+
+    async def fake_call():
+        return {"foo": "bar"}
+
+    result = await _try(report, "Test-Check", fake_call())
+    assert result == {"foo": "bar"}
+
+
+def test_redact_raw_capture_masks_sensitive_keys() -> None:
+    from roombapy_prime.diagnostics import _redact_raw_capture
+
+    data = {"address": "123 Main St", "latitude": 52.5, "batteryLevel": 80}
+    result = _redact_raw_capture(data, [])
+
+    assert result["address"] == "[REDACTED]"
+    assert result["latitude"] == "[REDACTED]"
+    assert result["batteryLevel"] == 80  # nicht sensibel, bleibt sichtbar
+
+
+def test_redact_raw_capture_replaces_literal_secrets_in_strings() -> None:
+    from roombapy_prime.diagnostics import _redact_raw_capture
+
+    data = {"someField": "value containing secretuser123"}
+    result = _redact_raw_capture(data, ["secretuser123"])
+
+    assert "secretuser123" not in result["someField"]
+    assert "[REDACTED]" in result["someField"]
+
+
+def test_redact_raw_capture_handles_nested_lists_and_dicts() -> None:
+    from roombapy_prime.diagnostics import _redact_raw_capture
+
+    data = {"items": [{"ssid": "MyWifiNetwork", "name": "Living Room"}]}
+    result = _redact_raw_capture(data, [])
+
+    assert result["items"][0]["ssid"] == "[REDACTED]"
+    assert result["items"][0]["name"] == "Living Room"
+
+
+def test_redact_raw_capture_preserves_non_sensitive_structure() -> None:
+    """Der Sinn der Dump-Datei: echte Werte fuer unbekannte, nicht als
+    sensibel erkannte Felder bleiben sichtbar -- das unterscheidet sie
+    bewusst von _shallow_summary()."""
+    from roombapy_prime.diagnostics import _redact_raw_capture
+
+    data = {"sku": "G185020", "softwareVer": "p25-405+9.3.7+I4.6.150", "missionCount": 42}
+    result = _redact_raw_capture(data, [])
+
+    assert result == data

@@ -6,10 +6,12 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: draft, Pre-Alpha.** Runs, is tested (200+ unit tests), builds
-> and installs cleanly — but has **never been run against a real
-> Prime/V4 account or device.** Everything here comes from APK
-> decompilation and native library analysis, not live testing. See
+> **Status: v0.1.2-alpha.** Runs, is tested (200+ unit tests), builds
+> and installs cleanly. As of this release, it has been **run
+> successfully against one real Prime/V4 account** (login, MQTT
+> connection, and most REST reads confirmed working) — but mission
+> commands and map editing remain **completely unverified against a
+> live device**, and only one robot model has been tested so far. See
 > [Confidence & known gaps](#confidence--known-gaps) before relying on
 > any of it, especially anything that sends a command to your robot.
 
@@ -159,14 +161,23 @@ roombapy-prime-validate --username you@example.com --country-code US
 ```
 
 Read-only by default (login, REST reads including parts/serial/
-notifications, shadow state, map bundle download) — nothing here can
-change anything on your account or robot. Also reports a best-effort
+notifications, shadow state, a bounded `watch_state()` sample, live-map
+stream request, map bundle download) — nothing here can change
+anything on your account or robot. Also reports a best-effort
 device/firmware summary and an explicit tier guess (SMART vs.
 EPHEMERAL, inferred from whether the named settings shadow responds).
 Pass `--allow-writes` to additionally run a self-cleaning favorite
 create/verify/delete round trip. Mission commands and map edits are
 never run automatically, with or without that flag — see the module
 docstring in `roombapy_prime/diagnostics.py` for why.
+
+Pass `--dump-config PATH` to additionally save the actual (lightly
+redacted) raw responses from every read endpoint as JSON — similar to
+a Home Assistant integration's "Download Diagnostics" feature. Useful
+for pinning down exact field names when something doesn't parse
+correctly; unlike the summary report, this file is never auto-included
+in the issue link, since it contains real values, not just structure —
+review it yourself before attaching it anywhere.
 
 At the end of every run, the script prints a pre-filled GitHub
 "new issue" link with the full report as the body — one click to share
