@@ -1531,6 +1531,17 @@ class PadWetnessParam:
             body["reusable"] = self.reusable
         return body
 
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> PadWetnessParam:
+        """NEU (32. Sitzung) -- bestaetigt aus echter get_settings()-
+        Antwort (chairstacker): {"disposable": 3, "reusable": 1,
+        "padPlate": 1}."""
+        return cls(
+            disposable=data.get("disposable"),
+            pad_plate=data.get("padPlate"),
+            reusable=data.get("reusable"),
+        )
+
 
 class CleaningMode(str, Enum):
     """Bestaetigt (androguard, MissionPreferenceValue$CleaningMode):
@@ -3089,3 +3100,94 @@ def parse_user_households(data: list[dict[str, Any]] | None) -> list[Household]:
     if not data:
         return []
     return [Household.from_json(entry) for entry in data]
+
+
+# =========================================================================
+# RobotSettings (32. Sitzung)
+# =========================================================================
+#
+# STATUS: NEU. Bestaetigt aus echter get_settings()-Antwort (chairstacker,
+# der "rw-settings"-benannte Shadow). Loest einen grossen Teil der zuvor
+# in docs/API_REFERENCE.md als "entdeckt, aber unmodelliert" gelisteten
+# Settings-Vokabelliste auf -- viele der dort nur als commandId vermuteten
+# Einstellungen entsprechen direkt Feldern in dieser Antwort (SetChildLock
+# -> childLock, SetAudioVolumePattern -> audio.volume,
+# SetAutoEvacFrequency -> autoevacFreq, SetRobotLanguageV2 -> langs2,
+# SetMapUploadAllowedCommand -> mapUploadAllowed, SetPadDryDuration ->
+# padDryDur, u.a.). "langs2" bewusst als rohes dict belassen (verschachtelte
+# Sprachlisten-Struktur, geringer Nutzen fuer ein eigenes Modell).
+
+
+@dataclass(frozen=True)
+class RobotSettings:
+    """Bestaetigt (echte Live-Antwort, get_settings()): kompletter
+    Inhalt des benannten "rw-settings"-Shadows fuer ein SMART-Tier-
+    Geraet. Deckt u.a. Kindersicherung, Lautstaerke, Zeitzone,
+    Wischpad-Einstellungen, Sprachliste, Auto-Evac-Frequenz und diverse
+    "*Allowed"-Berechtigungs-Flags ab."""
+
+    audio_volume: int | None = None
+    autoevac_freq: int | None = None
+    carpet_boost: bool | None = None
+    child_lock: bool | None = None
+    cloud_env: str | None = None
+    country: str | None = None
+    eco_charge: bool | None = None
+    evac_allowed: bool | None = None
+    map_upload_allowed: bool | None = None
+    name: str | None = None
+    no_auto_passes: bool | None = None
+    nsmip: int | None = None
+    pad_dry_allowed: int | None = None
+    pad_dry_duration: int | None = None
+    pad_wash_allowed: int | None = None
+    pad_wash_area_interval: int | None = None
+    pad_wash_return: int | None = None
+    pad_wash_time_interval: int | None = None
+    pad_wetness: PadWetnessParam | None = None
+    sched_hold: bool | None = None
+    scrub: int | None = None
+    suction_level: int | None = None
+    svc_deployment_id: str | None = None
+    timezone: str | None = None
+    two_pass: bool | None = None
+    vac_high: bool | None = None
+    languages_raw: dict[str, Any] | None = None
+    """Rohes "langs2"-Objekt (aSlots, dLangs.langs/ver, sLang, sVer) --
+    bewusst nicht weiter zerlegt, geringer Mehrwert fuer ein eigenes
+    Modell."""
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> RobotSettings:
+        audio = data.get("audio") or {}
+        pad_wetness_data = data.get("padWetness")
+        svc_endpoints = data.get("svcEndpoints") or {}
+        return cls(
+            audio_volume=audio.get("volume"),
+            autoevac_freq=data.get("autoevacFreq"),
+            carpet_boost=data.get("carpetBoost"),
+            child_lock=data.get("childLock"),
+            cloud_env=data.get("cloudEnv"),
+            country=data.get("country"),
+            eco_charge=data.get("ecoCharge"),
+            evac_allowed=data.get("evacAllowed"),
+            map_upload_allowed=data.get("mapUploadAllowed"),
+            name=data.get("name"),
+            no_auto_passes=data.get("noAutoPasses"),
+            nsmip=data.get("nsmip"),
+            pad_dry_allowed=data.get("padDryAllowed"),
+            pad_dry_duration=data.get("padDryDur"),
+            pad_wash_allowed=data.get("padWashAllowed"),
+            pad_wash_area_interval=data.get("pwAreaInterval"),
+            pad_wash_return=data.get("pwReturn"),
+            pad_wash_time_interval=data.get("pwTimeInterval"),
+            pad_wetness=PadWetnessParam.from_json(pad_wetness_data) if pad_wetness_data else None,
+            sched_hold=data.get("schedHold"),
+            scrub=data.get("swScrub"),
+            suction_level=data.get("suctionLevel"),
+            svc_deployment_id=svc_endpoints.get("svcDeplId"),
+            timezone=data.get("timezone"),
+            two_pass=data.get("twoPass"),
+            vac_high=data.get("vacHigh"),
+            languages_raw=data.get("langs2"),
+        )

@@ -1205,3 +1205,85 @@ def test_mission_command_record_top_level_params() -> None:
     assert with_params.params is not None
     assert with_params.params.cleaning_profile == "light"
     assert without_params.params is None
+
+
+# =========================================================================
+# RobotSettings (32. Sitzung)
+# =========================================================================
+
+
+def test_pad_wetness_param_from_json() -> None:
+    """NEU (32. Sitzung) -- bestaetigt aus echter get_settings()-Antwort."""
+    from roombapy_prime.models import PadWetnessParam
+
+    p = PadWetnessParam.from_json({"disposable": 3, "reusable": 1, "padPlate": 1})
+
+    assert p.disposable == 3
+    assert p.pad_plate == 1
+    assert p.reusable == 1
+
+
+def test_robot_settings_from_json_real_shape() -> None:
+    """Bestaetigt aus echter get_settings()-Antwort (chairstacker,
+    Roomba 405). Deckt einen grossen Teil der zuvor unmodellierten
+    Settings-Vokabelliste ab (childLock, audio.volume, autoevacFreq,
+    langs2, mapUploadAllowed, padDry*/padWash*, u.a.)."""
+    from roombapy_prime.models import RobotSettings
+
+    s = RobotSettings.from_json(
+        {
+            "nsmip": 2,
+            "audio": {"volume": 100},
+            "carpetBoost": True,
+            "childLock": False,
+            "cloudEnv": "prod",
+            "country": "US",
+            "ecoCharge": False,
+            "name": "House_Bot",
+            "noAutoPasses": False,
+            "padWetness": {"disposable": 3, "reusable": 1, "padPlate": 1},
+            "suctionLevel": 3,
+            "svcEndpoints": {"svcDeplId": "v007"},
+            "timezone": "America/Phoenix",
+            "twoPass": False,
+            "vacHigh": False,
+            "autoevacFreq": 1,
+            "evacAllowed": True,
+            "langs2": {"aSlots": 1, "sLang": "en-US", "sVer": "1.0"},
+            "mapUploadAllowed": True,
+            "padDryAllowed": 1,
+            "padDryDur": 4,
+            "padWashAllowed": 1,
+            "pwAreaInterval": 10,
+            "pwReturn": 2,
+            "pwTimeInterval": 15,
+            "schedHold": False,
+            "swScrub": 0,
+        }
+    )
+
+    assert s.name == "House_Bot"
+    assert s.child_lock is False
+    assert s.audio_volume == 100
+    assert s.timezone == "America/Phoenix"
+    assert s.autoevac_freq == 1
+    assert s.pad_wetness is not None
+    assert s.pad_wetness.disposable == 3
+    assert s.svc_deployment_id == "v007"
+    assert s.pad_dry_duration == 4
+    assert s.pad_wash_return == 2
+    assert s.languages_raw["sLang"] == "en-US"
+
+
+def test_robot_settings_handles_missing_optional_nested_objects() -> None:
+    """Absicherung: fehlende audio/padWetness/svcEndpoints/langs2 duerfen
+    nicht abstuerzen."""
+    from roombapy_prime.models import RobotSettings
+
+    s = RobotSettings.from_json({"name": "X"})
+
+    assert s.name == "X"
+    assert s.audio_volume is None
+    assert s.pad_wetness is None
+    assert s.svc_deployment_id is None
+    assert s.languages_raw is None

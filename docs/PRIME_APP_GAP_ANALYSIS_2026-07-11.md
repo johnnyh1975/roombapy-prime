@@ -1176,3 +1176,31 @@ aber niedrige Priorität ohne mehrere Testgeräte im Haushalt.
    zu schließen. Realistischer nächster Schritt: gezielte native
    Disassemblierung von CommandTierAgentImpl::postCommand() oder
    Warten auf echte Traffic-Daten (Ader).
+
+## Nachtrag (zweiunddreissigste Sitzung): get_settings()-Antwortinhalt endlich gesehen -- loest grossen Teil der Settings-Vokabelliste auf
+
+chairstacker hat nach dem korrigierten Reinstall erneut getestet -- diesmal mit tatsaechlichem
+Inhalt fuer `get_settings()` in der `--dump-config`-Datei (vorher war nur "Erfolg/Timeout" bekannt,
+nie der Inhalt selbst). Neues Modell `RobotSettings` gebaut, das den kompletten "rw-settings"-Shadow
+abdeckt: Kindersicherung, Lautstaerke, Zeitzone, Land, Cloud-Umgebung, Auto-Evac-Frequenz,
+Sprachliste, diverse "*Allowed"-Berechtigungsflags, Wischpad-Wasch-/Trocken-Zyklus-Einstellungen.
+
+Das loest einen erheblichen Teil der zuvor in `docs/API_REFERENCE.md` als "entdeckt, aber
+unmodelliert" gelisteten ~25 Settings-commandIds auf -- SetChildLock, SetAudioVolumePattern,
+SetAutoEvacFrequency, SetRobotLanguageV2, SetMapUploadAllowedCommand, SetPadWashReturn/
+SetPadWashWetoutFrequency/SetPadDryDuration entsprechen jetzt direkt bestaetigten Feldern.
+Verbleibende ~12 (SetChargingLightRightPattern, SetDisplayLight, SetDemoMode, SetBinTypeDetect,
+SetDetergentCleaningSolution, PMapLearningAllowed/PMapContinuousLearningAllowed,
+SetNavStrategyCommand, WifiDeviceLocalizationAllowed/BleDeviceLocalizationAllowed,
+TileScanModeAllowed, SetAQIScale, SetAssetSetting/SetSmartHomeSettings/SetPrecheck, ImgUpload)
+tauchten in dieser einen Antwort nicht auf -- plausibel, da nicht jedes Geraet jede Einstellung
+aktiv hat (z.B. SetDetergentCleaningSolution nur fuer detergent-faehige Modelle relevant).
+
+Nebenbei `PadWetnessParam.from_json()` ergaenzt (fehlte, obwohl `to_json()` schon lange existierte)
+-- bestaetigt gegen echte Werte (`{"disposable": 3, "reusable": 1, "padPlate": 1}`).
+
+Missionshistorie/Haushalt/Verschleissteile/Seriennummer/Kartenversionen in diesem Lauf identisch
+zu den vorherigen Daten (nur andere JSON-Schluesselreihenfolge) -- keine neuen Erkenntnisse dort,
+bereits vollstaendig verarbeitet.
+
+250/250 Tests gruen (4 neue), ruff sauber.

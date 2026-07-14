@@ -262,27 +262,41 @@ inspection) and what, if anything, is still uncertain about it.
 
 ---
 
-## Settings vocabulary — discovered, not yet modeled
+## Settings vocabulary
 
-`base_roomba_config.json` lists 47 `namedShadow: "rw-settings"` commands total. `CommandParams`
-covers the ones already confirmed via native analysis (suction, pad wetness, carpet boost, etc.).
-The remaining ~25 are genuine settings this app supports that this library doesn't expose yet —
-each is its own `commandId`, wire format per-field not reverse-engineered:
+`base_roomba_config.json` lists 47 `namedShadow: "rw-settings"` commands total. As of the 32nd
+session, a real `get_settings()` response (chairstacker) confirmed the actual field names for
+most of the settings below — `models.py::RobotSettings.from_json()` now covers them. Apply it to
+`response.payload["state"]["reported"]` (same nesting as `get_state()`).
+
+| commandId (write-side, still unconfirmed) | Confirmed field on `RobotSettings` |
+|---|---|
+| `SetChildLock` | `child_lock` (wire: `childLock`) |
+| `SetAudioVolumePattern` | `audio_volume` (wire: `audio.volume`) |
+| `SetAutoEvacFrequency` | `autoevac_freq` (wire: `autoevacFreq`) |
+| `SetRobotLanguageV2` | `languages_raw` (wire: `langs2` — left as raw dict, nested language-list structure) |
+| `SetMapUploadAllowedCommand` | `map_upload_allowed` (wire: `mapUploadAllowed`) |
+| `SetPadWashReturn` / `SetPadWashWetoutFrequency` / `SetPadDryDuration` | `pad_wash_return`/`pad_wash_area_interval`/`pad_wash_time_interval`/`pad_dry_duration`/`pad_dry_allowed`/`pad_wash_allowed` (wire: `pwReturn`/`pwAreaInterval`/`pwTimeInterval`/`padDryDur`/`padDryAllowed`/`padWashAllowed`) |
+| — (no matching commandId found, present anyway) | `timezone`, `country`, `cloud_env`, `sched_hold`, `evac_allowed`, `name` (the robot's own name), `svc_deployment_id` |
+
+Read-side confirmed via `CommandParams` reuse (same wire keys as mission commands):
+`carpet_boost`, `eco_charge`, `no_auto_passes`, `scrub` (wire `swScrub`), `suction_level`,
+`two_pass`, `vac_high`, `pad_wetness` (via `PadWetnessParam.from_json()`, now implemented).
+
+**Still genuinely unconfirmed** — these commandIds exist in the config file, but no field matching
+them showed up in the one real settings response seen so far (a single device won't necessarily
+have every setting active, e.g. `SetDetergentCleaningSolution` only applies to detergent-capable
+models):
 
 | commandId | Likely purpose |
 |---|---|
-| `SetChildLock` | Keypad lock |
-| `SetAudioVolumePattern` | Robot sound volume |
 | `SetChargingLightRightPattern` | Dock/charging light pattern |
 | `SetDisplayLight` | Robot display brightness/behavior |
 | `SetDemoMode` | In-store demo mode |
-| `SetAutoEvacFrequency` | Auto-empty dock frequency (every N missions) |
 | `SetBinTypeDetect` | Bin-type auto-detection toggle |
 | `SetDetergentCleaningSolution` | Mopping detergent/solution setting |
-| `SetPadWashReturn` / `SetPadWashWaterTemperature` / `SetPadWashWetoutFrequency` / `SetPadDryDuration` | Mop pad wash/dry cycle tuning |
 | `PMapLearningAllowed` / `PMapContinuousLearningAllowed` | Map-learning permission toggles |
 | `SetNavStrategyCommand` | Navigation strategy selection |
-| `SetRobotLanguageV2` | Voice/language (V2 — newer than the already-modeled language field) |
 | `WifiDeviceLocalizationAllowed` / `BleDeviceLocalizationAllowed` | "Find my robot" via phone permission toggles |
 | `TileScanModeAllowed` | Related to floor-tile-based navigation, unconfirmed |
 | `SetAQIScale` | Air quality index scale (air-purifying models) |

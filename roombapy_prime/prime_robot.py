@@ -199,7 +199,17 @@ class PrimeRobot:
             bedient wird, unabhaengig vom Online-Status des Roboters).
         Die urspruengliche "EPHEMERAL vs. SMART"-Unterscheidung bleibt
         bestehen, ist aber NICHT die alleinige Erklaerung fuer jeden
-        einzelnen Timeout -- siehe mqtt_client.py get_shadow-Docstring."""
+        einzelnen Timeout -- siehe mqtt_client.py get_shadow-Docstring.
+
+        Antwortform JETZT vollstaendig bestaetigt (32. Sitzung, echte
+        Live-Antwort): fuer ein typisiertes Ergebnis
+        models.py::RobotSettings.from_json() auf
+        response.payload["state"]["reported"] anwenden (dieselbe
+        Verschachtelung wie bei get_state()). Deckt u.a. Kindersicherung,
+        Lautstaerke, Zeitzone, Wischpad-Einstellungen, Sprachliste,
+        Auto-Evac-Frequenz ab -- loest einen grossen Teil der zuvor in
+        docs/API_REFERENCE.md als unmodelliert gelisteten Settings-
+        Vokabelliste auf."""
         return await asyncio.to_thread(self._mqtt.get_shadow, "rw-settings", timeout)
 
     async def set_setting(self, key: str, value: object, timeout: float = 8.0) -> ShadowResponse:
