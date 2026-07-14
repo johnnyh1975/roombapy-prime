@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime"
-version = "0.1.2a0"
+version = "0.1.3a0"
 description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
 readme = "README.md"
 requires-python = ">=3.11"

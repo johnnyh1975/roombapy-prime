@@ -34,4 +34,4 @@ Modulstruktur:
     diagnostics.py     -- Live-Validierungsskript gegen einen echten Account
 """
 
-__version__ = "0.1.2a0"
+__version__ = "0.1.3a0"

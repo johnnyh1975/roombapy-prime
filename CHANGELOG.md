@@ -8,6 +8,40 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.3a0] - 2026-07-13
+
+**Fixed a critical, silent bug affecting every user of mission history so far:** the detailed
+timeline of a cleaning run (which room/zone was cleaned, pad washes, docking, relocalization
+events) has returned an empty list for every mission since it was introduced, because the parser
+was looking for a JSON key that doesn't exist in real server responses. No error was ever raised —
+it silently returned nothing. Fixed and verified end-to-end against real mission history data.
+
+### Fixed
+
+- Mission timeline parsing (`parse_mission_timeline`) now reads the correct response key; all 20
+  timeline sub-event types (`RoomEvent`, `TravelEvent`, `TraversalEvent`, `ZoneEvent`,
+  `TentativeLocationEvent`, `PadWashEvent`, and more) had several wrong field names corrected
+  against real data, plus two enum values (`TravelDestination`, `TraversalType`) that were
+  wrong-cased
+- Household lookup used internally by `get_schedules()`/`get_dnd_settings()` had the same class of
+  bug as the earlier map-ID lookup (wrong field name silently blocking those checks) — fixed
+- `get_active_map_versions()` field-name lookup fixed (was still using guessed names in one spot)
+- `MissionCommandRecord` was missing a `params` field (separate from per-region params, sometimes
+  carries the cleaning profile)
+- `DoneCode` enum values were wrong-cased (lowercase in reality)
+- `CommandParams.scrub`'s wire key corrected to `swScrub`; `RegionType` values corrected to
+  lowercase
+- Diagnostics script: `get_state()` device-info extraction now looks at the correct nested
+  response path
+
+### Added
+
+- Typed models built from confirmed real responses: `P2MapVersion`/`RoomMetadataEntry` (map
+  versions, including per-room cleaning presets), `RobotSerialInfo`, `RobotPart`/`RobotPartsInfo`,
+  `Household`/`HouseholdRobot`/`HouseholdUser`
+- `CommandParams.operating_mode`, `CommandParams.no_auto_passes`, `RoutineCommand.initiator`,
+  `CommandParams.routine_type` (completed a previously incomplete field)
+
 ### Added
 
 - Diagnostics script now also checks `get_live_map_stream()` and runs a short, bounded
