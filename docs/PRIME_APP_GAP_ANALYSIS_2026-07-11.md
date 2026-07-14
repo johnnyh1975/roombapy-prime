@@ -1204,3 +1204,44 @@ zu den vorherigen Daten (nur andere JSON-Schluesselreihenfolge) -- keine neuen E
 bereits vollstaendig verarbeitet.
 
 250/250 Tests gruen (4 neue), ruff sauber.
+
+## Nachtrag (dreiunddreissigste Sitzung): wahrscheinliche Ursache fuer "get_settings() manchmal ja, manchmal nein" gefunden und behoben
+
+Auf die Frage "warum funktioniert get_settings() manchmal ja und manchmal nein" hin den eigenen
+Code (nicht die Serverantwort) genauer geprueft -- und einen echten, konkreten Kandidaten
+gefunden: `get_shadow()`/`update_shadow()` abonnierten die Antwort-Topics und publizierten die
+Anfrage SOFORT danach, ohne auf die SUBACK-Bestaetigung des Brokers zu warten. `subscribe()` in
+Paho ist selbst asynchron (queued nur das SUBSCRIBE-Paket). Kam die Antwort zurueck, BEVOR das
+SUBACK verarbeitet war, ging sie verloren -- der Client war zu diesem Zeitpunkt technisch noch
+nicht abonniert, exakt die Art nicht-deterministischer, netzwerk-timing-abhaengiger Race, die zu
+"gleiches Geraet, unterschiedliches Ergebnis" passt (chairstackers wiederholt beobachtete
+`get_settings()`-Inkonsistenz auf derselben BLID).
+
+Warum betraf das bisher vor allem `get_settings()` und nicht den klassischen Shadow
+(`get_state()`, bislang immer erfolgreich)? Reine Vermutung, nicht bestaetigt: moeglicherweise
+unterscheidet sich die Antwortlatenz zwischen klassischem und benanntem Shadow geringfuegig,
+wodurch der klassische die Race in der Praxis fast immer "gewinnt" und der benannte haeufiger
+knapp verliert -- ohne Zugriff auf Timing-Messungen an einem echten Geraet bleibt das Spekulation.
+
+Behoben: neue `_subscribe_and_wait()`-Hilfsmethode wartet auf die SUBACK-Bestaetigung (ueber einen
+neuen `on_subscribe`-Callback) fuer alle betroffenen Topics, bevor publiziert wird -- in beiden
+Methoden. Bewusst kurzer interner Timeout (3s) fuer das Warten selbst, da SUBACKs typischerweise
+sehr schnell sind, anders als die eigentliche Shadow-Antwort.
+
+251/251 Tests gruen (1 neuer, gezielter Regressionstest gegen die Race-Reihenfolge; mehrere
+bestehende Tests brauchten eine kleine Anpassung am Fake-MQTT-Client, der jetzt `(result, mid)`
+zurueckgeben und eine simulierte SUBACK ausloesen muss, wie der echte Paho-Client). ruff sauber.
+
+Version auf 0.1.4a0 angehoben (Lehre aus der vorherigen Sitzung: nicht zu lange mit dem Bump
+warten, sonst erkennt `pip install --upgrade` bei Git-Installationen faelschlich "nichts zu tun").
+
+**Nachtrag zur Nachtrag, selbe Sitzung:** Auf "was noch" hin systematisch nach WEITEREN Stellen
+mit demselben Muster gesucht (`grep` nach allen `.subscribe(`-Aufrufen im ganzen Modul) --
+zwei weitere gefunden: die dauerhafte `subscribe()`-Methode selbst (genutzt von
+`watch_state()`/`watch_live_map()`) und die Subscription-Wiederherstellung nach einem
+Token-Wechsel in `replace_token()`. Risiko dort milder (verpasste erste Nachricht statt verpasste
+einzige erwartete Antwort), aber aus Konsistenzgruenden ebenfalls auf `_subscribe_and_wait()`
+umgestellt. Danach: nur noch EINE einzige, kanonische `subscribe()`-Aufrufstelle im gesamten
+Modul (in `_subscribe_and_wait()` selbst) -- per `grep` bestaetigt, keine weiteren offenen Stellen.
+
+252/252 Tests gruen (1 weiterer neuer Test), ruff sauber.

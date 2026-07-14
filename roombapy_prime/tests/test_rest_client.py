@@ -450,7 +450,7 @@ async def test_get_cleaning_profiles_query() -> None:
     call = session.calls[0]
     assert call.method == "GET"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/profiles"
-    assert call.params == {"assetId": "asset1", "p2mapId": "map1"}
+    assert call.params == {"asset_id": "asset1", "p2map_id": "map1"}
 
 
 @pytest.mark.asyncio

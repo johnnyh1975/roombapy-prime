@@ -438,14 +438,28 @@ class PrimeRestClient:
 
     async def get_cleaning_profiles(self, asset_id: str, p2map_id: str) -> dict[str, Any]:
         """GET /v1/profiles -- NEU (11. Juli, sechste Sitzung). BESTAETIGT
-        aus CleaningProfileRequest (httpMethod = "GET", Query-Parameter
-        assetId + p2mapId -- Namen aus Kotlin-Property, nicht
-        @SerialName-verifiziert). Liefert vermutlich die fuer diese
-        Karte/dieses Geraet verfuegbaren Reinigungsprofile. Response-Form
-        JETZT modelliert (neunte Sitzung) --
+        aus CleaningProfileRequest (httpMethod = "GET").
+
+        KORREKTUR-VERSUCH (33. Sitzung): Query-Parameter-Namen von
+        "assetId"/"p2mapId" (Kotlin-Property-Namen, NIE per @SerialName
+        verifiziert) auf "asset_id"/"p2map_id" (snake_case) umgestellt.
+        Grund: ein echter Live-Aufruf (chairstacker) schlug mit HTTP 400
+        fehl, sobald dieser Endpunkt ueberhaupt erreichbar wurde (vorher
+        durch den p2map_id-Extraktionsbug im Diagnoseskript nie erreicht).
+        Snake_case ist das durchgaengig bestaetigte Muster in JEDER
+        anderen echten Antwort in dieser Bibliothek (robot_id,
+        household_id, p2map_id, active_p2mapv_id, user_p2mapv_id) --
+        camelCase kommt in bestaetigten Antworten praktisch nie vor.
+        Trotzdem: ANDERS als der aehnliche geojson_link-Fix ist dies
+        keine Bestaetigung durch tatsaechlich beobachtete Werte, sondern
+        eine informierte Vermutung nach demselben Muster -- falls der
+        naechste Livetest weiterhin HTTP 400 zeigt, war die Vermutung
+        falsch und die eigentliche Ursache liegt woanders (z.B. ein
+        fehlender Header oder ein komplett anderer Parametername).
+        Response-Form JETZT modelliert (neunte Sitzung) --
         models.py::CleaningProfile.from_json() pro Eintrag."""
         url = f"{self._http_base_auth}/v1/profiles"
-        return await self._request("GET", url, query={"assetId": asset_id, "p2mapId": p2map_id})
+        return await self._request("GET", url, query={"asset_id": asset_id, "p2map_id": p2map_id})
 
     async def get_default_routines(self, p2map_id: str) -> dict[str, Any]:
         """GET /v1/p2maps/{p2mapId}/routines/defaults -- NEU (11. Juli,

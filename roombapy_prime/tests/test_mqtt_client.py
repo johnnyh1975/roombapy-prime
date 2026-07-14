@@ -15,6 +15,8 @@ a real or heavily mocked socket layer and is integration-shaped.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -37,14 +39,24 @@ class _FakeMsg:
 class _FakeMqttClient:
     """Stand-in for paho.mqtt.client.Client. No sockets involved."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_subscribe: Callable[[int], None] | None = None) -> None:
         self.subscribed: list[str] = []
         self.unsubscribed: list[str] = []
         self.published: list[tuple[str, object]] = []
         self.on_publish_react: Callable[[str, object], None] | None = None
+        self._on_subscribe = on_subscribe
+        self._next_mid = 1
 
-    def subscribe(self, topic: str, qos: int = 0) -> None:
+    def subscribe(self, topic: str, qos: int = 0) -> tuple[int, int]:
+        """NEU (33. Sitzung): gibt jetzt (result, mid) zurueck wie das
+        echte Paho-Client -- und meldet sofort eine simulierte SUBACK-
+        Bestaetigung (Timing selbst ist hier nicht das Testziel)."""
         self.subscribed.append(topic)
+        mid = self._next_mid
+        self._next_mid += 1
+        if self._on_subscribe is not None:
+            self._on_subscribe(mid)
+        return (0, mid)
 
     def unsubscribe(self, topic: str) -> None:
         self.unsubscribed.append(topic)
@@ -64,7 +76,7 @@ def _dummy_token() -> ConnectionToken:
 
 def _connected_client(blid: str = "0000000000000000") -> tuple[PrimeMqttClient, _FakeMqttClient]:
     client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid=blid)
-    fake = _FakeMqttClient()
+    fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
     client._client = fake  # bypass real connect() — no network in these tests
     client._connected = True
     return client, fake
@@ -300,7 +312,7 @@ def test_replace_token_swaps_token_reconnects_and_restores_subscriptions() -> No
     client.subscribe("topic/a", lambda resp: None)
     client.subscribe("topic/b", lambda resp: None)
 
-    new_fake = _FakeMqttClient()
+    new_fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
     reconnect_calls: list[float] = []
     disconnect_calls: list[int] = []
 
@@ -356,7 +368,7 @@ def test_client_lock_serializes_get_shadow_and_replace_token() -> None:
 
     client, fake = _connected_client()
 
-    new_fake = _FakeMqttClient()
+    new_fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
 
     def fake_connect(timeout: float = 10.0) -> None:
         client._client = new_fake
@@ -394,3 +406,56 @@ def test_client_lock_serializes_get_shadow_and_replace_token() -> None:
     # "replace_token start" was appended earlier (that's just issuing
     # the call, not acquiring the lock).
     assert order.index("get_shadow end") < order.index("replace_token end")
+
+
+def test_get_shadow_waits_for_subscribe_confirmation_before_publishing() -> None:
+    """NEU (33. Sitzung) -- Regressionstest gegen die gefundene Race:
+    publish() darf erst erfolgen, NACHDEM alle SUBACKs bestaetigt wurden.
+    Simuliert eine verzoegerte SUBACK-Bestaetigung, um zu pruefen, dass
+    publish() tatsaechlich darauf wartet, statt sofort loszusenden."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="X")
+    order: list[str] = []
+
+    class DelayedFake(_FakeMqttClient):
+        def subscribe(self, topic, qos=0):
+            order.append(f"subscribe:{topic}")
+            mid = self._next_mid
+            self._next_mid += 1
+            # Bestaetigung bewusst verzoegert (in einem eigenen Thread),
+            # NICHT sofort wie die Standard-Fake -- genau das Szenario,
+            # das publish() faelschlicherweise nicht abgewartet hatte.
+            def confirm_later():
+                time.sleep(0.05)
+                if self._on_subscribe is not None:
+                    self._on_subscribe(mid)
+            threading.Thread(target=confirm_later, daemon=True).start()
+            return (0, mid)
+
+        def publish(self, topic, payload=None, qos=0):
+            order.append(f"publish:{topic}")
+            super().publish(topic, payload, qos)
+
+    fake = DelayedFake(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
+    client._client = fake
+    client._connected = True
+
+    def respond_after_publish(topic: str, payload: object) -> None:
+        if topic.endswith("/get"):
+            client._on_message(client, None, _FakeMsg("$aws/things/X/shadow/get/accepted", b"{}"))
+
+    fake.on_publish_react = respond_after_publish
+    client.get_shadow(timeout=2.0)
+
+    # Alle subscribe-Aufrufe muessen VOR dem publish-Aufruf stehen.
+    publish_index = next(i for i, e in enumerate(order) if e.startswith("publish:"))
+    subscribe_indices = [i for i, e in enumerate(order) if e.startswith("subscribe:")]
+    assert all(i < publish_index for i in subscribe_indices)
+
+
+def test_persistent_subscribe_waits_for_confirmation() -> None:
+    """NEU (33. Sitzung) -- derselbe Fix wie bei get_shadow(), jetzt auch
+    fuer die dauerhafte subscribe()-Methode (watch_state()/
+    watch_live_map()) abgesichert."""
+    client, fake = _connected_client()
+    client.subscribe("some/topic", lambda resp: None)
+    assert "some/topic" in fake.subscribed

@@ -89,6 +89,17 @@ class PrimeMqttClient:
         # multiple callbacks per topic can coexist (reference-counted at
         # the broker-subscribe level, see unsubscribe()).
         self._persistent: dict[str, list[Callable[[ShadowResponse], None]]] = {}
+        # NEU (33. Sitzung): behebt einen echten, bis dahin unbemerkten
+        # Bug -- subscribe() in Paho ist selbst asynchron (queued nur das
+        # SUBSCRIBE-Paket, wartet nicht auf das SUBACK vom Broker). Frueher
+        # wurde direkt danach publish() aufgerufen, ohne auf die
+        # Bestaetigung zu warten -- kam die Antwort zurueck, BEVOR das
+        # SUBACK verarbeitet war, ging sie verloren (der Client war zu
+        # diesem Zeitpunkt technisch noch nicht abonniert). Erklaert
+        # vermutlich das bei chairstacker beobachtete "get_settings()
+        # antwortet manchmal, manchmal nicht" auf demselben Geraet --
+        # eine reine Netzwerk-Timing-Race, kein Tier-Unterschied.
+        self._confirmed_mids: set[int] = set()
         # NEU: schliesst eine bisher dokumentierte Luecke (siehe README) --
         # replace_token() trennt/verbindet self._client neu; ohne Schutz
         # koennte ein GLEICHZEITIG (via asyncio.to_thread, also echter
@@ -125,7 +136,37 @@ class PrimeMqttClient:
         client._reconnect_on_failure = False
         client.on_connect = self._on_connect
         client.on_message = self._on_message
+        client.on_subscribe = self._on_subscribe
         return client
+
+    def _on_subscribe(self, client, userdata, mid, reason_codes, properties=None) -> None:
+        """NEU (33. Sitzung) -- zeichnet auf, dass der Broker das SUBSCRIBE
+        mit dieser mid tatsaechlich bestaetigt hat (SUBACK). Siehe
+        __init__'s Kommentar zu _confirmed_mids fuer den Bug, den das
+        behebt."""
+        self._confirmed_mids.add(mid)
+
+    def _subscribe_and_wait(self, topics: list[str], timeout: float = 3.0) -> None:
+        """NEU (33. Sitzung) -- abonniert alle uebergebenen Topics und
+        wartet auf das SUBACK JEDES EINZELNEN, bevor zurueckgekehrt wird.
+        Der eigentliche Fix fuer die in get_shadow()/update_shadow()
+        beschriebene Race -- publish() darf erst danach erfolgen.
+        `timeout` bewusst kurz (SUBACKs sind i.d.R. sehr schnell,
+        anders als die eigentliche Shadow-Antwort) -- laeuft dieser
+        Timeout ab, wird trotzdem fortgefahren (besser ein kleines
+        Rest-Risiko als eine kaputte Bibliothek, falls ein Broker aus
+        irgendeinem Grund nie ein SUBACK schickt)."""
+        assert self._client is not None
+        mids = []
+        for topic in topics:
+            result, mid = self._client.subscribe(topic, qos=1)
+            mids.append(mid)
+        waited = 0.0
+        while waited < timeout and not all(m in self._confirmed_mids for m in mids):
+            time.sleep(0.05)
+            waited += 0.05
+        for m in mids:
+            self._confirmed_mids.discard(m)
 
     def connect(self, timeout: float = 10.0) -> None:
         self._client = self._build_client()
@@ -208,8 +249,10 @@ class PrimeMqttClient:
             # frischen connect() aber nicht mehr -- direkt am neuen
             # paho-Client resubscriben, NICHT ueber subscribe() (das wuerde
             # doppelte Callback-Eintraege anhaengen).
-            for topic in topics_to_restore:
-                self._client.subscribe(topic, qos=1)
+            # NEU (33. Sitzung): auf alle SUBACKs warten, bevor
+            # zurueckgekehrt wird -- aus denselben Konsistenzgruenden wie
+            # bei subscribe()/get_shadow(), siehe deren Kommentare.
+            self._subscribe_and_wait(topics_to_restore)
 
     def _on_connect(self, client, userdata, connect_flags, reason_code, properties=None) -> None:
         if reason_code == 0:
@@ -265,7 +308,14 @@ class PrimeMqttClient:
         is_new_topic = topic not in self._persistent
         self._persistent.setdefault(topic, []).append(callback)
         if is_new_topic:
-            self._client.subscribe(topic, qos=1)
+            # NEU (33. Sitzung): dieselbe Bestaetigung wie get_shadow()/
+            # update_shadow(), aus Konsistenzgruenden -- das Risiko hier
+            # ist milder (nur eine erste, sehr fruehe Nachricht koennte
+            # in der kurzen Luecke verpasst werden, nicht "die eine
+            # erwartete Antwort" wie bei get_shadow()), aber es lohnt
+            # sich, denselben Fehlertyp nicht an zwei Stellen zu haben,
+            # nur weil die Symptome unterschiedlich sichtbar sind.
+            self._subscribe_and_wait([topic])
 
     def unsubscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
         """Removes exactly this callback. Reference-counted: only
@@ -305,10 +355,12 @@ class PrimeMqttClient:
                 result.append(resp)
 
             assert self._client is not None, "call connect() first"
+            topics = []
             for suffix in ("get/accepted", "get/rejected"):
                 topic = f"{base}/{suffix}"
                 self._pending.setdefault(topic, []).append(_capture)
-                self._client.subscribe(topic, qos=1)
+                topics.append(topic)
+            self._subscribe_and_wait(topics)
             self._client.publish(f"{base}/get", payload=b"", qos=1)
 
             waited = 0.0
@@ -343,10 +395,12 @@ class PrimeMqttClient:
                 result.append(resp)
 
             assert self._client is not None, "call connect() first"
+            topics = []
             for suffix in ("update/accepted", "update/rejected", "update/delta"):
                 topic = f"{base}/{suffix}"
                 self._pending.setdefault(topic, []).append(_capture)
-                self._client.subscribe(topic, qos=1)
+                topics.append(topic)
+            self._subscribe_and_wait(topics)
             self._client.publish(
                 f"{base}/update", payload=json.dumps({"state": {"desired": desired}}), qos=1
             )

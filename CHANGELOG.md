@@ -8,6 +8,24 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.4a0] - 2026-07-13
+
+**Fixed a likely explanation for intermittent shadow request failures.** `get_shadow()`,
+`update_shadow()`, the persistent `subscribe()` (used by `watch_state()`/`watch_live_map()`), and
+subscription restoration after a token refresh all subscribed to response topics and acted
+immediately, without waiting for the broker to confirm the subscription (SUBACK). If a response
+or push arrived before the subscription was actually active, it was silently dropped, causing an
+unpredictable timeout that had nothing to do with device tier or connectivity. This likely
+explains the same-device, different-run inconsistency observed with `get_settings()` in earlier
+testing. All four call sites now wait for subscription confirmation before proceeding.
+
+### Added
+
+- `RobotSettings` model (from a confirmed real `get_settings()` response): child lock, volume,
+  timezone, country, auto-evac frequency, language list, pad wash/dry cycle settings, and several
+  permission flags — resolves a good portion of the previously-guessed settings vocabulary
+- `PadWetnessParam.from_json()` (was missing despite `to_json()` existing)
+
 ## [0.1.3a0] - 2026-07-13
 
 **Fixed a critical, silent bug affecting every user of mission history so far:** the detailed

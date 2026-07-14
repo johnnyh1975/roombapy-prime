@@ -337,6 +337,7 @@ async def run(
         )
 
         p2map_id: str | None = None
+        p2map_version_id: str | None = None
         if map_versions:
             try:
                 first = map_versions[0]
@@ -347,6 +348,14 @@ async def run(
                     or first.get("id")
                     or first.get("map_id")
                 )
+                # NEU (33. Sitzung): "1" war ein Platzhalter-Ratewert fuer die
+                # Kartenversion -- echte Daten (chairstacker) zeigen, dass die
+                # tatsaechliche Versions-ID unter "active_p2mapv_id" steht
+                # (z.B. "260518T135521.119", kein einfacher Zaehler). Das
+                # erklaert vermutlich den HTTP-400-Fehler bei
+                # get_map_geojson_link(): die URL enthielt bisher immer eine
+                # erfundene, nie existierende Versions-ID.
+                p2map_version_id = first.get("active_p2mapv_id")
             except (AttributeError, IndexError, TypeError):
                 p2map_id = None
             if p2map_id is None:
@@ -364,11 +373,19 @@ async def run(
                 robot.get_map_metadata(p2map_id),
                 capture=raw_capture,
             )
-            geojson_link = await _try(
-                report,
-                "Vorsignierte Kartenbuendel-URL abrufen (get_map_geojson_link)",
-                robot.get_map_geojson_link(p2map_id, "1"),
-            )
+            if p2map_version_id:
+                geojson_link = await _try(
+                    report,
+                    "Vorsignierte Kartenbuendel-URL abrufen (get_map_geojson_link)",
+                    robot.get_map_geojson_link(p2map_id, p2map_version_id),
+                )
+            else:
+                geojson_link = None
+                _skip(
+                    report,
+                    "Vorsignierte Kartenbuendel-URL abrufen (get_map_geojson_link)",
+                    "keine active_p2mapv_id in get_active_map_versions()s Antwort gefunden",
+                )
             if isinstance(geojson_link, dict):
                 url = next((v for v in geojson_link.values() if isinstance(v, str) and v.startswith("http")), None)
                 if url:

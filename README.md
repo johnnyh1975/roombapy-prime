@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.3-alpha.** Runs, is tested (200+ unit tests), builds
+> **Status: v0.1.4-alpha.** Runs, is tested (200+ unit tests), builds
 > and installs cleanly. As of this release, it has been **run
 > successfully against one real Prime/V4 account** (login, MQTT
 > connection, most REST reads, and one reversible write operation —
