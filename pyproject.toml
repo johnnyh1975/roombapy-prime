@@ -30,6 +30,7 @@ Changelog = "https://github.com/johnnyh1975/roombapy-prime/blob/main/CHANGELOG.m
 
 [project.scripts]
 roombapy-prime-validate = "roombapy_prime.diagnostics:main"
+roombapy-prime-verify-commands = "roombapy_prime.verify_mission_commands:main"
 
 [project.optional-dependencies]
 test = [

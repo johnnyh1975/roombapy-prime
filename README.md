@@ -187,6 +187,22 @@ before that link is built, as a defense-in-depth measure. Pass
 `--no-issue-link` to skip this, or `--open-browser` to have it open
 automatically.
 
+### Verifying mission commands (start/stop/pause/dock)
+
+This is the one thing `roombapy-prime-validate` deliberately never does automatically — sending
+mission commands means your robot actually moves. There's a separate, standalone script for this,
+used only if and when you choose to run it, watching your robot the whole time:
+
+```bash
+roombapy-prime-verify-commands --username you@example.com --country-code US \
+    --blid YOUR_ROBOT_BLID --i-understand-this-will-move-my-robot
+```
+
+Both the `--i-understand-...` flag *and* an interactive yes/no prompt before every individual
+command are required — declining any prompt skips that step. Runs a conservative start→stop test
+by default, with pause/resume and dock offered as separate, individually-opt-in steps. Produces
+the same kind of shareable report as `roombapy-prime-validate`, including `--dump-config` support.
+
 ## Documentation
 
 - [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) — every `PrimeRobot` method and the key models, organized by feature area, with per-item confidence markers

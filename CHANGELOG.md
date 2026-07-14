@@ -8,7 +8,7 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
-## [0.1.4a0] - 2026-07-13
+## [0.1.4a0] - 2026-07-14
 
 **Fixed a likely explanation for intermittent shadow request failures.** `get_shadow()`,
 `update_shadow()`, the persistent `subscribe()` (used by `watch_state()`/`watch_live_map()`), and
@@ -21,6 +21,14 @@ testing. All four call sites now wait for subscription confirmation before proce
 
 ### Added
 
+- `roombapy-prime-verify-commands`: a separate, standalone script for manually verifying mission
+  commands (start/stop/pause/resume/dock) against a real robot — deliberately never part of the
+  automatic diagnostics script, since this is the one operation that actually moves your robot.
+  Requires both a `--i-understand-this-will-move-my-robot` flag and an interactive confirmation
+  before every individual command; declining any prompt skips that step. Runs a conservative
+  start→stop test by default, with pause/resume and dock as separate opt-in steps. Also captures
+  `get_state()` before/after each command — the first opportunity to see what the shadow reports
+  during an actual active mission, which no prior real response has shown.
 - `RobotSettings` model (from a confirmed real `get_settings()` response): child lock, volume,
   timezone, country, auto-evac frequency, language list, pad wash/dry cycle settings, and several
   permission flags — resolves a good portion of the previously-guessed settings vocabulary

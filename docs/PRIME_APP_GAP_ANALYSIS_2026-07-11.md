@@ -1245,3 +1245,36 @@ umgestellt. Danach: nur noch EINE einzige, kanonische `subscribe()`-Aufrufstelle
 Modul (in `_subscribe_and_wait()` selbst) -- per `grep` bestaetigt, keine weiteren offenen Stellen.
 
 252/252 Tests gruen (1 weiterer neuer Test), ruff sauber.
+
+## Nachtrag (vierunddreissigste Sitzung): Manuelles Missionsbefehl-Verifikationsskript gebaut
+
+Auf die Bitte hin, chairstacker zu fragen, ob er bereit waere, Start/Stop/Pause zu verifizieren --
+und im Vorgriff darauf, falls er zustimmt -- ein separates, eigenstaendiges Skript
+(`verify_mission_commands.py`, Entry-Point `roombapy-prime-verify-commands`) gebaut. Bewusst
+GETRENNT von `diagnostics.py`, aus demselben Grund, aus dem `diagnostics.py` selbst nie
+automatisch Missionsbefehle sendet -- dieses Skript existiert nur fuer den Moment, in dem jemand
+das bewusst, einmalig und beobachtet tun moechte.
+
+**Sicherheitsdesign, zweifach:**
+1. `--i-understand-this-will-move-my-robot` muss gesetzt sein, sonst bricht das Skript ab, bevor
+   es sich ueberhaupt einloggt.
+2. Vor JEDEM einzelnen Befehl eine eigene interaktive Bestaetigung (nicht nur einmal am Anfang) --
+   `_confirm()` akzeptiert ausschliesslich eindeutige Zustimmung ("j"/"ja"/"y"/"yes"), ein
+   versehentliches Enter zaehlt als Ablehnung, nicht als Zustimmung (per Test abgesichert).
+
+**Ablauf:** Start (clean_all=True) -> Stop, konservativ als Standardpfad. Pause/Resume und Dock
+als separate, einzeln abgefragte Zusatzschritte. Vor und nach jedem gesendeten Befehl wird
+zusaetzlich `get_state()` abgerufen und der rohe Zustand angezeigt/erfasst -- ein aktiver
+Missionszustand wurde bisher noch nie eingefangen (alle bisherigen echten Antworten zeigten einen
+geladenen, aber nicht laufenden Roboter), das waere also selbst neue Information, unabhaengig vom
+Testergebnis.
+
+Nutzt dieselbe `Report`-/Redaktions-/Issue-Link-Infrastruktur wie `diagnostics.py`
+(wiederverwendet, nicht dupliziert) fuer einen konsistenten, teilbaren Abschlussbericht.
+
+268/268 Tests gruen (16 neue, alle ohne echtes Netzwerk -- der eigentliche Zweck des Skripts ist
+per Natur nicht automatisiert testbar). Rauchtest bestaetigt: Sicherheitsgate greift korrekt ohne
+das Pflicht-Flag, `--blid` ist Pflicht (kein "erstes gefundenes Geraet" wie bei diagnostics.py),
+Build/Entry-Point verifiziert.
+
+Version bleibt 0.1.4a0 -- alles aus dieser Sitzung (Race-Condition-Fix + neues Skript) unter derselben, noch nicht extern verteilten Version gesammelt.
