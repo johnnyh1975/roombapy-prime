@@ -1,26 +1,26 @@
 """AWS Signature Version 4 request signing.
 
-Portiert (Umbenennung, keine Logikaenderung an der Kernsignierung) aus
-ha_roomba_plus's bereits produktiv laufender cloud_api.py::
-_AWSSignatureV4 -- dort seit Version 3.x genutzt, um die
-Classic-Protokoll-REST-Endpunkte (/v1/{blid}/pmaps, /v1/{blid}/
-missionhistory, etc.) zu signieren. SigV4 selbst ist ein oeffentlicher,
-von AWS dokumentierter Standardmechanismus (nicht iRobot-spezifisch
-reverse-engineered) -- daher mit hoher Zuversicht uebertragbar.
+Ported (renamed, no logic changes to the core signing) from
+ha_roomba_plus's already-production cloud_api.py::_AWSSignatureV4 --
+used there since version 3.x to sign the Classic-protocol REST
+endpoints (/v1/{blid}/pmaps, /v1/{blid}/missionhistory, etc.). SigV4
+itself is a public, AWS-documented standard mechanism (not iRobot-
+specific reverse engineering) -- so it carries over with high
+confidence.
 
-WICHTIGE EINSCHRAENKUNG: Das Original (`_aws_get`) signiert ausschliesslich
-GET-Anfragen ohne Body (payload_hash ist dort immer sha256("")). p2maps
-braucht aber auch POST mit JSON-Body (edit_map, set_map_name, etc.) --
-der body-Parameter unten und die daraus berechnete payload_hash sind
-MEINE Erweiterung, nicht Teil des Originals. Der Algorithmus selbst
-(SigV4) verlangt das exakt so, aber es ist nie gegen einen echten
-POST-Aufruf mit Body getestet worden -- weder Classic noch Prime/V4.
+IMPORTANT LIMITATION: the original (`_aws_get`) only ever signs GET
+requests with no body (payload_hash there is always sha256("")).
+p2maps also needs POST with a JSON body (edit_map, set_map_name,
+etc.) -- the body parameter below and the payload_hash computed from
+it are MY extension, not part of the original. The algorithm itself
+(SigV4) requires exactly this, but it has never been tested against a
+real POST call with a body -- neither Classic nor Prime/V4.
 
-Ebenfalls nie getestet: ob p2maps ueberhaupt SigV4-Signierung braucht
-(vs. z.B. eines der bereits im Login enthaltenen Tokens als simplen
-Bearer-Header). Diese Uebertragung ist eine plausible Annahme aus der
-Analogie zu anderen /v1/-Endpunkten derselben Cloud-API-Familie, keine
-bestaetigte Tatsache fuer p2maps selbst.
+Also never tested: whether p2maps needs SigV4 signing at all (vs. e.g.
+one of the tokens already included at login as a simple Bearer
+header). This carry-over is a plausible assumption by analogy to
+other /v1/ endpoints in the same cloud API family, not a confirmed
+fact for p2maps itself.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ _USER_AGENT_AWS = "aws-sdk-iOS/2.27.6 iOS/18.0.1 en_US"
 
 
 class AwsSigV4Signer:
-    """Minimaler AWS-SigV4-Signierer. Zugangsdaten kommen aus
+    """Minimal AWS SigV4 signer. Credentials come from
     auth.CloudCredentials (access_key_id, secret_key, session_token)."""
 
     def __init__(self, access_key_id: str, secret_key: str, session_token: str) -> None:
@@ -65,14 +65,14 @@ class AwsSigV4Signer:
         query_params: dict[str, str] | None = None,
         body: str = "",
     ) -> dict[str, str]:
-        """Gibt ein Header-Dict inkl. AWS-SigV4-Authorization zurueck.
+        """Returns a header dict including the AWS SigV4 Authorization
+        header.
 
-        body: leer fuer GET (Original-Verhalten unveraendert). Fuer
-        POST MUSS body exakt der String sein, der tatsaechlich als
-        Request-Body gesendet wird -- Signatur und gesendeter Body
-        muessen byte-identisch sein, sonst schlaegt die Signaturpruefung
-        serverseitig fehl (siehe rest_client.py, wie das sichergestellt
-        wird)."""
+        body: empty for GET (original behavior unchanged). For POST,
+        body MUST be exactly the string that's actually sent as the
+        request body -- the signature and the sent body must be
+        byte-identical, or the signature check will fail server-side
+        (see rest_client.py for how this is ensured)."""
         now = datetime.now(tz=UTC)
         amz_date = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")

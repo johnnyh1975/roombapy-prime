@@ -89,25 +89,25 @@ class PrimeMqttClient:
         # multiple callbacks per topic can coexist (reference-counted at
         # the broker-subscribe level, see unsubscribe()).
         self._persistent: dict[str, list[Callable[[ShadowResponse], None]]] = {}
-        # NEU (33. Sitzung): behebt einen echten, bis dahin unbemerkten
-        # Bug -- subscribe() in Paho ist selbst asynchron (queued nur das
-        # SUBSCRIBE-Paket, wartet nicht auf das SUBACK vom Broker). Frueher
-        # wurde direkt danach publish() aufgerufen, ohne auf die
-        # Bestaetigung zu warten -- kam die Antwort zurueck, BEVOR das
-        # SUBACK verarbeitet war, ging sie verloren (der Client war zu
-        # diesem Zeitpunkt technisch noch nicht abonniert). Erklaert
-        # vermutlich das bei chairstacker beobachtete "get_settings()
-        # antwortet manchmal, manchmal nicht" auf demselben Geraet --
-        # eine reine Netzwerk-Timing-Race, kein Tier-Unterschied.
+        # NEW (session 33): fixes a real, previously unnoticed bug --
+        # subscribe() in Paho is itself asynchronous (only queues the
+        # SUBSCRIBE packet, doesn't wait for the broker's SUBACK).
+        # Previously, publish() was called right after, without waiting
+        # for confirmation -- if the response came back BEFORE the
+        # SUBACK was processed, it was lost (the client was technically
+        # not yet subscribed at that point). Likely explains the
+        # "get_settings() sometimes responds, sometimes doesn't" on the
+        # same device observed by chairstacker -- a pure network-timing
+        # race, not a tier difference.
         self._confirmed_mids: set[int] = set()
-        # NEU: schliesst eine bisher dokumentierte Luecke (siehe README) --
-        # replace_token() trennt/verbindet self._client neu; ohne Schutz
-        # koennte ein GLEICHZEITIG (via asyncio.to_thread, also echter
-        # OS-Thread) laufender get_shadow()/update_shadow()-Aufruf mitten in
-        # dieser Umschaltung auf ein bereits getrenntes oder noch nicht
-        # fertig verbundenes self._client zugreifen. threading.Lock, nicht
-        # asyncio.Lock -- diese Methoden laufen in echten Threads
-        # (to_thread), nicht als Coroutinen auf demselben Event-Loop.
+        # NEW: closes a previously documented gap (see README) --
+        # replace_token() disconnects/reconnects self._client; without
+        # protection, a CONCURRENTLY (via asyncio.to_thread, i.e. a real
+        # OS thread) running get_shadow()/update_shadow() call could
+        # access an already-disconnected or not-yet-fully-connected
+        # self._client in the middle of this switch. threading.Lock, not
+        # asyncio.Lock -- these methods run in real threads (to_thread),
+        # not as coroutines on the same event loop.
         self._client_lock = threading.Lock()
 
     def _build_client(self) -> mqtt.Client:
@@ -140,22 +140,20 @@ class PrimeMqttClient:
         return client
 
     def _on_subscribe(self, client, userdata, mid, reason_codes, properties=None) -> None:
-        """NEU (33. Sitzung) -- zeichnet auf, dass der Broker das SUBSCRIBE
-        mit dieser mid tatsaechlich bestaetigt hat (SUBACK). Siehe
-        __init__'s Kommentar zu _confirmed_mids fuer den Bug, den das
-        behebt."""
+        """NEW (session 33) -- records that the broker has actually
+        confirmed the SUBSCRIBE with this mid (SUBACK). See __init__'s
+        comment on _confirmed_mids for the bug this fixes."""
         self._confirmed_mids.add(mid)
 
     def _subscribe_and_wait(self, topics: list[str], timeout: float = 3.0) -> None:
-        """NEU (33. Sitzung) -- abonniert alle uebergebenen Topics und
-        wartet auf das SUBACK JEDES EINZELNEN, bevor zurueckgekehrt wird.
-        Der eigentliche Fix fuer die in get_shadow()/update_shadow()
-        beschriebene Race -- publish() darf erst danach erfolgen.
-        `timeout` bewusst kurz (SUBACKs sind i.d.R. sehr schnell,
-        anders als die eigentliche Shadow-Antwort) -- laeuft dieser
-        Timeout ab, wird trotzdem fortgefahren (besser ein kleines
-        Rest-Risiko als eine kaputte Bibliothek, falls ein Broker aus
-        irgendeinem Grund nie ein SUBACK schickt)."""
+        """NEW (session 33) -- subscribes to all given topics and waits
+        for the SUBACK of EACH ONE before returning. The actual fix for
+        the race described in get_shadow()/update_shadow() -- publish()
+        must only happen after this. `timeout` deliberately short
+        (SUBACKs are usually very fast, unlike the actual shadow
+        response) -- if this timeout runs out, proceeds anyway (better
+        a small residual risk than a broken library, in case a broker
+        never sends a SUBACK for some reason)."""
         assert self._client is not None
         mids = []
         for topic in topics:
@@ -186,49 +184,48 @@ class PrimeMqttClient:
             self._client.loop_stop()
             self._client.disconnect()
 
-    # --- Proaktiver Token-Refresh --------------------------------------
+    # --- Proactive token refresh ---------------------------------------
     #
-    # Es gibt keinen Refresh-Endpunkt (siehe auth.py) -- "Refresh" heisst
-    # hier: mit einem neu eingeloggten Token neu verbinden, WAEHREND
-    # laufende subscribe()-Watcher transparent weiterlaufen.
+    # There's no refresh endpoint (see auth.py) -- "refresh" here means:
+    # reconnect with a newly-logged-in token, WHILE any running
+    # subscribe() watchers keep running transparently.
 
-    REFRESH_MARGIN_SECONDS = 300  # 5 Minuten vor Ablauf -- willkuerlich
-    # gewaehlt, um Zeit fuer den Re-Login-Roundtrip selbst zu lassen,
-    # nicht empirisch gegen die echte ~1h-Token-Lebensdauer getestet.
+    REFRESH_MARGIN_SECONDS = 300  # 5 minutes before expiry -- chosen
+    # arbitrarily to leave time for the re-login roundtrip itself, not
+    # empirically tested against the real ~1h token lifetime.
 
     def seconds_until_token_refresh_due(self) -> float | None:
-        """None, wenn der Token kein expires-Feld hat (siehe
-        ConnectionToken.seconds_until_expiry) -- dann kann nicht
-        proaktiv geplant werden, das ist eine bekannte Einschraenkung,
-        kein stiller Fehler."""
+        """None if the token has no expires field (see
+        ConnectionToken.seconds_until_expiry) -- then proactive
+        scheduling isn't possible, which is a known limitation, not a
+        silent bug."""
         remaining = self._token.seconds_until_expiry()
         if remaining is None:
             return None
         return max(remaining - self.REFRESH_MARGIN_SECONDS, 0.0)
 
     def replace_token(self, new_token: ConnectionToken, timeout: float = 10.0) -> None:
-        """Tauscht den Token, trennt, verbindet neu, stellt alle
-        laufenden persistenten Subscriptions wieder her (siehe
-        subscribe()) -- damit laufende watch_*()-Generatoren
-        transparent weiterlaufen, ohne dass der Aufrufer neu abonnieren
-        muss.
+        """Swaps the token, disconnects, reconnects, restores all
+        running persistent subscriptions (see subscribe()) -- so
+        running watch_*() generators keep going transparently, without
+        the caller needing to re-subscribe.
 
-        NICHT wiederhergestellt: offene _pending-Eintraege (laufende
-        get_shadow()/update_shadow()-Aufrufe). Faellt ein Refresh
-        zufaellig mitten in so einen Aufruf, laeuft der schlicht in
-        seinen Timeout und wirft ShadowError -- akzeptierter Randfall,
-        da Refreshs mit Vorlauf geplant werden (siehe
-        REFRESH_MARGIN_SECONDS), keine Garantie gegen Ueberschneidung.
+        NOT restored: open _pending entries (in-flight get_shadow()/
+        update_shadow() calls). If a refresh happens to fall in the
+        middle of such a call, it simply runs into its timeout and
+        raises ShadowError -- an accepted edge case, since refreshes
+        are scheduled with lead time (see REFRESH_MARGIN_SECONDS), no
+        guarantee against overlap.
 
-        NEU: laeuft jetzt unter self._client_lock -- schliesst die
-        vorher hier dokumentierte Luecke ("nicht thread-/aufrufsicher
-        gegenueber get_shadow()/update_shadow()"). Ein gleichzeitiger
-        get_shadow()/update_shadow()-Aufruf wartet jetzt, bis
-        replace_token() fertig ist, statt auf einen halb-getrennten
-        Client zuzugreifen. Der oben beschriebene _pending-Randfall
-        bleibt trotzdem bestehen -- der Lock verhindert nur den
-        gleichzeitigen ZUGRIFF auf self._client, nicht das inhaltliche
-        Problem "Refresh faellt in ein laufendes get/update"."""
+        NEW: now runs under self._client_lock -- closes the gap
+        documented here before ("not thread-/call-safe against
+        get_shadow()/update_shadow()"). A concurrent get_shadow()/
+        update_shadow() call now waits until replace_token() is done,
+        instead of accessing a half-disconnected client. The
+        _pending edge case described above still remains, though --
+        the lock only prevents concurrent ACCESS to self._client, not
+        the underlying issue of "a refresh falls into an in-flight
+        get/update"."""
         with self._client_lock:
             assert self._client is not None, "call connect() first"
             _LOGGER.info(
@@ -243,15 +240,15 @@ class PrimeMqttClient:
             self._connect_error = None
             self.connect(timeout=timeout)
 
-            # _persistent selbst ist Zustand auf self, nicht auf dem
-            # paho-Client-Objekt -- ueberlebt disconnect()/connect() also
-            # automatisch. Der BROKER kennt die Subscriptions nach einem
-            # frischen connect() aber nicht mehr -- direkt am neuen
-            # paho-Client resubscriben, NICHT ueber subscribe() (das wuerde
-            # doppelte Callback-Eintraege anhaengen).
-            # NEU (33. Sitzung): auf alle SUBACKs warten, bevor
-            # zurueckgekehrt wird -- aus denselben Konsistenzgruenden wie
-            # bei subscribe()/get_shadow(), siehe deren Kommentare.
+            # _persistent itself is state on self, not on the paho
+            # client object -- so it survives disconnect()/connect()
+            # automatically. The BROKER no longer knows the
+            # subscriptions after a fresh connect(), though --
+            # re-subscribe directly on the new paho client, NOT via
+            # subscribe() (that would append duplicate callback entries).
+            # NEW (session 33): wait for all SUBACKs before returning --
+            # for the same consistency reasons as subscribe()/
+            # get_shadow(), see their comments.
             self._subscribe_and_wait(topics_to_restore)
 
     def _on_connect(self, client, userdata, connect_flags, reason_code, properties=None) -> None:
@@ -282,16 +279,16 @@ class PrimeMqttClient:
         return f"{_shadow_base(self._blid, named)}/{suffix}"
 
     def livemap_topic(self, irbt_topic_prefix: str) -> str:
-        """NEU, UNSICHER. Baut das feste Live-Map-Topic-Muster, wie es
-        die echte App verwendet (core::MQTTTopicResolverAdapter.resolve()
+        """NEW, UNCERTAIN. Builds the fixed live-map topic pattern the
+        way the real app uses it (core::MQTTTopicResolverAdapter.resolve()
         -> "{prefix}/{identifier}", mqttClient.subscribe(irbt,
         "livemap/update", assetId) in P2MapAPIFetching.observeLiveMap())
-        -- KEIN Shadow-Topic, komplett unabhaengig von get_shadow()/
-        update_shadow(). Die exakte Verkettungsreihenfolge von blid und
-        "livemap/update" zu einem einzigen "identifier" ist nicht
-        letztgueltig bestaetigt -- hier als "{blid}/livemap/update"
-        angenommen (naheliegendste Lesart der drei subscribe()-Argumente),
-        nicht aus dem Wire-Format direkt abgelesen."""
+        -- NOT a shadow topic, completely independent of get_shadow()/
+        update_shadow(). The exact concatenation order of blid and
+        "livemap/update" into a single "identifier" isn't conclusively
+        confirmed -- assumed here as "{blid}/livemap/update" (the most
+        plausible reading of the three subscribe() arguments), not read
+        directly from the wire format."""
         return f"{irbt_topic_prefix}/{self._blid}/livemap/update"
 
     def subscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
@@ -308,13 +305,13 @@ class PrimeMqttClient:
         is_new_topic = topic not in self._persistent
         self._persistent.setdefault(topic, []).append(callback)
         if is_new_topic:
-            # NEU (33. Sitzung): dieselbe Bestaetigung wie get_shadow()/
-            # update_shadow(), aus Konsistenzgruenden -- das Risiko hier
-            # ist milder (nur eine erste, sehr fruehe Nachricht koennte
-            # in der kurzen Luecke verpasst werden, nicht "die eine
-            # erwartete Antwort" wie bei get_shadow()), aber es lohnt
-            # sich, denselben Fehlertyp nicht an zwei Stellen zu haben,
-            # nur weil die Symptome unterschiedlich sichtbar sind.
+            # NEW (session 33): same confirmation as get_shadow()/
+            # update_shadow(), for consistency -- the risk here is
+            # milder (only a very early first message could be missed
+            # in the brief gap, not "the one expected response" like
+            # with get_shadow()), but it's worth not having the same
+            # bug type in two places just because the symptoms show up
+            # differently.
             self._subscribe_and_wait([topic])
 
     def unsubscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
@@ -341,12 +338,12 @@ class PrimeMqttClient:
         this tier" from "transient failure" — callers on EPHEMERAL-like
         devices should expect named-shadow timeouts as normal, not a bug.
 
-        NEU: laeuft jetzt unter self._client_lock -- serialisiert gegen
-        ein gleichzeitig laufendes replace_token(). Bewusster Tradeoff:
-        ist replace_token() gerade aktiv, wartet dieser Aufruf, bis es
-        fertig ist, statt auf einen halb-getrennten Client zuzugreifen --
-        kann im ungluecklichsten Fall die Antwortzeit um die Dauer eines
-        Token-Wechsels verlaengern, nie um mehr als `timeout` selbst."""
+        NEW: now runs under self._client_lock -- serializes against a
+        concurrently running replace_token(). Deliberate tradeoff: if
+        replace_token() is currently active, this call waits until it's
+        done, instead of accessing a half-disconnected client -- in the
+        worst case this can extend the response time by the duration of
+        a token swap, never by more than `timeout` itself."""
         with self._client_lock:
             base = _shadow_base(self._blid, named)
             result: list[ShadowResponse] = []
@@ -385,8 +382,8 @@ class PrimeMqttClient:
         but gives you no way to confirm actual delivery — use a genuinely
         different, restorable value if you need to verify delivery.
 
-        NEU: laeuft jetzt unter self._client_lock, siehe get_shadow()'s
-        Docstring fuer den Tradeoff."""
+        NEW: now runs under self._client_lock, see get_shadow()'s
+        docstring for the tradeoff."""
         with self._client_lock:
             base = _shadow_base(self._blid, named)
             result: list[ShadowResponse] = []

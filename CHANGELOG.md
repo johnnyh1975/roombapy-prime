@@ -8,6 +8,15 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.5a0] - 2026-07-14
+
+### Changed
+
+- **All user-facing output from `roombapy-prime-validate` and `roombapy-prime-verify-commands` is
+  now in English** (report labels, status values, prompts, `--help` text). Previously this was in
+  German. Internal code comments/docstrings (explaining implementation history) remain in German
+  as before — this change only affects what a user actually sees when running the tools.
+
 ## [0.1.4a0] - 2026-07-14
 
 **Fixed a likely explanation for intermittent shadow request failures.** `get_shadow()`,

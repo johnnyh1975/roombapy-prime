@@ -1,37 +1,35 @@
 """roombapy-prime — Cloud client for iRobot "Prime"/V4-generation robots.
 
-STATUS (11. Juli 2026, zwoelfte Sitzung): Draft, vollstaendig durch
-statische Analyse (Kotlin/Java-Dekompilierung + native Bytecode-
-Inspektion) entstanden. Umfangreiche Funktionsabdeckung (Auth, MQTT-
-Shadow, Missionssteuerung, p2maps-Kartenbearbeitung, Favoriten,
-Zeitplaene, DND, Reinigungsprofile, Missionshistorie) -- aber NIE gegen
-einen echten Server oder ein echtes V4-Geraet getestet. Siehe
-docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md fuer den vollstaendigen,
-laufend aktualisierten Auditstand und README.md fuer den
-Contributing-Abschnitt (roombapy_prime.diagnostics -- das
-Live-Validierungsskript, mit dem sich das aendern liesse).
+STATUS (July 11, 2026, twelfth session): Draft, entirely produced
+through static analysis (Kotlin/Java decompilation + native bytecode
+inspection). Extensive feature coverage (auth, MQTT shadow, mission
+control, p2maps map editing, favorites, schedules, DND, cleaning
+profiles, mission history) -- but NEVER tested against a real server
+or a real V4 device. See docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for
+the complete, continuously updated audit status and README.md for the
+Contributing section (roombapy_prime.diagnostics -- the live
+validation script that could change this).
 
-Warum eine eigene Bibliothek statt einer Erweiterung von `roombapy`:
+Why a separate library instead of extending `roombapy`:
 
-`roombapy`'s RoombaRemoteClient setzt `ssl.CERT_NONE` global gecacht
-(korrekt fuer lokale Verbindungen, unsicher fuer einen echten
-Internet-Endpunkt) und erwartet (address, blid, password) als lokale
-IP -- strukturell inkompatibel mit einem Cloud-Client. Es ist kein
-Anpassungsproblem, sondern ein grundlegend anderes Vertrauens- und
-Verbindungsmodell. Siehe docs/ROOMBAPY_COMPARISON.md fuer den
-vollstaendigen Vergleich.
+`roombapy`'s RoombaRemoteClient sets `ssl.CERT_NONE` globally cached
+(correct for local connections, unsafe for a real internet endpoint)
+and expects (address, blid, password) as a local IP -- structurally
+incompatible with a cloud client. It's not an adaptation problem, but
+a fundamentally different trust and connection model. See
+docs/ROOMBAPY_COMPARISON.md for the full comparison.
 
-Der Name "Prime" ist iRobots eigene Bezeichnung (com.irobot.home.prime
-App), nicht unser informelles "V4".
+The name "Prime" is iRobot's own designation (com.irobot.home.prime
+app), not our informal "V4".
 
-Modulstruktur:
-    auth.py           -- Gigya -> Custom-Authorizer-Token
-    mqtt_client.py     -- AWS-IoT-WebSocket-Verbindung, echte Zertifikatspruefung
-    rest_client.py     -- p2maps, Favoriten, Zeitplaene, DND, Missionshistorie, etc.
-    models.py          -- State-/Kommando-Payload-Typen
-    prime_robot.py     -- Oeffentliche Klasse (Analog zu roomba.py in roombapy)
-    prime_factory.py   -- Factory: username/password/blid statt lokaler IP
-    diagnostics.py     -- Live-Validierungsskript gegen einen echten Account
+Module structure:
+    auth.py           -- Gigya -> Custom Authorizer token
+    mqtt_client.py     -- AWS IoT WebSocket connection, real cert verification
+    rest_client.py     -- p2maps, favorites, schedules, DND, mission history, etc.
+    models.py          -- state/command payload types
+    prime_robot.py     -- public class (analogous to roomba.py in roombapy)
+    prime_factory.py   -- factory: username/password/blid instead of a local IP
+    diagnostics.py     -- live validation script against a real account
 """
 
-__version__ = "0.1.4a0"
+__version__ = "0.1.5a0"

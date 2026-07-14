@@ -1,27 +1,27 @@
-"""p2maps REST-Client: Kartenmetadaten, Editierbefehle, Live-Stream-Init.
+"""p2maps REST client: map metadata, edit commands, live stream init.
 
-STATUS: Draft. Endpunkte/Payload-Formen aus Java-Quellcode-Analyse
-bestaetigt (siehe docs/FINDINGS_2026-07-11.md), NICHT live gegen einen
-echten Server getestet -- weder Classic noch V4/Prime. Kein einziger
-dieser Aufrufe ist bisher tatsaechlich ausgefuehrt worden.
+STATUS: Draft. Endpoints/payload shapes confirmed from Java source code
+analysis (see docs/FINDINGS_2026-07-11.md), NOT live-tested against a
+real server -- neither Classic nor V4/Prime. Not a single one of
+these calls has actually been executed yet.
 
-Seit heute: AWS-SigV4-Signierung (siehe aws_sigv4.py) und `http_base_auth`
-statt `http_base` -- beides uebernommen aus ha_roomba_plus's bereits
-produktiv laufender cloud_api.py (dritte, unabhaengige
-Bestaetigungsquelle neben Live-Tests und APK-Analyse). Vorher war
-`auth_headers` hier ein vages, nie befuelltes Passthrough-Dict -- das
-war schlicht falsch modelliert, nicht nur unvollstaendig.
+Also: AWS SigV4 signing (see aws_sigv4.py) and `http_base_auth` instead
+of `http_base` -- both carried over from ha_roomba_plus's already-
+production cloud_api.py (a third, independent confirmation source
+alongside live tests and APK analysis). Previously, `auth_headers` here
+was a vague, never-populated passthrough dict -- that was simply
+modeled wrong, not just incomplete.
 
-Offene, bewusst nicht geratene Fragen:
-  - Ob p2maps ueberhaupt SigV4-Signierung braucht (vs. z.B. eines der
-    Login-Tokens als Bearer-Header) ist eine Analogie-Annahme aus
-    anderen /v1/-Endpunkten derselben Cloud-API-Familie, keine fuer
-    p2maps selbst bestaetigte Tatsache.
-  - SigV4 fuer POST-mit-Body ist MEINE Erweiterung des Originals (das
-    nur GET signiert) -- siehe aws_sigv4.py's Docstring.
-  - 403 -> Reauth-Retry ist 1:1 aus cloud_api.py's _aws_get() uebernommen
-    (dort fuer Classic-REST-Endpunkte bestaetigt), hier zum ersten Mal
-    auf p2maps angewendet.
+Open questions, deliberately not guessed at:
+  - Whether p2maps needs SigV4 signing at all (vs. e.g. one of the
+    login tokens as a Bearer header) is an analogy assumption from
+    other /v1/ endpoints in the same cloud API family, not a fact
+    confirmed for p2maps itself.
+  - SigV4 for POST-with-body is MY extension of the original (which
+    only signs GET) -- see aws_sigv4.py's docstring.
+  - 403 -> reauth retry is carried over 1:1 from cloud_api.py's
+    _aws_get() (confirmed there for Classic REST endpoints), applied
+    here to p2maps for the first time.
 """
 from __future__ import annotations
 
@@ -72,11 +72,11 @@ class PrimeRestClient:
     every request is SigV4-signed with these, replacing the earlier
     (never-populated) generic auth_headers passthrough.
 
-    relogin: optionaler async Callback, der bei HTTP 403 genau einmal
-    aufgerufen wird, um neue credentials zu holen und den Aufruf zu
-    wiederholen (siehe cloud_api.py's _aws_get() fuer das Original
-    dieses Musters). None (Default) -- kein automatischer Retry, ein
-    403 wird als RestError durchgereicht."""
+    relogin: optional async callback that's called exactly once on an
+    HTTP 403, to fetch new credentials and retry the call (see
+    cloud_api.py's _aux_get() for the original of this pattern). None
+    (default) -- no automatic retry, a 403 is passed through as a
+    RestError."""
 
     def __init__(
         self,
@@ -98,74 +98,72 @@ class PrimeRestClient:
         return await self._request("GET", url)
 
     async def get_active_map_versions(self, blid: str) -> list[dict[str, Any]]:
-        """GET /v1/p2maps?robotId={blid}&visible=true -- NEU (11. Juli),
-        bestaetigt aus P2MapAPIFetching$fetchActiveVersions$2 (diese
-        innere Coroutine-Klasse dekompilierte sauber, anders als die
-        drei fetchPersistentMap/fetchLatestPersistentMap/fetchMissionMap
-        -Aequivalente, siehe PRIME_APP_GAP_ANALYSIS Punkt C2).
+        """GET /v1/p2maps?robotId={blid}&visible=true -- NEW (July 11),
+        confirmed from P2MapAPIFetching$fetchActiveVersions$2 (this
+        inner coroutine class decompiled cleanly, unlike the three
+        fetchPersistentMap/fetchLatestPersistentMap/fetchMissionMap
+        equivalents, see PRIME_APP_GAP_ANALYSIS point C2).
 
-        KORRIGIERT (25. Sitzung): die urspruengliche Vermutung
-        "mindestens 'mapId' und 'mapVersionId'" war FALSCH -- echte
-        Live-Antwort (chairstacker) zeigt die tatsaechlichen Felder:
-        `p2map_id`, `entity_type`, `create_time`, `robot_id`, `sku`,
-        `active_p2mapv_id` (das ist die Kartenversion-ID),
+        CORRECTED (session 25): the original assumption "at least
+        'mapId' and 'mapVersionId'" was WRONG -- a real live response
+        (chairstacker) shows the actual fields: `p2map_id`,
+        `entity_type`, `create_time`, `robot_id`, `sku`,
+        `active_p2mapv_id` (that's the map version ID),
         `last_p2mapv_ts`, `state`, `visible`, `name`, `rooms_metadata`.
-        Hier weiterhin als rohes JSON durchgereicht -- fuer ein
-        typisiertes Ergebnis models.py::parse_active_map_versions()
-        verwenden (NEU, 26. Sitzung, inkl. Raum-Metadaten mit
-        wiederverwendbaren CommandParams-Presets pro Operating-Mode)."""
+        Still passed through here as raw JSON -- for a typed result
+        use models.py::parse_active_map_versions() (NEW, session 26,
+        includes room metadata with reusable CommandParams presets per
+        operating mode)."""
         url = f"{self._http_base_auth}/v1/p2maps"
         data = await self._request("GET", url, query={"robotId": blid, "visible": "true"})
         return data if isinstance(data, list) else []
 
     async def get_map_geojson_link(self, map_id: str, map_version: str) -> dict[str, Any]:
-        """NEU (11. Juli, dritte Sitzung -- nach erneutem, gezieltem
-        Nachsuchen). Loest endlich auf, wie fetchPersistentMap/
-        fetchLatestPersistentMap/fetchMissionMap an ihr tar.gz-
-        Kartenbuendel kommen (siehe PRIME_APP_GAP_ANALYSIS Punkt C2,
-        vorher als "nicht wirtschaftlich weiter aufloesbar" markiert --
-        das war zu frueh aufgegeben, eine breitere Quellcode-Suche nach
-        "/versions/" fand P2MapGeoJSONRequest.java direkt):
+        """NEW (July 11, third session -- after renewed, targeted
+        searching). Finally resolves how fetchPersistentMap/
+        fetchLatestPersistentMap/fetchMissionMap get their tar.gz map
+        bundle (see PRIME_APP_GAP_ANALYSIS point C2, previously marked
+        as "not economically resolvable further" -- that was given up
+        too early, a broader source-code search for "/versions/" found
+        P2MapGeoJSONRequest.java directly):
 
             GET /v1/p2maps/{map_id}/versions/{map_version}/geojson
                 ?response_type=link
 
-        Bestaetigt aus P2MapGeoJSONRequest.java: `response_type` ist ein
-        Enum mit @SerialName("link")/@SerialName("binary") -- "link"
-        (Default im Original) fragt eine vorsignierte Download-URL an
-        (Accept: application/json, passt zufaellig zum ohnehin
-        gesetzten Standard-Header). "binary" (direktes gzip, Accept:
-        application/gzip,application/json) wird hier NICHT unterstuetzt
-        -- braeuchte einen parametrisierbaren Accept-Header, den
-        aws_sigv4.py aktuell nicht anbietet.
+        Confirmed from P2MapGeoJSONRequest.java: `response_type` is an
+        enum with @SerialName("link")/@SerialName("binary") -- "link"
+        (the default in the original) requests a presigned download URL
+        (Accept: application/json, which happens to match the default
+        header already set anyway). "binary" (direct gzip, Accept:
+        application/gzip,application/json) is NOT supported here --
+        would need a parametrizable Accept header, which aws_sigv4.py
+        doesn't currently offer.
 
-        Antwortform (welcher JSON-Schluessel die eigentliche URL
-        traegt) bleibt UNBESTAETIGT -- keine eigene Response-Klasse im
-        Quellcode gefunden, nur die Anfrage selbst. Rohes JSON
-        durchgereicht."""
+        Response shape (which JSON key carries the actual URL) remains
+        UNCONFIRMED -- no dedicated response class found in the source
+        code, only the request itself. Raw JSON passed through."""
         url = f"{self._http_base_auth}/v1/p2maps/{map_id}/versions/{map_version}/geojson"
         return await self._request("GET", url, query={"response_type": "link"})
 
     async def download_map_bundle(self, url: str) -> bytes:
-        """NEU (11. Juli, fuenfte Sitzung). Laedt das rohe tar.gz-
-        Kartenbuendel von einer VORSIGNIERTEN URL (siehe
-        get_map_geojson_link()) herunter.
+        """NEW (July 11, fifth session). Downloads the raw tar.gz map
+        bundle from a PRESIGNED URL (see get_map_geojson_link()).
 
-        BEWUSST OHNE SigV4-Signierung -- bestaetigt aus P2MapAPI.
+        DELIBERATELY WITHOUT SigV4 signing -- confirmed from P2MapAPI.
         MapUnpacker.fetchMapBundleContentHolder(P2MapIdentifier, URL):
-        die App oeffnet die vorsignierte URL direkt
-        (`mapURL.openConnection()`), ohne eigene Auth-Header. Vorsignierte
-        URLs (S3-Stil) tragen ihre Authentifizierung typischerweise in
-        eigenen Query-Parametern -- zusaetzliches Signieren waere nicht
-        nur unnoetig, sondern wuerde die vom Server erwartete Signatur
-        ueberschreiben/verfaelschen.
+        the app opens the presigned URL directly
+        (`mapURL.openConnection()`), with no auth header of its own.
+        Presigned URLs (S3-style) typically carry their
+        authentication in their own query parameters -- additional
+        signing wouldn't just be unnecessary, it would overwrite/
+        corrupt the signature the server expects.
 
-        Gibt die rohen Bytes zurueck (tar.gz-Archiv) -- Entpacken und
-        Parsen siehe models.py::parse_map_bundle(). Getrennt von
-        _request(), da diese URL nicht unter self._http_base_auth liegt
-        (typischerweise ein S3-Bucket oder aehnlicher CDN-Host) und daher
-        nicht das SigV4-Signierungsschema dieser Klasse durchlaufen
-        sollte."""
+        Returns the raw bytes (tar.gz archive) -- for unpacking and
+        parsing see models.py::parse_map_bundle(). Separate from
+        _request(), since this URL doesn't live under
+        self._http_base_auth (typically an S3 bucket or similar CDN
+        host) and therefore shouldn't go through this class's SigV4
+        signing scheme."""
         async with self._session.get(url) as resp:
             if resp.status >= 400:
                 text = await resp.text()
@@ -194,18 +192,18 @@ class PrimeRestClient:
         return await self._post_settings(p2map_id, {"user_orientation_rad": clamped})
 
     async def delete_map(self, p2map_id: str) -> dict[str, Any]:
-        """NEU (11. Juli, dritte Sitzung) -- bestaetigt aus
-        DeleteMapRequest.java: trotz des Namens KEIN HTTP-DELETE,
-        sondern ein "soft delete" ueber denselben Settings-Endpunkt wie
+        """NEW (July 11, third session) -- confirmed from
+        DeleteMapRequest.java: despite the name, NOT an HTTP DELETE,
+        but a "soft delete" via the same settings endpoint as
         set_map_name()/set_map_orientation():
 
             POST /v1/p2maps/{p2mapId}/settings?trigger_fast_updates=true
             Body: {"visible": false}
 
-        Feldname "visible" ohne @SerialName im Original gefunden --
-        serialisiert vermutlich unter dem Property-Namen direkt, nicht
-        geraten aber auch nicht durch eine explizite Annotation
-        zusaetzlich abgesichert wie bei den uebrigen Feldern."""
+        Field name "visible" found without a @SerialName in the
+        original -- presumably serializes directly under the property
+        name, not guessed but also not additionally secured by an
+        explicit annotation like the other fields."""
         return await self._post_settings(p2map_id, {"visible": False})
 
     async def _post_settings(self, p2map_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -213,34 +211,33 @@ class PrimeRestClient:
         return await self._request("POST", url, query={"trigger_fast_updates": "true"}, body=body)
 
     async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict[str, Any]:
-        """POST /v2/p2maps/{p2mapId}/versions -- ACHTUNG (11. Juli, vierte
-        Sitzung): nach voller Neu-Dekompilierung der App bestaetigt, dass
-        requestEditV2() im GESAMTEN App-Code NIE aufgerufen wird. Dieser
-        Pfad existiert serverseitig vermutlich noch (der Endpunkt selbst
-        ist keine Erfindung), wird aber von der aktuellen App-Version
-        (2.2.4) nirgends genutzt. edit_map() (V1) ist der tatsaechlich
-        aktive Pfad -- siehe dort. Bleibt hier verfuegbar, umbenannt von
-        edit_map() zu edit_map_v2(), damit der Name nicht mehr suggeriert,
-        dies sei der Standardweg.
+        """POST /v2/p2maps/{p2mapId}/versions -- NOTE (July 11, fourth
+        session): after a full re-decompilation of the app, confirmed
+        that requestEditV2() is NEVER called anywhere in the ENTIRE app
+        code. This path presumably still exists server-side (the
+        endpoint itself isn't made up), but isn't used anywhere by the
+        current app version (2.2.4). edit_map() (V1) is the actually
+        active path -- see there. Kept available here, renamed from
+        edit_map() to edit_map_v2(), so the name no longer suggests
+        this is the standard way.
 
-        Response shape (die aktualisierte P2PersistentMap, laut den
-        Kotlin-Repository-Interfaces) nicht modelliert -- rohes JSON."""
+        Response shape (the updated P2PersistentMap, per the Kotlin
+        repository interfaces) not modeled -- raw JSON."""
         url = f"{self._http_base_auth}/v2/p2maps/{p2map_id}/versions"
         return await self._request("POST", url, body=command.to_command_body())
 
     async def edit_map(self, p2map_id: str, command: MapEditCommandV1) -> dict[str, Any]:
-        """POST /v1/p2maps/{p2mapId}/versions -- NEU (11. Juli, vierte
-        Sitzung), der TATSAECHLICH AKTIVE Editier-Pfad (siehe
-        models.py's V1-Abschnitt und PRIME_APP_GAP_ANALYSIS): jede
-        einzelne Editier-Operation im App-Code ruft requestEditV1() auf,
-        nie requestEditV2(). Ersetzt die vorherige Standardannahme
-        (edit_map() = V2) -- der alte Pfad ist jetzt separat unter
-        edit_map_v2() verfuegbar, mit einer Warnung, dass er unbenutzter
-        Code ist.
+        """POST /v1/p2maps/{p2mapId}/versions -- NEW (July 11, fourth
+        session), the ACTUALLY ACTIVE edit path (see models.py's V1
+        section and PRIME_APP_GAP_ANALYSIS): every single edit
+        operation in the app code calls requestEditV1(), never
+        requestEditV2(). Replaces the previous default assumption
+        (edit_map() = V2) -- the old path is now separately available
+        under edit_map_v2(), with a warning that it's unused code.
 
-        Response shape nicht modelliert -- rohes JSON. Das genaue
-        Envelope-Format des Kommandos selbst ist eine Analogie-Annahme,
-        siehe MapEditCommandV1's Modul-Docstring in models.py."""
+        Response shape not modeled -- raw JSON. The exact envelope
+        format of the command itself is an analogy assumption, see
+        MapEditCommandV1's module docstring in models.py."""
         url = f"{self._http_base_auth}/v1/p2maps/{p2map_id}/versions"
         return await self._request("POST", url, body=command.to_v1_command_body())
 
@@ -252,17 +249,17 @@ class PrimeRestClient:
         data = await self._request("GET", url, query={"robotId": blid})
         return LiveMapStreamInit.from_json(data)
 
-    # --- Favoriten (FavoriteV1) -----------------------------------------
+    # --- Favorites (FavoriteV1) -------------------------------------------
     #
-    # NEU (11. Juli, vierte Sitzung). Basis-URL und app_edition-Query-Param
-    # bestaetigt aus FavoriteCommonRequest.java, siehe models.py's
-    # Favoriten-Abschnitt fuer die vollstaendige Herleitung inkl. welche
-    # HTTP-Methoden bestaetigt vs. angenommen sind.
+    # NEW (July 11, fourth session). Base URL and app_edition query param
+    # confirmed from FavoriteCommonRequest.java, see models.py's
+    # favorites section for the full derivation including which
+    # HTTP methods are confirmed vs. assumed.
 
     _FAVORITES_QUERY = {"app_edition": "1"}
 
     async def get_favorites(self) -> list[FavoriteV1]:
-        """GET /v1/user/favorites?app_edition=1 -- BESTAETIGT (FetchFavoriteRequest,
+        """GET /v1/user/favorites?app_edition=1 -- CONFIRMED (FetchFavoriteRequest,
         httpMethod = "GET")."""
         url = f"{self._http_base_auth}/v1/user/favorites"
         data = await self._request("GET", url, query=self._FAVORITES_QUERY)
@@ -270,12 +267,12 @@ class PrimeRestClient:
         return [self._favorite_from_json(item) for item in raw_list]
 
     async def create_favorite(self, favorite: FavoriteV1) -> dict[str, Any]:
-        """POST /v1/user/favorites?app_edition=1 -- BESTAETIGT (achte
-        Sitzung: CreateFavoriteRequest.<init> setzt httpMethod = "POST"
-        direkt, androguard-Bytecode-Inspektion -- vorher nur angenommen,
-        da jadx die Lambda-Klasse dafuer stillschweigend uebersprungen
-        hatte). Antwort laut Kotlin-Interface ein FavoriteIdResponse --
-        hier als rohes JSON durchgereicht."""
+        """POST /v1/user/favorites?app_edition=1 -- CONFIRMED (eighth
+        session: CreateFavoriteRequest.<init> sets httpMethod = "POST"
+        directly, androguard bytecode inspection -- previously only
+        assumed, since jadx had silently skipped the lambda class for
+        this). Response per the Kotlin interface is a FavoriteIdResponse
+        -- passed through here as raw JSON."""
         url = f"{self._http_base_auth}/v1/user/favorites"
         return await self._request(
             "POST", url, query=self._FAVORITES_QUERY, body=favorite.to_json()
@@ -283,8 +280,8 @@ class PrimeRestClient:
 
     async def update_favorite(self, favorite_id: str, favorite: FavoriteV1) -> dict[str, Any]:
         """PUT /v1/user/favorites/{favoriteId}?app_edition=1 --
-        BESTAETIGT (achte Sitzung: UpdateFavoriteRequest.<init> setzt
-        httpMethod = "PUT" direkt -- vorher nur angenommen)."""
+        CONFIRMED (eighth session: UpdateFavoriteRequest.<init> sets
+        httpMethod = "PUT" directly -- previously only assumed)."""
         url = f"{self._http_base_auth}/v1/user/favorites/{favorite_id}"
         return await self._request(
             "PUT", url, query=self._FAVORITES_QUERY, body=favorite.to_json()
@@ -292,7 +289,7 @@ class PrimeRestClient:
 
     async def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
         """DELETE /v1/user/favorites/{favoriteId}?app_edition=1 --
-        BESTAETIGT (DeleteFavoriteRequest, httpMethod = "DELETE")."""
+        CONFIRMED (DeleteFavoriteRequest, httpMethod = "DELETE")."""
         url = f"{self._http_base_auth}/v1/user/favorites/{favorite_id}"
         return await self._request("DELETE", url, query=self._FAVORITES_QUERY)
 
@@ -305,15 +302,15 @@ class PrimeRestClient:
         insert_after: str | None = None,
     ) -> dict[str, Any]:
         """PUT /v1/user/favorites/{favoriteId}/order?app_edition=1 --
-        BESTAETIGT (OrderFavoriteRequest, httpMethod = "PUT"). KORRIGIERT:
-        insert_at/insert_before/insert_after sind QUERY-PARAMETER
-        (snake_case: insert_at/insert_before/insert_after), nicht Body-
-        Felder -- bytecode-bestaetigt aus OrderFavoriteRequest.
+        CONFIRMED (OrderFavoriteRequest, httpMethod = "PUT"). CORRECTED:
+        insert_at/insert_before/insert_after are QUERY PARAMETERS
+        (snake_case: insert_at/insert_before/insert_after), not body
+        fields -- bytecode-confirmed from OrderFavoriteRequest.
         getQueryParams() (via androguard/jadx: r0.put("insert_at", ...),
-        r0.put("insert_before", ...), r0.put("insert_after", ...)). Kein
-        httpBody bei diesem Request gefunden. Genau eine der drei wird
-        vermutlich erwartet -- welche Kombination(en) der Server
-        tatsaechlich akzeptiert, nicht bestaetigt."""
+        r0.put("insert_before", ...), r0.put("insert_after", ...)). No
+        httpBody found for this request. Presumably exactly one of the
+        three is expected -- which combination(s) the server actually
+        accepts is not confirmed."""
         url = f"{self._http_base_auth}/v1/user/favorites/{favorite_id}/order"
         query = dict(self._FAVORITES_QUERY)
         if insert_at is not None:
@@ -334,23 +331,23 @@ class PrimeRestClient:
         exclusive_start_timestamp: int | None = None,
         supported_done_codes: list[str] | None = None,
     ) -> dict[str, Any]:
-        """GET /v1/{blid}/missionhistory -- NEU (11. Juli, sechste
-        Sitzung). BESTAETIGT aus FetchMissionHistoryRequest.java
+        """GET /v1/{blid}/missionhistory -- NEW (July 11, sixth
+        session). CONFIRMED from FetchMissionHistoryRequest.java
         (httpMethod = "GET", urlString = "/v1/" + robotId +
-        "/missionhistory"). Deckt sich mit dem gleichnamigen Endpunkt in
-        ha_roomba_plus' cloud_api.py fuer Classic-Geraete -- Prime nutzt
-        dasselbe URL-Muster.
+        "/missionhistory"). Matches the endpoint of the same name in
+        ha_roomba_plus' cloud_api.py for Classic devices -- Prime uses
+        the same URL pattern.
 
-        Query-Parameter alle bestaetigt (camelCase, Kotlin-Property-Name
-        = Wire-Name, kein @SerialName gefunden): maxReports, maxAge,
-        filterType, exclusiveStartTimestamp, supportedDoneCodes (Liste
-        wird mit Komma verbunden -- bestaetigt aus
+        Query parameters all confirmed (camelCase, Kotlin property name
+        = wire name, no @SerialName found): maxReports, maxAge,
+        filterType, exclusiveStartTimestamp, supportedDoneCodes (list
+        joined with commas -- confirmed from
         ProvisioningErrorConstants.LAST_ERROR_INTERNAL_LINE_DELIMITER =
-        ","). Response-Form JETZT modelliert (neunte Sitzung) --
-        models.py::parse_mission_history() wandelt das Ergebnis dieser
-        Methode in eine Liste typisierter MissionHistoryEntry-Objekte
-        um (analog zu parse_map_bundle() -- getrennter, optionaler
-        Schritt statt automatischer Umwandlung hier)."""
+        ","). Response shape NOW modeled (ninth session) --
+        models.py::parse_mission_history() converts this method's
+        result into a list of typed MissionHistoryEntry objects
+        (analogous to parse_map_bundle() -- a separate, optional step
+        rather than automatic conversion here)."""
         url = f"{self._http_base_auth}/v1/{blid}/missionhistory"
         query: dict[str, str] = {}
         if max_reports is not None:
@@ -366,25 +363,25 @@ class PrimeRestClient:
         return await self._request("GET", url, query=query)
 
     async def get_schedules(self, household_id: str) -> dict[str, Any]:
-        """GET /v1/households/{householdId}/settings/schedule -- NEU (11.
-        Juli, sechste Sitzung). BESTAETIGT aus SchedulesCommonRequest/
-        FetchSchedulesRequest (httpMethod = "GET", urlString ohne
-        householdScheduleId-Suffix). Response-Form (SchedulesList) nicht
-        modelliert -- rohes JSON."""
+        """GET /v1/households/{householdId}/settings/schedule -- NEW
+        (July 11, sixth session). CONFIRMED from SchedulesCommonRequest/
+        FetchSchedulesRequest (httpMethod = "GET", urlString without a
+        householdScheduleId suffix). Response shape (SchedulesList) not
+        modeled -- raw JSON."""
         url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule"
         return await self._request("GET", url)
 
     async def delete_schedule(self, household_id: str, household_schedule_id: str) -> dict[str, Any]:
         """DELETE /v1/households/{householdId}/settings/schedule/{id} --
-        BESTAETIGT aus DeleteSchedulesRequest (httpMethod = "DELETE")."""
+        CONFIRMED from DeleteSchedulesRequest (httpMethod = "DELETE")."""
         url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule/{household_schedule_id}"
         return await self._request("DELETE", url)
 
     async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict[str, Any]:
         """POST /v1/households/{householdId}/settings/schedule --
-        BESTAETIGT (achte Sitzung: CreateSchedulesRequest.<init> setzt
-        httpMethod = "POST" direkt, androguard-Bytecode-Inspektion --
-        vorher nur angenommen). Feldstruktur ebenfalls bestaetigt, siehe
+        CONFIRMED (eighth session: CreateSchedulesRequest.<init> sets
+        httpMethod = "POST" directly, androguard bytecode inspection --
+        previously only assumed). Field structure also confirmed, see
         models.py::ScheduleOptions."""
         url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule"
         return await self._request("POST", url, body={"schedules": [s.to_json() for s in schedules]})
@@ -393,182 +390,178 @@ class PrimeRestClient:
         self, household_id: str, household_schedule_id: str, schedules: list[HouseholdSchedule]
     ) -> dict[str, Any]:
         """PUT /v1/households/{householdId}/settings/schedule/{id} --
-        BESTAETIGT (achte Sitzung: UpdateSchedulesRequest.<init> setzt
-        httpMethod = "PUT" direkt -- vorher nur angenommen). Feldstruktur
-        bestaetigt, siehe models.py::HouseholdSchedule."""
+        CONFIRMED (eighth session: UpdateSchedulesRequest.<init> sets
+        httpMethod = "PUT" directly -- previously only assumed). Field
+        structure confirmed, see models.py::HouseholdSchedule."""
         url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule/{household_schedule_id}"
         return await self._request("PUT", url, body={"schedules": [s.to_json() for s in schedules]})
 
     async def get_user_households(self) -> dict[str, Any]:
-        """GET /v1/user/households -- NEU (11. Juli, siebte Sitzung).
-        HTTP-Methode war reine REST-Konvention (dieser Endpunkt wird von
-        der App-Version 2.2.4 nirgends aufgerufen -- die Konstante
-        HOUSEHOLDS_TEMPLATE existiert, aber keine Request-Klasse nutzt
-        sie). TROTZDEM LIVE BESTAETIGT (28. Sitzung, chairstacker):
-        funktioniert einwandfrei, liefert eine echte, klar strukturierte
-        Antwort -- "im aktuellen App-Code unbenutzt" bedeutete hier
-        tatsaechlich nur "diese Version braucht es nicht", nicht "der
-        Server unterstuetzt es nicht mehr".
+        """GET /v1/user/households -- NEW (July 11, seventh session).
+        HTTP method was pure REST convention (this endpoint isn't
+        called anywhere by app version 2.2.4 -- the constant
+        HOUSEHOLDS_TEMPLATE exists, but no request class uses it).
+        STILL LIVE CONFIRMED (session 28, chairstacker): works
+        flawlessly, returns a real, clearly structured response --
+        "unused in the current app code" here actually just meant
+        "this version doesn't need it", not "the server no longer
+        supports it".
 
-        Response-Form bestaetigt: household_id, owner_cognito_id,
-        household_name (beobachtet: "#AUTO_GENERATED_HOUSEHOLD#"),
-        has_precise_location, household_robots, household_users. Fuer
-        ein typisiertes Ergebnis models.py::parse_user_households()
-        verwenden."""
+        Response shape confirmed: household_id, owner_cognito_id,
+        household_name (observed: "#AUTO_GENERATED_HOUSEHOLD#"),
+        has_precise_location, household_robots, household_users. For a
+        typed result use models.py::parse_user_households()."""
         url = f"{self._http_base_auth}/v1/user/households"
         return await self._request("GET", url)
 
     async def get_dnd_settings(self, household_id: str) -> dict[str, Any]:
-        """GET /v1/households/{householdId}/settings/dnd -- NEU (11.
-        Juli, sechste Sitzung). BESTAETIGT aus DNDGetRequest (httpMethod
-        = "GET"). Response-Form JETZT modelliert (neunte Sitzung) --
-        models.py::DNDStatusResponse.from_json(). WICHTIG: siehe
-        DNDStatusResponse's Docstring zur Unterscheidung von der
-        separaten DNDSchedule-Klassenfamilie."""
+        """GET /v1/households/{householdId}/settings/dnd -- NEW (July
+        11, sixth session). CONFIRMED from DNDGetRequest (httpMethod
+        = "GET"). Response shape NOW modeled (ninth session) --
+        models.py::DNDStatusResponse.from_json(). IMPORTANT: see
+        DNDStatusResponse's docstring for the distinction from the
+        separate DNDSchedule class family."""
         url = f"{self._http_base_auth}/v1/households/{household_id}/settings/dnd"
         return await self._request("GET", url)
 
     async def set_dnd_settings(self, household_id: str, settings: dict[str, Any]) -> dict[str, Any]:
-        """PUT /v1/households/{householdId}/settings/dnd -- BESTAETIGT
-        aus DNDPutRequest (httpMethod = "PUT"). Genaues Body-Format
-        (Zeitfenster-Felder) nicht weiter untersucht -- rohes JSON
-        durchgereicht."""
+        """PUT /v1/households/{householdId}/settings/dnd -- CONFIRMED
+        from DNDPutRequest (httpMethod = "PUT"). Exact body format
+        (time-window fields) not further investigated -- raw JSON
+        passed through."""
         url = f"{self._http_base_auth}/v1/households/{household_id}/settings/dnd"
         return await self._request("PUT", url, body=settings)
 
     async def get_cleaning_profiles(self, asset_id: str, p2map_id: str) -> dict[str, Any]:
-        """GET /v1/profiles -- NEU (11. Juli, sechste Sitzung). BESTAETIGT
-        aus CleaningProfileRequest (httpMethod = "GET").
+        """GET /v1/profiles -- NEW (July 11, sixth session). CONFIRMED
+        from CleaningProfileRequest (httpMethod = "GET").
 
-        KORREKTUR-VERSUCH (33. Sitzung): Query-Parameter-Namen von
-        "assetId"/"p2mapId" (Kotlin-Property-Namen, NIE per @SerialName
-        verifiziert) auf "asset_id"/"p2map_id" (snake_case) umgestellt.
-        Grund: ein echter Live-Aufruf (chairstacker) schlug mit HTTP 400
-        fehl, sobald dieser Endpunkt ueberhaupt erreichbar wurde (vorher
-        durch den p2map_id-Extraktionsbug im Diagnoseskript nie erreicht).
-        Snake_case ist das durchgaengig bestaetigte Muster in JEDER
-        anderen echten Antwort in dieser Bibliothek (robot_id,
-        household_id, p2map_id, active_p2mapv_id, user_p2mapv_id) --
-        camelCase kommt in bestaetigten Antworten praktisch nie vor.
-        Trotzdem: ANDERS als der aehnliche geojson_link-Fix ist dies
-        keine Bestaetigung durch tatsaechlich beobachtete Werte, sondern
-        eine informierte Vermutung nach demselben Muster -- falls der
-        naechste Livetest weiterhin HTTP 400 zeigt, war die Vermutung
-        falsch und die eigentliche Ursache liegt woanders (z.B. ein
-        fehlender Header oder ein komplett anderer Parametername).
-        Response-Form JETZT modelliert (neunte Sitzung) --
-        models.py::CleaningProfile.from_json() pro Eintrag."""
+        CORRECTION ATTEMPT (session 33): query parameter names changed
+        from "assetId"/"p2mapId" (Kotlin property names, NEVER verified
+        via @SerialName) to "asset_id"/"p2map_id" (snake_case). Reason:
+        a real live call (chairstacker) failed with HTTP 400 as soon as
+        this endpoint became reachable at all (previously never reached
+        due to the p2map_id extraction bug in the diagnostics script).
+        Snake_case is the consistently confirmed pattern in EVERY
+        other real response in this library (robot_id, household_id,
+        p2map_id, active_p2mapv_id, user_p2mapv_id) -- camelCase
+        practically never occurs in confirmed responses. Still: UNLIKE
+        the similar geojson_link fix, this is not a confirmation via
+        actually observed values, but an informed guess following the
+        same pattern -- if the next live test still shows HTTP 400, the
+        guess was wrong and the actual cause lies elsewhere (e.g. a
+        missing header or a completely different parameter name).
+        Response shape NOW modeled (ninth session) --
+        models.py::CleaningProfile.from_json() per entry."""
         url = f"{self._http_base_auth}/v1/profiles"
         return await self._request("GET", url, query={"asset_id": asset_id, "p2map_id": p2map_id})
 
     async def get_default_routines(self, p2map_id: str) -> dict[str, Any]:
-        """GET /v1/p2maps/{p2mapId}/routines/defaults -- NEU (11. Juli,
-        sechste Sitzung). Automatisch generierte Reinigungsvorschlaege
-        pro Karte (z.B. "ganze Wohnung", "nur Kueche"). Response-Form
-        JETZT modelliert (neunte Sitzung) --
+        """GET /v1/p2maps/{p2mapId}/routines/defaults -- NEW (July 11,
+        sixth session). Automatically generated cleaning suggestions
+        per map (e.g. "whole home", "kitchen only"). Response shape
+        NOW modeled (ninth session) --
         models.py::parse_default_routines()."""
         url = f"{self._http_base_auth}/v1/p2maps/{p2map_id}/routines/defaults"
         return await self._request("GET", url)
 
     async def get_robot_parts(self, blid: str) -> dict[str, Any]:
-        """GET /v1/robots/{blid}/parts -- NEU (15. Sitzung). BESTAETIGT
-        aus der tatsaechlichen APK-Konfigurationsdatei
+        """GET /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
+        from the actual APK configuration file
         (res/raw/base_roomba_config.json, commandId "GetRobotParts":
         httpMethod=GET, urlPath="/v1/robots/%s/parts",
-        networkList=["awsApiGateway"]) -- eine Primaerquelle, keine
-        Bytecode-Interpretation.
+        networkList=["awsApiGateway"]) -- a primary source, not
+        bytecode interpretation.
 
-        Response-Form JETZT bestaetigt (27. Sitzung, echte Live-Antwort
-        von chairstacker): robot_id, num_parts, parts (Liste mit
-        part_id, counter, minutes_remaining, count_type z.B.
+        Response shape NOW confirmed (session 27, real live response
+        from chairstacker): robot_id, num_parts, parts (list with
+        part_id, counter, minutes_remaining, count_type e.g.
         "combo_missions"/"pad_washes_used"/"minutes"/"evacs",
-        count_remaining, count_used, counter_category, reset_by). Rohes
-        JSON hier durchgereicht -- fuer ein typisiertes Ergebnis
-        models.py::RobotPartsInfo.from_json() verwenden."""
+        count_remaining, count_used, counter_category, reset_by). Raw
+        JSON passed through here -- for a typed result use
+        models.py::RobotPartsInfo.from_json()."""
         url = f"{self._http_base_auth}/v1/robots/{blid}/parts"
         return await self._request("GET", url)
 
     async def reset_robot_parts(self, blid: str) -> dict[str, Any]:
-        """POST /v1/robots/{blid}/parts -- NEU (15. Sitzung). BESTAETIGT
-        aus derselben Konfigurationsdatei (commandId "ResetRobotParts",
-        httpMethod=POST, identischer urlPath wie get_robot_parts()).
-        Setzt vermutlich Verschleissteil-Zaehler zurueck (z.B. nach
-        Teiletausch) -- Body-Form nicht untersucht, rohes JSON
-        durchgereicht."""
+        """POST /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
+        from the same configuration file (commandId "ResetRobotParts",
+        httpMethod=POST, identical urlPath to get_robot_parts()).
+        Presumably resets consumable-part counters (e.g. after a part
+        replacement) -- body shape not investigated, raw JSON passed
+        through."""
         url = f"{self._http_base_auth}/v1/robots/{blid}/parts"
         return await self._request("POST", url)
 
     async def get_serial_number_data(self, blid: str) -> dict[str, Any]:
-        """GET /v1/robots?robot_id={blid} -- NEU (15. Sitzung). BESTAETIGT
-        aus derselben Konfigurationsdatei (commandId "GetSerialNumberData",
+        """GET /v1/robots?robot_id={blid} -- NEW (session 15). CONFIRMED
+        from the same configuration file (commandId "GetSerialNumberData",
         httpMethod=GET, urlPath="/v1/robots?robot_id=%s").
 
-        Response-Form JETZT bestaetigt (26. Sitzung, echte Live-Antwort
-        von chairstacker): RobotID, SerialNumber, built_as_sku,
+        Response shape NOW confirmed (session 26, real live response
+        from chairstacker): RobotID, SerialNumber, built_as_sku,
         family_variant, is_raas, is_refurbished, is_smartcare,
-        min_utc_reg_date, name (nutzervergebener Robotername, z.B.
-        "House_Bot"), sku, series (z.B. "G1"), family (z.B.
-        "Roomba Combo" -- bestaetigt ein Kombigeraet fuer Saugen+
-        Wischen), serial_history. Rohes JSON hier durchgereicht -- fuer
-        ein typisiertes Ergebnis models.py::RobotSerialInfo.from_json()
-        verwenden."""
+        min_utc_reg_date, name (user-assigned robot name, e.g.
+        "House_Bot"), sku, series (e.g. "G1"), family (e.g.
+        "Roomba Combo" -- confirms a vacuum+mop combo device),
+        serial_history. Raw JSON passed through here -- for a typed
+        result use models.py::RobotSerialInfo.from_json()."""
         url = f"{self._http_base_auth}/v1/robots"
         return await self._request("GET", url, query={"robot_id": blid})
 
     async def poll_echo_value(self, blid: str) -> dict[str, Any]:
-        """POST /v1/robots/{blid}/echo -- NEU (16. Sitzung). BESTAETIGT
-        aus base_roomba_config.json (commandId "PollEchoValueCommand,Set",
-        httpMethod=POST, urlPath="/v1/robots/%s/echo"). Passt zur
-        "Echo"-Funktion ("finde meinen Roboter" -- Signalton/Ansage) --
-        deckt sich mit dem SetRoombaEchoAwsIotSerializer-Fund aus der
-        nativen Analyse. Body-Form unbekannt -- vermutlich leer oder
-        ein einfacher Trigger, kein Payload noetig fuer den einfachsten
-        Fall. Kein Body mitgegeben, bis Gegenteil bestaetigt ist."""
+        """POST /v1/robots/{blid}/echo -- NEW (session 16). CONFIRMED
+        from base_roomba_config.json (commandId "PollEchoValueCommand,Set",
+        httpMethod=POST, urlPath="/v1/robots/%s/echo"). Matches the
+        "echo" feature ("find my robot" -- audible chime/announcement)
+        -- consistent with the SetRoombaEchoAwsIotSerializer finding
+        from the native analysis. Body shape unknown -- presumably
+        empty or a simple trigger, no payload needed for the simplest
+        case. No body included, until proven otherwise."""
         url = f"{self._http_base_auth}/v1/robots/{blid}/echo"
         return await self._request("POST", url)
 
     async def get_time_estimates(self, body: dict[str, Any]) -> dict[str, Any]:
-        """POST /v1/time-estimates -- NEU (16. Sitzung). BESTAETIGT aus
+        """POST /v1/time-estimates -- NEW (session 16). CONFIRMED from
         base_roomba_config.json (commandId "GetTimeEstimates",
-        httpMethod=POST trotz "read": true -- vermutlich POST, weil die
-        Anfrage einen Body braucht, um zu wissen, WELCHE Mission/Raeume
-        geschaetzt werden sollen, nicht weil sie schreibend waere).
-        Body-Form nicht untersucht -- rohes dict durchgereicht, vom
-        Aufrufer selbst zu befuellen (vermutlich robot_id + Regionen/
-        Kommandotyp, in Analogie zu RoutineCommand)."""
+        httpMethod=POST despite "read": true -- presumably POST because
+        the request needs a body to know WHICH mission/rooms to
+        estimate, not because it's a write). Body shape not
+        investigated -- raw dict passed through, to be filled in by the
+        caller themselves (presumably robot_id + regions/command type,
+        by analogy to RoutineCommand)."""
         url = f"{self._http_base_auth}/v1/time-estimates"
         return await self._request("POST", url, body=body)
 
     async def reset_robot(self, blid: str) -> dict[str, Any]:
-        """POST /v1/{blid}/reset -- NEU (16. Sitzung). BESTAETIGT aus
+        """POST /v1/{blid}/reset -- NEW (session 16). CONFIRMED from
         base_roomba_config.json (commandId "ResetRobotCommand",
-        httpMethod=POST, networkList enthaelt sowohl awsApiGateway als
-        auch lss -- existiert also fuer Classic UND Prime). WARNUNG:
-        vermutlich ein Werksreset oder zumindest ein signifikanter
-        Zuruecksetzungsvorgang -- Name und "write": true legen nahe,
-        dass dies eine ECHTE, moeglicherweise folgenreiche Aktion am
-        Geraet ausloest. Nie live getestet. Nicht leichtfertig aufrufen."""
+        httpMethod=POST, networkList contains both awsApiGateway and
+        lss -- so it exists for both Classic AND Prime). WARNING:
+        presumably a factory reset or at least a significant reset
+        operation -- the name and "write": true suggest this triggers
+        a REAL, potentially consequential action on the device. Never
+        live-tested. Don't call this lightly."""
         url = f"{self._http_base_auth}/v1/{blid}/reset"
         return await self._request("POST", url)
 
     async def get_notifications(self, blid: str, app_version: str = "1.0") -> dict[str, Any]:
-        """GET /v1/robots/{blid}/timeline -- NEU (16. Sitzung). BESTAETIGT
-        aus base_roomba_config.json (commandId "GetNotifications",
+        """GET /v1/robots/{blid}/timeline -- NEW (session 16). CONFIRMED
+        from base_roomba_config.json (commandId "GetNotifications",
         urlPath="/v1/robots/%s/timeline?event_type=HKC&
-        details_type_filter=all&app_version=%s&limit=50"). "HKC" als
-        event_type-Wert nicht aufgeloest (Abkuerzung unbekannt) --
-        1:1 aus der Konfigurationsdatei uebernommen, nicht geraten.
+        details_type_filter=all&app_version=%s&limit=50"). "HKC" as an
+        event_type value not resolved (abbreviation unknown) -- carried
+        over 1:1 from the configuration file, not guessed.
 
-        BEKANNTER, UNGELOESTER FEHLER (25. Sitzung): live gegen einen
-        echten Account (chairstacker) schlaegt dieser Aufruf mit
-        HTTP 400 fehl. Die URL selbst stimmt mit der Konfigurationsdatei
-        ueberein -- der Fehler liegt vermutlich am `app_version`-
-        Platzhalterwert ("1.0"), den der Server evtl. als ungueltig
-        zurueckweist (die echte App schickt vermutlich ihre tatsaechliche
-        Versionsnummer mit, kein generischer Platzhalter), oder an einem
-        fehlenden Header/Parameter, der in der Konfigurationsdatei nicht
-        sichtbar ist. NICHT als funktionierend behandeln, bis das
-        aufgeloest ist."""
+        KNOWN, UNRESOLVED BUG (session 25): live against a real account
+        (chairstacker), this call fails with HTTP 400. The URL itself
+        matches the configuration file -- the error is presumably in
+        the `app_version` placeholder value ("1.0"), which the server
+        might reject as invalid (the real app presumably sends its
+        actual version number, not a generic placeholder), or in a
+        missing header/parameter that isn't visible in the
+        configuration file. Do NOT treat this as working until this is
+        resolved."""
         url = f"{self._http_base_auth}/v1/robots/{blid}/timeline"
         return await self._request(
             "GET",
@@ -583,9 +576,9 @@ class PrimeRestClient:
 
     @staticmethod
     def _favorite_from_json(data: dict[str, Any]) -> FavoriteV1:
-        """Baut ein FavoriteV1 aus rohem JSON. Bewusst tolerant (.get()
-        ueberall) -- keine echte Serverantwort je gesehen, um zu wissen,
-        welche Felder wirklich immer vorhanden sind."""
+        """Builds a FavoriteV1 from raw JSON. Deliberately tolerant
+        (.get() everywhere) -- never seen a real server response to
+        know which fields are truly always present."""
         command_defs_raw = data.get("commanddefs") or []
         return FavoriteV1(
             favorite_id=data.get("favorite_id"),

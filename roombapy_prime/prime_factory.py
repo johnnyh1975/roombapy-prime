@@ -1,20 +1,20 @@
-"""Factory: username/password/blid statt lokaler IP (Cloud-Client-Aufbau).
+"""Factory: username/password/blid instead of a local IP (cloud client setup).
 
-STATUS: Draft. Namenskonvention bewusst an roombapy.roomba_factory
-angelehnt (RoombaFactory.create_roomba(...) -> PrimeFactory.
-create_prime_robot(...)) fuer Wiedererkennbarkeit -- siehe
-docs/ROOMBAPY_COMPARISON.md Abschnitt 4. Anders als roombapy's Factory
-ist diese hier zwangslaeufig async, weil der Verbindungsaufbau einen
-echten Login-Flow braucht (roombapy braucht dafuer nichts, da es direkt
-mit einer lokalen IP + bereits bekanntem Passwort arbeitet).
+STATUS: Draft. Naming convention deliberately mirrors
+roombapy.roomba_factory (RoombaFactory.create_roomba(...) ->
+PrimeFactory.create_prime_robot(...)) for recognizability -- see
+docs/ROOMBAPY_COMPARISON.md section 4. Unlike roombapy's factory,
+this one is necessarily async, because establishing the connection
+needs a real login flow (roombapy doesn't need this since it works
+directly with a local IP + an already-known password).
 
-NICHT gegen ein echtes V4-Konto getestet -- reine Verdrahtung von
-bereits einzeln dokumentierten Bausteinen (auth.py, mqtt_client.py,
+NOT tested against a real V4 account -- pure wiring of already
+individually documented building blocks (auth.py, mqtt_client.py,
 rest_client.py, prime_robot.py).
 
-Seit heute: auto_refresh-Parameter (siehe unten) fuer proaktiven
-Token-Refresh -- siehe prime_robot.py's Modul-Docstring fuer den
-Zugangsdaten-im-Speicher-Tradeoff, den das mit sich bringt.
+Also has an auto_refresh parameter (see below) for proactive token
+refresh -- see prime_robot.py's module docstring for the
+credentials-in-memory tradeoff that comes with it.
 """
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ from .rest_client import PrimeRestClient
 
 
 class PrimeFactory:
-    """Analog zu roombapy.RoombaFactory, aber async und Account-basiert
-    statt lokaler-IP-basiert."""
+    """Analogous to roombapy.RoombaFactory, but async and account-based
+    instead of local-IP-based."""
 
     @staticmethod
     async def create_prime_robot(
@@ -40,20 +40,20 @@ class PrimeFactory:
         *,
         auto_refresh: bool = False,
     ) -> PrimeRobot:
-        """Loggt ein, waehlt den Roboter aus (erster gefundener, falls
-        blid nicht angegeben), verdrahtet MQTT- und REST-Client, gibt
-        eine noch NICHT verbundene PrimeRobot-Instanz zurueck -- der
-        Aufrufer muss selbst noch await robot.connect() aufrufen.
+        """Logs in, selects the robot (first one found if blid isn't
+        given), wires up the MQTT and REST clients, returns a
+        NOT-YET-connected PrimeRobot instance -- the caller still needs
+        to await robot.connect() themselves.
 
-        auto_refresh=True: haelt username/password im Schliessungsbereich
-        eines relogin-Callbacks, der zweifach genutzt wird -- proaktiv
-        von PrimeRobot kurz vor MQTT-Token-Ablauf (siehe
-        prime_robot.py's Modul-Docstring fuer den damit verbundenen
-        Zugangsdaten-im-Speicher-Tradeoff), UND reaktiv von
-        PrimeRestClient bei einem HTTP-403 auf einen p2maps-Aufruf
-        (siehe rest_client.py). Default False -- bisheriges Verhalten
-        (Zugangsdaten laufen nach ~1h ab, keine Ueberraschung fuer
-        bestehende Aufrufer dieser Methode."""
+        auto_refresh=True: keeps username/password in the closure of a
+        relogin callback that's used two ways -- proactively by
+        PrimeRobot shortly before the MQTT token expires (see
+        prime_robot.py's module docstring for the credentials-in-memory
+        tradeoff that comes with this), AND reactively by
+        PrimeRestClient on an HTTP 403 on a p2maps call (see
+        rest_client.py). Default False -- previous behavior
+        (credentials expire after ~1h), no surprise for existing
+        callers of this method."""
         login_result = await login(session, username, password, country_code)
         target_blid = blid or login_result.primary_blid()
         token = login_result.token_for_blid(target_blid)

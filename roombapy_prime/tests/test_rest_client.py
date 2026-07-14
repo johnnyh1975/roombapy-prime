@@ -169,9 +169,9 @@ async def test_set_map_orientation_already_in_range_is_unchanged() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_map_is_soft_delete_via_settings_endpoint() -> None:
-    """NEU (11. Juli, dritte Sitzung) -- bestaetigt aus DeleteMapRequest.java:
-    trotz des Namens kein HTTP DELETE, sondern POST .../settings mit
-    {"visible": false}, siehe delete_map()'s Docstring."""
+    """NEW (July 11, third session) -- confirmed from DeleteMapRequest.java:
+    despite the name, not an HTTP DELETE, but POST .../settings with
+    {"visible": false}, see delete_map()'s docstring."""
     session = _FakeSession()
     session.queue_response(payload={"ok": True})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -186,11 +186,11 @@ async def test_delete_map_is_soft_delete_via_settings_endpoint() -> None:
     assert call.body_json == {"visible": False}
 
 
-# --- Favoriten (FavoriteV1) -- NEU, vierte Sitzung -----------------------
+# --- Favorites (FavoriteV1) -- NEW, fourth session -----------------------
 
 @pytest.mark.asyncio
 async def test_get_favorites_url_and_query() -> None:
-    """BESTAETIGT: GET /v1/user/favorites?app_edition=1, httpMethod aus
+    """CONFIRMED: GET /v1/user/favorites?app_edition=1, httpMethod from
     FetchFavoriteRequest.java."""
     from roombapy_prime.models import MissionCommandType
 
@@ -234,8 +234,8 @@ async def test_get_favorites_non_list_response_is_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_create_favorite_sends_body_and_query() -> None:
-    """ANGENOMMEN, nicht bestaetigt (POST-Methode) -- siehe
-    create_favorite()'s Docstring."""
+    """ASSUMED, not confirmed (POST method) -- see create_favorite()'s
+    docstring."""
     from roombapy_prime.models import FavoriteV1, MissionCommandType, RoutineCommand
 
     session = _FakeSession()
@@ -276,7 +276,7 @@ async def test_update_favorite_uses_put_and_favorite_id_in_url() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_favorite_uses_delete_method() -> None:
-    """BESTAETIGT aus DeleteFavoriteRequest.java (httpMethod = "DELETE")."""
+    """CONFIRMED from DeleteFavoriteRequest.java (httpMethod = "DELETE")."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -291,9 +291,9 @@ async def test_delete_favorite_uses_delete_method() -> None:
 
 @pytest.mark.asyncio
 async def test_order_favorite_uses_put_and_order_suffix() -> None:
-    """BESTAETIGT aus OrderFavoriteRequest.java (httpMethod = "PUT",
-    urlString + "/order", insert_at/insert_before/insert_after als
-    Query-Parameter -- KORRIGIERT, siehe order_favorite()'s Docstring)."""
+    """CONFIRMED from OrderFavoriteRequest.java (httpMethod = "PUT",
+    urlString + "/order", insert_at/insert_before/insert_after as
+    query parameters -- CORRECTED, see order_favorite()'s docstring)."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -308,7 +308,7 @@ async def test_order_favorite_uses_put_and_order_suffix() -> None:
 
 @pytest.mark.asyncio
 async def test_get_mission_history_url_and_query() -> None:
-    """BESTAETIGT aus FetchMissionHistoryRequest.java."""
+    """CONFIRMED from FetchMissionHistoryRequest.java."""
     session = _FakeSession()
     session.queue_response(payload={"missions": []})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -398,8 +398,8 @@ async def test_update_schedules_puts_body() -> None:
 
 @pytest.mark.asyncio
 async def test_get_user_households_url() -> None:
-    """HTTP-Methode reine REST-Konvention, nicht aus einer Request-Klasse
-    bestaetigt -- siehe get_user_households()'s Docstring."""
+    """HTTP method pure REST convention, not confirmed from a request
+    class -- see get_user_households()'s docstring."""
     session = _FakeSession()
     session.queue_response(payload={"households": []})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -468,8 +468,8 @@ async def test_get_default_routines_url() -> None:
 
 @pytest.mark.asyncio
 async def test_get_robot_parts_url() -> None:
-    """Bestaetigt aus base_roomba_config.json (commandId "GetRobotParts"),
-    nicht aus Bytecode-Interpretation."""
+    """Confirmed from base_roomba_config.json (commandId "GetRobotParts"),
+    not from bytecode interpretation."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -483,7 +483,7 @@ async def test_get_robot_parts_url() -> None:
 
 @pytest.mark.asyncio
 async def test_reset_robot_parts_url() -> None:
-    """Bestaetigt aus base_roomba_config.json (commandId "ResetRobotParts")."""
+    """Confirmed from base_roomba_config.json (commandId "ResetRobotParts")."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -497,7 +497,7 @@ async def test_reset_robot_parts_url() -> None:
 
 @pytest.mark.asyncio
 async def test_get_serial_number_data_query() -> None:
-    """Bestaetigt aus base_roomba_config.json (commandId "GetSerialNumberData")."""
+    """Confirmed from base_roomba_config.json (commandId "GetSerialNumberData")."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -512,8 +512,8 @@ async def test_get_serial_number_data_query() -> None:
 
 @pytest.mark.asyncio
 async def test_edit_map_v2_sends_command_envelope() -> None:
-    """edit_map_v2() -- der unbenutzte Pfad, siehe rest_client.py's
-    Docstring. Bleibt getestet, da der Endpunkt weiterhin existiert."""
+    """edit_map_v2() -- the unused path, see rest_client.py's
+    docstring. Stays tested since the endpoint still exists."""
     session = _FakeSession()
     session.queue_response(payload={"updated": True})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -528,8 +528,8 @@ async def test_edit_map_v2_sends_command_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_edit_map_v1_sends_command_envelope() -> None:
-    """edit_map() -- NEU (11. Juli, vierte Sitzung), der tatsaechlich
-    aktive Pfad (siehe PRIME_APP_GAP_ANALYSIS)."""
+    """edit_map() -- NEW (July 11, fourth session), the actually
+    active path (see PRIME_APP_GAP_ANALYSIS)."""
     from roombapy_prime.models import MergeRoomsV1
 
     session = _FakeSession()
@@ -588,8 +588,8 @@ async def test_non_json_success_response_raises_rest_error() -> None:
 
 @pytest.mark.asyncio
 async def test_get_active_map_versions_url_and_query() -> None:
-    """NEU (11. Juli) -- Endpunkt aus der inneren Coroutine-Klasse
-    P2MapAPIFetching$fetchActiveVersions$2 bestaetigt, siehe
+    """NEW (July 11) -- endpoint confirmed from the inner coroutine
+    class P2MapAPIFetching$fetchActiveVersions$2, see
     PRIME_APP_GAP_ANALYSIS."""
     session = _FakeSession()
     session.queue_response(payload=[{"mapId": "m1", "mapVersionId": "v1"}])
@@ -618,10 +618,10 @@ async def test_get_active_map_versions_non_list_response_is_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_get_map_geojson_link_url_and_query() -> None:
-    """NEU (11. Juli, dritte Sitzung) -- Endpunkt aus P2MapGeoJSONRequest.java
-    bestaetigt, siehe PRIME_APP_GAP_ANALYSIS Punkt C2. Response-Form
-    selbst bleibt unbestaetigt -- dieser Test prueft nur URL/Query,
-    nicht welcher JSON-Schluessel die URL traegt."""
+    """NEW (July 11, third session) -- endpoint confirmed from
+    P2MapGeoJSONRequest.java, see PRIME_APP_GAP_ANALYSIS point C2.
+    The response shape itself remains unconfirmed -- this test only
+    checks URL/query, not which JSON key carries the URL."""
     session = _FakeSession()
     session.queue_response(payload={"some_unconfirmed_key": "https://example.invalid/bundle.tar.gz"})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -637,8 +637,8 @@ async def test_get_map_geojson_link_url_and_query() -> None:
 
 @pytest.mark.asyncio
 async def test_download_map_bundle_returns_raw_bytes() -> None:
-    """NEU (11. Juli, fuenfte Sitzung) -- bewusst OHNE SigV4-Signierung,
-    siehe download_map_bundle()'s Docstring."""
+    """NEW (July 11, fifth session) -- deliberately WITHOUT SigV4
+    signing, see download_map_bundle()'s docstring."""
     session = _FakeSession()
     fake_bundle_bytes = b"\x1f\x8b\x08\x00fake-gzip-bytes-not-a-real-archive"
     session.queue_response(raw_bytes=fake_bundle_bytes)
@@ -730,7 +730,7 @@ async def test_403_retry_only_happens_once_not_infinitely() -> None:
 
 @pytest.mark.asyncio
 async def test_poll_echo_value_url() -> None:
-    """Bestaetigt aus base_roomba_config.json (commandId "PollEchoValueCommand,Set")."""
+    """Confirmed from base_roomba_config.json (commandId "PollEchoValueCommand,Set")."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -744,7 +744,7 @@ async def test_poll_echo_value_url() -> None:
 
 @pytest.mark.asyncio
 async def test_get_time_estimates_sends_body() -> None:
-    """Bestaetigt aus base_roomba_config.json (commandId "GetTimeEstimates")."""
+    """Confirmed from base_roomba_config.json (commandId "GetTimeEstimates")."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -759,7 +759,7 @@ async def test_get_time_estimates_sends_body() -> None:
 
 @pytest.mark.asyncio
 async def test_reset_robot_url() -> None:
-    """Bestaetigt aus base_roomba_config.json (commandId "ResetRobotCommand")."""
+    """Confirmed from base_roomba_config.json (commandId "ResetRobotCommand")."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -773,7 +773,7 @@ async def test_reset_robot_url() -> None:
 
 @pytest.mark.asyncio
 async def test_get_notifications_query() -> None:
-    """Bestaetigt aus base_roomba_config.json (commandId "GetNotifications")."""
+    """Confirmed from base_roomba_config.json (commandId "GetNotifications")."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())

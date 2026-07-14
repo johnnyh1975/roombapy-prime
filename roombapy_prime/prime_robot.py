@@ -1,40 +1,40 @@
-"""Oeffentliche Roboter-Klasse (Analog zu roombapy.roomba.Roomba).
+"""Public robot class (analogous to roombapy.roomba.Roomba).
 
-STATUS: Draft. Verbindet auth.LoginResult, mqtt_client.PrimeMqttClient
-und rest_client.PrimeRestClient. NICHT gegen ein echtes V4-Konto
-getestet -- die einzelnen Bausteine sind unterschiedlich weit bestaetigt
-(siehe deren jeweilige Docstrings), diese Klasse selbst ist reine
-Verdrahtung, ungetestet als Ganzes.
+STATUS: Draft. Connects auth.LoginResult, mqtt_client.PrimeMqttClient
+and rest_client.PrimeRestClient. NOT tested against a real V4 account
+-- the individual building blocks are confirmed to varying degrees
+(see their respective docstrings), this class itself is pure wiring,
+untested as a whole.
 
-Seit heute (siehe watch_state()/watch_live_map() unten) Teil dieses
-Drafts: kontinuierliche Dispatch-Schleifen fuer Shadow-Deltas und
-Live-Map/-Position-Nachrichten -- vorher bewusst ausgeklammert (siehe
-docs/ROOMBAPY_COMPARISON.md Abschnitt 3). Bruecke von paho's
-Hintergrund-Thread (treibt mqtt_client.py's subscribe()-Callbacks an)
-in die asyncio-Welt: eine asyncio.Queue PRO watch_*()-Aufruf,
-befuellt via loop.call_soon_threadsafe(). Kein Lock noetig -- jeder
-Watcher bekommt seine eigene Queue, mqtt_client.py's subscribe()/
-unsubscribe() sind bereits referenzgezaehlt fuer den Fall, dass zwei
-Watcher dasselbe Topic beobachten (siehe dessen Docstring).
+Also part of this draft (see watch_state()/watch_live_map() below):
+continuous dispatch loops for shadow deltas and live-map/-position
+messages -- previously deliberately left out (see
+docs/ROOMBAPY_COMPARISON.md section 3). Bridges from paho's background
+thread (drives mqtt_client.py's subscribe() callbacks) into the
+asyncio world: one asyncio.Queue PER watch_*() call, filled via
+loop.call_soon_threadsafe(). No lock needed -- each watcher gets its
+own queue, mqtt_client.py's subscribe()/unsubscribe() are already
+reference-counted for the case where two watchers observe the same
+topic (see its docstring).
 
-Ebenfalls seit heute: proaktiver Token-Refresh (siehe _refresh_loop()
-unten). PrimeFactory verdrahtet dafuer standardmaessig einen relogin-
-Callback -- ohne den (relogin=None) verhaelt sich diese Klasse wie
-vorher: Tokens laufen nach ~1h ab, laufende watch_*()-Generatoren
-liefern dann einfach keine Nachrichten mehr, kein Fehler.
+Also: proactive token refresh (see _refresh_loop() below).
+PrimeFactory wires up a relogin callback for this by default --
+without it (relogin=None) this class behaves as before: tokens expire
+after ~1h, running watch_*() generators then simply stop delivering
+messages, no error.
 
-WICHTIGER TRADEOFF, nicht versteckt: automatischer Refresh bedeutet,
-dass Zugangsdaten (ueber den relogin-Callback) fuer die gesamte
-Lebensdauer der PrimeRobot-Instanz im Speicher bleiben muessen, nicht
-nur fuer den einmaligen Login-Moment wie vorher. Wer das nicht will,
-laesst relogin weg und nimmt das ~1h-Verfallslimit in Kauf.
+IMPORTANT TRADEOFF, not hidden: automatic refresh means credentials
+(via the relogin callback) must stay in memory for the entire lifetime
+of the PrimeRobot instance, not just for the one-time login moment as
+before. Anyone who doesn't want this can omit relogin and accept the
+~1h expiry limit.
 
-Weiterhin NICHT Teil dieses Drafts:
-  - Kein Backpressure-Handling -- die interne Queue ist unbegrenzt.
-    Ein Consumer, der nicht mitkommt, laesst sie unbegrenzt wachsen.
-  - replace_token() (siehe mqtt_client.py) ist NICHT sicher gegenueber
-    einem gleichzeitig laufenden get_shadow()/update_shadow()-Aufruf --
-    bekannte, akzeptierte Einschraenkung, kein Lock vorhanden.
+Still NOT part of this draft:
+  - No backpressure handling -- the internal queue is unbounded. A
+    consumer that falls behind lets it grow without limit.
+  - replace_token() (see mqtt_client.py) is NOT safe against a
+    concurrently running get_shadow()/update_shadow() call -- a known,
+    accepted limitation, no lock in place.
 """
 from __future__ import annotations
 
@@ -64,44 +64,42 @@ _LOGGER = logging.getLogger(__name__)
 Relogin = Callable[[], Awaitable[LoginResult]]
 
 DEFAULT_WATCH_QUEUE_MAXSIZE = 100
-# Willkuerlich gewaehlt (kein empirischer Wert) -- gross genug, um kurze
-# Verarbeitungs-Verzoegerungen beim Aufrufer abzufedern, klein genug, um
-# nicht unbegrenzt Speicher zu binden, falls der Consumer dauerhaft
-# hinterherhinkt.
+# Chosen arbitrarily (not an empirical value) -- large enough to
+# absorb brief processing delays on the caller's side, small enough to
+# not tie up unbounded memory if the consumer permanently falls behind.
 
 
 def _put_with_backpressure(queue: "asyncio.Queue[object]", item: object, topic: str) -> None:
-    """Laeuft auf dem Event-Loop-Thread (aufgerufen via
-    loop.call_soon_threadsafe aus watch_state()/watch_live_map()). Ist
-    die Queue voll, wird der AELTESTE Eintrag verworfen, um Platz fuer
-    den neuen zu schaffen -- Aktualitaet vor Vollstaendigkeit, passend
-    fuer Status-/Positions-Stroeme, wo ein veralteter Wert weniger nuetzt
-    als ein aktueller. Jeder Drop wird geloggt, damit ein
-    hinterherhinkender Consumer nicht unbemerkt Nachrichten verliert.
+    """Runs on the event loop thread (called via
+    loop.call_soon_threadsafe from watch_state()/watch_live_map()). If
+    the queue is full, the OLDEST entry is dropped to make room for the
+    new one -- freshness over completeness, appropriate for status/
+    position streams, where a stale value is less useful than a
+    current one. Every drop is logged, so a lagging consumer doesn't
+    lose messages unnoticed.
 
-    NEU: wird ausgerechnet ein Exception-Eintrag verworfen (watch_live_map()
-    legt Fehler mit in dieselbe Queue, siehe dortigen Docstring), wird das
-    als ERROR statt WARNING geloggt -- ein verlorener Fehler ist ernster
-    als eine verlorene Routine-Nachricht. Verhindert den Verlust NICHT
-    (dafuer bräuchte es eine Prioritaets-Queue statt einer einfachen
-    FIFO), macht ihn aber sichtbarer, statt in der Masse gewoehnlicher
-    Drops unterzugehen."""
+    NEW: if the entry being dropped happens to be an exception
+    (watch_live_map() puts errors into the same queue, see its
+    docstring), this is logged as ERROR instead of WARNING -- a lost
+    error is more serious than a lost routine message. This does NOT
+    prevent the loss (that would need a priority queue instead of a
+    simple FIFO), but makes it more visible instead of disappearing
+    among ordinary drops."""
     if queue.full():
         try:
             dropped = queue.get_nowait()
             if isinstance(dropped, Exception):
                 _LOGGER.error(
-                    "watch_*()-Queue fuer Topic %s voll -- ein FEHLER wurde beim "
-                    "Verwerfen des aeltesten Eintrags verworfen (nicht nur eine "
-                    "Routine-Nachricht): %r. Der Aufrufer hat dieses Fehlersignal "
-                    "verpasst.",
+                    "watch_*() queue for topic %s full -- an ERROR was dropped "
+                    "while discarding the oldest entry (not just a routine "
+                    "message): %r. The caller missed this error signal.",
                     topic,
                     dropped,
                 )
             else:
                 _LOGGER.warning(
-                    "watch_*()-Queue fuer Topic %s voll -- aeltester Eintrag "
-                    "verworfen, um Platz zu schaffen (Consumer kommt nicht hinterher)",
+                    "watch_*() queue for topic %s full -- oldest entry "
+                    "dropped to make room (consumer is falling behind)",
                     topic,
                 )
         except asyncio.QueueEmpty:
@@ -110,18 +108,18 @@ def _put_with_backpressure(queue: "asyncio.Queue[object]", item: object, topic: 
 
 
 class PrimeRobot:
-    """Ein Roboter, identifiziert durch blid. Haelt keine eigene
-    Login-Session -- die kommt fertig verdrahtet aus prime_factory.py.
+    """A robot, identified by blid. Doesn't hold its own login session
+    -- that comes already wired up from prime_factory.py.
 
-    relogin: optionaler async Callback ohne Argumente, der einen neuen
-    LoginResult liefert (siehe prime_factory.py). Nur noetig fuer
-    proaktiven Token-Refresh -- ohne ihn laeuft alles wie gehabt, nur
-    ohne automatischen Refresh (siehe Modul-Docstring, Tradeoff).
+    relogin: optional async callback with no arguments that provides a
+    new LoginResult (see prime_factory.py). Only needed for proactive
+    token refresh -- without it, everything works as before, just
+    without automatic refresh (see module docstring, tradeoff).
 
-    irbt_topic_prefix: NEU, UNSICHER (siehe auth.py's LoginResult-
-    Docstring und mqtt_client.py's livemap_topic()). Noetig fuer
-    watch_live_map() -- ohne ihn wirft watch_live_map() sofort einen
-    klaren Fehler, statt still auf ein falsches Topic zu warten."""
+    irbt_topic_prefix: NEW, UNCERTAIN (see auth.py's LoginResult
+    docstring and mqtt_client.py's livemap_topic()). Needed for
+    watch_live_map() -- without it, watch_live_map() immediately raises
+    a clear error, instead of silently waiting on the wrong topic."""
 
     def __init__(
         self,
@@ -139,11 +137,11 @@ class PrimeRobot:
         self._refresh_task: asyncio.Task[None] | None = None
 
     async def connect(self, timeout: float = 10.0) -> None:
-        """Blockierender paho-Verbindungsaufbau in einem Worker-Thread,
-        damit der Rest der App async bleiben kann (siehe mqtt_client.py
-        -- der Client selbst ist absichtlich nicht umgebaut worden).
-        Startet zusaetzlich die Refresh-Schleife im Hintergrund, falls
-        relogin uebergeben wurde (siehe Klassen-Docstring)."""
+        """Blocking paho connection setup in a worker thread, so the
+        rest of the app can stay async (see mqtt_client.py -- the
+        client itself was deliberately not rebuilt). Also starts the
+        refresh loop in the background, if relogin was provided (see
+        class docstring)."""
         await asyncio.to_thread(self._mqtt.connect, timeout)
         if self._relogin is not None:
             self._refresh_task = asyncio.ensure_future(self._refresh_loop())
@@ -157,110 +155,109 @@ class PrimeRobot:
         await asyncio.to_thread(self._mqtt.disconnect)
 
     async def _refresh_loop(self) -> None:
-        """Loggt proaktiv neu ein und tauscht den MQTT-Token kurz vor
-        Ablauf (siehe mqtt_client.py's seconds_until_token_refresh_due()/
-        replace_token()) -- damit laufende watch_*()-Generatoren und
-        zukuenftige Anfrage/Antwort-Aufrufe die ~1h-Token-Lebensdauer
-        ueberleben. Kehrt endgueltig zurueck (kein weiterer Refresh),
-        sobald keine Ablaufzeit mehr bekannt ist -- siehe
-        seconds_until_token_refresh_due()'s Docstring, warum das eine
-        bekannte Einschraenkung ist, kein stiller Fehler."""
+        """Proactively logs in again and swaps the MQTT token shortly
+        before it expires (see mqtt_client.py's
+        seconds_until_token_refresh_due()/replace_token()) -- so
+        running watch_*() generators and future request/response calls
+        survive the ~1h token lifetime. Returns for good (no further
+        refresh) once no expiry time is known anymore -- see
+        seconds_until_token_refresh_due()'s docstring for why that's a
+        known limitation, not a silent bug."""
         while True:
             wait_seconds = self._mqtt.seconds_until_token_refresh_due()
             if wait_seconds is None:
                 return
             await asyncio.sleep(wait_seconds)
-            assert self._relogin is not None  # invariant: nur gestartet, wenn gesetzt
+            assert self._relogin is not None  # invariant: only started if set
             login_result = await self._relogin()
             new_token = login_result.token_for_blid(self.blid)
             await asyncio.to_thread(self._mqtt.replace_token, new_token)
 
-    # --- Shadow-basierte Operationen (ueber mqtt_client.py) -----------
+    # --- Shadow-based operations (via mqtt_client.py) -----------------
 
     async def get_state(self, timeout: float = 8.0) -> ShadowResponse:
-        """Klassischer/unbenannter Shadow -- Identitaet, Capabilities,
-        laufender Missionsstatus. Antwortet zuverlaessig auf beiden
-        bisher getesteten Tiers (EPHEMERAL + SMART)."""
+        """Classic/unnamed shadow -- identity, capabilities, current
+        mission status. Responds reliably on both tiers tested so
+        far (EPHEMERAL + SMART)."""
         return await asyncio.to_thread(self._mqtt.get_shadow, None, timeout)
 
     async def get_settings(self, timeout: float = 8.0) -> ShadowResponse:
-        """Benannter "rw-settings"-Shadow. WICHTIGE KORREKTUR (25.
-        Sitzung): die vorherige "SMART-Tier live bestaetigt"-Meldung war
-        VERFRUEHT. Derselbe Nutzer (chairstacker), dasselbe Geraet
-        (SKU G185020, gleiche BLID), zwei aufeinanderfolgende Laeufe --
-        einmal ERFOLGREICH, einmal TIMEOUT. Das ist kein stabiles
-        Tier-Signal, sondern zeigt entweder:
-        (a) eine echte Inkonsistenz/Race-Condition in dieser Bibliothek
-            beim Anfordern des benannten Shadows, oder
-        (b) einen echten, geraeteseitigen Zustand (z.B. muss der
-            Roboter selbst aktiv mit AWS IoT verbunden sein, damit ein
-            GET auf einen benannten Shadow beantwortet wird -- anders
-            als der klassische Shadow, der eventuell aus einem Cache
-            bedient wird, unabhaengig vom Online-Status des Roboters).
-        Die urspruengliche "EPHEMERAL vs. SMART"-Unterscheidung bleibt
-        bestehen, ist aber NICHT die alleinige Erklaerung fuer jeden
-        einzelnen Timeout -- siehe mqtt_client.py get_shadow-Docstring.
+        """Named "rw-settings" shadow. IMPORTANT CORRECTION (session
+        25): the earlier "SMART tier live-confirmed" claim was
+        PREMATURE. The same user (chairstacker), the same device (SKU
+        G185020, same BLID), two consecutive runs -- once SUCCESSFUL,
+        once TIMEOUT. That's not a stable tier signal, but shows
+        either:
+        (a) a genuine inconsistency/race condition in this library when
+            requesting the named shadow, or
+        (b) a genuine, device-side state (e.g. the robot itself might
+            need to be actively connected to AWS IoT for a GET on a
+            named shadow to be answered -- unlike the classic shadow,
+            which might be served from a cache regardless of the
+            robot's online status).
+        The original "EPHEMERAL vs. SMART" distinction still stands,
+        but is NOT the sole explanation for every individual timeout --
+        see mqtt_client.py's get_shadow docstring.
 
-        Antwortform JETZT vollstaendig bestaetigt (32. Sitzung, echte
-        Live-Antwort): fuer ein typisiertes Ergebnis
-        models.py::RobotSettings.from_json() auf
-        response.payload["state"]["reported"] anwenden (dieselbe
-        Verschachtelung wie bei get_state()). Deckt u.a. Kindersicherung,
-        Lautstaerke, Zeitzone, Wischpad-Einstellungen, Sprachliste,
-        Auto-Evac-Frequenz ab -- loest einen grossen Teil der zuvor in
-        docs/API_REFERENCE.md als unmodelliert gelisteten Settings-
-        Vokabelliste auf."""
+        Response shape NOW fully confirmed (session 32, real live
+        response): for a typed result, apply
+        models.py::RobotSettings.from_json() to
+        response.payload["state"]["reported"] (same nesting as
+        get_state()). Covers things like child lock, volume, timezone,
+        pad wash settings, language list, auto-evac frequency --
+        resolves a large part of the settings vocabulary previously
+        listed as unmodeled in docs/API_REFERENCE.md."""
         return await asyncio.to_thread(self._mqtt.get_shadow, "rw-settings", timeout)
 
     async def set_setting(self, key: str, value: object, timeout: float = 8.0) -> ShadowResponse:
-        """Schreibt ins "rw-settings"-Shadow. Nur sinnvoll auf
-        SMART-Tier -- auf EPHEMERAL vermutlich derselbe Timeout wie bei
-        get_settings(), nie getestet."""
+        """Writes to the "rw-settings" shadow. Only meaningful on
+        SMART tier -- on EPHEMERAL, presumably the same timeout as
+        get_settings(), never tested."""
         return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
 
     async def send_mission_command(self, command: RoutineCommand, timeout: float = 8.0) -> ShadowResponse:
-        """BESTAETIGT (15. Sitzung) -- siehe models.py's Missionssteuerungs-
-        Abschnitt fuer die Payload-Herleitung.
+        """CONFIRMED (session 15) -- see models.py's mission control
+        section for the payload derivation.
 
-        Sendet ueber den KLASSISCHEN (unbenannten) Shadow. Das ist jetzt
-        definitiv bestaetigt -- nicht mehr durch Bytecode-Interpretation,
-        sondern durch die tatsaechliche, in der APK mitgelieferte
-        Konfigurationsdatei (res/raw/base_roomba_config.json,
-        "commandList"-Eintrag fuer commandId "Control"):
+        Sends via the CLASSIC (unnamed) shadow. This is now definitively
+        confirmed -- no longer through bytecode interpretation, but
+        through the actual configuration file bundled in the APK
+        (res/raw/base_roomba_config.json, "commandList" entry for
+        commandId "Control"):
 
             {"commandId": "Control", "topic": "cmd", "namedShadow": ""}
 
-        Zum Vergleich, im selben JSON (bestaetigt "rw-settings" fuer
-        Settings, unabhaengig von der Kotlin/nativen Herleitung):
+        For comparison, in the same JSON (confirms "rw-settings" for
+        settings, independent of the Kotlin/native derivation):
 
             {"commandId": "SetBinPause", "topic": "delta",
              "namedShadow": "rw-settings"}
             {"commandId": "AssetScheduleCommand,Set", "topic": "delta",
              "namedShadow": "rw-schedule"}
 
-        Das "namedShadow": "" fuer "Control" ist der entscheidende
-        Unterschied -- Missionsbefehle nutzen keinen benannten Shadow,
-        im Gegensatz zu Settings ("rw-settings") und Zeitplaenen
-        ("rw-schedule"). Diese Datei wurde erst gefunden, nachdem eine
-        vielversprechende, aber falsche native Kette (Vtable-Slot-Zaehl-
-        fehler, siehe Versionsgeschichte dieser Methode) den Weg dorthin
-        aufgezeigt hatte (PMIAssetServiceImpl::getProtocolConfig() ->
-        ProtocolConfig::ProtocolConfig(string) -> genau diese JSON-Datei
-        als Konstruktor-Eingabe).
+        The "namedShadow": "" for "Control" is the decisive difference
+        -- mission commands don't use a named shadow, unlike settings
+        ("rw-settings") and schedules ("rw-schedule"). This file was
+        only found after a promising but incorrect native chain (vtable
+        slot counting error, see this method's version history) had
+        pointed the way there (PMIAssetServiceImpl::getProtocolConfig()
+        -> ProtocolConfig::ProtocolConfig(string) -> exactly this JSON
+        file as constructor input).
 
-        NIE gegen einen echten Server gesendet -- Transport (jetzt aus
-        der echten Konfigurationsdatei bestaetigt) und Payload-Form
-        (RoutineCommand-Feldnamen) sind weiterhin nie GEMEINSAM live
-        getestet."""
+        NEVER sent to a real server -- transport (now confirmed from
+        the actual configuration file) and payload shape
+        (RoutineCommand field names) still have never been tested
+        live TOGETHER."""
         return await asyncio.to_thread(
             self._mqtt.update_shadow, command.to_shadow_desired(), None, timeout
         )
 
-    # --- REST-basierte p2maps-Operationen (bereits nativ async) -------
+    # --- REST-based p2maps operations (already natively async) -------
 
     async def get_active_map_versions(self) -> list[dict]:
-        """NEU (11. Juli, elfte Sitzung) -- fehlte bisher als Wrapper,
-        obwohl rest_client.py's Version schon lange existierte."""
+        """NEW (July 11, eleventh session) -- was missing as a wrapper
+        until now, even though rest_client.py's version had already
+        existed for a while."""
         return await self._rest.get_active_map_versions(self.blid)
 
     async def get_map_metadata(self, p2map_id: str) -> dict:
@@ -273,66 +270,66 @@ class PrimeRobot:
         return await self._rest.set_map_orientation(p2map_id, orientation_rad)
 
     async def delete_map(self, p2map_id: str) -> dict:
-        """NEU (dreizehnte Sitzung) -- fehlte bisher als Wrapper trotz
-        laengst existierender rest_client.py-Version (systematischer
-        Review-Fund)."""
+        """NEW (thirteenth session) -- was missing as a wrapper despite
+        a rest_client.py version having existed for a while (found
+        during a systematic review)."""
         return await self._rest.delete_map(p2map_id)
 
     async def get_map_geojson_link(self, map_id: str, map_version: str) -> dict:
-        """NEU (dreizehnte Sitzung) -- fehlte bisher als Wrapper. Liefert
-        die vorsignierte Download-URL fuer download_map_bundle() (siehe
-        dort). Antwortform/Schluesselname der URL unbestaetigt -- siehe
-        rest_client.py's Docstring."""
+        """NEW (thirteenth session) -- was missing as a wrapper. Returns
+        the presigned download URL for download_map_bundle() (see
+        there). Response shape/URL key name unconfirmed -- see
+        rest_client.py's docstring."""
         return await self._rest.get_map_geojson_link(map_id, map_version)
 
     async def download_map_bundle(self, url: str) -> bytes:
-        """NEU (dreizehnte Sitzung) -- fehlte bisher als Wrapper, obwohl
-        das Diagnoseskript und parse_map_bundle() darauf angewiesen
-        sind. Bewusst OHNE SigV4-Signierung -- siehe rest_client.py's
-        Docstring."""
+        """NEW (thirteenth session) -- was missing as a wrapper, even
+        though the diagnostics script and parse_map_bundle() depend on
+        it. Deliberately WITHOUT SigV4 signing -- see rest_client.py's
+        docstring."""
         return await self._rest.download_map_bundle(url)
 
     async def edit_map(self, p2map_id: str, command: MapEditCommandV1) -> dict:
-        """NEU (11. Juli, vierte Sitzung) -- command ist jetzt eine der
-        9 V1-Kommando-Dataclasses aus models.py (RenameRoomV1,
-        SplitRoomV1, MergeRoomsV1, ...) -- der tatsaechlich aktive Pfad
-        (siehe rest_client.py's Docstring, PRIME_APP_GAP_ANALYSIS).
-        Fuer den unbenutzten V2-Pfad siehe edit_map_v2()."""
+        """NEW (July 11, fourth session) -- command is now one of the
+        9 V1 command dataclasses from models.py (RenameRoomV1,
+        SplitRoomV1, MergeRoomsV1, ...) -- the actually active path
+        (see rest_client.py's docstring, PRIME_APP_GAP_ANALYSIS). For
+        the unused V2 path see edit_map_v2()."""
         return await self._rest.edit_map(p2map_id, command)
 
     async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict:
-        """Der von der App selbst nie aufgerufene V2-Pfad -- siehe
-        edit_map()'s Docstring und rest_client.py::edit_map_v2()."""
+        """The V2 path never called by the app itself -- see
+        edit_map()'s docstring and rest_client.py::edit_map_v2()."""
         return await self._rest.edit_map_v2(p2map_id, command)
 
     async def get_live_map_stream(self) -> LiveMapStreamInit:
-        """KORRIGIERTES VERSTAENDNIS (11. Juli, siehe
-        docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md Punkt B1): Dieser
-        REST-Aufruf ist vermutlich ein KEEP-ALIVE-Ping, kein "gib mir
-        das Topic"-Aufruf -- in der echten App wird die Antwort
-        (LiveMapStreamResponse.mqtt_topic) nirgends gelesen, nur
-        geparst. watch_live_map() nutzt diese Methode entsprechend NICHT
-        mehr zur Topic-Ermittlung, sondern nur noch als periodischen
-        Keep-Alive im Hintergrund. Bleibt trotzdem oeffentlich fuer
-        Aufrufer, die den rohen REST-Aufruf selbst brauchen."""
+        """CORRECTED UNDERSTANDING (July 11, see
+        docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1): this REST
+        call is likely a KEEP-ALIVE ping, not a "give me the topic"
+        call -- in the real app, the response
+        (LiveMapStreamResponse.mqtt_topic) is never read anywhere, only
+        parsed. watch_live_map() accordingly no longer uses this
+        method to determine the topic, only as a periodic background
+        keep-alive. Still public for callers who need the raw REST
+        call itself."""
         return await self._rest.get_live_map_stream(self.blid)
 
-    # --- Favoriten (FavoriteV1) ------------------------------------------
+    # --- Favorites (FavoriteV1) ------------------------------------------
 
     async def get_favorites(self) -> list[FavoriteV1]:
-        """Siehe rest_client.py::get_favorites() -- einziger der fuenf
-        Favoriten-Endpunkte, dessen HTTP-Methode UND Antwortform
-        vollstaendig bestaetigt sind."""
+        """See rest_client.py::get_favorites() -- the only one of the
+        five favorite endpoints whose HTTP method AND response shape
+        are both fully confirmed."""
         return await self._rest.get_favorites()
 
     async def create_favorite(self, favorite: FavoriteV1) -> dict:
-        """Siehe rest_client.py::create_favorite() -- HTTP-Methode
-        (POST) bestaetigt (achte Sitzung)."""
+        """See rest_client.py::create_favorite() -- HTTP method
+        (POST) confirmed (eighth session)."""
         return await self._rest.create_favorite(favorite)
 
     async def update_favorite(self, favorite_id: str, favorite: FavoriteV1) -> dict:
-        """Siehe rest_client.py::update_favorite() -- HTTP-Methode
-        (PUT) bestaetigt (achte Sitzung)."""
+        """See rest_client.py::update_favorite() -- HTTP method
+        (PUT) confirmed (eighth session)."""
         return await self._rest.update_favorite(favorite_id, favorite)
 
     async def delete_favorite(self, favorite_id: str) -> dict:
@@ -360,8 +357,8 @@ class PrimeRobot:
         exclusive_start_timestamp: int | None = None,
         supported_done_codes: list[str] | None = None,
     ) -> dict:
-        """Siehe rest_client.py::get_mission_history() -- vollstaendig
-        bestaetigt aus FetchMissionHistoryRequest.java."""
+        """See rest_client.py::get_mission_history() -- fully
+        confirmed from FetchMissionHistoryRequest.java."""
         return await self._rest.get_mission_history(
             blid,
             max_reports=max_reports,
@@ -375,22 +372,22 @@ class PrimeRobot:
         return await self._rest.get_schedules(household_id)
 
     async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict:
-        """HTTP-Methode (POST) bestaetigt (achte Sitzung), siehe
+        """HTTP method (POST) confirmed (eighth session), see
         rest_client.py::create_schedules()."""
         return await self._rest.create_schedules(household_id, schedules)
 
     async def update_schedules(
         self, household_id: str, household_schedule_id: str, schedules: list[HouseholdSchedule]
     ) -> dict:
-        """HTTP-Methode (PUT) bestaetigt (achte Sitzung)."""
+        """HTTP method (PUT) confirmed (eighth session)."""
         return await self._rest.update_schedules(household_id, household_schedule_id, schedules)
 
     async def delete_schedule(self, household_id: str, household_schedule_id: str) -> dict:
         return await self._rest.delete_schedule(household_id, household_schedule_id)
 
     async def get_user_households(self) -> dict:
-        """Von der aktuellen App-Version nicht genutzt -- siehe
-        rest_client.py::get_user_households()'s Docstring."""
+        """Not used by the current app version -- see
+        rest_client.py::get_user_households()'s docstring."""
         return await self._rest.get_user_households()
 
     async def get_dnd_settings(self, household_id: str) -> dict:
@@ -406,65 +403,64 @@ class PrimeRobot:
         return await self._rest.get_default_routines(p2map_id)
 
     async def get_robot_parts(self) -> dict:
-        """NEU (15. Sitzung) -- siehe rest_client.py::get_robot_parts()."""
+        """NEW (session 15) -- see rest_client.py::get_robot_parts()."""
         return await self._rest.get_robot_parts(self.blid)
 
     async def reset_robot_parts(self) -> dict:
-        """NEU (15. Sitzung) -- siehe rest_client.py::reset_robot_parts()."""
+        """NEW (session 15) -- see rest_client.py::reset_robot_parts()."""
         return await self._rest.reset_robot_parts(self.blid)
 
     async def get_serial_number_data(self) -> dict:
-        """NEU (15. Sitzung) -- siehe rest_client.py::get_serial_number_data()."""
+        """NEW (session 15) -- see rest_client.py::get_serial_number_data()."""
         return await self._rest.get_serial_number_data(self.blid)
 
     async def poll_echo_value(self) -> dict:
-        """NEU (16. Sitzung) -- "finde meinen Roboter"-Funktion, siehe
+        """NEW (session 16) -- "find my robot" feature, see
         rest_client.py::poll_echo_value()."""
         return await self._rest.poll_echo_value(self.blid)
 
     async def get_time_estimates(self, body: dict) -> dict:
-        """NEU (16. Sitzung) -- siehe rest_client.py::get_time_estimates()
-        fuer den Hinweis zur unbestaetigten Body-Form."""
+        """NEW (session 16) -- see rest_client.py::get_time_estimates()
+        for the note on the unconfirmed body shape."""
         return await self._rest.get_time_estimates(body)
 
     async def reset_robot(self) -> dict:
-        """NEU (16. Sitzung) -- WARNUNG: vermutlich folgenreiche Aktion,
-        siehe rest_client.py::reset_robot()."""
+        """NEW (session 16) -- WARNING: likely a consequential action,
+        see rest_client.py::reset_robot()."""
         return await self._rest.reset_robot(self.blid)
 
     async def get_notifications(self, app_version: str = "1.0") -> dict:
-        """NEU (16. Sitzung) -- siehe rest_client.py::get_notifications()."""
+        """NEW (session 16) -- see rest_client.py::get_notifications()."""
         return await self._rest.get_notifications(self.blid, app_version)
 
-    # --- Kontinuierliche Dispatch-Schleifen ----------------------------
+    # --- Continuous dispatch loops --------------------------------------
 
     async def watch_state(
         self, named: str | None = None, *, queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE
     ) -> AsyncIterator[ShadowResponse]:
-        """Liefert jedes Shadow-Delta, sobald es eintrifft -- bis der
-        Aufrufer die Iteration abbricht (break/return aus einem
-        `async for`, oder .aclose()).
+        """Delivers every shadow delta as soon as it arrives -- until
+        the caller breaks the iteration (break/return from an
+        `async for`, or .aclose()).
 
-        named=None -> klassischer Shadow-Delta (funktioniert auf beiden
-        bisher getesteten Tiers). named="rw-settings" -> benannter
-        Shadow-Delta, nur auf SMART-Tier erwartet zu funktionieren --
-        auf EPHEMERAL liefert dieser Iterator dann vermutlich nie etwas
-        (kein Fehler, einfach Stille, analog zu get_shadow()'s
-        Timeout-Verhalten -- hier gibt es aber keinen Timeout, da
-        "warten auf die naechste Aenderung" der ganze Sinn ist).
+        named=None -> classic shadow delta (works on both tiers tested
+        so far). named="rw-settings" -> named shadow delta, expected to
+        only work on SMART tier -- on EPHEMERAL, this iterator then
+        presumably never delivers anything (no error, just silence,
+        analogous to get_shadow()'s timeout behavior -- but there's no
+        timeout here, since "wait for the next change" is the whole
+        point).
 
-        queue_maxsize: begrenzt den internen Puffer (siehe
-        DEFAULT_WATCH_QUEUE_MAXSIZE). Bei vollem Puffer wird der
-        AELTESTE Eintrag verworfen (nicht der neueste) -- ein
-        hinterherhinkender Consumer bekommt so den aktuellsten Stand,
-        nicht die laengste Warteschlange. Jeder Drop wird als WARNING
-        geloggt.
+        queue_maxsize: bounds the internal buffer (see
+        DEFAULT_WATCH_QUEUE_MAXSIZE). When the buffer is full, the
+        OLDEST entry is dropped (not the newest) -- a lagging consumer
+        this way gets the most current state, not the longest queue.
+        Every drop is logged as a WARNING.
 
-        WICHTIG: Das Delta-Topic selbst (.../update/delta) ist Teil des
-        AWS-IoT-Shadow-Standardverhaltens (liefert sofort eine Nachricht
-        beim Abonnieren, falls desired/reported voneinander abweichen,
-        danach bei jeder Aenderung) -- diese Standard-Semantik wird hier
-        angenommen, nicht speziell fuer Classic/Prime verifiziert.
+        IMPORTANT: the delta topic itself (.../update/delta) is part of
+        AWS IoT's standard shadow behavior (delivers a message
+        immediately upon subscribing if desired/reported differ, then
+        on every subsequent change) -- this standard semantic is
+        assumed here, not specifically verified for Classic/Prime.
         """
         topic = self._mqtt.shadow_topic("update/delta", named=named)
         loop = asyncio.get_running_loop()
@@ -486,55 +482,53 @@ class PrimeRobot:
         queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
         keep_alive_interval: float = 10.0,
     ) -> AsyncIterator[PositionUpdateMessage | MapUpdateMessage]:
-        """KORRIGIERT (11. Juli, siehe
-        docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md Punkt B1) -- fruehere
-        Version rief get_live_map_stream() auf und abonnierte das darin
-        zurueckgegebene Topic. Das war falsch verstanden: in der echten
-        App (P2MapAPIFetching.observeLiveMap()) wird sofort ein FESTES
-        Topic abonniert (siehe mqtt_client.py's livemap_topic()), und
-        get_live_map_stream() laeuft nur als periodischer Keep-Alive im
-        Hintergrund weiter, solange beobachtet wird.
+        """CORRECTED (July 11, see
+        docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1) -- an
+        earlier version called get_live_map_stream() and subscribed to
+        the topic returned in it. That was a misunderstanding: in the
+        real app (P2MapAPIFetching.observeLiveMap()), a FIXED topic is
+        subscribed to (see mqtt_client.py's livemap_topic()), and
+        get_live_map_stream() only keeps running as a periodic
+        keep-alive in the background, for as long as it's being
+        watched.
 
-        Braucht irbt_topic_prefix (siehe __init__/auth.py's LoginResult)
-        -- wenn der None ist (Feldname aus der Discovery-Antwort nicht
-        bestaetigt, siehe dort), wirft diese Methode sofort einen
-        RuntimeError, statt still auf ein falsch konstruiertes Topic zu
-        warten.
+        Needs irbt_topic_prefix (see __init__/auth.py's LoginResult)
+        -- if that's None (field name from the discovery response not
+        confirmed, see there), this method immediately raises a
+        RuntimeError, instead of silently waiting on an incorrectly
+        constructed topic.
 
-        keep_alive_interval: wie oft der Keep-Alive-Ping gesendet wird,
-        waehrend beobachtet wird. Die echte App nutzt ein komplexeres
-        Schema (Timer relativ zu einer expiration/refreshWindowMillis,
-        siehe LiveMapKeepAlivePublisher) -- hier bewusst vereinfacht zu
-        einem festen Intervall, da die genaue Nachschlage-/Ausloese-
-        Logik des Originals nicht vollstaendig rekonstruiert wurde.
-        Scheitert ein einzelner Keep-Alive-Ping, wird das als WARNING
-        geloggt, aber die Beobachtung laeuft weiter (ein Ping-Fehlschlag
-        soll nicht den ganzen Watcher abbrechen).
+        keep_alive_interval: how often the keep-alive ping is sent
+        while watching. The real app uses a more complex scheme
+        (timer relative to an expiration/refreshWindowMillis, see
+        LiveMapKeepAlivePublisher) -- deliberately simplified here to
+        a fixed interval, since the original's exact lookup/trigger
+        logic wasn't fully reconstructed. If a single keep-alive ping
+        fails, this is logged as a WARNING, but watching continues (a
+        ping failure shouldn't abort the whole watcher).
 
-        queue_maxsize: siehe watch_state() -- dieselbe Drop-Oldest-
-        Backpressure-Politik. WICHTIGE EINSCHRAENKUNG hier: Fehler
-        (siehe naechster Absatz) durchlaufen dieselbe Queue wie normale
-        Nachrichten und sind damit NICHT von der Drop-Oldest-Politik
-        ausgenommen -- ein Fehler koennte theoretisch verworfen werden,
-        wenn die Queue zum Zeitpunkt seines Eintreffens voll ist.
-        Akzeptierte Einschraenkung fuer diesen Draft, kein Sonderfall
-        fuer Fehler eingebaut.
+        queue_maxsize: see watch_state() -- same drop-oldest
+        backpressure policy. IMPORTANT LIMITATION here: errors (see
+        next paragraph) go through the same queue as normal messages
+        and are therefore NOT exempt from the drop-oldest policy -- an
+        error could theoretically be dropped if the queue happens to
+        be full when it arrives. An accepted limitation for this
+        draft, no special case built in for errors.
 
-        Nachrichten mit unbekannter Form (weder pos_update noch
-        map_update, siehe parse_livemap_message_data) werden NICHT
-        stillschweigend uebersprungen -- der Fehler propagiert durch
-        den Generator, der Aufrufer sieht ihn im naechsten `async for`-
-        Schritt. Das ist eine bewusste Entscheidung: ein unbekanntes
-        Nachrichtenformat auf einem noch nie live getesteten Kanal ist
-        etwas, das auffallen sollte, nicht etwas, das man stillschweigend
-        verwirft.
+        Messages of unknown shape (neither pos_update nor map_update,
+        see parse_livemap_message_data) are NOT silently skipped -- the
+        error propagates through the generator, the caller sees it on
+        the next `async for` step. This is a deliberate choice: an
+        unknown message format on a channel that's never been tested
+        live is something that should stand out, not something to
+        silently discard.
         """
         if self._irbt_topic_prefix is None:
             msg = (
-                "watch_live_map() braucht irbt_topic_prefix (aus LoginResult) -- "
-                "None bedeutet: Discovery-Antwort enthielt das (unsicher benannte) "
-                "Feld nicht, oder der Feldname war falsch geraten. Siehe "
-                "auth.py's LoginResult-Docstring."
+                "watch_live_map() needs irbt_topic_prefix (from LoginResult) -- "
+                "None means: the discovery response didn't contain the "
+                "(uncertain-named) field, or the field name was a wrong guess. See "
+                "auth.py's LoginResult docstring."
             )
             raise RuntimeError(msg)
 

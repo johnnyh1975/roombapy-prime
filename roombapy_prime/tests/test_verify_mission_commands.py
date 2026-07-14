@@ -1,8 +1,8 @@
-"""Tests fuer die testbaren Teile von verify_mission_commands.py --
-_confirm() und _run_command()'s Logik, komplett gemockt (echter Roboter,
-echtes Netzwerk). Der eigentliche Zweck des Skripts (echte Missionsbefehle
-an ein echtes Geraet senden) ist per Natur nicht automatisiert testbar --
-das ist der ganze Punkt des Skripts, siehe Modul-Docstring."""
+"""Tests for the testable parts of verify_mission_commands.py --
+_confirm()'s and _run_command()'s logic, completely mocked (real robot,
+real network). The actual purpose of the script (sending real mission
+commands to a real device) is by nature not automatable to test --
+that's the whole point of the script, see the module docstring."""
 
 from __future__ import annotations
 
@@ -61,14 +61,14 @@ async def test_run_command_skips_when_user_declines(monkeypatch) -> None:
 
     robot.send_mission_command.assert_not_called()
     assert result is False
-    assert report.results[0].status == "UEBERSPRUNGEN"
+    assert report.results[0].status == "SKIPPED"
 
 
 @pytest.mark.asyncio
 async def test_run_command_sends_and_records_success(monkeypatch) -> None:
-    """Voller Erfolgspfad: Nutzer bestaetigt Senden UND bestaetigt danach,
-    dass der Roboter tatsaechlich reagiert hat."""
-    answers = iter(["j", "j"])  # 1) Senden bestaetigen, 2) Beobachtung bestaetigen
+    """Full success path: user confirms sending AND afterward confirms
+    that the robot actually reacted."""
+    answers = iter(["j", "j"])  # 1) confirm sending, 2) confirm observation
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     monkeypatch.setattr("roombapy_prime.verify_mission_commands.asyncio.sleep", AsyncMock())
 
@@ -86,16 +86,16 @@ async def test_run_command_sends_and_records_success(monkeypatch) -> None:
     assert sent_command.clean_all is True
     assert result is True
     assert report.results[0].status == "OK"
-    assert "Start (vorher)" in raw_capture
-    assert "Start (nachher)" in raw_capture
+    assert "Start (before)" in raw_capture
+    assert "Start (after)" in raw_capture
 
 
 @pytest.mark.asyncio
 async def test_run_command_records_failure_when_robot_did_not_react(monkeypatch) -> None:
-    """Server nimmt den Befehl an (kein Fehler), aber der Nutzer
-    bestaetigt NICHT, dass der Roboter reagiert hat -- muss als
-    FEHLGESCHLAGEN gemeldet werden, nicht als OK."""
-    answers = iter(["j", "n"])  # 1) Senden bestaetigen, 2) Beobachtung ABLEHNEN
+    """Server accepts the command (no error), but the user does NOT
+    confirm that the robot reacted -- must be reported as FAILED, not
+    OK."""
+    answers = iter(["j", "n"])  # 1) confirm sending, 2) DECLINE observation
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     monkeypatch.setattr("roombapy_prime.verify_mission_commands.asyncio.sleep", AsyncMock())
 
@@ -107,13 +107,13 @@ async def test_run_command_records_failure_when_robot_did_not_react(monkeypatch)
     result = await _run_command(robot, report, {}, MissionCommandType.START, "Start")
 
     assert result is False
-    assert report.results[0].status == "FEHLGESCHLAGEN"
+    assert report.results[0].status == "FAILED"
 
 
 @pytest.mark.asyncio
 async def test_run_command_records_server_error(monkeypatch) -> None:
     """Server lehnt den Befehl selbst ab (Exception) -- muss als
-    FEHLGESCHLAGEN gemeldet werden, keine Beobachtungsfrage noetig."""
+    FAILED gemeldet werden, keine Beobachtungsfrage noetig."""
     monkeypatch.setattr("builtins.input", lambda prompt: "j")
     robot = AsyncMock()
     robot.blid = "BLID123"
@@ -124,5 +124,5 @@ async def test_run_command_records_server_error(monkeypatch) -> None:
     result = await _run_command(robot, report, {}, MissionCommandType.START, "Start")
 
     assert result is False
-    assert report.results[-1].status == "FEHLGESCHLAGEN"
+    assert report.results[-1].status == "FAILED"
     assert "server said no" in report.results[-1].detail

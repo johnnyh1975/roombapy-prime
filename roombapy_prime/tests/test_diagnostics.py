@@ -1,9 +1,9 @@
-"""Tests fuer die testbaren Teile von diagnostics.py -- Report-Klasse
-und Hilfsfunktionen, OHNE echte Netzwerkaufrufe. Das eigentliche
-Live-Validierungsskript kann per Natur nicht in einer CI-Umgebung ohne
-echten Prime-Account getestet werden -- das ist der ganze Punkt des
-Skripts. Diese Tests stellen nur sicher, dass die Berichtslogik und
-die Best-Effort-Hilfsfunktionen selbst korrekt sind."""
+"""Tests for the testable parts of diagnostics.py -- the Report class
+and helper functions, WITHOUT real network calls. The actual live
+validation script by its nature can't be tested in a CI environment
+without a real Prime account -- that's the whole point of the script.
+These tests only ensure that the reporting logic and the best-effort
+helper functions themselves are correct."""
 
 import pytest
 
@@ -13,8 +13,8 @@ from roombapy_prime.diagnostics import Report, _extract_first_id
 def test_report_add_and_summary() -> None:
     report = Report()
     report.add("Check A", "OK")
-    report.add("Check B", "FEHLGESCHLAGEN", "irgendein Fehler")
-    report.add("Check C", "UEBERSPRUNGEN", "kein Grund vorhanden")
+    report.add("Check B", "FAILED", "irgendein Fehler")
+    report.add("Check C", "SKIPPED", "kein Grund vorhanden")
 
     ok, failed, skipped = report.summary()
     assert (ok, failed, skipped) == (1, 1, 1)
@@ -23,14 +23,14 @@ def test_report_add_and_summary() -> None:
 def test_report_to_markdown_contains_all_entries() -> None:
     report = Report()
     report.add("Login", "OK")
-    report.add("Kartenbearbeitung", "UEBERSPRUNGEN", "wird nie automatisch ausgefuehrt")
+    report.add("Kartenbearbeitung", "SKIPPED", "wird nie automatisch ausgefuehrt")
 
     markdown = report.to_markdown()
 
     assert "Login" in markdown
     assert "Kartenbearbeitung" in markdown
     assert "wird nie automatisch ausgefuehrt" in markdown
-    assert "1 OK, 0 fehlgeschlagen, 1 uebersprungen" in markdown
+    assert "1 OK, 0 failed, 1 skipped" in markdown
 
 
 def test_extract_first_id_flat_dict() -> None:
@@ -54,7 +54,7 @@ def test_report_redact_replaces_secret_in_detail() -> None:
     from roombapy_prime.diagnostics import Report
 
     report = Report()
-    report.add("Login", "FEHLGESCHLAGEN", "AuthError: bad credentials for geheim@example.com")
+    report.add("Login", "FAILED", "AuthError: bad credentials for geheim@example.com")
     report.redact("geheim@example.com", "supersecretpw")
 
     assert "geheim@example.com" not in report.results[0].detail
@@ -75,7 +75,7 @@ def test_report_redact_multiple_secrets() -> None:
     from roombapy_prime.diagnostics import Report
 
     report = Report()
-    report.add("X", "FEHLGESCHLAGEN", "user=alice pass=hunter2")
+    report.add("X", "FAILED", "user=alice pass=hunter2")
     report.redact("alice", "hunter2")
 
     assert "alice" not in report.results[0].detail
@@ -87,7 +87,7 @@ def test_build_issue_url_contains_encoded_summary() -> None:
 
     report = Report()
     report.add("Login", "OK")
-    report.add("Favoriten abrufen", "FEHLGESCHLAGEN", "HTTP 500")
+    report.add("Favoriten abrufen", "FAILED", "HTTP 500")
 
     url = build_issue_url(report, repo="someowner/somerepo")
 
@@ -114,10 +114,9 @@ def test_to_markdown_includes_version_and_platform_info() -> None:
 
 
 def test_report_device_info_extracts_known_candidates() -> None:
-    """AKTUALISIERT (25. Sitzung) -- nutzt jetzt die per Live-Daten
-    (chairstacker) bestaetigte echte Verschachtelung
-    payload["state"]["reported"], nicht mehr die urspruengliche
-    (falsche) Top-Level-Annahme."""
+    """UPDATED (session 25) -- now uses the real nesting confirmed via
+    live data (chairstacker), payload["state"]["reported"], no longer
+    the original (wrong) top-level assumption."""
     from roombapy_prime.diagnostics import Report, _report_device_info
     from roombapy_prime.mqtt_client import ShadowResponse
 
@@ -151,7 +150,7 @@ def test_report_device_info_handles_no_known_candidates() -> None:
     state = ShadowResponse(topic="t", payload={"state": {"reported": {"somethingElse": 1}}})
     _report_device_info(report, state)
 
-    assert "keine der vermuteten Kandidaten-Felder" in report.results[0].detail
+    assert "none of the suspected candidate fields" in report.results[0].detail
     assert "somethingElse" in report.results[0].detail
 
 
@@ -166,7 +165,7 @@ def test_report_device_info_handles_missing_state_key_gracefully() -> None:
     _report_device_info(report, state)
 
     assert len(report.results) == 1
-    assert "keine der vermuteten Kandidaten-Felder" in report.results[0].detail
+    assert "none of the suspected candidate fields" in report.results[0].detail
 
 
 def test_report_tier_inference_smart_when_settings_succeeded() -> None:
@@ -199,19 +198,19 @@ def test_shallow_summary_list_shows_length_and_first_element() -> None:
     from roombapy_prime.diagnostics import _shallow_summary
 
     result = _shallow_summary([{"id": "a1"}, {"id": "a2"}])
-    assert result == "Liste[2] erstes Element: {'id': '...'}"
+    assert result == "list[2] first element: {'id': '...'}"
 
 
 def test_shallow_summary_empty_list() -> None:
     from roombapy_prime.diagnostics import _shallow_summary
 
-    assert _shallow_summary([]) == "[] (leere Liste)"
+    assert _shallow_summary([]) == "[] (empty list)"
 
 
 def test_shallow_summary_never_leaks_actual_values() -> None:
-    """Sicherheitsrelevant: darf nie den tatsaechlichen Wert zeigen,
-    nur den Typ -- Schutz vor versehentlichem Leak sensibler Daten in
-    einem geteilten Bericht."""
+    """Security-relevant: must never show the actual value, only the
+    type -- protection against accidentally leaking sensitive data in
+    a shared report."""
     from roombapy_prime.diagnostics import _shallow_summary
 
     result = _shallow_summary({"address": "123 Secret Street", "email": "user@example.com"})
@@ -220,7 +219,7 @@ def test_shallow_summary_never_leaks_actual_values() -> None:
 
 
 # =========================================================================
-# Raw-Capture + Redaktion fuer --dump-config (24. Sitzung)
+# Raw capture + redaction for --dump-config (session 24)
 # =========================================================================
 
 
@@ -254,7 +253,7 @@ async def test_try_does_not_capture_on_failure() -> None:
     await _try(report, "Test-Check", failing_call(), capture=capture)
 
     assert capture == {}
-    assert report.results[0].status == "FEHLGESCHLAGEN"
+    assert report.results[0].status == "FAILED"
 
 
 @pytest.mark.asyncio
@@ -304,9 +303,9 @@ def test_redact_raw_capture_handles_nested_lists_and_dicts() -> None:
 
 
 def test_redact_raw_capture_preserves_non_sensitive_structure() -> None:
-    """Der Sinn der Dump-Datei: echte Werte fuer unbekannte, nicht als
-    sensibel erkannte Felder bleiben sichtbar -- das unterscheidet sie
-    bewusst von _shallow_summary()."""
+    """The point of the dump file: real values for unknown fields not
+    recognized as sensitive stay visible -- that's what deliberately
+    distinguishes it from _shallow_summary()."""
     from roombapy_prime.diagnostics import _redact_raw_capture
 
     data = {"sku": "G185020", "softwareVer": "p25-405+9.3.7+I4.6.150", "missionCount": 42}
@@ -316,9 +315,9 @@ def test_redact_raw_capture_preserves_non_sensitive_structure() -> None:
 
 
 def test_extract_first_id_finds_confirmed_household_id_field() -> None:
-    """Regressionstest gegen den in dieser Sitzung gefundenen Bug:
-    _extract_first_id suchte nur nach householdId/id, echte Daten
-    (chairstacker) zeigen household_id (snake_case)."""
+    """Regression test against the bug found in that session:
+    _extract_first_id only searched for householdId/id, real data
+    (chairstacker) shows household_id (snake_case)."""
     from roombapy_prime.diagnostics import _extract_first_id
 
     real_households = [

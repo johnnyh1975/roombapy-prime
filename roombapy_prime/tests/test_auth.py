@@ -6,13 +6,12 @@ Classic-protocol robots (EPHEMERAL 980, SMART-tier i7x2). Synthetic
 tests (clearly labeled) cover edge cases not present in any real
 capture yet — missing optional fields, missing required fields.
 
-login()/_login_gigya()/_login_irobot() ARE covered below (dreizehnte
-Sitzung, systematischer Review-Fund -- auth.py stand bei nur 55%
-Testabdeckung, fast ausschliesslich die komplette login()-Kette
-inklusive aller "fail loudly"-Validierungsgates unbenutzt). Ein
-_FakeSequentialSession haelt die drei aufeinanderfolgenden HTTP-Aufrufe
-(Discovery-GET, Gigya-POST, iRobot-POST) nach, in genau der Reihenfolge,
-in der login() sie tatsaechlich ausloest.
+login()/_login_gigya()/_login_irobot() ARE covered below (thirteenth
+session, systematic review finding -- auth.py stood at only 55% test
+coverage, with almost the entire login() chain including all "fail
+loudly" validation gates unused). A _FakeSequentialSession replays the
+three sequential HTTP calls (discovery GET, Gigya POST, iRobot POST)
+in exactly the order login() actually triggers them.
 """
 from __future__ import annotations
 
@@ -192,7 +191,7 @@ def test_cloud_credentials_missing_expiration_is_defensive() -> None:
 
 
 # =========================================================================
-# login()-Kette (dreizehnte Sitzung -- siehe Docstring oben)
+# login() chain (thirteenth session -- see docstring above)
 # =========================================================================
 
 _DISCOVERY_RESPONSE = {
@@ -246,10 +245,10 @@ class _FakeResp:
 
 
 class _FakeSequentialSession:
-    """Gibt die vorbereiteten Antworten in der Reihenfolge zurueck, in
-    der login() tatsaechlich ruft: GET (Discovery), POST (Gigya), POST
-    (iRobot). Methode (get/post) wird bewusst nicht geprueft -- login()
-    ruft sie in einer festen, bekannten Reihenfolge auf, das reicht."""
+    """Returns the prepared responses in the order login() actually
+    calls them: GET (discovery), POST (Gigya), POST (iRobot). The
+    method (get/post) is deliberately not checked -- login() calls
+    them in a fixed, known order, that's enough."""
 
     def __init__(self, responses: list[_FakeResp]) -> None:
         self._responses = list(responses)
@@ -341,8 +340,8 @@ async def test_login_gigya_error_code_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_login_irobot_missing_credentials_raises() -> None:
-    """Der zentrale "validate at the gate"-Fund aus ha_roomba_plus's
-    cloud_api.py, hier zum ersten Mal tatsaechlich getestet."""
+    """The central "validate at the gate" finding from ha_roomba_plus's
+    cloud_api.py, tested here for the first time."""
     response_without_creds = {"connection_tokens": [], "robots": {}}
     session = _FakeSequentialSession(
         [
@@ -359,7 +358,7 @@ async def test_login_irobot_missing_credentials_raises() -> None:
 @pytest.mark.asyncio
 async def test_login_irobot_missing_single_credential_key_raises() -> None:
     incomplete_creds = {
-        "credentials": {"CognitoId": "x", "AccessKeyId": "y", "SecretKey": "z"},  # SessionToken fehlt
+        "credentials": {"CognitoId": "x", "AccessKeyId": "y", "SecretKey": "z"},  # SessionToken missing
         "connection_tokens": [],
         "robots": {},
     }
@@ -377,8 +376,8 @@ async def test_login_irobot_missing_single_credential_key_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_login_irobot_mqtt_slot_rate_limit_gets_friendlier_message() -> None:
-    """Bestaetigter, echter Fehlermodus aus cloud_api.py -- die Nachricht
-    wird umformuliert, nicht nur durchgereicht."""
+    """Confirmed, real failure mode from cloud_api.py -- the message
+    is reworded, not just passed through."""
     session = _FakeSequentialSession(
         [
             _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
@@ -407,8 +406,8 @@ async def test_login_irobot_invalid_json_response_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_login_topic_prefixes_default_to_none_when_absent() -> None:
-    """irbt_topic_prefix/iot_topic_prefix sind Best-Guess-Feldnamen --
-    duerfen fehlen, ohne den Login zum Scheitern zu bringen."""
+    """irbt_topic_prefix/iot_topic_prefix are best-guess field names --
+    they're allowed to be absent, without causing login to fail."""
     session = _full_success_session()
 
     result = await login(session, "user@example.com", "hunter2", "US")

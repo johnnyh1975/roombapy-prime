@@ -1,82 +1,79 @@
-"""Live-Validierung von roombapy-prime gegen einen echten Prime/V4-Account.
+"""Live validation of roombapy-prime against a real Prime/V4 account.
 
-NEU (11. Juli, elfte Sitzung). Der bislang groesste, wiederholt genannte
-Schwachpunkt der ganzen Bibliothek ist: nichts wurde je gegen einen
-echten Server getestet. Dieses Skript ist der erste konkrete Schritt,
-das zu aendern -- es fuehrt die oeffentliche API gegen einen echten
-Account aus und meldet pro Bereich OK/FEHLGESCHLAGEN/UEBERSPRUNGEN.
+NEW (July 11, eleventh session). By far the biggest, repeatedly-cited
+weak point of the whole library is: nothing was ever tested against a
+real server. This script is the first concrete step to change that --
+it runs the public API against a real account and reports OK/FAILED/
+SKIPPED per area.
 
-SICHERHEITSPRINZIP, nicht verhandelbar:
-- Standardmaessig NUR LESENDE Operationen (Login, REST-GETs, Shadow-
-  Zustand abrufen, Kartenbuendel herunterladen). Nichts hiervon kann
-  einen Zustand am Server oder Roboter veraendern.
-- --allow-writes schaltet EINEN reversiblen Test frei: einen Test-
-  Favoriten anlegen, pruefen dass er in get_favorites() auftaucht, dann
-  sofort wieder loeschen. Das validiert die drei bislang nur per
-  Bytecode bestaetigten, nie live getesteten HTTP-Methoden
-  (create/update/delete Favorite) an einem einzigen, klar
-  gekennzeichneten, selbst wieder aufgeraeumten Objekt.
-- Missionsbefehle (send_mission_command -- der Roboter wuerde real
-  starten/stoppen/etc.) und Kartenbearbeitung (edit_map -- koennte eine
-  echte, evtl. muehsam neu erstellte Karte verunstalten) werden NIE
-  ausgefuehrt, auch nicht mit --allow-writes. Das Risiko einer
-  ungewollten realen Aktion ist fuer ein automatisiertes Testskript zu
-  hoch -- diese beiden Bereiche brauchen weiterhin gezielte, bewusste
-  manuelle Tests durch einen Menschen, der zusieht.
+SAFETY PRINCIPLE, non-negotiable:
+- READ-ONLY operations by default (login, REST GETs, fetching shadow
+  state, downloading map bundles). None of this can change any state
+  on the server or the robot.
+- --allow-writes unlocks ONE reversible test: creating a test
+  favorite, checking it shows up in get_favorites(), then deleting it
+  immediately. This validates the three HTTP methods (create/update/
+  delete favorite) that were previously only confirmed via bytecode,
+  never live-tested, against a single, clearly-labeled, self-cleaning
+  object.
+- Mission commands (send_mission_command -- the robot would actually
+  start/stop/etc.) and map editing (edit_map -- could disfigure a
+  real, possibly laboriously created map) are NEVER run, even with
+  --allow-writes. The risk of an unwanted real-world action is too
+  high for an automated test script -- these two areas still need
+  deliberate, targeted manual tests by a human who is watching.
 
-Nutzung:
+Usage:
     python -m roombapy_prime.diagnostics --username you@example.com --country-code US
-    (Passwort wird interaktiv abgefragt, nie als Kommandozeilenargument --
-    das wuerde in der Shell-Historie landen.)
+    (Password is prompted interactively, never as a command-line
+    argument -- that would end up in shell history.)
 
-    Optional: --blid BLID123 (sonst wird der erste gefundene Roboter genutzt)
-    Optional: --allow-writes (siehe oben)
-    Optional: --output report.md (Ergebnisbericht zusaetzlich als Markdown speichern)
-    Optional: --dump-config diagnose.json (siehe DIAGNOSE-DUMP unten)
+    Optional: --blid BLID123 (otherwise the first robot found is used)
+    Optional: --allow-writes (see above)
+    Optional: --output report.md (additionally save the result report as markdown)
+    Optional: --dump-config diagnose.json (see DIAGNOSTIC DUMP below)
 
-Zugangsdaten koennen alternativ ueber Umgebungsvariablen
+Credentials can alternatively be set via environment variables
 ROOMBAPY_PRIME_USERNAME / ROOMBAPY_PRIME_PASSWORD / ROOMBAPY_PRIME_COUNTRY
-gesetzt werden (nuetzlich fuer CI/wiederholte Laeufe) -- werden aber nie
-geloggt oder in den Bericht aufgenommen.
+(useful for CI/repeated runs) -- but are never logged or included in
+the report.
 
-ABGEDECKTE PRUEFUNGEN (NEU, 24. Sitzung -- vorher luecken haft): neben
-Login/MQTT/den REST-Lesezugriffen jetzt auch `get_live_map_stream()`
-und ein zeitlich begrenzter (Standard 3s) `watch_state()`-Test --
-beide rein lesend, vorher aus reinem Versehen nicht abgedeckt. NICHT
-abgedeckt, bewusst: alle Schreiboperationen ausser dem
-Favoriten-Rundlauftest, sowie send_mission_command/edit_map/reset_robot
-(siehe Sicherheitsprinzip oben) und poll_echo_value (loest ein
-hoerbares Signal am echten Geraet aus -- fuer ein automatisiertes
-Skript zu invasiv, obwohl technisch reversibel).
+CHECKS COVERED (NEW, session 24 -- previously had gaps): besides
+login/MQTT/the REST reads, now also `get_live_map_stream()` and a
+time-bounded (default 3s) `watch_state()` test -- both read-only,
+previously not covered by pure oversight. NOT covered, deliberately:
+all write operations except the favorite round-trip test, as well as
+send_mission_command/edit_map/reset_robot (see safety principle
+above) and poll_echo_value (triggers an audible signal on the real
+device -- too invasive for an automated script, even though it's
+technically reversible).
 
-DIAGNOSE-DUMP (NEU, 24. Sitzung): --dump-config PATH speichert die
-TATSAECHLICHEN Rohantworten aller Lese-Endpunkte als JSON -- aehnlich
-der "Diagnose herunterladen"-Funktion einer Home-Assistant-Integration.
-Anders als der normale Bericht (der nur Pass/Fail zeigt) sind hier
-echte Feldnamen UND echte Werte enthalten -- das ist der Sinn der
-Datei: Reverse-Engineering-taugliche Rohdaten liefern, nicht nur
-Status. Redaktion bleibt trotzdem zweistufig (Zugangsdaten +
-offensichtlich sensible Feldnamen wie Adresse/GPS/WLAN), aber ist
-NICHT so umfassend wie beim normalen Bericht -- diese Datei wird
-DESHALB nie automatisch Teil des Issue-Links, sondern muss bewusst
-und einzeln angehaengt werden, nachdem man sie selbst durchgesehen
-hat. Kartenbuendel-Inhalte werden nie mitgeschrieben (nur die
-Dateinamen darin) -- ein Wohnungsgrundriss ist persoenlicher als die
-meisten anderen hier erfassten Daten.
+DIAGNOSTIC DUMP (NEW, session 24): --dump-config PATH saves the
+ACTUAL raw responses from every read endpoint as JSON -- similar to a
+Home Assistant integration's "Download Diagnostics" feature. Unlike
+the normal report (which only shows pass/fail), this contains real
+field names AND real values -- that's the whole point of this file:
+providing raw data suitable for reverse engineering, not just status.
+Redaction still happens in two stages (credentials + obviously
+sensitive field names like address/GPS/WiFi), but it is NOT as
+thorough as with the normal report -- which is WHY this file is never
+automatically part of the issue link, and must be attached
+deliberately and individually, after reviewing it yourself. Map
+bundle contents are never written out (only the filenames within) --
+a floor plan is more personal than most other data captured here.
 
-RUECKMELDUNG AN DIE MAINTAINER (NEU, zwoelfte Sitzung):
-Am Ende jedes Laufs wird -- zusaetzlich zur Konsolenausgabe -- ein
-vorausgefuellter Link zum Oeffnen eines GitHub-Issues gedruckt (Titel +
-Bericht als Body, URL-kodiert), sowie derselbe Bericht als reines
-Markdown zum manuellen Kopieren (z.B. fuer Discord/E-Mail, falls kein
-GitHub gewuenscht ist). Der Bericht durchlaeuft vorher eine
-Redaktionsstufe: jedes woertliche Auftreten von Benutzername oder
-Passwort in irgendeinem Fehlertext wird durch "[REDACTED]" ersetzt --
-Verteidigung in der Tiefe, falls eine tieferliegende Exception (z.B.
-aus aiohttp) versehentlich Zugangsdaten in eine Fehlermeldung
-einbettet. Der Ziel-Repo-Pfad ist ueber ISSUE_TRACKER_REPO unten
-konfigurierbar -- aktuell auf das echte Repo gesetzt
-(github.com/johnnyh1975/roombapy-prime, siehe Konstante).
+FEEDBACK FOR THE MAINTAINERS (NEW, twelfth session):
+At the end of every run -- in addition to the console output -- a
+pre-filled link to open a GitHub issue is printed (title + report as
+body, URL-encoded), as well as the same report as plain markdown for
+manual copying (e.g. for Discord/email, if GitHub isn't wanted). The
+report first goes through a redaction stage: every literal occurrence
+of the username or password in any error text is replaced with
+"[REDACTED]" -- defense in depth, in case a deeper exception (e.g.
+from aiohttp) accidentally embeds credentials in an error message.
+The target repo path is configurable via ISSUE_TRACKER_REPO below --
+currently set to the real repo
+(github.com/johnnyh1975/roombapy-prime, see the constant).
 """
 
 from __future__ import annotations
@@ -96,15 +93,15 @@ import aiohttp
 
 from .prime_factory import PrimeFactory
 
-#: Repo fuer den vorausgefuellten "Neues Issue"-Link (siehe Modul-Docstring).
-#: Aktualisiert (19. Sitzung) auf das echte GitHub-Repo.
+#: Repo for the pre-filled "New issue" link (see module docstring).
+#: Updated (session 19) to the real GitHub repo.
 ISSUE_TRACKER_REPO = "johnnyh1975/roombapy-prime"
 
 
 @dataclass
 class CheckResult:
     name: str
-    status: str  # "OK", "FEHLGESCHLAGEN", "UEBERSPRUNGEN"
+    status: str  # "OK", "FAILED", "SKIPPED"
     detail: str = ""
 
 
@@ -114,7 +111,7 @@ class Report:
 
     def add(self, name: str, status: str, detail: str = "") -> None:
         self.results.append(CheckResult(name, status, detail))
-        marker = {"OK": "✓", "FEHLGESCHLAGEN": "✗", "UEBERSPRUNGEN": "–"}[status]
+        marker = {"OK": "✓", "FAILED": "✗", "SKIPPED": "–"}[status]
         line = f"  [{marker}] {name}"
         if detail:
             line += f" — {detail}"
@@ -122,19 +119,18 @@ class Report:
 
     def summary(self) -> tuple[int, int, int]:
         ok = sum(1 for r in self.results if r.status == "OK")
-        failed = sum(1 for r in self.results if r.status == "FEHLGESCHLAGEN")
-        skipped = sum(1 for r in self.results if r.status == "UEBERSPRUNGEN")
+        failed = sum(1 for r in self.results if r.status == "FAILED")
+        skipped = sum(1 for r in self.results if r.status == "SKIPPED")
         return ok, failed, skipped
 
     def redact(self, *secrets: str) -> None:
-        """NEU (12. Sitzung). Ersetzt jedes woertliche Auftreten der
-        uebergebenen Strings (Benutzername, Passwort) in JEDEM
-        Fehlertext durch "[REDACTED]" -- Verteidigung in der Tiefe,
-        bevor der Bericht geteilt wird. Sollte im Normalfall nichts
-        finden (Zugangsdaten werden nirgends direkt in Berichtseintraege
-        geschrieben), faengt aber ab, falls eine tieferliegende
-        Exception (z.B. aus aiohttp) versehentlich Zugangsdaten in eine
-        Fehlermeldung einbettet."""
+        """NEW (session 12). Replaces every literal occurrence of the
+        given strings (username, password) in EVERY error text with
+        "[REDACTED]" -- defense in depth, before the report is shared.
+        Should normally find nothing (credentials are never written
+        directly into report entries anywhere), but catches it in case
+        a deeper exception (e.g. from aiohttp) accidentally embeds
+        credentials in an error message."""
         cleaned = [s for s in secrets if s]
         if not cleaned:
             return
@@ -149,33 +145,33 @@ class Report:
         from . import __version__ as lib_version
 
         lines = [
-            f"# roombapy-prime Live-Validierung — {datetime.now(timezone.utc).isoformat()}",
+            f"# roombapy-prime Live Validation — {datetime.now(timezone.utc).isoformat()}",
             "",
             f"roombapy-prime {lib_version}, Python {platform.python_version()}, {platform.system()}",
             "",
         ]
         for r in self.results:
-            marker = {"OK": "✅", "FEHLGESCHLAGEN": "❌", "UEBERSPRUNGEN": "⏭️"}[r.status]
+            marker = {"OK": "✅", "FAILED": "❌", "SKIPPED": "⏭️"}[r.status]
             entry = f"- {marker} **{r.name}**"
             if r.detail:
                 entry += f": {r.detail}"
             lines.append(entry)
         ok, failed, skipped = self.summary()
-        lines += ["", f"**Zusammenfassung:** {ok} OK, {failed} fehlgeschlagen, {skipped} uebersprungen."]
+        lines += ["", f"**Summary:** {ok} OK, {failed} failed, {skipped} skipped."]
         return "\n".join(lines)
 
 
 async def _try(report: Report, name: str, coro: Any, capture: dict[str, Any] | None = None) -> Any:
-    """Fuehrt eine einzelne Pruefung aus, faengt JEDE Exception (nicht
-    nur RestError) -- ein Diagnoseskript darf nie selbst abstuerzen,
-    egal was der Server zurueckgibt.
+    """Runs a single check, catching EVERY exception (not just
+    RestError) -- a diagnostics script must never crash itself, no
+    matter what the server returns.
 
-    capture (NEU, 24. Sitzung): falls uebergeben, wird das rohe,
-    erfolgreiche Ergebnis zusaetzlich unter `name` abgelegt -- fuer
-    --dump-config (siehe main()). Getrennt vom Bericht selbst, damit
-    der normale Pass/Fail-Bericht (der z.B. in den GitHub-Issue-Link
-    einfliesst) unveraendert kompakt bleibt; die Rohdaten landen nur in
-    der optionalen Dump-Datei, nie automatisch im Issue-Link."""
+    capture (NEW, session 24): if provided, the raw, successful result
+    is additionally stored under `name` -- for --dump-config (see
+    main()). Kept separate from the report itself so the normal
+    pass/fail report (which e.g. flows into the GitHub issue link)
+    stays unchanged and compact; the raw data only ends up in the
+    optional dump file, never automatically in the issue link."""
     try:
         result = await coro
         report.add(name, "OK")
@@ -183,33 +179,33 @@ async def _try(report: Report, name: str, coro: Any, capture: dict[str, Any] | N
             capture[name] = result
         return result
     except Exception as exc:  # noqa: BLE001 -- bewusst breit, siehe Docstring
-        report.add(name, "FEHLGESCHLAGEN", f"{type(exc).__name__}: {exc}")
+        report.add(name, "FAILED", f"{type(exc).__name__}: {exc}")
         return None
 
 
 def _skip(report: Report, name: str, reason: str) -> None:
-    report.add(name, "UEBERSPRUNGEN", reason)
+    report.add(name, "SKIPPED", reason)
 
 
 def _report_device_info(report: Report, state: Any) -> None:
-    """NEU (21. Sitzung), KORRIGIERT (25./27. Sitzung): erste Live-Antwort
-    (chairstacker) zeigte die tatsaechliche Struktur --
-    payload["state"]["reported"] enthaelt sku/svcEndpoints/soldAsSku,
-    NICHT auf Top-Level wie urspruenglich vermutet.
+    """NEW (session 21), CORRECTED (sessions 25/27): the first live
+    response (chairstacker) showed the actual structure --
+    payload["state"]["reported"] contains sku/svcEndpoints/soldAsSku,
+    NOT at the top level as originally assumed.
 
-    WICHTIGE KORREKTUR (27. Sitzung, detailliertes Review): die
-    vollstaendige echte Antwort zeigt, dass "reported" GAR KEIN
-    Firmware-/softwareVer-Feld enthaelt -- weder auf Top-Level noch
-    verschachtelt. Firmware-Info kommt stattdessen aus
-    get_serial_number_data() oder aus einzelnen Missionshistorie-
-    Eintraegen (beide fuehren "softwareVer"). Der "firmware"-Kandidat
-    wird hier trotzdem beibehalten (falls ein anderes Geraet/Tier es
-    doch im Shadow fuehrt), aber es sollte NICHT ueberraschen, wenn er
-    hier leer bleibt -- das ist erwartet, kein Fehlerzeichen.
+    IMPORTANT CORRECTION (session 27, detailed review): the complete
+    real response shows that "reported" contains NO firmware/
+    softwareVer field AT ALL -- neither at the top level nor nested.
+    Firmware info instead comes from get_serial_number_data() or from
+    individual mission history entries (both carry "softwareVer"). The
+    "firmware" candidate is still kept here (in case some other
+    device/tier does carry it in the shadow), but it shouldn't be
+    surprising if it stays empty here -- that's expected, not a sign
+    of a bug.
 
-    Kandidaten-Feldnamen bleiben ansonsten Vermutungen -- daher weiterhin
-    IMMER zusaetzlich die tatsaechlichen Top-Level-Schluessel melden,
-    falls sich die Verschachtelung nochmal aendert."""
+    Candidate field names otherwise remain guesses -- so this will
+    ALWAYS additionally report the actual top-level keys, in case the
+    nesting changes again."""
     if state is None or not isinstance(getattr(state, "payload", None), dict):
         return
     payload = state.payload
@@ -231,37 +227,36 @@ def _report_device_info(report: Report, state: Any) -> None:
                 break
     top_level_keys = sorted(payload.keys())
     reported_keys = sorted(reported.keys()) if reported else []
-    detail = f"gefunden: {found}" if found else "keine der vermuteten Kandidaten-Felder gefunden"
-    detail += f" -- Top-Level-Schluessel: {top_level_keys}"
+    detail = f"found: {found}" if found else "none of the suspected candidate fields were found"
+    detail += f" -- top-level keys: {top_level_keys}"
     if reported_keys:
-        detail += f" -- state.reported-Schluessel: {reported_keys}"
-    report.add("Geraeteinfo aus get_state() extrahiert", "OK", detail)
+        detail += f" -- state.reported keys: {reported_keys}"
+    report.add("Device info extracted from get_state()", "OK", detail)
 
 
 def _report_tier_inference(report: Report, settings_result: Any) -> None:
-    """NEU (21. Sitzung), ABGESCHWAECHT (25. Sitzung) -- dieselbe
-    Geraete-BLID lieferte in zwei aufeinanderfolgenden Laeufen
-    UNTERSCHIEDLICHE Ergebnisse (einmal Erfolg, einmal Timeout). Das
-    ist kein stabiles Tier-Signal -- entweder eine Race-Condition in
-    dieser Bibliothek oder ein echter, wechselnder Geraetezustand
-    (Roboter online/offline gegenueber AWS IoT). Formulierung
-    entsprechend vorsichtiger: "deutet auf" statt "ist"."""
+    """NEW (session 21), WEAKENED (session 25) -- the same device BLID
+    produced DIFFERENT results in two consecutive runs (once success,
+    once timeout). That's not a stable tier signal -- either a race
+    condition in this library or a genuine, changing device state
+    (robot online/offline with respect to AWS IoT). Wording adjusted
+    to be more cautious accordingly: "suggests" instead of "is"."""
     if settings_result is not None:
         report.add(
-            "Tier-Vermutung (aus get_settings()-Ergebnis)",
+            "Tier guess (from get_settings() result)",
             "OK",
-            "rw-settings hat geantwortet -> deutet auf SMART-Tier hin. HINWEIS: bei demselben "
-            "Geraet wurde in einem anderen Lauf auch ein Timeout beobachtet -- dieses Signal "
-            "ist nicht zuverlaessig stabil, siehe get_settings()'s Docstring.",
+            "rw-settings responded -> suggests SMART tier. NOTE: the same device also showed a "
+            "timeout in a different run -- this signal is not reliably stable, see "
+            "get_settings()'s docstring.",
         )
     else:
         report.add(
-            "Tier-Vermutung (aus get_settings()-Ergebnis)",
+            "Tier guess (from get_settings() result)",
             "OK",
-            "rw-settings hat NICHT geantwortet (Timeout) -> koennte EPHEMERAL-Tier bedeuten, "
-            "koennte aber auch ein voruebergehender Zustand sein (z.B. Roboter aktuell nicht "
-            "aktiv mit AWS IoT verbunden) -- bei demselben Geraet wurde in einem anderen Lauf "
-            "auch ein Erfolg beobachtet. Kein verlaesslicher Tier-Beweis fuer sich allein.",
+            "rw-settings did NOT respond (timeout) -> could mean EPHEMERAL tier, but could also "
+            "be a temporary state (e.g. robot currently not actively connected to AWS IoT) -- the "
+            "same device also showed a success in a different run. Not reliable proof of tier on "
+            "its own.",
         )
 
 
@@ -276,62 +271,62 @@ async def run(
     report = Report()
 
     async with aiohttp.ClientSession() as session:
-        print("\n== Anmeldung ==")
+        print("\n== Login ==")
         try:
             robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-            report.add("Login (Discovery + Gigya + iRobot-Auth-Kette)", "OK", f"BLID={robot.blid}")
+            report.add("Login (Discovery + Gigya + iRobot auth chain)", "OK", f"BLID={robot.blid}")
         except Exception as exc:  # noqa: BLE001
-            report.add("Login", "FEHLGESCHLAGEN", f"{type(exc).__name__}: {exc}")
-            print("\nAnmeldung fehlgeschlagen -- alle weiteren Pruefungen werden uebersprungen.")
+            report.add("Login", "FAILED", f"{type(exc).__name__}: {exc}")
+            print("\nLogin failed -- all further checks will be skipped.")
             return report
 
-        print("\n== MQTT / Shadow-Zustand ==")
+        print("\n== MQTT / shadow state ==")
         try:
             await robot.connect()
-            report.add("MQTT-Verbindung (AWS-IoT-Custom-Authorizer)", "OK")
+            report.add("MQTT connection (AWS IoT custom authorizer)", "OK")
         except Exception as exc:  # noqa: BLE001
-            report.add("MQTT-Verbindung", "FEHLGESCHLAGEN", f"{type(exc).__name__}: {exc}")
+            report.add("MQTT connection", "FAILED", f"{type(exc).__name__}: {exc}")
 
-        state = await _try(report, "Shadow-Zustand abrufen (get_state)", robot.get_state(), capture=raw_capture)
+        state = await _try(report, "Fetching shadow state (get_state)", robot.get_state(), capture=raw_capture)
         _report_device_info(report, state)
 
         settings_result = await _try(
-            report, "Shadow-Einstellungen abrufen (get_settings)", robot.get_settings(), capture=raw_capture
+            report, "Fetching shadow settings (get_settings)", robot.get_settings(), capture=raw_capture
         )
         _report_tier_inference(report, settings_result)
 
         await _try(
-            report, "Live-Map-Stream anfordern (get_live_map_stream)", robot.get_live_map_stream(), capture=raw_capture
+            report, "Requesting live map stream (get_live_map_stream)", robot.get_live_map_stream(), capture=raw_capture
         )
         await _try_watch_state_briefly(report, robot)
 
-        print("\n== REST-Lesezugriffe (Favoriten/Missionshistorie/Zeitplaene/...) ==")
-        await _try(report, "Favoriten abrufen (get_favorites)", robot.get_favorites(), capture=raw_capture)
+        print("\n== REST reads (favorites/mission history/schedules/...) ==")
+        await _try(report, "Fetching favorites (get_favorites)", robot.get_favorites(), capture=raw_capture)
         await _try(
             report,
-            "Missionshistorie abrufen (get_mission_history)",
+            "Fetching mission history (get_mission_history)",
             robot.get_mission_history(robot.blid, max_reports=5),
             capture=raw_capture,
         )
         await _try(
-            report, "Haushaltsliste abrufen (get_user_households)", robot.get_user_households(), capture=raw_capture
+            report, "Fetching household list (get_user_households)", robot.get_user_households(), capture=raw_capture
         )
         await _try(
-            report, "Verschleissteile abrufen (get_robot_parts)", robot.get_robot_parts(), capture=raw_capture
+            report, "Fetching consumable parts (get_robot_parts)", robot.get_robot_parts(), capture=raw_capture
         )
         await _try(
             report,
-            "Seriennummer/Geraetedaten abrufen (get_serial_number_data)",
+            "Fetching serial number/device data (get_serial_number_data)",
             robot.get_serial_number_data(),
             capture=raw_capture,
         )
         await _try(
-            report, "Benachrichtigungen abrufen (get_notifications)", robot.get_notifications(), capture=raw_capture
+            report, "Fetching notifications (get_notifications)", robot.get_notifications(), capture=raw_capture
         )
 
         map_versions = await _try(
             report,
-            "Aktive Kartenversionen abrufen (get_active_map_versions)",
+            "Fetching active map versions (get_active_map_versions)",
             robot.get_active_map_versions(),
             capture=raw_capture,
         )
@@ -348,137 +343,137 @@ async def run(
                     or first.get("id")
                     or first.get("map_id")
                 )
-                # NEU (33. Sitzung): "1" war ein Platzhalter-Ratewert fuer die
-                # Kartenversion -- echte Daten (chairstacker) zeigen, dass die
-                # tatsaechliche Versions-ID unter "active_p2mapv_id" steht
-                # (z.B. "260518T135521.119", kein einfacher Zaehler). Das
-                # erklaert vermutlich den HTTP-400-Fehler bei
-                # get_map_geojson_link(): die URL enthielt bisher immer eine
-                # erfundene, nie existierende Versions-ID.
+                # NEW (session 33): "1" was a placeholder guess value
+                # for the map version -- real data (chairstacker) shows
+                # that the actual version ID is under "active_p2mapv_id"
+                # (e.g. "260518T135521.119", not a simple counter). This
+                # likely explains the HTTP 400 error on
+                # get_map_geojson_link(): the URL previously always
+                # contained a made-up, never-existing version ID.
                 p2map_version_id = first.get("active_p2mapv_id")
             except (AttributeError, IndexError, TypeError):
                 p2map_id = None
             if p2map_id is None:
                 report.add(
-                    "Karten-ID-Extraktion",
-                    "FEHLGESCHLAGEN",
-                    f"get_active_map_versions() lieferte Daten, aber kein bekanntes ID-Feld "
-                    f"gefunden. Antwortstruktur: {_shallow_summary(map_versions)}",
+                    "Map ID extraction",
+                    "FAILED",
+                    f"get_active_map_versions() returned data, but no known ID field was found. "
+                    f"Response structure: {_shallow_summary(map_versions)}",
                 )
 
         if p2map_id:
             await _try(
                 report,
-                "Kartenmetadaten abrufen (get_map_metadata)",
+                "Fetching map metadata (get_map_metadata)",
                 robot.get_map_metadata(p2map_id),
                 capture=raw_capture,
             )
             if p2map_version_id:
                 geojson_link = await _try(
                     report,
-                    "Vorsignierte Kartenbuendel-URL abrufen (get_map_geojson_link)",
+                    "Fetching presigned map bundle URL (get_map_geojson_link)",
                     robot.get_map_geojson_link(p2map_id, p2map_version_id),
                 )
             else:
                 geojson_link = None
                 _skip(
                     report,
-                    "Vorsignierte Kartenbuendel-URL abrufen (get_map_geojson_link)",
-                    "keine active_p2mapv_id in get_active_map_versions()s Antwort gefunden",
+                    "Fetching presigned map bundle URL (get_map_geojson_link)",
+                    "no active_p2mapv_id found in get_active_map_versions()'s response",
                 )
             if isinstance(geojson_link, dict):
                 url = next((v for v in geojson_link.values() if isinstance(v, str) and v.startswith("http")), None)
                 if url:
-                    bundle = await _try(report, "Kartenbuendel herunterladen (download_map_bundle)", _fetch_bundle(robot, url))
+                    bundle = await _try(report, "Downloading map bundle (download_map_bundle)", _fetch_bundle(robot, url))
                     if bundle is not None:
                         from .models import parse_map_bundle
 
                         try:
                             parsed = parse_map_bundle(bundle)
                             report.add(
-                                "Kartenbuendel entpacken (parse_map_bundle)", "OK", f"{len(parsed)} Dateien gefunden"
+                                "Unpacking map bundle (parse_map_bundle)", "OK", f"{len(parsed)} files found"
                             )
-                            # NEU (24. Sitzung): bewusst NUR die Dateinamen erfassen, nie den
-                            # Karteninhalt selbst -- ein Wohnungsgrundriss ist deutlich
-                            # persoenlicher als die meisten anderen hier erfassten Daten.
+                            # NEW (session 24): deliberately capture ONLY
+                            # the filenames, never the map content itself
+                            # -- a floor plan is considerably more
+                            # personal than most other data captured here.
                             if raw_capture is not None:
-                                raw_capture["Kartenbuendel (nur Dateinamen)"] = sorted(parsed.keys())
+                                raw_capture["Map bundle (filenames only)"] = sorted(parsed.keys())
                         except Exception as exc:  # noqa: BLE001
-                            report.add("Kartenbuendel entpacken", "FEHLGESCHLAGEN", f"{type(exc).__name__}: {exc}")
+                            report.add("Unpacking map bundle", "FAILED", f"{type(exc).__name__}: {exc}")
                 else:
                     _skip(
                         report,
-                        "Kartenbuendel herunterladen",
-                        "kein erkennbarer URL-Schluessel in der Antwort (Antwortform unbestaetigt)",
+                        "Downloading map bundle",
+                        "no recognizable URL key in the response (response shape unconfirmed)",
                     )
             households = await _try_silent(robot.get_user_households())
             household_id = _extract_first_id(households, ["household_id", "householdId", "id"])
             if household_id:
                 await _try(
-                    report, "Zeitplaene abrufen (get_schedules)", robot.get_schedules(household_id), capture=raw_capture
+                    report, "Fetching schedules (get_schedules)", robot.get_schedules(household_id), capture=raw_capture
                 )
                 await _try(
                     report,
-                    "DND-Einstellungen abrufen (get_dnd_settings)",
+                    "Fetching DND settings (get_dnd_settings)",
                     robot.get_dnd_settings(household_id),
                     capture=raw_capture,
                 )
             elif households:
                 report.add(
-                    "household_id-Extraktion",
-                    "FEHLGESCHLAGEN",
-                    f"get_user_households() lieferte Daten, aber weder 'householdId' noch 'id' "
-                    f"gefunden. Antwortstruktur: {_shallow_summary(households)}",
+                    "household_id extraction",
+                    "FAILED",
+                    f"get_user_households() returned data, but neither 'householdId' nor 'id' "
+                    f"was found. Response structure: {_shallow_summary(households)}",
                 )
-                _skip(report, "Zeitplaene/DND abrufen", "household_id-Extraktion fehlgeschlagen, siehe oben")
+                _skip(report, "Fetching schedules/DND", "household_id extraction failed, see above")
             else:
                 _skip(
                     report,
-                    "Zeitplaene/DND abrufen",
-                    "get_user_households() lieferte keine Daten (leere Antwort oder Fehler)",
+                    "Fetching schedules/DND",
+                    "get_user_households() returned no data (empty response or error)",
                 )
 
             await _try(
                 report,
-                "Reinigungsprofile abrufen (get_cleaning_profiles)",
+                "Fetching cleaning profiles (get_cleaning_profiles)",
                 robot.get_cleaning_profiles(robot.blid, p2map_id),
                 capture=raw_capture,
             )
             await _try(
                 report,
-                "Standard-Routinen abrufen (get_default_routines)",
+                "Fetching default routines (get_default_routines)",
                 robot.get_default_routines(p2map_id),
                 capture=raw_capture,
             )
         else:
             _skip(
                 report,
-                "Kartenmetadaten/Kartenbuendel/Reinigungsprofile/Standard-Routinen",
-                f"keine aktive Kartenversion gefunden -- get_active_map_versions()s Antwort: "
-                f"{_shallow_summary(map_versions)} (falls das eine leere Liste zeigt, obwohl "
-                f"der Roboter eine Karte gelernt hat, ist das der eigentliche Fehler, nicht das "
-                f"Roboter-Alter)",
+                "Map metadata/bundle/cleaning profiles/default routines",
+                f"no active map version found -- get_active_map_versions()'s response: "
+                f"{_shallow_summary(map_versions)} (if this shows an empty list even though "
+                f"the robot has learned a map, that's the actual bug, not the robot's age)",
             )
 
         if allow_writes:
-            print("\n== Reversibler Schreib-Rundlauftest (--allow-writes) ==")
+            print("\n== Reversible write round-trip test (--allow-writes) ==")
             await _round_trip_favorite_test(robot, report)
         else:
             _skip(
                 report,
-                "Favoriten-Schreib-Rundlauftest (create/update/delete)",
-                "--allow-writes nicht gesetzt",
+                "Favorite write round-trip test (create/update/delete)",
+                "--allow-writes not set",
             )
 
         _skip(
             report,
-            "Missionsbefehle (send_mission_command)",
-            "wird NIE automatisch ausgefuehrt -- siehe Modul-Docstring",
+            "Mission commands (send_mission_command)",
+            "NEVER run automatically -- see module docstring",
         )
         _skip(
             report,
-            "Kartenbearbeitung (edit_map)",
-            "wird NIE automatisch ausgefuehrt -- siehe Modul-Docstring",
+            "Map editing (edit_map)",
+            "NEVER run automatically -- see module docstring",
         )
 
         await robot.disconnect()
@@ -491,32 +486,33 @@ async def _fetch_bundle(robot: Any, url: str) -> bytes:
 
 
 async def _try_watch_state_briefly(report: Report, robot: Any, timeout_seconds: float = 3.0) -> None:
-    """NEU (24. Sitzung) -- watch_state() war bisher komplett ungetestet,
-    obwohl es rein lesend ist (reagiert nur auf Shadow-Deltas, sendet
-    nichts). Laesst den Generator hoechstens `timeout_seconds` laufen --
-    KEIN Delta zu bekommen ist normal (der Roboter muss sich dafuer
-    aktiv aendern) und zaehlt als OK, nicht als Fehler; ein Absturz des
-    Generators selbst waere dagegen ein echter Fund."""
+    """NEW (session 24) -- watch_state() was completely untested until
+    now, even though it's read-only (only reacts to shadow deltas,
+    sends nothing). Runs the generator for at most `timeout_seconds` --
+    getting NO delta is normal (the robot needs to actively change for
+    that) and counts as OK, not a failure; a crash of the generator
+    itself, on the other hand, would be a real finding."""
     try:
         count = 0
         async with asyncio.timeout(timeout_seconds):
             async for _delta in robot.watch_state():
                 count += 1
-        report.add("Kontinuierliches Beobachten (watch_state, kurz)", "OK", f"{count} Delta(s) in {timeout_seconds}s")
+        report.add("Watching continuously (watch_state, brief)", "OK", f"{count} delta(s) in {timeout_seconds}s")
     except TimeoutError:
         report.add(
-            "Kontinuierliches Beobachten (watch_state, kurz)",
+            "Watching continuously (watch_state, brief)",
             "OK",
-            f"kein Delta in {timeout_seconds}s -- normal, wenn sich der Zustand nicht aendert",
+            f"no delta in {timeout_seconds}s -- normal if the state doesn't change",
         )
     except Exception as exc:  # noqa: BLE001
-        report.add("Kontinuierliches Beobachten (watch_state, kurz)", "FEHLGESCHLAGEN", f"{type(exc).__name__}: {exc}")
+        report.add("Watching continuously (watch_state, brief)", "FAILED", f"{type(exc).__name__}: {exc}")
 
 
 async def _try_silent(coro: Any) -> Any:
-    """Wie _try(), aber ohne Bericht-Eintrag -- fuer Zwischenschritte,
-    die selbst kein eigener Pruefpunkt sind (z.B. household_id nur
-    ermitteln, um EINE andere Pruefung ueberhaupt versuchen zu koennen)."""
+    """Like _try(), but without a report entry -- for intermediate
+    steps that aren't a check point in their own right (e.g. just
+    determining household_id, so that ONE other check can even be
+    attempted)."""
     try:
         return await coro
     except Exception:  # noqa: BLE001
@@ -524,29 +520,29 @@ async def _try_silent(coro: Any) -> Any:
 
 
 def _shallow_summary(data: Any, _depth: int = 0) -> Any:
-    """NEU (21. Sitzung) -- fasst eine unbekannte Antwortstruktur fuer
-    die Debug-Ausgabe zusammen: STRUKTUR (Schluessel/Typen/Laenge), NIE
-    tatsaechliche Werte -- damit auch bei unerwarteten Formen kein
-    potenziell sensibler Inhalt (Adressen, Namen, IDs) im geteilten
-    Bericht landet, nur die Form der Antwort. Absichtlich flach (max.
-    2 Ebenen) -- fuer Feldnamen-Debugging reicht das, ein tieferer Dump
-    waere nur Rauschen."""
+    """NEW (session 21) -- summarizes an unknown response structure for
+    debug output: STRUCTURE (keys/types/length), NEVER actual values --
+    so that even with unexpected shapes, no potentially sensitive
+    content (addresses, names, IDs) ends up in a shared report, only
+    the shape of the response. Deliberately shallow (max 2 levels) --
+    that's enough for field-name debugging, a deeper dump would just
+    be noise."""
     if _depth >= 2:
         return "..."
     if isinstance(data, dict):
         return {k: _shallow_summary(v, _depth + 1) for k, v in data.items()}
     if isinstance(data, list):
         if not data:
-            return "[] (leere Liste)"
-        return f"Liste[{len(data)}] erstes Element: {_shallow_summary(data[0], _depth + 1)}"
+            return "[] (empty list)"
+        return f"list[{len(data)}] first element: {_shallow_summary(data[0], _depth + 1)}"
     return type(data).__name__
 
 
 def _extract_first_id(data: Any, keys: list[str]) -> str | None:
-    """Best-effort: findet die erste passende ID in einer moeglicherweise
-    verschachtelten, unbestaetigten Antwortform (households/settings-
-    Listing wurde nie gegen eine echte Antwort geprueft, siehe
-    get_user_households()'s Docstring)."""
+    """Best-effort: finds the first matching ID in a possibly nested,
+    unconfirmed response shape (households/settings listing was never
+    checked against a real response, see get_user_households()'s
+    docstring)."""
     if isinstance(data, dict):
         for key in keys:
             if key in data and isinstance(data[key], str):
@@ -564,20 +560,20 @@ def _extract_first_id(data: Any, keys: list[str]) -> str | None:
 
 
 async def _round_trip_favorite_test(robot: Any, report: Report) -> None:
-    """Legt EINEN klar als Test gekennzeichneten Favoriten an, prueft
-    dass er auftaucht, loescht ihn sofort wieder. Validiert live die
-    drei bisher nur per Bytecode bestaetigten HTTP-Methoden (POST/PUT/
-    DELETE) fuer Favoriten, ohne dauerhafte Spuren zu hinterlassen."""
+    """Creates ONE clearly test-labeled favorite, checks it shows up,
+    deletes it again immediately. Live-validates the three HTTP
+    methods (POST/PUT/DELETE) for favorites that were previously only
+    confirmed via bytecode, without leaving any permanent trace."""
     from .models import FavoriteV1
 
     test_favorite = FavoriteV1(
-        name="roombapy-prime-diagnostics-testfavorit (bitte loeschen falls sichtbar)",
+        name="roombapy-prime-diagnostics-test-favorite (please delete if visible)",
         command_defs=[],
     )
 
-    created = await _try(report, "Test-Favorit anlegen (create_favorite)", robot.create_favorite(test_favorite))
+    created = await _try(report, "Creating test favorite (create_favorite)", robot.create_favorite(test_favorite))
     if created is None:
-        _skip(report, "Test-Favorit pruefen/loeschen", "Anlegen fehlgeschlagen, siehe oben")
+        _skip(report, "Checking/deleting test favorite", "Creation failed, see above")
         return
 
     created_id = None
@@ -587,48 +583,48 @@ async def _round_trip_favorite_test(robot: Any, report: Report) -> None:
     if not created_id:
         _skip(
             report,
-            "Test-Favorit in Liste finden + loeschen",
-            "keine favorite_id in der create-Antwort erkennbar (Antwortform unbestaetigt) -- "
-            "BITTE MANUELL PRUEFEN UND DEN TEST-FAVORITEN VON HAND LOESCHEN",
+            "Finding + deleting test favorite in list",
+            "no favorite_id recognizable in the create response (response shape unconfirmed) -- "
+            "PLEASE CHECK MANUALLY AND DELETE THE TEST FAVORITE BY HAND",
         )
         return
 
-    favorites = await _try(report, "Favoritenliste erneut abrufen (Test-Favorit sollte da sein)", robot.get_favorites())
+    favorites = await _try(report, "Fetching favorites list again (test favorite should be there)", robot.get_favorites())
     if favorites is not None:
         found = any(getattr(f, "favorite_id", None) == created_id for f in favorites) if isinstance(favorites, list) else False
-        report.add("Test-Favorit in Liste gefunden", "OK" if found else "FEHLGESCHLAGEN", f"id={created_id}")
+        report.add("Test favorite found in list", "OK" if found else "FAILED", f"id={created_id}")
 
-    await _try(report, "Test-Favorit wieder loeschen (delete_favorite)", robot.delete_favorite(created_id))
+    await _try(report, "Deleting test favorite again (delete_favorite)", robot.delete_favorite(created_id))
 
 
 def build_issue_url(report: Report, repo: str = ISSUE_TRACKER_REPO) -> str:
-    """Baut eine vorausgefuellte "Neues Issue"-URL fuer GitHub (Titel +
-    Bericht als Body, URL-kodiert). Funktioniert unabhaengig davon, ob
-    das Repo schon existiert -- der Link ist einfach nur ein Klick,
-    kein API-Aufruf, daher kein Fehlschlagen moeglich."""
+    """Builds a pre-filled "New issue" URL for GitHub (title + report
+    as body, URL-encoded). Works regardless of whether the repo
+    already exists -- the link is just a click, no API call, so no
+    way for it to fail."""
     ok, failed, skipped = report.summary()
-    title = f"Live-Validierung: {ok} OK, {failed} fehlgeschlagen, {skipped} uebersprungen"
+    title = f"Live validation: {ok} OK, {failed} failed, {skipped} skipped"
     body = report.to_markdown()
     return f"https://github.com/{repo}/issues/new?title={quote(title)}&body={quote(body)}"
 
 
 def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
-    """NEU (24. Sitzung) -- Redaktion fuer --dump-config. Anders als
-    _shallow_summary() (nur Struktur, nie Werte -- fuer den Bericht,
-    der automatisch in den Issue-Link einfliesst) behaelt diese
-    Funktion tatsaechliche Werte, weil eine Dump-Datei genau dafuer da
-    ist: echte Feldnamen UND echte Werte fuer Reverse-Engineering-
-    Zwecke zu zeigen. Redaktion bleibt trotzdem zweistufig:
-    1) Jedes woertliche Auftreten von username/password (siehe secrets)
-       wird ersetzt -- exakt dieselbe Verteidigung-in-der-Tiefe wie bei
+    """NEW (session 24) -- redaction for --dump-config. Unlike
+    _shallow_summary() (structure only, never values -- for the report
+    that automatically flows into the issue link), this function keeps
+    actual values, because a dump file exists for exactly this
+    purpose: showing real field names AND real values for reverse-
+    engineering purposes. Redaction still happens in two stages,
+    though:
+    1) Every literal occurrence of username/password (see secrets) is
+       replaced -- exactly the same defense in depth as
        Report.redact().
-    2) Werte unter eindeutig sensibel wirkenden Schluesselnamen (Adresse,
-       GPS-Koordinaten, WLAN-Zugangsdaten) werden komplett maskiert,
-       unabhaengig vom Inhalt -- diese Felder sind fuer die
-       Protokoll-Reverse-Engineering nicht interessant, fuer die
-       Privatsphaere aber schon.
-    Trotzdem gilt: diese Datei ist NIE automatisch Teil des Issue-Links
-    -- wer sie teilt, sollte sie vorher selbst einmal durchsehen."""
+    2) Values under obviously sensitive-looking key names (address,
+       GPS coordinates, WiFi credentials) are masked entirely,
+       regardless of content -- these fields aren't interesting for
+       protocol reverse engineering, but they are for privacy.
+    Still: this file is NEVER automatically part of the issue link --
+    whoever shares it should review it themselves first."""
     sensitive_keys = {
         "password",
         "ssid",
@@ -668,73 +664,72 @@ def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Live-Validierung von roombapy-prime gegen einen echten Prime/V4-Account. "
-        "Standardmaessig rein lesend -- siehe Modul-Docstring fuer das Sicherheitsprinzip."
+        description="Live validation of roombapy-prime against a real Prime/V4 account. "
+        "Read-only by default -- see the module docstring for the safety principle."
     )
     parser.add_argument("--username", default=os.environ.get("ROOMBAPY_PRIME_USERNAME"))
     parser.add_argument("--country-code", default=os.environ.get("ROOMBAPY_PRIME_COUNTRY", "US"))
-    parser.add_argument("--blid", default=None, help="Optional: gezielt diesen Roboter waehlen statt des ersten gefundenen")
+    parser.add_argument("--blid", default=None, help="Optional: target this specific robot instead of the first one found")
     parser.add_argument(
         "--allow-writes",
         action="store_true",
-        help="Erlaubt den reversiblen Favoriten-Rundlauftest (anlegen+pruefen+loeschen). "
-        "Missionsbefehle/Kartenbearbeitung bleiben davon unberuehrt -- werden nie ausgefuehrt.",
+        help="Allows the reversible favorite round-trip test (create+verify+delete). "
+        "Mission commands/map editing are unaffected by this -- they're never run.",
     )
-    parser.add_argument("--output", default=None, help="Zusaetzlich den Bericht als Markdown-Datei speichern")
+    parser.add_argument("--output", default=None, help="Additionally save the report as a markdown file")
     parser.add_argument(
         "--no-issue-link",
         action="store_true",
-        help="Keinen GitHub-Issue-Link am Ende drucken/oeffnen (falls kein Teilen gewuenscht ist).",
+        help="Don't print/open a GitHub issue link at the end (if you don't want to share).",
     )
     parser.add_argument(
         "--open-browser",
         action="store_true",
-        help="Den Issue-Link am Ende automatisch im Standardbrowser oeffnen, statt ihn nur auszudrucken.",
+        help="Automatically open the issue link in the default browser at the end, instead of just printing it.",
     )
     parser.add_argument(
         "--dump-config",
         default=None,
         metavar="PATH",
-        help="NEU (24. Sitzung). Speichert die tatsaechlichen (redaktierten) Rohantworten aller "
-        "Lese-Endpunkte als JSON unter PATH -- aehnlich der 'Diagnose herunterladen'-Funktion "
-        "einer Home-Assistant-Integration. Fuer Reverse-Engineering/Feldnamen-Abgleich gedacht, "
-        "nicht fuer den taeglichen Gebrauch. Redaktion entfernt Zugangsdaten und offensichtlich "
-        "sensible Felder (Adresse, GPS, WLAN-Zugangsdaten) -- ALLE ANDEREN Werte bleiben "
-        "unveraendert sichtbar. Wird NIE automatisch in den Issue-Link aufgenommen -- bitte vor "
-        "dem Teilen selbst einmal durchsehen.",
+        help="Saves the actual (redacted) raw responses from every read endpoint as JSON under "
+        "PATH -- similar to a Home Assistant integration's 'Download Diagnostics' feature. "
+        "Meant for reverse-engineering/field-name comparison, not everyday use. Redaction removes "
+        "credentials and obviously sensitive fields (address, GPS, WiFi credentials) -- ALL OTHER "
+        "values remain visible unchanged. Never automatically included in the issue link -- "
+        "please review it yourself before sharing.",
     )
     args = parser.parse_args()
 
-    username = args.username or input("Prime-Account-E-Mail: ")
-    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Passwort: ")
+    username = args.username or input("Prime account email: ")
+    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Password: ")
 
-    print(f"\nroombapy-prime Live-Validierung gegen Account fuer Land '{args.country_code}'...")
+    print(f"\nroombapy-prime live validation against account for country '{args.country_code}'...")
     if args.allow_writes:
-        print("--allow-writes gesetzt: ein Test-Favorit wird angelegt und sofort wieder geloescht.")
+        print("--allow-writes set: a test favorite will be created and deleted again immediately.")
     else:
-        print("Rein lesender Modus (Standard). --allow-writes fuer den zusaetzlichen Favoriten-Rundlauftest.")
+        print("Read-only mode (default). Use --allow-writes for the additional favorite round-trip test.")
     if args.dump_config:
-        print(f"--dump-config gesetzt: redaktierte Rohantworten werden zusaetzlich unter {args.dump_config} gespeichert.")
+        print(f"--dump-config set: redacted raw responses will additionally be saved under {args.dump_config}.")
 
     raw_capture: dict[str, Any] = {} if args.dump_config else None
     report = asyncio.run(run(username, password, args.country_code, args.blid, args.allow_writes, raw_capture))
     report.redact(username, password)
 
     ok, failed, skipped = report.summary()
-    print(f"\n== Zusammenfassung: {ok} OK, {failed} fehlgeschlagen, {skipped} uebersprungen ==")
+    print(f"\n== Summary: {ok} OK, {failed} failed, {skipped} skipped ==")
 
     if failed > 0 and not args.dump_config:
         print(
-            "\nTipp: Bei einem Fehlschlag hilft oft ein zusaetzlicher Lauf mit --dump-config "
-            "diagnose.json -- das speichert die tatsaechlichen Rohantworten (nicht nur "
-            "Pass/Fail), was uns bei der Fehlersuche hilft. Wird NIE automatisch geteilt, "
-            "eigene Durchsicht vor dem Anhaengen empfohlen (siehe --help)."
+            "\nTip: after a failure, an additional run with --dump-config diagnose.json often "
+            "helps -- it saves the actual raw responses (not just pass/fail), which helps with "
+            "debugging. Never shared automatically, reviewing it yourself before attaching it is "
+            "recommended (see --help)."
         )
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(report.to_markdown())
-        print(f"Bericht gespeichert unter {args.output}")
+        print(f"Report saved to {args.output}")
 
     if args.dump_config and raw_capture is not None:
         import json
@@ -742,17 +737,16 @@ def main() -> None:
         redacted = _redact_raw_capture(raw_capture, [username, password])
         with open(args.dump_config, "w", encoding="utf-8") as f:
             json.dump(redacted, f, indent=2, default=str, ensure_ascii=False)
-        print(f"Redaktierte Rohantworten gespeichert unter {args.dump_config}")
+        print(f"Redacted raw responses saved to {args.dump_config}")
         print(
-            "  Bitte vor dem Teilen einmal selbst durchsehen -- die Redaktion faengt bekannte "
-            "Faelle ab, kann aber nicht jede moegliche Ueberraschung in unbekannten Antwortformen "
-            "garantieren."
+            "  Please review this yourself before sharing -- the redaction catches known cases, "
+            "but can't guarantee every possible surprise in unfamiliar response shapes."
         )
 
     if not args.no_issue_link:
         issue_url = build_issue_url(report)
-        print("\n== Rueckmeldung an die Maintainer ==")
-        print("Falls du diesen Bericht teilen moechtest (hilft der Bibliothek enorm):")
+        print("\n== Feedback for the maintainers ==")
+        print("If you'd like to share this report (helps the library enormously):")
         print(f"  {issue_url}")
         if args.open_browser:
             webbrowser.open(issue_url)

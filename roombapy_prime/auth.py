@@ -16,11 +16,11 @@ Token lifetime is short (~1 hour) — callers should re-run the full login
 flow rather than trying to refresh in place; there's no known refresh
 endpoint, only re-login.
 
-Seit heute: CloudCredentials + http_base_auth, uebernommen aus
-ha_roomba_plus's bereits produktiv laufender cloud_api.py (dritte,
-unabhaengige Bestaetigungsquelle neben Live-Tests und APK-Analyse) --
-siehe CloudCredentials-Docstring fuer Details und Grenzen dieser
-Uebertragung.
+Also has: CloudCredentials + http_base_auth, carried over from
+ha_roomba_plus's already-production cloud_api.py (a third, independent
+confirmation source alongside live tests and APK analysis) -- see the
+CloudCredentials docstring for details and the limits of this
+carry-over.
 """
 from __future__ import annotations
 
@@ -52,27 +52,26 @@ class AuthError(Exception):
 
 @dataclass(frozen=True)
 class CloudCredentials:
-    """AWS-Cognito-Zugangsdaten zum Signieren von REST-Aufrufen (AWS
-    SigV4) -- getrennt von ConnectionToken, das fuer den AWS-IoT-MQTT-
-    Custom-Authorizer-Weg ist. Zwei unabhaengige Zugangsdaten-Saetze aus
-    derselben Login-Antwort (unter dem "credentials"-Schluessel).
+    """AWS Cognito credentials for signing REST calls (AWS SigV4) --
+    separate from ConnectionToken, which is for the AWS IoT MQTT
+    Custom Authorizer path. Two independent credential sets from the
+    same login response (under the "credentials" key).
 
-    Feldnamen (AccessKeyId, SecretKey, SessionToken, CognitoId,
-    Expiration) 1:1 uebernommen aus ha_roomba_plus's bereits produktiv
-    laufender cloud_api.py -- dort seit Version 3.x genutzt, um die
-    Classic-Protokoll-REST-Endpunkte (/v1/{blid}/pmaps,
-    /v1/{blid}/missionhistory, etc.) zu signieren. Das ist eine
-    dritte, unabhaengige Bestaetigungsquelle (neben Live-Tests und
-    APK-Analyse) -- ABER: nie gegen einen p2maps-Endpunkt oder ein
-    Prime/V4-Konto getestet, nur gegen die Classic-REST-Endpunkte.
-    Ob Prime dieselbe Signierung ueberhaupt braucht, ist eine
-    Uebertragungs-Annahme (siehe rest_client.py), keine bestaetigte
-    Tatsache.
+    Field names (AccessKeyId, SecretKey, SessionToken, CognitoId,
+    Expiration) carried over 1:1 from ha_roomba_plus's already-
+    production cloud_api.py -- used there since version 3.x to sign
+    the Classic-protocol REST endpoints (/v1/{blid}/pmaps,
+    /v1/{blid}/missionhistory, etc.). That's a third, independent
+    confirmation source (alongside live tests and APK analysis) --
+    BUT: never tested against a p2maps endpoint or a Prime/V4 account,
+    only against the Classic REST endpoints. Whether Prime needs the
+    same signing at all is a carry-over assumption (see rest_client.py),
+    not a confirmed fact.
 
-    Expiration ist ein ISO-8601-String ("2026-07-10T17:29:39+00:00"),
-    NICHT ein Unix-Epoch-Int wie ConnectionToken.expires -- andere
-    Formatkonvention fuer denselben Login-Antwort-Payload, im
-    Original-Code unveraendert uebernommen."""
+    Expiration is an ISO-8601 string ("2026-07-10T17:29:39+00:00"),
+    NOT a Unix-epoch int like ConnectionToken.expires -- a different
+    format convention for the same login response payload, carried
+    over unchanged from the original code."""
 
     access_key_id: str
     secret_key: str
@@ -99,8 +98,8 @@ class CloudCredentials:
 
     @property
     def region(self) -> str:
-        """Aus CognitoId extrahiert (Format "region:uuid") -- bestaetigtes
-        Muster aus cloud_api.py's _aws_get()."""
+        """Extracted from CognitoId (format "region:uuid") -- confirmed
+        pattern from cloud_api.py's _aws_get()."""
         return self.cognito_id.split(":")[0]
 
 
@@ -174,17 +173,17 @@ class LoginResult:
     these should fail loudly at login(), not with a confusing KeyError
     deep inside a later REST call).
 
-    irbt_topic_prefix / iot_topic_prefix: NEU, UNSICHER. Noetig, um
-    MQTT-Topics ausserhalb des Shadow-Systems zu bilden (z.B. den
-    Live-Map-Topic, siehe mqtt_client.py's livemap_topic()) --
-    bestaetigt als KONZEPT (core::MQTTTopicResolverAdapter.resolve()
-    liefert "{prefix}/{identifier}", der Prefix kommt aus einer
-    "ServiceDiscoveryData"-Struktur), aber die JSON-Feldnamen hier
-    ("irbtTopicPrefix"/"iotTopicPrefix") sind ein Best-Guess aus den
-    nativen Getter-Namen (getIrbtTopicPrefix()/getIotTopicPrefix()),
-    NICHT aus einer echten JSON-Antwort gelesen. Optional (None wenn
-    nicht vorhanden/falsch benannt) -- kein Gate-Fehler beim Login,
-    da die Unsicherheit zu hoch ist, um das hart zu erzwingen."""
+    irbt_topic_prefix / iot_topic_prefix: NEW, UNCERTAIN. Needed to
+    build MQTT topics outside the shadow system (e.g. the live map
+    topic, see mqtt_client.py's livemap_topic()) -- confirmed as a
+    CONCEPT (core::MQTTTopicResolverAdapter.resolve() returns
+    "{prefix}/{identifier}", the prefix comes from a
+    "ServiceDiscoveryData" structure), but the JSON field names here
+    ("irbtTopicPrefix"/"iotTopicPrefix") are a best guess from the
+    native getter names (getIrbtTopicPrefix()/getIotTopicPrefix()),
+    NOT read from a real JSON response. Optional (None if absent/
+    wrongly named) -- not a gate failure at login, since the
+    uncertainty is too high to enforce this strictly."""
 
     mqtt_endpoint: str
     http_base: str
@@ -282,8 +281,8 @@ async def login(
         robots=login_result.get("robots") or {},
         connection_tokens=connection_tokens,
         raw=login_result,
-        # Best-guess field names (siehe LoginResult-Docstring) -- .get(),
-        # kein Gate-Fehler, da unsicher genug, um nicht hart zu erzwingen.
+        # Best-guess field names (see LoginResult docstring) -- .get(),
+        # not a gate failure, since it's too uncertain to enforce strictly.
         irbt_topic_prefix=deployment.get("irbtTopicPrefix"),
         iot_topic_prefix=deployment.get("iotTopicPrefix"),
     )
@@ -378,8 +377,8 @@ async def _login_irobot(
 
     if result.get("errorCode"):
         msg = result.get("errorMessage") or str(result)
-        # Bekannter, echter Fehlermodus -- 1:1 aus cloud_api.py uebernommen
-        # (dort fuer denselben /v2/login-Endpunkt bestaetigt).
+        # Known, real failure mode -- carried over 1:1 from cloud_api.py
+        # (confirmed there for the same /v2/login endpoint).
         if "mqtt slot" in msg.lower():
             msg = f"Cloud auth rate-limited. Close the iRobot app and try again. ({msg})"
         raise AuthError(f"iRobot cloud login failed: {msg}", result)

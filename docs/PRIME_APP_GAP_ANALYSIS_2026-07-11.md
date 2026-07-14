@@ -1,533 +1,531 @@
-# Detailaudit: Prime-App-Pakete/Analyse vs. roombapy-prime — Stand 11. Juli 2026
+# Detailed audit: Prime app packages/analysis vs. roombapy-prime — status July 11, 2026
 
-## AKTUELLER STAND (nach neunter Sitzung) — diese Zusammenfassung zuerst lesen
+## CURRENT STATE (after ninth session) — read this summary first
 
-Der Rest des Dokuments ist chronologisch (neueste Sitzung oben), gewachsen ueber 9 Sitzungen.
-Diese Zusammenfassung fasst zusammen, was JETZT gilt, ohne die Historie durchsuchen zu muessen.
+The rest of the document is chronological (newest session on top), grown over 9 sessions.
+This summary captures what applies NOW, without needing to search the history.
 
-**Vollstaendig implementiert und bytecode-/quellcode-bestaetigt:**
-Auth-Kette, MQTT-Shadow-Client, alle 11 P2Map-Lese-Endpunkte + Lese-Modelle, V1-Editier-Vokabular
-(9 Kommandos, der tatsaechlich aktive Pfad), Missionssteuerung (`RoutineCommand` inkl. `CommandParams`
-mit 37 Feldern, `Region`/`CommandPolygon`/`PadWetnessParam`), Favoriten (alle 5 Endpunkte inkl. HTTP-
-Methoden), Zeitplaene (`ScheduleOptions`/`HouseholdSchedule`, alle 4 HTTP-Methoden bestaetigt), DND-
-Einstellungen, Reinigungsprofile, Standard-Routinen, Missionshistorie (Anfrage UND Antwort-Top-Level),
-tar.gz-Kartenbuendel (Download+Entpacken), Haushaltslisting (trotz App-seitigem Totcode-Status).
+**Fully implemented and bytecode-/source-code-confirmed:**
+Auth chain, MQTT shadow client, all 11 P2Map read endpoints + read models, V1 edit vocabulary
+(9 commands, the actually active path), mission control (`RoutineCommand` incl. `CommandParams`
+with 37 fields, `Region`/`CommandPolygon`/`PadWetnessParam`), favorites (all 5 endpoints incl. HTTP
+methods), schedules (`ScheduleOptions`/`HouseholdSchedule`, all 4 HTTP methods confirmed), DND
+settings, cleaning profiles, default routines, mission history (request AND response top level),
+tar.gz map bundles (download+unpacking), household listing (despite dead-code status on the app side).
 
-**Echte, aber NICHT weiter aufloesbare Luecken** (brauchen ein echtes Geraet oder sind strukturell
-unerreichbar durch Analyse):
-- Exaktes Envelope-Format der V1-Editier-Kommandos (Diskriminator-Schluessel unbekannt, custom
-  Serializer nicht dekompilierbar)
-- `irbt_topic_prefix`s exakter JSON-Feldname (Konzept bestaetigt, String nicht gefunden)
-- p2maps-Auth-Mechanismus: SigV4-Annahme bleibt Analogie zu Classic, Primes eigener Code delegiert
-  nachweislich an native `accountService.sendRequest()` -- prinzipiell nie aus Kotlin/Java-Code
-  bestaetigbar, nur durch echten Traffic-Capture
-- Dateibenennung innerhalb des tar.gz-Kartenbuendels
-- `HouseholdSettingOptions`-Struktur, 16 von 20 `MissionTimelineEvent`-Unterereignistypen (nur
-  PlanEvent/PolygonEvent/TravelEvent/TraversalEvent im Detail typisiert -- Aufwand/Nutzen-Grenze)
-- Teaming/Mehrgeraete-Koordination -- nicht untersucht, braucht mehrere Testgeraete im Haushalt
+**Genuine, but NOT further resolvable gaps** (need a real device or are structurally
+unreachable through analysis):
+- Exact envelope format of the V1 edit commands (discriminator key unknown, custom
+  serializer not decompilable)
+- `irbt_topic_prefix`'s exact JSON field name (concept confirmed, string not found)
+- p2maps auth mechanism: the SigV4 assumption remains an analogy to Classic, Prime's own code
+  provably delegates to a native `accountService.sendRequest()` -- in principle never
+  confirmable from Kotlin/Java code, only through a real traffic capture
+- File naming inside the tar.gz map bundle
+- `HouseholdSettingOptions` structure, 16 of 20 `MissionTimelineEvent` sub-event types (only
+  PlanEvent/PolygonEvent/TravelEvent/TraversalEvent typed in detail -- effort/benefit limit)
+- Teaming/multi-device coordination -- not investigated, needs multiple test devices in the household
 
-**Bekannte False-Positives aus frueheren Sitzungen, seither aufgeloest:**
-- "Furniture-Editierbefehl fehlen 2 Felder" (B2 unten) -- war ein Vergleichsfehler
-  Lese-Modell-vs-Schreib-Modell; das reale `EditMapV2Request.Furniture` hat nur 4 Felder
-  (geometry/id/type/userModified), exakt was die Bibliothek bereits hatte
-- "V1 ist fuer aeltere Firmware" -- falsch, V1 ist schlicht der einzige aktive Pfad (alle
-  Firmware-Generationen), V2 ist komplett totes Gewebe
-- Alter C1-Abschnitt unten ("Missionssteuerung nicht baubar") -- durch spaetere Sitzungen ueberholt,
-  Missionssteuerung ist implementiert
+**Known false positives from earlier sessions, since resolved:**
+- "Furniture edit command missing 2 fields" (B2 below) -- was a comparison error
+  read-model-vs-write-model; the real `EditMapV2Request.Furniture` only has 4 fields
+  (geometry/id/type/userModified), exactly what the library already had
+- "V1 is for older firmware" -- wrong, V1 is simply the only active path (all
+  firmware generations), V2 is completely dead code
+- Old C1 section below ("mission control not buildable") -- superseded by later sessions,
+  mission control is implemented
 
-**Testabdeckung:** 139/139 Tests gruen, ruff sauber.
+**Test coverage:** 139/139 tests green, ruff clean.
 
-## Nachtrag (elfte Sitzung, selber Tag): Korrektur + Live-Diagnoseskript
+## Addendum (eleventh session, same day): correction + live diagnostics script
 
-**Korrektur:** Die in der neunten Sitzung als Indiz vorgeschlagene Deutung von
-`RoutineCommand.ordered` ("impliziert Sequenzierung mehrerer commandDefs-Eintraege") wurde vom
-Parallelchat zurecht widerlegt: `ha_roomba_plus` (jahrelang produktiv gegen echte Classic-Geraete)
-nutzt `ordered` als reine INTRA-Command-Eigenschaft neben `regions` im selben Kommando-Objekt --
-ob die Regionen INNERHALB dieses einen Kommandos in Reihenfolge angefahren werden oder der Roboter
-optimieren darf. Hat nichts mit der Anzahl separat verschickter Kommandos zu tun. Docstring in
-`models.py` entsprechend korrigiert. Die urspruengliche Frage (iteriert die App ueber mehrere
-`commandDefs`-Eintraege?) bleibt unentschieden.
+**Correction:** The interpretation of `RoutineCommand.ordered` suggested as evidence in the
+ninth session ("implies sequencing of multiple commandDefs entries") was rightly refuted by the
+parallel chat: `ha_roomba_plus` (in production for years against real Classic devices) uses
+`ordered` as a pure INTRA-command property alongside `regions` within the same command object --
+whether the regions WITHIN this one command are visited in order or the robot is allowed to
+optimize. Has nothing to do with the number of separately sent commands. Docstring in
+`models.py` corrected accordingly. The original question (does the app iterate over multiple
+`commandDefs` entries?) remains unresolved.
 
-**Neu: `roombapy_prime/diagnostics.py`** -- ein Live-Validierungsskript, direkt aus der wiederholt
-genannten Kernschwaeche der Bibliothek entstanden (nichts wurde je gegen einen echten Account
-getestet). Rein lesend per Standard (Login, REST-Reads, Shadow-Zustand, Kartenbuendel-Download);
-`--allow-writes` schaltet einen reversiblen Favoriten-Anlegen/Pruefen/Loeschen-Rundlauf frei, der
-live bestaetigen wuerde, ob die drei bisher nur per Bytecode bestaetigten HTTP-Methoden
-(create/update/delete Favorite) tatsaechlich vom Server akzeptiert werden. Missionsbefehle und
-Kartenbearbeitung werden bewusst NIE automatisch ausgefuehrt (Risiko einer echten Aktion am
-physischen Geraet). CLI-Einstiegspunkt `roombapy-prime-validate` in pyproject.toml registriert.
-Rauchtest mit ungueltigen Zugangsdaten bestaetigt sauberes Fehlschlagen (kein Absturz, klarer
-Bericht, Exit-Code 1).
+**New: `roombapy_prime/diagnostics.py`** -- a live validation script, arising directly from the
+repeatedly-cited core weakness of the library (nothing was ever tested against a real account).
+Read-only by default (login, REST reads, shadow state, map bundle download);
+`--allow-writes` unlocks a reversible favorite create/verify/delete round trip, which would
+live-confirm whether the three HTTP methods only confirmed via bytecode so far
+(create/update/delete favorite) are actually accepted by the server. Mission commands and
+map editing are deliberately NEVER run automatically (risk of a real action on the
+physical device). CLI entry point `roombapy-prime-validate` registered in pyproject.toml.
+Smoke test with invalid credentials confirms clean failure (no crash, clear
+report, exit code 1).
 
-Nebenbei eine kleine Luecke geschlossen: `PrimeRobot.get_active_map_versions()` fehlte bisher als
-Wrapper, obwohl die rest_client.py-Version schon lange existierte.
+Also closed a small gap along the way: `PrimeRobot.get_active_map_versions()` had been missing as
+a wrapper, even though the rest_client.py version had already existed for a while.
 
-145/145 Tests gruen (6 neue fuer die testbaren Teile von diagnostics.py -- Report-Klasse und
-Hilfsfunktionen; das eigentliche Live-Skript kann seiner Natur nach nicht ohne echten Account
-getestet werden), ruff sauber.
+145/145 tests green (6 new for the testable parts of diagnostics.py -- Report class and
+helper functions; the actual live script by its nature can't be tested without a real account),
+ruff clean.
 
-**Nachtrag zum Nachtrag (zwoelfte Sitzung):** Auf Wunsch ergaenzt -- das Skript druckt am Ende
-jedes Laufs jetzt einen vorausgefuellten GitHub-"Neues Issue"-Link (Titel + kompletter Bericht als
-Body, URL-kodiert), damit jemand mit einem echten Account die Ergebnisse mit einem Klick teilen
-kann. Davor durchlaeuft der Bericht eine Redaktionsstufe (`Report.redact()`), die jedes woertliche
-Auftreten von Benutzername/Passwort in Fehlertexten durch "[REDACTED]" ersetzt -- Verteidigung in
-der Tiefe, auch wenn Zugangsdaten im Normalfall nirgends in Berichtseintraege geschrieben werden.
-`ISSUE_TRACKER_REPO` ist ein Platzhalter-Konstante (`"OWNER/roombapy-prime"`), die auf den echten
-Repo-Pfad umzustellen ist, sobald das Repo existiert -- der Link funktioniert unabhaengig davon
-(reine URL-Konstruktion, kein API-Aufruf), zeigt bis dahin aber ins Leere; das Skript weist selbst
-darauf hin. `--no-issue-link`/`--open-browser` als zusaetzliche Flags. 150/150 Tests gruen.
+**Addendum to the addendum (twelfth session):** Added on request -- the script now prints a
+pre-filled GitHub "new issue" link at the end of every run (title + full report as
+body, URL-encoded), so someone with a real account can share the results with one click.
+Before that, the report goes through a redaction stage (`Report.redact()`), which replaces
+every literal occurrence of username/password in error texts with "[REDACTED]" -- defense in
+depth, even though credentials are normally never written into report entries anywhere.
+`ISSUE_TRACKER_REPO` is a placeholder constant (`"OWNER/roombapy-prime"`), to be changed to the
+real repo path once the repo exists -- the link works regardless
+(pure URL construction, no API call), but points nowhere until then; the script itself points
+this out. `--no-issue-link`/`--open-browser` as additional flags. 150/150 tests green.
 
-## Nachtrag (zwoelfte Sitzung, selber Tag): Release-Vorbereitung -- LICENSE + CI
+## Addendum (twelfth session, same day): release prep -- LICENSE + CI
 
-Auf die Frage "sind wir release-faehig fuer v0.1 Beta" ehrliche Antwort gegeben: NEIN, "Beta" waere
-irrefuehrend -- kein einziger erfolgreicher Lauf gegen einen echten Account existiert, und die
-Kernfrage (funktioniert Login/Missionssteuerung ueberhaupt gegen den echten Server?) ist komplett
-offen, nicht nur "hat noch Ecken und Kanten". Zwei konkrete, jetzt behobene Blocker unabhaengig
-davon aber erledigt:
+Given the question "are we release-ready for v0.1 Beta", gave an honest answer: NO, "Beta" would be
+misleading -- not a single successful run against a real account exists, and the core question
+(does login/mission control even work against the real server?) is completely
+open, not just "still has rough edges". Two concrete blockers, now fixed regardless, were
+handled anyway:
 
-- **`LICENSE`** (MIT, konsistent mit `roombapy`s eigener Lizenzwahl) angelegt.
-  `pyproject.toml` auf PEP-639-Stil (`license = "MIT"` + `license-files`) umgestellt, inkl.
-  Klassifikatoren -- bewusst `"Development Status :: 2 - Pre-Alpha"`, nicht Beta, passend zur
-  obigen Einschaetzung. Build lokal verifiziert: sdist+wheel bauen sauber, Lizenz landet korrekt in
-  `dist-info/licenses/LICENSE`, Metadaten zeigen `License-Expression: MIT`.
-- **CI verschaerft**: Der Lint-Job hatte bisher `continue-on-error: true` (aus der Zeit, als ruff
-  noch nicht durchgehend sauber war) -- entfernt, da ruff seit mehreren Sitzungen ausnahmslos
-  clean ist. Neuer `build`-Job: baut sdist+wheel, installiert das Wheel in einer frischen,
-  isolierten venv, importiert das Paket -- validiert, dass die Bibliothek tatsaechlich
-  installierbar ist, nicht nur dass die Tests im Repo laufen. Alle drei Schritte lokal
-  durchprobiert, bevor sie ins CI-File kamen.
+- **`LICENSE`** (MIT, consistent with `roombapy`'s own license choice) created.
+  `pyproject.toml` switched to PEP 639 style (`license = "MIT"` + `license-files`), including
+  classifiers -- deliberately `"Development Status :: 2 - Pre-Alpha"`, not Beta, matching the
+  assessment above. Build verified locally: sdist+wheel build cleanly, the license ends up correctly in
+  `dist-info/licenses/LICENSE`, metadata shows `License-Expression: MIT`.
+- **CI tightened**: The lint job previously had `continue-on-error: true` (from when ruff
+  wasn't yet consistently clean) -- removed, since ruff has been unfailingly clean for several
+  sessions. New `build` job: builds sdist+wheel, installs the wheel in a fresh,
+  isolated venv, imports the package -- validates that the library is actually
+  installable, not just that the tests in the repo run. All three steps tried out
+  locally before they went into the CI file.
 
-README's Lizenz-Abschnitt von "TBD" auf "MIT" aktualisiert.
+README's license section updated from "TBD" to "MIT".
 
-150/150 Tests weiterhin gruen, ruff sauber, Build+Install-Verifikation lokal bestaetigt.
+150/150 tests still green, ruff clean, build+install verification confirmed locally.
 
-## Nachtrag (vierzehnte Sitzung, selber Tag): Transportmechanismus fuer Missionsbefehle -- zwei Ketten
-## untersucht, keine bestaetigt (Korrektur nach Nachfrage)
+## Addendum (fourteenth session, same day): transport mechanism for mission commands -- two chains
+## investigated, none confirmed (correction after a follow-up question)
 
-Auf Bitte des Parallelchats (MVP-Frage: MQTT, REST, oder Shadow fuer den Missionsstart?) wurde
-`liblegacyCore.so` und `libcorebase.so` vollstaendig mit Ghidra analysiert. Eine vielversprechende
-Kette wurde gefunden und zunaechst als bestaetigt behandelt -- auf Nachfrage genauer geprueft, dabei
-ein echter Widerspruch entdeckt. Beide Ketten hier dokumentiert, keine davon tragfaehig:
+At the parallel chat's request (MVP question: MQTT, REST, or shadow for starting a mission?),
+`liblegacyCore.so` and `libcorebase.so` were fully analyzed with Ghidra. One promising
+chain was found and initially treated as confirmed -- checked more closely on follow-up, finding a
+genuine contradiction. Both chains documented here, neither viable:
 
-**Kette A (klassischer Shadow):** urspruenglicher Stand, aus einem generischen String-Fund
-(`"$aws/things/%s/shadow/update"`) gefolgert. Dieser String ist generisch (nicht Missions-
-spezifisch), die Wahl "klassisch statt benannt" war selbst nie eigenstaendig belegt.
+**Chain A (classic shadow):** original state, concluded from a generic string finding
+(`"$aws/things/%s/shadow/update"`). This string is generic (not mission-
+specific), the choice "classic instead of named" was itself never independently substantiated.
 
-**Kette B (NAMED "rw-settings"-Shadow, untersucht und wieder verworfen):**
+**Chain B (NAMED "rw-settings" shadow, investigated and discarded again):**
 ```
-CloudCapableMissionUIService::sendCommandJson(json)  [AWS-Zweig]
-  -> vermutet: PMIAssetService::postCommand(type, json)   [Vtable-Slot 0x38]
+CloudCapableMissionUIService::sendCommandJson(json)  [AWS branch]
+  -> suspected: PMIAssetService::postCommand(type, json)   [vtable slot 0x38]
     -> getMqttTopic(type)
       -> ThingShadowConstants::supportedNamedShadowTopics()[5] == "rw-settings"
 ```
-Bei genauer Pruefung (Argumentzahl-Abgleich, nicht nur thematische Plausibilitaet) zeigte sich:
-`sendCommandJson()`s tatsaechliche Aufrufstelle uebergibt nur EIN String-Argument, waehrend
-`PMIAssetServiceImpl::postCommand()` bestaetigt ZWEI braucht (`mov x21, x2` bei dessen eigenem
-Funktionseintritt, aus der urspruenglichen Disassemblierung). Die Verbindung sendCommandJson ->
-postCommand war also nur thematisch plausibel (beide "nehmen einen JSON-String"), nicht durch
-Argumentabgleich bestaetigt -- vermutlich falsch. Zusaetzlich: die VOLLSTAENDIGE
-`mapCommandsToNamedTopics()`-Tabelle (die postCommand fuettert, alle 14 Eintraege durchgesehen:
+On closer inspection (argument-count matching, not just thematic plausibility), it turned out:
+`sendCommandJson()`'s actual call site passes only ONE string argument, while
+`PMIAssetServiceImpl::postCommand()` confirmedly needs TWO (`mov x21, x2` at its own
+function entry, from the original disassembly). The connection sendCommandJson ->
+postCommand was thus only thematically plausible (both "take a JSON string"), not confirmed by
+argument matching -- presumably wrong. Additionally: the COMPLETE
+`mapCommandsToNamedTopics()` table (which feeds postCommand, all 14 entries reviewed:
 `SetBinPauseCommand`, `SetCarpetBoostCommand`, `SetEdgeCleanCommand`, `SetSuctionLevelCommand`,
 `SetRobotPadWetnessCommand`, `SetAssetLanguageCommand`, `SetEchoCommand`, `AssetScheduleCommand`,
 `AssetNameCommand`, `SetAssetPreferencesCommand`, `SetMapUploadAllowedCommand`,
-`SetMultiPassCommand`, `SetRobotPadPlateWetnessCommand`, `SetRobotRankOverlapCommand`) deckt
-ausschliesslich EINSTELLUNGS-Kommandos ab -- kein einziges Missions-Start/Clean/Dock-Kommando war
-darunter, selbst wenn die Verbindung gestimmt haette.
+`SetMultiPassCommand`, `SetRobotPadPlateWetnessCommand`, `SetRobotRankOverlapCommand`) covers
+exclusively SETTINGS commands -- not a single mission start/clean/dock command was
+among them, even if the connection had been correct.
 
-**Konsequenz:** `send_mission_command()` wurde kurzzeitig auf `"rw-settings"` umgestellt, dann nach
-dieser Pruefung wieder auf den klassischen Shadow zurueckgesetzt. Der Docstring dokumentiert jetzt
-ehrlich beide untersuchten, keine bestaetigte Kette. Dies bleibt der genuin unsicherste Teil der
-gesamten Bibliothek -- eine definitive Antwort braucht entweder einen vollstaendigeren nativen
-Trace (den tatsaechlichen Aufrufer von `sendCommandJson`s korrektem Gegenstueck finden) oder einen
-echten Live-Test.
+**Consequence:** `send_mission_command()` was briefly switched to `"rw-settings"`, then reset
+to the classic shadow after this check. The docstring now honestly documents both investigated,
+neither confirmed chain. This remains the genuinely most uncertain part of the
+entire library -- a definitive answer needs either a more complete native
+trace (finding the actual caller of `sendCommandJson`'s correct counterpart) or a
+real live test.
 
-**Methodische Lehre:** Eine vtable-Slot-Aufloesung ueber RTTI-Typinfo-Lesen (wie hier fuer
-`AssemblerImpl`s Mehrfachvererbung von `Assembler`+`CoreInjector` gezeigt) ist ein maechtiges
-Werkzeug, ersetzt aber nicht den Argumentzahl-/Signatur-Abgleich an der tatsaechlichen Aufrufstelle
--- thematische Plausibilitaet (”beide nehmen einen String") reicht nicht als Bestaetigung.
+**Methodological lesson:** Resolving a vtable slot via reading RTTI type info (as shown here for
+`AssemblerImpl`'s multiple inheritance from `Assembler`+`CoreInjector`) is a powerful
+tool, but doesn't replace argument-count/signature matching at the actual call site
+-- thematic plausibility ("both take a string") isn't enough as confirmation.
 
-171/171 Tests gruen, ruff sauber.
+171/171 tests green, ruff clean.
 
-## Nachtrag (achtzehnte Sitzung): alle 20 MissionTimelineEvent-Unterereignistypen typisiert
+## Addendum (eighteenth session): all 20 MissionTimelineEvent sub-event types typed
 
-Die in der neunten Sitzung gezogene Aufwandsgrenze wurde aufgehoben. Beim Umsetzen zeigte sich:
-die 4 Typen, die als "bereits im Detail bytecode-inspiziert" dokumentiert waren (PlanEvent,
-PolygonEvent, TravelEvent, TraversalEvent), existierten tatsaechlich nur als Analyse-Notiz im
-Docstring -- nie als echter Code. Alle 20 wurden jetzt neu implementiert:
+The effort limit drawn in the ninth session was lifted. While implementing, it turned out:
+the 4 types documented as "already inspected in detail via bytecode" (PlanEvent,
+PolygonEvent, TravelEvent, TraversalEvent), actually only existed as an analysis note in the
+docstring -- never as real code. All 20 have now been newly implemented:
 
-- **15 Klassen sauber per jadx dekompiliert**: CommandEvent, DiscoveryEvent, ErrorEvent, EvacEvent,
+- **15 classes cleanly decompiled via jadx**: CommandEvent, DiscoveryEvent, ErrorEvent, EvacEvent,
   LiveViewEvent, PadDryEvent, PadWashEvent, PanoramaEvent, RefillEvent, RoomEvent, SubRoomEvent,
-  TentativeLocationEvent, WaypointEvent, WetOutEvent, ZoneEvent
-- **4 weitere per androguard** (jadx hatte sie wie ueblich stillschweigend uebersprungen):
-  PlanEvent, PolygonEvent, TravelEvent, TraversalEvent -- inklusive 4 zugehoeriger Enums
+- **4 more via androguard** (jadx had silently skipped them as usual):
+  PlanEvent, PolygonEvent, TravelEvent, TraversalEvent -- including 4 corresponding enums
   (PlanType, PlanUpcoming, TravelDestination, TraversalType)
-- `MissionTimelineEvent` selbst: androguard-bestaetigt GENAU 20 Unterereignis-Felder (nicht 19
-  Klassen -- `relocalizing` und `tentativeLocation` teilen sich denselben Typ
-  `TentativeLocationEvent`, zwei Felder, eine Klasse)
-- `MissionHistoryEntry.timeline` von rohem dict auf `list[MissionTimelineEvent]` umgestellt,
-  `parse_mission_timeline()` neu
+- `MissionTimelineEvent` itself: androguard-confirmed EXACTLY 20 sub-event fields (not 19
+  classes -- `relocalizing` and `tentativeLocation` share the same type
+  `TentativeLocationEvent`, two fields, one class)
+- `MissionHistoryEntry.timeline` switched from a raw dict to `list[MissionTimelineEvent]`,
+  `parse_mission_timeline()` new
 
-**Interessanter Nebenbefund**: `PlanEvent.ordered` (Int) -- eine weitere Instanz des `ordered`-Musters,
-diesmal eindeutig als Intra-Event-Positionsangabe innerhalb der `upcoming`-Liste, nicht als
-Kommando-Sequenzierung. Zusaetzlicher, unabhaengiger Beleg fuer die von ha_roomba_plus schon
-frueher korrigierte Lesart von `RoutineCommand.ordered` (siehe Nachtrag elfte Sitzung).
+**Interesting side finding**: `PlanEvent.ordered` (Int) -- another instance of the `ordered` pattern,
+this time clearly as an intra-event position indicator within the `upcoming` list, not as
+command sequencing. Additional, independent evidence for the reading already corrected earlier
+by ha_roomba_plus for `RoutineCommand.ordered` (see addendum, eleventh session).
 
-205/205 Tests weiterhin gruen (25 neue), ruff sauber.
+205/205 tests still green (25 new), ruff clean.
 
-## Nachtrag (zwanzigste Sitzung): ERSTER erfolgreicher Live-Lauf ueberhaupt
+## Addendum (twentieth session): FIRST successful live run ever
 
-Ein Nutzer (johnnyh1975 selbst, echtes Prime-Konto, BLID 80B2841450310780) hat
-`roombapy-prime-validate` zum ersten Mal in der Geschichte dieses Projekts gegen einen echten
-Server laufen lassen. Ergebnis: **7 OK, 1 fehlgeschlagen, 4 uebersprungen.**
+A user (johnnyh1975 themselves, real Prime account, BLID 80B2841450310780) ran
+`roombapy-prime-validate` for the first time in this project's history against a real
+server. Result: **7 OK, 1 failed, 4 skipped.**
 
-**Bestaetigt live, zum ersten Mal ueberhaupt:**
-- Die komplette Login-Kette (Discovery -> Gigya -> iRobot-Auth) funktioniert gegen einen echten Server
-- MQTT-Verbindung (AWS-IoT-Custom-Authorizer) funktioniert
-- `get_state()` (klassischer Shadow) funktioniert
+**Confirmed live, for the first time ever:**
+- The complete login chain (discovery -> Gigya -> iRobot auth) works against a real server
+- MQTT connection (AWS IoT custom authorizer) works
+- `get_state()` (classic shadow) works
 - `get_favorites()`, `get_mission_history()`, `get_user_households()`, `get_active_map_versions()`
-  funktionieren alle REST-seitig
+  all work REST-side
 
-**Eine Fehlermeldung, aber keine neue Erkenntnis noetig -- sie bestaetigt eine bereits
-dokumentierte Vorhersage:** `get_settings()` (der benannte "rw-settings"-Shadow) lief in den
-Timeout. Der Docstring dieser Methode sagte bereits vorher: "antwortet nur auf SMART-Tier, laeuft
-auf EPHEMERAL in den Timeout (kein Fehler)". Falls der Testnutzer ein EPHEMERAL-Tier-Geraet hat
-(aeltere Prime-Generation), ist das die erste LIVE-Bestaetigung dieser strukturellen Vorhersage,
-kein Bug.
+**One error message, but no new insight needed -- it confirms an already
+documented prediction:** `get_settings()` (the named "rw-settings" shadow) timed
+out. This method's docstring had already said: "only responds on SMART tier, times
+out on EPHEMERAL (not a bug)". If the test user has an EPHEMERAL-tier device
+(older Prime generation), this is the first LIVE confirmation of this structural
+prediction, not a bug.
 
-**Ein echter, konkreter Bug gefunden und behoben:** Der Nutzer meldete, sein Roboter reinige seit
-Monaten nach Zeitplan -- die Diagnose "keine aktive Kartenversion gefunden" konnte also nicht
-stimmen. Ursache gefunden: `diagnostics.py` suchte nach den Feldern `p2mapId`/`id` in der
-`get_active_map_versions()`-Antwort -- aber `rest_client.py`s EIGENER Docstring fuer dieselbe
-Methode dokumentierte bereits seit der allerersten Sitzung, dass die Antwort mindestens `mapId`
-und `mapVersionId` enthaelt. Reiner Eigenfehler im Diagnoseskript, nicht im REST-Client selbst.
-Behoben: `mapId` als primaeres Feld ergaenzt, zusaetzliche Debug-Ausgabe (zeigt die tatsaechlichen
-Schluessel der Antwort), falls kuenftig wieder kein bekanntes Feld greift.
+**A genuine, concrete bug found and fixed:** The user reported their robot had been cleaning on
+schedule for months -- so the diagnosis "no active map version found" couldn't be right.
+Cause found: `diagnostics.py` searched for the fields `p2mapId`/`id` in the
+`get_active_map_versions()` response -- but `rest_client.py`'s OWN docstring for the same
+method had already documented since the very first session that the response contains at least `mapId`
+and `mapVersionId`. A pure bug in the diagnostics script itself, not in the REST client itself.
+Fixed: `mapId` added as a primary field, additional debug output (shows the actual
+keys of the response) in case no known field matches again in the future.
 
-Das ist der erste Beweis, dass das Diagnoseskript selbst als Werkzeug funktioniert -- es hat
-sofort einen echten, konkreten, behebbaren Fehler aufgedeckt, genau wie beabsichtigt.
+This is the first proof that the diagnostics script itself works as a tool -- it
+immediately uncovered a real, concrete, fixable bug, exactly as intended.
 
-## Nachtrag (einundzwanzigste Sitzung): Diagnoseskript erweitert, auf Nachfrage
+## Addendum (twenty-first session): diagnostics script extended, on request
 
-Direkt nach dem ersten Live-Ergebnis um vier Dinge ergaenzt, die beim naechsten Lauf mehr
-Information liefern sollen:
+Right after the first live result, four things were added that should provide more
+information on the next run:
 
-1. **Drei neue, sichere Lesezugriffe** (seit ihrer Einfuehrung nie ins Diagnoseskript
-   aufgenommen): `get_robot_parts()`, `get_serial_number_data()`, `get_notifications()`.
-2. **Automatische Geraeteinfo-Extraktion** (`_report_device_info()`): versucht, Modell/SKU,
-   Firmware-Version, Name und Faehigkeiten-Feld aus `get_state()`s Antwort zu lesen (Kandidaten-
-   Feldnamen sind Vermutungen, nie an einer echten Antwort verifiziert) -- meldet IMMER
-   zusaetzlich alle tatsaechlich vorhandenen Top-Level-Schluessel der Antwort, damit ein falscher
-   Kandidat beim naechsten Lauf korrigiert werden kann, statt stillschweigend nichts zu finden.
-3. **Explizite Tier-Vermutung** (`_report_tier_inference()`): macht die "SMART vs. EPHEMERAL"-
-   Ableitung aus `get_settings()`s Erfolg/Fehlschlag als eigenen, klar lesbaren Bericht-Eintrag
-   sichtbar, statt nur implizit aus einem FEHLGESCHLAGEN-Eintrag ablesbar zu sein.
+1. **Three new, safe reads** (never added to the diagnostics script
+   since their introduction): `get_robot_parts()`, `get_serial_number_data()`, `get_notifications()`.
+2. **Automatic device info extraction** (`_report_device_info()`): tries to read model/SKU,
+   firmware version, name, and capabilities field from `get_state()`'s response (candidate
+   field names are guesses, never verified against a real response) -- ALWAYS additionally
+   reports all actual top-level keys of the response, so a wrong
+   candidate can be corrected on the next run, instead of silently finding nothing.
+3. **Explicit tier guess** (`_report_tier_inference()`): makes the "SMART vs. EPHEMERAL"
+   inference from `get_settings()`'s success/failure visible as its own, clearly readable report
+   entry, instead of being only implicitly readable from a FAILED entry.
 
-Direkter Auslöser: der erste Live-Nutzer musste manuell nach seinem Robotermodell gefragt werden,
-um die Tier-Vermutung zu pruefen -- das sollte das Skript kuenftig selbst herausfinden.
+Direct trigger: the first live user had to be manually asked about their robot model,
+to check the tier guess -- the script should figure this out on its own in the future.
 
-210/210 Tests gruen (16 neue fuer die beiden neuen Hilfsfunktionen), ruff sauber. Rauchtest mit
-ungueltigen Zugangsdaten weiterhin sauber (Login-Gate greift vor den neuen Pruefungen, kein
-Regressionsrisiko).
+210/210 tests green (16 new for the two new helper functions), ruff clean. Smoke test with
+invalid credentials still clean (login gate fires before the new checks, no
+regression risk).
 
-## Nachtrag (zweiundzwanzigste Sitzung): dieselbe Luecke bei household_id gefunden und behoben
+## Addendum (twenty-second session): same gap found and fixed for household_id
 
-Auf Nachfrage ("brauchen wir noch weitere Diagnose-Details?") systematisch geprueft, wo sonst noch
-dieselbe Art Fehler wie beim Karten-Bug lauern koennte: geratene Feldnamen ohne Debug-Fallback bei
-Fehlschlag. Gefunden: `household_id = _extract_first_id(households, ["householdId", "id"])` fuer
-den Zeitplan-/DND-Pfad hat exakt dasselbe Risiko -- `get_user_households()` ist selbst als
-Analogie/unbestaetigt dokumentiert, die Feldnamen sind reine Vermutung.
+On follow-up ("do we need further diagnostic details?"), systematically checked where else
+the same kind of bug as the map bug could be lurking: guessed field names without a debug
+fallback on failure. Found: `household_id = _extract_first_id(households, ["householdId", "id"])` for
+the schedule/DND path has exactly the same risk -- `get_user_households()` is itself documented as
+an analogy/unconfirmed, the field names are pure guesswork.
 
-Behoben mit einer neuen, wiederverwendbaren `_shallow_summary()`-Hilfsfunktion: fasst eine
-unbekannte Antwortstruktur fuer die Debug-Ausgabe zusammen (Schluessel + Werttypen, NIE
-tatsaechliche Werte -- bewusst so, damit auch bei unerwarteten Antwortformen keine potenziell
-sensiblen Daten wie Adressen oder Namen in einem geteilten Bericht landen). Sowohl die
-Karten-ID- als auch die household_id-Extraktion nutzen jetzt denselben Mechanismus, statt
-zweier leicht unterschiedlicher Ad-hoc-Loesungen.
+Fixed with a new, reusable `_shallow_summary()` helper function: summarizes an
+unknown response structure for debug output (keys + value types, NEVER
+actual values -- deliberately so, so that even with unexpected response shapes, no potentially
+sensitive data like addresses or names ends up in a shared report). Both the
+map ID and the household_id extraction now use the same mechanism, instead of
+two slightly different ad-hoc solutions.
 
-214/214 Tests gruen (4 neue fuer `_shallow_summary`, davon einer explizit gegen Werte-Leckage),
-ruff sauber. Rauchtest weiterhin unauffaellig.
+214/214 tests green (4 new for `_shallow_summary`, one of them explicitly against value
+leakage), ruff clean. Smoke test still unremarkable.
 
-## Nachtrag (dreiundzwanzigste Sitzung): zweiter Live-Lauf -- Tier-Vermutung live bestaetigt
+## Addendum (twenty-third session): second live run -- tier guess confirmed live
 
-chairstacker hat nach Entfernen eines alten Roomba 675 vom Account erneut getestet: **8 OK, 0
-fehlgeschlagen, 4 uebersprungen** -- ein sauberer Lauf. Wichtigste Bestaetigung: `get_settings()`
-(der benannte "rw-settings"-Shadow) hat diesmal geantwortet -- der vorherige Timeout lag also
-tatsaechlich am falschen (alten, stillgelegten) BLID, nicht an einer echten Tier-Einschraenkung
-des aktuellen Geraets. Die vorher zurueckgenommene Tier-Vermutung fuer DIESES konkrete Geraet
-(Roomba 405, SKU G185020, Firmware p25-405+9.3.7+I4.6.150 -- via dorita980 bestaetigt, nicht aus
-roombapy-prime selbst) ist damit gegenstandslos -- es antwortet, ist also SMART-Tier-faehig.
+chairstacker tested again after removing an old Roomba 675 from the account: **8 OK, 0
+failed, 4 skipped** -- a clean run. Most important confirmation: `get_settings()`
+(the named "rw-settings" shadow) responded this time -- the previous timeout was therefore
+actually due to the wrong (old, retired) BLID, not a genuine tier limitation
+of the current device. The previously walked-back tier guess for THIS specific device
+(Roomba 405, SKU G185020, firmware p25-405+9.3.7+I4.6.150 -- confirmed via dorita980, not from
+roombapy-prime itself) is thus moot -- it responds, so it's SMART-tier capable.
 
-**Kartenversions-Problem besteht weiterhin, trotz des Feldnamen-Fixes aus der letzten Sitzung.**
-Wahrscheinlichste Erklaerung: chairstacker hat vermutlich noch die Version VOR dem Fix laufen
-lassen (kein `git pull`/Neuinstallation zwischen den Laeufen). Um das fuer den naechsten Lauf in
-JEDEM Fall aufzuklaeren (auch falls `get_active_map_versions()` tatsaechlich eine leere Liste
-liefert, was der Feldnamen-Fix nicht beheben wuerde), wurde die Debug-Ausgabe erweitert: der
-Skip-Text bei "keine aktive Kartenversion gefunden" zeigt jetzt IMMER die tatsaechliche
-Antwortstruktur (leere Liste vs. Daten mit unbekannten Feldern sind jetzt unterscheidbar).
+**The map version problem still persists, despite the field name fix from the last
+session.** Most likely explanation: chairstacker presumably was still running the version FROM
+BEFORE the fix (no `git pull`/reinstall between runs). To clarify this for the next run in
+EVERY case (even if `get_active_map_versions()` genuinely returns an empty list,
+which the field name fix wouldn't fix), the debug output was expanded: the
+skip text for "no active map version found" now ALWAYS shows the actual
+response structure (an empty list vs. data with unknown fields are now distinguishable).
 
-214/214 Tests weiterhin gruen, ruff sauber.
+214/214 tests still green, ruff clean.
 
-## Nachtrag (vierundzwanzigste Sitzung): Diagnoseskript-Abdeckung geprueft, echte Luecken geschlossen
+## Addendum (twenty-fourth session): diagnostics script coverage checked, real gaps closed
 
-Auf Nachfrage ("testen wir eigentlich die volle Funktionalitaet?") systematisch mit `comm` gegen
-`prime_robot.py`s gesamten Methoden-Katalog abgeglichen. Ergebnis: NEIN, nicht vollstaendig --
-aber die Luecken waren zum Teil beabsichtigt (alle schreibenden/destruktiven Operationen: Zeitplan-
+On follow-up ("are we actually testing full functionality?"), systematically compared with `comm` against
+`prime_robot.py`'s entire method catalog. Result: NO, not completely --
+but the gaps were partly intentional (all write/destructive operations: schedule
 CRUD, `set_dnd_settings`, `set_setting`, `reset_robot`, `edit_map`, `send_mission_command` --
-bleiben bewusst aussen vor, siehe Sicherheitsprinzip) und zum Teil reines Versehen:
-`get_live_map_stream()` und `watch_state()` sind beide rein lesend, wurden aber nie einbezogen.
-Beide jetzt ergaenzt -- `watch_state()` zeitlich auf 3 Sekunden begrenzt (kein Delta zu bekommen
-gilt als OK, nicht als Fehler, da der Roboter sich dafuer aktiv aendern muesste).
+deliberately left out, see safety principle) and partly pure oversight:
+`get_live_map_stream()` and `watch_state()` are both read-only, but were never included.
+Both now added -- `watch_state()` time-bounded to 3 seconds (getting no delta
+counts as OK, not a failure, since the robot would need to actively change for that).
 
-**Groessere Ergaenzung: `--dump-config PATH`.** Auf die Frage "koennen wir nicht auch eine
-Diagnose-Config-Datei wie bei einer Integration zurueckmelden" hin umgesetzt -- direkt inspiriert
-von Home Assistants "Diagnose herunterladen"-Funktion. Anders als der normale Bericht (der nur
-Pass/Fail zeigt und automatisch in den Issue-Link einfliesst) speichert diese Datei die
-TATSAECHLICHEN Rohantworten aller Lese-Endpunkte als JSON -- echte Feldnamen UND echte Werte,
-genau das, was beim chairstacker-Kartenbug gefehlt hat. Zweistufige Redaktion (Zugangsdaten +
-offensichtlich sensible Feldnamen wie Adresse/GPS/WLAN-Zugangsdaten), aber bewusst NICHT so
-umfassend wie beim normalen Bericht -- diese Datei wird deshalb NIE automatisch Teil des
-Issue-Links, sondern muss bewusst einzeln angehaengt werden. Kartenbuendel-Inhalte werden nie
-mitgeschrieben (nur Dateinamen) -- ein Wohnungsgrundriss ist persoenlicher als die meisten anderen
-hier erfassten Daten.
+**Bigger addition: `--dump-config PATH`.** Implemented in response to the question "can't we also
+report back a diagnostic config file like an integration does" -- directly inspired
+by Home Assistant's "download diagnostics" feature. Unlike the normal report (which only
+shows pass/fail and automatically flows into the issue link), this file saves the
+ACTUAL raw responses of every read endpoint as JSON -- real field names AND real values,
+exactly what was missing for the chairstacker map bug. Two-stage redaction (credentials +
+obviously sensitive field names like address/GPS/WiFi credentials), but deliberately NOT as
+thorough as the normal report -- this file is therefore NEVER automatically part of the
+issue link, and must be deliberately attached individually. Map bundle contents are never
+included (only filenames) -- a floor plan is more personal than most other
+data captured here.
 
-Umgesetzt ueber eine kleine Erweiterung von `_try()` (optionaler `capture`-Parameter, der
-erfolgreiche Rohergebnisse in ein separates dict ablegt, getrennt vom eigentlichen Bericht) plus
-eine neue `_redact_raw_capture()`-Funktion.
+Implemented via a small extension of `_try()` (optional `capture` parameter, which
+stores successful raw results in a separate dict, separate from the actual report) plus
+a new `_redact_raw_capture()` function.
 
-221/221 Tests gruen (7 neue), ruff sauber. Rauchtest mit `--dump-config` bestaetigt: kein Absturz,
-korrekte (leere) JSON-Datei bei fehlgeschlagenem Login.
+221/221 tests green (7 new), ruff clean. Smoke test with `--dump-config` confirmed: no crash,
+correct (empty) JSON file on failed login.
 
-## Nachtrag (fuenfundzwanzigste Sitzung): erste --dump-config-Datei ausgewertet -- mehrere echte Bugs UND Modellkorrekturen
+## Addendum (twenty-fifth session): first --dump-config file evaluated -- several real bugs AND model corrections
 
-chairstacker hat die aktualisierte Skriptversion inklusive `--dump-config` gegen denselben (jetzt
-bestaetigt korrekten) Roomba 405 laufen lassen und die vollstaendige, echte JSON-Rohantwort
-geteilt (per privater Nachricht, nicht oeffentlich, wie in `--dump-config`s Warnung empfohlen).
-Das ist die ergiebigste einzelne Datenquelle seit `base_roomba_config.json` selbst.
+chairstacker ran the updated script version including `--dump-config` against the same (now
+confirmed correct) Roomba 405 and shared the complete, real raw JSON response
+(via private message, not public, as recommended in `--dump-config`'s warning).
+This is the most productive single data source since `base_roomba_config.json` itself.
 
-**Definitiv geloest: der Kartenversions-Bug.** Die echte `get_active_map_versions()`-Antwort
-zeigt die tatsaechlichen Feldnamen: `p2map_id`, `entity_type`, `create_time`, `robot_id`, `sku`,
-`active_p2mapv_id`, `last_p2mapv_ts`, `state`, `visible`, `name`, `rooms_metadata` -- KEINS davon
-war `mapId`/`mapVersionId`, der urspruenglichen (falschen) Dokumentationsannahme aus der ersten
-Sitzung. `diagnostics.py` und `rest_client.py`s Docstring korrigiert.
+**Definitively resolved: the map version bug.** The real `get_active_map_versions()` response
+shows the actual field names: `p2map_id`, `entity_type`, `create_time`, `robot_id`, `sku`,
+`active_p2mapv_id`, `last_p2mapv_ts`, `state`, `visible`, `name`, `rooms_metadata` -- NONE of it
+was `mapId`/`mapVersionId`, the original (wrong) documentation assumption from the first
+session. `diagnostics.py` and `rest_client.py`'s docstring corrected.
 
-**Geraeteinfo-Extraktion war strukturell falsch.** Die echte `get_state()`-Antwort zeigt: `sku`
-liegt unter `payload["state"]["reported"]["sku"]`, nicht auf Top-Level. `_report_device_info()`
-entsprechend korrigiert (liest jetzt zusaetzlich `state.reported`, meldet bei Fehlschlag beide
-Ebenen an Schluesseln).
+**Device info extraction was structurally wrong.** The real `get_state()` response shows: `sku`
+lives under `payload["state"]["reported"]["sku"]`, not at the top level. `_report_device_info()`
+corrected accordingly (now additionally reads `state.reported`, reports both
+levels of keys on failure).
 
-**Zwei echte Korrekturen am Kernmodell, beide aus echten Missionshistorie-Daten:**
-- `RegionType`s Werte sind KLEINGESCHRIEBEN ("rid"/"zid"), nicht gross wie urspruenglich aus
-  Bytecode gelesen ("RID"/"ZID") -- die Konstantennamen im Bytecode stimmten, die tatsaechliche
-  Serialisierung nicht. Korrigiert, Python-Member-Namen bleiben gross (nur Werte geaendert).
-- `CommandParams.scrub`s Wire-Schluessel ist tatsaechlich `"swScrub"`, nicht `"scrub"` --
-  ebenfalls korrigiert (Python-Attributname bleibt "scrub" fuer Abwaertskompatibilitaet).
+**Two genuine corrections to the core model, both from real mission history data:**
+- `RegionType`'s values are LOWERCASE ("rid"/"zid"), not uppercase as originally read from
+  bytecode ("RID"/"ZID") -- the constant names in the bytecode were correct, the actual
+- `CommandParams.scrub`'s wire key is actually `"swScrub"`, not `"scrub"` --
+  also corrected (Python attribute name stays "scrub" for backward compatibility).
 
-**Zwei neue Felder ergaenzt**, beide aus echten Daten, vorher unbekannt:
-- `CommandParams.operating_mode` (Wire: "operatingMode", beobachtete Werte 2/32)
-- `RoutineCommand.initiator` (Wire: "initiator", beobachtete Werte "cloud"/"rmtApp" -- wer/was
-  die Mission ausgeloest hat)
+**Two new fields added**, both from real data, previously unknown:
+- `CommandParams.operating_mode` (wire: "operatingMode", observed values 2/32)
+- `RoutineCommand.initiator` (wire: "initiator", observed values "cloud"/"rmtApp" -- who/what
+  triggered the mission)
 
-**Ein wichtiger Ruecknahme: die "SMART-Tier live bestaetigt"-Behauptung aus der dreiundzwanzigsten
-Sitzung war verfrueht.** Derselbe Nutzer, dasselbe Geraet (SKU G185020), zwei Laeufe kurz
-hintereinander -- einmal `get_settings()` erfolgreich, einmal Timeout. Das ist kein stabiles
-Tier-Signal. Docstrings und die automatische Tier-Vermutungsausgabe in `diagnostics.py`
-entsprechend vorsichtiger formuliert ("deutet auf" statt "ist", mit explizitem Hinweis auf die
-beobachtete Inkonsistenz). Offene Hypothese, nicht Code-Fix: moeglicherweise muss der Roboter
-selbst aktiv mit AWS IoT verbunden sein, damit ein benannter Shadow antwortet, waehrend der
-klassische Shadow eventuell aus einem Cache bedient wird -- ungeklaert.
+**One important walk-back: the "SMART tier live confirmed" claim from the twenty-third
+session was premature.** Same user, same device (SKU G185020), two runs shortly
+after each other -- once `get_settings()` succeeded, once it timed out. That's not a stable
+tier signal. Docstrings and the automatic tier-guess output in `diagnostics.py`
+worded more cautiously accordingly ("suggests" instead of "is", with an explicit note about the
+observed inconsistency). An open hypothesis, not a code fix: perhaps the robot
+itself needs to be actively connected to AWS IoT for a named shadow to respond, while
+the classic shadow might be served from a cache -- unresolved.
 
-**Ein neuer, echter, ungeloester Bug:** `get_notifications()` schlaegt live mit HTTP 400 fehl. Die
-URL selbst stimmt mit `base_roomba_config.json` ueberein -- vermutlich liegt es am
-Platzhalter-`app_version`-Wert ("1.0") oder einem fehlenden, in der Konfigurationsdatei nicht
-sichtbaren Parameter. Docstring aktualisiert, als bekannter offener Fehler markiert, kein Fix
-versucht ohne weitere Daten.
+**A new, genuine, unresolved bug:** `get_notifications()` fails live with HTTP 400. The
+URL itself matches `base_roomba_config.json` -- presumably it's the
+placeholder `app_version` value ("1.0") or a missing parameter not visible in the
+configuration file. Docstring updated, marked as a known open bug, no fix
+attempted without further data.
 
-**Reichhaltige Missionshistorie-Rohdaten bestaetigen zusaetzlich** (ohne Code-Aenderung noetig,
-nur zur Kenntnisnahme): `RoutineCommand`s bestehende Feldzuordnungen (`command`, `p2map_id`,
-`ordered`, `user_p2mapv_id`, `regions[].region_id`/`type`) sowie mehrere `CommandParams`-Felder
-(`twoPass`, `suctionLevel`, `carpetBoost`) stimmen 1:1 mit der Dokumentation ueberein -- ein gutes
-Zeichen fuer die Zuverlaessigkeit der urspruenglichen nativen Analyse insgesamt, trotz der oben
-genannten Einzelkorrekturen.
+**Rich mission history raw data additionally confirms** (no code change needed,
+just for reference): `RoutineCommand`'s existing field mappings (`command`, `p2map_id`,
+`ordered`, `user_p2mapv_id`, `regions[].region_id`/`type`) as well as several `CommandParams` fields
+(`twoPass`, `suctionLevel`, `carpetBoost`) match the documentation 1:1 -- a good
+sign for the reliability of the original native analysis overall, despite the
+individual corrections mentioned above.
 
-228/228 Tests gruen (12 neue/aktualisiert), ruff sauber.
+228/228 tests green (12 new/updated), ruff clean.
 
-## Nachtrag (sechsundzwanzigste Sitzung): der Rest der --dump-config-Datei -- vollstaendige Modelle fuer zwei bisher rohe Endpunkte
+## Addendum (twenty-sixth session): the rest of the --dump-config file -- complete models for two previously raw endpoints
 
-chairstacker hatte die 38k-Zeichen-Datei ueber zwei private Nachrichten geteilt; der erste Teil
-wurde in der fuenfundzwanzigsten Sitzung ausgewertet, der zweite Teil (ab der Mitte der
-Verschleissteile-Liste) hier. Enthielt die vollstaendigen, echten Antworten fuer
-`get_serial_number_data()` und `get_active_map_versions()` -- beide bisher nur als rohes JSON
-durchgereicht, jetzt vollstaendig typisiert.
+chairstacker had shared the 38k-character file across two private messages; the first part
+was evaluated in the twenty-fifth session, the second part (starting mid-
+consumable-parts-list) here. Contained the complete, real responses for
+`get_serial_number_data()` and `get_active_map_versions()` -- both previously only passed
+through as raw JSON, now fully typed.
 
-**`get_active_map_versions()`**: Neue Modelle `P2MapVersion` und `RoomMetadataEntry` plus
-`parse_active_map_versions()`. Bestaetigt: ein Account kann mehrere Karten haben (im
-beobachteten Fall zwei: "Whole House" und "Master_Bathroom"). Der wertvollste Einzelfund dabei:
-`rooms_metadata[].room_metadata.operating_mode_defaults` ist ein Dict (Schluessel = Operating-
-Mode-ID als String, z.B. "512"/"32"/"2"), dessen WERTE direkt CommandParams-foermig sind --
-`CommandParams.from_json()` laesst sich unveraendert wiederverwenden. Bestaetigt ausserdem, dass
-`region_type` konsistent kleingeschrieben ist ("rid"/"zid", passend zum Fix aus der letzten
-Sitzung) und dass manche Raeume einen nutzervergebenen Namen haben (z.B. "Bathroom"), andere
-nicht.
+**`get_active_map_versions()`**: New models `P2MapVersion` and `RoomMetadataEntry` plus
+`parse_active_map_versions()`. Confirmed: an account can have multiple maps (in the
+observed case two: "Whole House" and "Master_Bathroom"). The most valuable single finding:
+`rooms_metadata[].room_metadata.operating_mode_defaults` is a dict (keys = operating-
+mode ID as a string, e.g. "512"/"32"/"2"), whose VALUES are directly CommandParams-shaped --
+`CommandParams.from_json()` can be reused unchanged. Also confirms that
+`region_type` is consistently lowercase ("rid"/"zid", matching the fix from the last
+session) and that some rooms have a user-assigned name (e.g. "Bathroom"), others
+don't.
 
-**`get_serial_number_data()`**: Neues Modell `RobotSerialInfo`. Bestaetigt u.a. `family: "Roomba
-Combo"` (ein Saug+Wisch-Kombigeraet), `series: "G1"`, sowie den nutzervergebenen Robotername
+**`get_serial_number_data()`**: New model `RobotSerialInfo`. Confirms, among other things, `family: "Roomba
+Combo"` (a vacuum+mop combo device), `series: "G1"`, and the user-assigned robot name
 ("House_Bot").
 
-**Nebenbei eine unvollstaendige Verdrahtung entdeckt und geschlossen:** `CommandParams.routine_type`
-existierte bereits als Feld (samt Docstring, der bereits auf chairstackers Daten verwies), war
-aber nie an `to_json()`/`from_json()` angebunden -- vervollstaendigt.
+**Also discovered and closed an incomplete wiring:** `CommandParams.routine_type`
+already existed as a field (complete with a docstring that already referenced chairstacker's
+data), but was never wired into `to_json()`/`from_json()` -- completed.
 
-235/235 Tests gruen (7 neue), ruff sauber.
+235/235 tests green (7 new), ruff clean.
 
-## Nachtrag (siebenundzwanzigste Sitzung): detailliertes Review auf Nachfrage -- ein grosser, bisher uebersehener Fund
+## Addendum (twenty-seventh session): detailed review on request -- a large, previously overlooked finding
 
-Auf die Frage "hast du alles verarbeitet, nochmal im Detail reviewen" wurde `MissionHistoryEntry`
-und `MissionCommandRecord` systematisch gegen dieselbe echte Missionshistorie erneut geprueft, die
-schon in der fuenfundzwanzigsten Sitzung vorlag -- dort war der Fokus auf den NEUEN Modellen
-(P2MapVersion etc.), die eigenen, laengst bestehenden Feldzuordnungen wurden nicht erneut
-gegengeprueft. Ergebnis: **fast alle Feldnamen in beiden Klassen waren falsch geraten.**
+In response to the question "did you process everything, please review in detail again", `MissionHistoryEntry`
+and `MissionCommandRecord` were systematically re-checked against the same real mission history that
+had already been available in the twenty-fifth session -- there the focus had been on the NEW models
+(P2MapVersion etc.), the library's own, long-standing field mappings were not re-checked at that time.
+Result: **almost all field names in both classes had been wrongly guessed.**
 
-**`MissionHistoryEntry`, korrigiert:**
+**`MissionHistoryEntry`, corrected:**
 - `robotId` -> `robot_id`
 - `minutesRunning`/`minutesPaused`/`minutesCharging`/`minutesDone` -> `runM`/`pauseM`/`chrgM`/`doneM`
 - `squareFeetCovered` -> `sqft`
 - `numberOfEvacuations` -> `evacs`
 - `endedOnDock` -> `eDock`
-- `doneCode`/`doneRaw` -> `done`/`done_raw` (beide scheinen denselben Wert doppelt zu fuehren)
-- Der Missionsbefehl selbst steht unter dem Schluessel `cmd`, nicht `command`
+- `doneCode`/`doneRaw` -> `done`/`done_raw` (both seem to carry the same value twice)
+- The mission command itself is under the key `cmd`, not `command`
 
-**`MissionCommandRecord`, korrigiert:**
+**`MissionCommandRecord`, corrected:**
 - `mapId` -> `p2map_id`, `mapVersionId` -> `user_p2mapv_id`
-- `regions` von roher Liste auf `list[Region]` umgestellt (Struktur inzwischen bekannt)
+- `regions` switched from a raw list to `list[Region]` (structure now known)
 
-**`Region.from_json()` fehlte komplett** (nur `to_json()` existierte, da urspruenglich nur fuers
-Senden gebaut) -- ergaenzt. Echte Daten zeigen beim Lesen den Schluessel `region_id`, nicht `id`
-wie beim Senden ueber `to_json()` -- moeglicherweise zwei unterschiedliche Wire-Formen fuer
-denselben Zweck, beide werden jetzt akzeptiert.
+**`Region.from_json()` was completely missing** (only `to_json()` existed, since originally only built
+for sending) -- added. Real data shows the key `region_id` when reading, not `id`
+as when sending via `to_json()` -- possibly two different wire forms for
+the same purpose, both are now accepted.
 
-**Ein zweites Vorkommen desselben Gross-/Kleinschreibungs-Musters wie bei `RegionType`:**
-`DoneCode.OK` war als `"OK"` bestaetigt (androguard-Konstantenname), echte Daten zeigen `"ok"`
-(kleingeschrieben). Alle 19 Werte auf Kleinschreibung umgestellt -- nur "ok" ist direkt bestaetigt,
-der Rest folgt demselben, jetzt zweimal beobachteten Muster (durchgaengige Kleinschreibung
-wahrscheinlicher als gemischte Schreibung innerhalb eines Enums). **Methodische Konsequenz:**
-saemtliche andere ueber androguard "bestaetigten" Enums in dieser Bibliothek (CleaningMode,
+**A second occurrence of the same case pattern as `RegionType`:**
+`DoneCode.OK` had been confirmed as `"OK"` (androguard constant name), real data shows `"ok"`
+(lowercase). All 19 values changed to lowercase -- only "ok" is directly confirmed,
+the rest follows the same, now twice-observed pattern (consistent lowercasing
+more likely than mixed casing within an enum). **Methodological consequence:**
+all other "confirmed" enums via androguard in this library (CleaningMode,
 VacuumPowerLevel, PadCategory, RankOverlap, CoverageStrategy, PlanType, PlanUpcoming,
-TravelDestination, TraversalType) tragen jetzt dasselbe Risiko einer Gross-/Kleinschreibungs-
-Abweichung, bis echte Daten dafuer vorliegen -- `_enum_or_none()` faengt das zwar ab (kein Absturz,
-Fallback auf rohen String), aber niemand sollte sich derzeit auf die exakte Gross-/Kleinschreibung
-dieser konkreten Enum-Werte verlassen.
+TravelDestination, TraversalType) now carry the same risk of a casing
+mismatch, until real data is available for them -- `_enum_or_none()` does catch this (no crash,
+falls back to the raw string), but no one should currently rely on the exact casing
+of these specific enum values.
 
-**Zwei kleinere Ergaenzungen aus demselben Datensatz:**
-- `CommandParams.no_auto_passes` (Wire: "noAutoPasses") -- gefunden an einer ungewoehnlichen
-  Stelle: eingebettet als string-serialisiertes (Python-repr-artiges, kein direktes JSON)
-  `cmdStr`-Feld in `get_state()`s `cleanSchedule2`-Liste.
-- Neue Modelle `RobotPart`/`RobotPartsInfo` fuer `get_robot_parts()` (bisher rohes JSON).
+**Two smaller additions from the same dataset:**
+- `CommandParams.no_auto_passes` (wire: "noAutoPasses") -- found in an unusual
+  place: embedded as a string-serialized (Python-repr-like, not direct JSON)
+  `cmdStr` field in `get_state()`'s `cleanSchedule2` list.
+- New models `RobotPart`/`RobotPartsInfo` for `get_robot_parts()` (previously raw JSON).
 
-**Bewusst weiterhin NICHT modelliert**, zur Kenntnisnahme fuer kuenftige Sitzungen:
-- `get_state()`s `cap`-Objekt (35 Faehigkeits-Flags/-Stufen wie `carpetBoost: 3`, `suctionLvl: 4`,
-  `maps: 6`) -- reichhaltig, aber ein eigenes Modell waere ein groesseres Vorhaben fuer sich
-- `cleanSchedule2` selbst als Ganzes (die im Shadow eingebettete Zeitplanform, separat von den
-  REST-basierten `get_schedules()`/`ScheduleOptions`) -- nur das einzelne `no_auto_passes`-Feld
-  daraus wurde uebernommen
-- Diverse MissionHistoryEntry-Felder ohne erkennbaren Mehrwert fuer eine Home-Automation-
-  Bibliothek (`wlBars`, `startEndWlBars`, `oModeStats`, `saves`, `wifiChannel`, `flags`, `chrgs`,
-  `pauseId`, `nMssn`) -- bleiben ueber `.raw` weiterhin zugaenglich
+**Deliberately still NOT modeled**, for future sessions' reference:
+- `get_state()`'s `cap` object (35 capability flags/levels like `carpetBoost: 3`, `suctionLvl: 4`,
+  `maps: 6`) -- rich, but a dedicated model would be a substantial undertaking on its own
+- `cleanSchedule2` itself as a whole (the schedule form embedded in the shadow, separate from the
+  REST-based `get_schedules()`/`ScheduleOptions`) -- only the single `no_auto_passes` field
+  from it was picked up
+- Various MissionHistoryEntry fields with no recognizable value for a home automation
+  library (`wlBars`, `startEndWlBars`, `oModeStats`, `saves`, `wifiChannel`, `flags`, `chrgs`,
+  `pauseId`, `nMssn`) -- remain accessible via `.raw`
 
-242/242 Tests gruen (14 neue), ruff sauber.
+242/242 tests green (14 new), ruff clean.
 
-## Nachtrag (achtundzwanzigste Sitzung): noch einmal Zeichen fuer Zeichen geprueft, auf explizite Nachfrage
+## Addendum (twenty-eighth session): checked character by character once more, on explicit request
 
-Zwei weitere, kleinere aber echte Funde beim erneuten, diesmal zeichenweisen Durchgehen der
-kompletten Antwort:
+Two further, smaller but genuine findings while going through the
+complete response once more, this time character by character:
 
-**`get_state()` enthaelt entgegen meiner bisherigen Annahme GAR KEIN Firmware-Feld.** Die
-vollstaendige `reported`-Struktur hat genau acht Schluessel (`digiCap`, `nsmip`, `cap`,
-`cleanSchedule2`, `schedHold`, `sku`, `svcEndpoints`, `soldAsSku`) -- keiner davon ist eine
-Firmware-/Softwareversion. `_report_device_info()`s "firmware"-Kandidatensuche wird hier also
-zuverlaessig leer bleiben, nicht weil etwas falsch waere, sondern weil das Feld schlicht nicht in
-dieser Antwort steckt. Firmware kommt stattdessen aus `get_serial_number_data()` oder aus
-Missionshistorie-Eintraegen (beide fuehren `softwareVer`). Docstring entsprechend klargestellt,
-damit ein leeres Ergebnis hier nicht als Fehler missverstanden wird.
+**`get_state()` contains, contrary to my previous assumption, NO firmware field AT ALL.** The
+complete `reported` structure has exactly eight keys (`digiCap`, `nsmip`, `cap`,
+`cleanSchedule2`, `schedHold`, `sku`, `svcEndpoints`, `soldAsSku`) -- none of them is a
+firmware/software version. `_report_device_info()`'s "firmware" candidate search will therefore
+reliably stay empty here, not because something is wrong, but because the field simply isn't in
+this response. Firmware instead comes from `get_serial_number_data()` or from
+mission history entries (both carry `softwareVer`). Docstring clarified accordingly,
+so an empty result here isn't misunderstood as a bug.
 
-**Eine bestaetigte Querverbindung, rein informativ:** `get_state()`s `svcEndpoints.svcDeplId`
-("v007") stimmt exakt mit dem Praefix in `get_live_map_stream()`s MQTT-Topic ueberein
-("v007-irbthbu/things/.../livemap/update"). Bestaetigt, dass dieses Praefix kein Zufallswert ist,
-sondern aus der "Deployment-ID" des Accounts/Geraets stammt -- nuetzlich, falls das Live-Map-Topic
-jemals fuer ein anderes Geraet/Deployment konstruiert werden muss, statt es woertlich zu
-uebernehmen.
+**One confirmed cross-connection, purely informational:** `get_state()`'s `svcEndpoints.svcDeplId`
+("v007") matches exactly the prefix in `get_live_map_stream()`'s MQTT topic
+("v007-irbthbu/things/.../livemap/update"). Confirms this prefix isn't a random value,
+but comes from the account/device's "deployment ID" -- useful if the live-map topic
+ever needs to be constructed for a different device/deployment, instead of copying it
+literally.
 
-**Zusaetzlich bemerkt, bewusst nicht geaendert:** Die in `cleanSchedule2[].cmdStr` eingebettete
-Kommandostruktur nutzt `pmap_id`/`user_pmapv_id` (OHNE die "2"), waehrend ueberall sonst bestaetigt
-`p2map_id`/`user_p2mapv_id` gilt. Da `cleanSchedule2` ohnehin als Ganzes unmodelliert bleibt (siehe
-vorheriger Nachtrag), keine Code-Aenderung noetig -- aber falls diese Struktur spaeter doch
-modelliert wird, ist das ein wichtiger, eigener Namenskonvention-Unterschied, keine Tippfehler-
-Verwechslung.
+**Also noticed, deliberately not changed:** The command structure embedded in
+`cleanSchedule2[].cmdStr` uses `pmap_id`/`user_pmapv_id` (WITHOUT the "2"), while everywhere else
+`p2map_id`/`user_p2mapv_id` is confirmed. Since `cleanSchedule2` remains unmodeled as a whole anyway
+(see previous addendum), no code change is needed -- but if this structure is
+later modeled after all, this is an important, distinct naming-convention difference, not a typo
+mix-up.
 
-**Ehrliche Einschaetzung nach zwei Durchgaengen:** Kein weiterer, aehnlich grosser Fund wie die
-Feldnamen-Korrekturen der siebenundzwanzigsten Sitzung aufgetaucht. Die verbleibenden, bewusst
-unmodellierten Bereiche (cap-Objekt, cleanSchedule2 als Ganzes, diverse Missionshistorie-
-Nebenfelder) sind bereits benannt, nicht uebersehen. Sicher sein kann ich trotzdem nicht zu
-100% -- die einzige Methode, die bisher tatsaechlich Bugs gefunden hat, war der Abgleich gegen
-echte Daten, nicht das erneute Lesen des eigenen Codes; weitere echte Antworten (andere
-Endpunkte, andere Geraete) wuerden vermutlich weitere, aehnliche Fehler aufdecken, so wie es
-bisher bei jeder neuen Datenquelle der Fall war.
+**Honest assessment after two passes:** No further finding of similar size to the
+field name corrections from the twenty-seventh session turned up. The remaining, deliberately
+unmodeled areas (cap object, cleanSchedule2 as a whole, various mission history
+side fields) are already named, not overlooked. Still, I can't be
+100% certain -- the only method that has actually found bugs so far was comparison against
+real data, not re-reading my own code; further real responses (other
+endpoints, other devices) would presumably uncover further, similar errors, just as it
+had been the case with every new data source so far.
 
-242/242 Tests weiterhin gruen, ruff sauber.
+242/242 tests still green, ruff clean.
 
-## Nachtrag (neunundzwanzigste Sitzung): derselbe Bugtyp bei household_id gefunden -- trotz laengst vorliegender Daten uebersehen
+## Addendum (twenty-ninth session): same bug type found for household_id -- overlooked despite the data having been available for a long time
 
-Auf nochmalige Nachfrage ("kannst du noch etwas finden") den Haushaltslisten-Teil der laengst
-vorliegenden echten Antwort erneut geprueft -- diesmal gezielt, nicht nur oberflaechlich als
-"bleibt roh" abgehakt. Ergebnis: **derselbe Fehlertyp wie beim Karten-Bug, diesmal bei
-`household_id`**, und er war die ganze Zeit sichtbar, wurde aber nicht mit derselben Sorgfalt
-gegengeprueft wie die Missionshistorie-Felder.
+On yet another follow-up ("can you still find something"), the household listing part of the
+already long-available real response was checked again -- this time deliberately, not just superficially
+dismissed as "stays raw". Result: **the same error type as with the map bug, this time for
+`household_id`**, and it had been visible the whole time, but wasn't checked with the same
+care as the mission history fields.
 
-`diagnostics.py`s `_extract_first_id(households, ["householdId", "id"])` sucht nach zwei
-camelCase-/generischen Kandidaten -- die tatsaechliche, laengst bekannte Antwort zeigt
-`"household_id"` (snake_case), keiner der beiden Kandidaten passt. Das haette den Zeitplan-/DND-
-Pruefungspfad im Diagnoseskript genauso stillschweigend blockiert wie zuvor bei den Karten.
-Behoben: `"household_id"` als erster Kandidat ergaenzt.
+`diagnostics.py`'s `_extract_first_id(households, ["householdId", "id"])` searches for two
+camelCase/generic candidates -- the actual, long-known response shows
+`"household_id"` (snake_case), neither of the two candidates matches. This would have blocked the schedule/DND
+check path in the diagnostics script just as silently as it did before with the maps.
+Fixed: `"household_id"` added as the first candidate.
 
-**Bei der Gelegenheit ein vollstaendiges Modell fuer `get_user_households()` gebaut**
-(`Household`/`HouseholdRobot`/`HouseholdUser` + `parse_user_households()`), da die Struktur jetzt
-ohnehin vollstaendig bekannt ist. Nebenbei die Docstring-Einschaetzung korrigiert: der Endpunkt
-war als "im aktuellen App-Code totes Gewebe, HTTP-Methode nur Konvention" dokumentiert --
-funktioniert aber live einwandfrei. "Im App-Code unbenutzt" bedeutete hier tatsaechlich nur "diese
-App-Version braucht es nicht", nicht "der Server unterstuetzt es nicht mehr".
+**While at it, built a complete model for `get_user_households()`**
+(`Household`/`HouseholdRobot`/`HouseholdUser` + `parse_user_households()`), since the structure is now
+completely known anyway. Also corrected the docstring assessment: the endpoint
+had been documented as "dead code in the current app, HTTP method just convention" --
+but works flawlessly live. "Unused in the app code" here actually only meant "this
+app version doesn't need it", not "the server no longer supports it".
 
-246/246 Tests gruen (4 neue), ruff sauber.
+246/246 tests green (4 new), ruff clean.
 
-## Nachtrag (dreissigste Sitzung): ein fehlendes Feld, kein falscher Name diesmal
+## Addendum (thirtieth session): a missing field, not a wrong name this time
 
-Auf nochmalige Nachfrage ("und was noch") gefunden: `MissionCommandRecord` hatte kein
-Top-Level-`params`-Feld -- getrennt von `regions[].params`, in der echten Missionshistorie mal
-gesetzt (z.B. `{"profile": "light"}`, beobachtet bei `initiator: "rmtApp"`-Eintraegen), mal
-explizit `null` (bei mehreren `initiator: "cloud"`-Eintraegen). Anders als die bisherigen Funde
-dieser Sitzungsreihe war das kein falsch geratener Feldname, sondern ein komplett fehlendes Feld
--- die Daten dafuer lagen die ganze Zeit vor, wurden aber nie einzeln herausgezogen. Ergaenzt,
-nutzt `CommandParams.from_json()` wie das analoge `regions[].params`.
+On yet another follow-up ("and what else"), found: `MissionCommandRecord` had no
+top-level `params` field -- separate from `regions[].params`, sometimes
+set in real mission history (e.g. `{"profile": "light"}`, observed on `initiator: "rmtApp"`
+entries), sometimes explicitly `null` (on several `initiator: "cloud"` entries). Unlike
+previous findings in this series of sessions, this wasn't a wrongly guessed field name, but a completely missing field
+-- the data for it had been available the whole time, but was never individually extracted. Added,
+uses `CommandParams.from_json()` like the analogous `regions[].params`.
 
-247/247 Tests gruen (1 neu), ruff sauber.
+247/247 tests green (1 new), ruff clean.
 
-## Nachtrag (einunddreissigste Sitzung): programmatischer Vollabgleich statt manuellem Lesen -- der bisher groesste Fund
+## Addendum (thirty-first session): programmatic full comparison instead of manual reading -- the biggest finding so far
 
-Auf explizite Kritik ("das ist zu iterativ, hast du wirklich die vollen Informationen geprueft")
-wurde die Methode geaendert: statt die Daten nochmal von Auge zu lesen, wurden ALLE Feldnamen aus
-der kompletten `diagnose.json` (beide Nachrichten, als echtes Python-Objekt rekonstruiert)
-programmatisch rekursiv extrahiert und gegen jeden `.get()`-Aufruf im Code gehalten. Ergebnis: der
-bisher folgenreichste Fund der gesamten Untersuchung.
+In response to explicit criticism ("this is too iterative, did you really check the full information"),
+the method was changed: instead of reading the data by eye again, ALL field names from
+the complete `diagnose.json` (both messages, reconstructed as a real Python object) were
+programmatically, recursively extracted and checked against every `.get()` call in the code. Result: the
+most consequential finding of the entire investigation so far.
 
-**Die komplette MissionTimelineEvent-Verarbeitung aus der achtzehnten Sitzung war bis zu diesem
-Zeitpunkt komplett wirkungslos.** `parse_mission_timeline()` suchte nach dem Schluessel `"events"`
-innerhalb von `timeline` -- dieser Schluessel existiert in echten Daten schlicht nicht. Die
-tatsaechlichen, reichen Unterereignisse stehen unter `"finEvents"`; eine separate, sparsame
-`"event"`-Liste (nur `type`+`ts`, kein Zusatzobjekt) existiert daneben und enthaelt keine
-zusaetzliche Information. Jede einzelne Mission haette bei jedem bisherigen Nutzer eine leere
-`.timeline`-Liste geliefert, ohne Fehler -- der Bug war vollstaendig stumm.
+**The entire MissionTimelineEvent processing from the eighteenth session had been completely
+ineffective up to this point.** `parse_mission_timeline()` searched for the key `"events"`
+within `timeline` -- this key simply doesn't exist in real data. The
+actual, rich sub-events are under `"finEvents"`; a separate, sparse
+`"event"` list (just `type`+`ts`, no additional object) exists alongside it and contains no
+additional information. Every single mission would have returned an empty
+`.timeline` list for every previous user, with no error -- the bug was completely silent.
 
-**Zusaetzlich, an fast jedem Unterereignistyp: systematisch falsche Feldnamen**, alle demselben
-Muster folgend (Wire-Format nutzt kurze `p2map`-praefigierte Formen, nicht die verboseren
-camelCase-Vermutungen):
+**Additionally, on almost every sub-event type: systematically wrong field names**, all following the same
+pattern (wire format uses short `p2map`-prefixed forms, not the more verbose
+camelCase guesses):
 - `RoomEvent`: `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`, `regionId`->`rid`
 - `TravelEvent`: `destination`->`dest`, `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`,
   `regionId`->`rid`, `zoneId`->`zid`
@@ -535,746 +533,762 @@ camelCase-Vermutungen):
   `zoneId`->`zid`
 - `ZoneEvent`: `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`, `zoneId`->`zid`
 - `TentativeLocationEvent`: `confirmedMapId`->`confp2mapId`, `confirmedMapVersion`->`confp2mapvId`,
-  `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`. Zusaetzlich: der MissionTimelineEvent-Schluessel
-  selbst ist `"reloc"`, nicht `"relocalizing"` oder `"tentativeLocation"` wie urspruenglich
-  angenommen -- ergaenzt, ohne die beiden alten (unbestaetigten) Feldnamen zu entfernen.
+  `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`. Also: the MissionTimelineEvent key
+  itself is `"reloc"`, not `"relocalizing"` or `"tentativeLocation"` as originally
+  assumed -- added, without removing the two old (unconfirmed) field names.
 - `PadWashEvent`: `fluidAmount`->`flAmt`, `padWashState`->`pwState`
-- `MissionTimelineEvent.start_time`/`end_time` selbst: `startTime`/`endTime` existieren nicht,
-  echte Schluessel sind `ts`/`ets`
+- `MissionTimelineEvent.start_time`/`end_time` itself: `startTime`/`endTime` don't exist,
+  the actual keys are `ts`/`ets`
 
-**Zwei weitere, dabei entdeckte Enum-Fehlschreibungen** (dasselbe Gross-/Kleinschreibungsmuster
-wie RegionType/DoneCode zuvor): `TravelDestination` und `TraversalType` waren grossgeschrieben,
-echte Daten zeigen Kleinschreibung ("dock"/"zone"/"room", "region"). Beide korrigiert.
+**Two further enum misspellings discovered along the way** (the same case pattern
+as RegionType/DoneCode before): `TravelDestination` and `TraversalType` were uppercase,
+real data shows lowercase ("dock"/"zone"/"room", "region"). Both corrected.
 
-**Ende-zu-Ende gegen die vollstaendige echte Missionshistorie verifiziert** (nicht nur einzelne
-Unit-Tests): alle drei echten Missionen liefern jetzt korrekt befuellte Timelines (8/10/7
-Ereignisse), mit korrekt aufgeloesten Karten-IDs, Zonen- und Raum-Referenzen -- vorher ueberall
-`0`.
+**Verified end-to-end against the complete real mission history** (not just individual
+unit tests): all three real missions now return correctly populated timelines (8/10/7
+events), with correctly resolved map IDs, zone and room references -- previously
+`0` everywhere.
 
-**Ehrliche Einordnung:** Dieser Fund waere durch die vorherige Methode (Feld-fuer-Feld-Lesen mit
-gelegentlichen Stichproben) wahrscheinlich nicht aufgefallen -- er lag mehrere Verschachtelungs-
-ebenen tief (timeline -> finEvents -> Unterereignis -> Feld) und betraf einen Schluessel, dessen
-Abwesenheit keinen Fehler wirft, nur eine leere Liste. Die programmatische Methode (alle
-Feldnamen rekursiv extrahieren, gegen alle `.get()`-Aufrufe abgleichen) ist damit die einzige
-bisher gefundene Vorgehensweise, die diese Art von stillem, tief verschachteltem Bug zuverlaessig
-aufdeckt -- fuer kuenftige Live-Daten-Auswertungen sollte sie der Standardansatz sein, nicht die
-Ausnahme.
+**Honest framing:** This finding would likely not have been caught by the previous method
+(field-by-field reading with occasional spot checks) -- it was several nesting
+levels deep (timeline -> finEvents -> sub-event -> field) and involved a key whose
+absence doesn't raise an error, only an empty list. The programmatic method (recursively
+extracting all field names, checking against all `.get()` calls) is thus the only
+approach found so far that reliably uncovers this kind of silent, deeply nested bug
+-- for future live-data evaluations it should be the standard approach, not the
+exception.
 
-247/247 Tests gruen (1 neu, mehrere korrigiert), ruff sauber.
+247/247 tests green (1 new, several corrected), ruff clean.
 
-## Nachtrag (siebzehnte Sitzung): priorisierte Roadmap -- was als Naechstes
+## Addendum (seventeenth session): prioritized roadmap -- what's next
 
-Auf die Frage "was muessen wir an der Library noch machen" systematisch beantwortet. Bei der
-Gelegenheit ein weiterer Fund in derselben Konfigurationsdatei: **47 Settings-Kommandos
-(`namedShadow: "rw-settings"`) insgesamt, davon ~25 bisher komplett unmodelliert** (SetChildLock,
-SetAudioVolumePattern, Pad-Wash-Einstellungen, PMapLearningAllowed, WifiDeviceLocalizationAllowed,
-etc.) -- dokumentiert in `docs/API_REFERENCE.md`s neuem "Settings vocabulary"-Abschnitt, bewusst
-NICHT implementiert (Feldnamen/Wire-Format pro Setting nicht reverse-engineered, waere ein eigener,
-groesserer Aufwand).
+Systematically answered the question "what do we still need to do to the library". Along
+the way, another finding in the same configuration file: **47 settings commands
+(`namedShadow: "rw-settings"`) total, ~25 of them completely unmodeled so far** (SetChildLock,
+SetAudioVolumePattern, pad wash settings, PMapLearningAllowed, WifiDeviceLocalizationAllowed,
+etc.) -- documented in `docs/API_REFERENCE.md`'s new "settings vocabulary" section, deliberately
+NOT implemented (field names/wire format per setting not reverse engineered, would be its own,
+larger undertaking).
 
-**Prioritaet 1 -- der eine Gate-Keeper, der alles andere qualifiziert:**
-Mindestens ein Lauf von `roombapy_prime.diagnostics` gegen einen echten Prime/V4-Account. Nichts
-in dieser Bibliothek wurde je live getestet. Das ist der Unterschied zwischen "gruendlich
-analysiert" und "funktioniert wirklich" -- kein weiterer Analyseaufwand ersetzt das.
+**Priority 1 -- the one gatekeeper that qualifies everything else:**
+At least one run of `roombapy_prime.diagnostics` against a real Prime/V4 account. Nothing
+in this library has ever been live-tested. That's the difference between "thoroughly
+analyzed" and "actually works" -- no amount of further analysis replaces that.
 
-**Prioritaet 2 -- konkrete, bekannte Luecken (kein neuer RE-Aufwand, nur Fleissarbeit):**
-- Die ~25 neu gefundenen Settings-Kommandos als Methoden/Felder modellieren, SOBALD ihre
-  Wire-Form bekannt ist (entweder durch Live-Traffic-Capture oder gezielte native Nachverfolgung
-  einzelner Kommandos)
-- `HouseholdSettingOptions`-Struktur (aktuell rohes dict)
-- Die 16 von 20 noch nicht typisierten `MissionTimelineEvent`-Unterereignistypen
+**Priority 2 -- concrete, known gaps (no new RE effort, just legwork):**
+- Model the ~25 newly found settings commands as methods/fields, AS SOON AS their
+  wire form is known (either through live traffic capture or targeted native tracing
+  of individual commands)
+- `HouseholdSettingOptions` structure (currently a raw dict)
+- The 16 of 20 not-yet-typed `MissionTimelineEvent` sub-event types
 
-**Prioritaet 3 -- architektonisch bekannt, aber bewusst zurueckgestellt:**
-- Teaming/Mehrgeraete-Koordination (9 REST-Endpunkte bestaetigt, dokumentiert in
-  API_REFERENCE.md, braucht einen echten Mehrroboter-Haushalt zum sinnvollen Testen)
-- V1-Editier-Kommando-Umschlagformat (Diskriminator-Schluessel unbekannt)
-- p2maps-Auth-Mechanismus (SigV4-Annahme, strukturell nie aus Primes eigenem Code bestaetigbar,
-  siehe C4 im aelteren Abschnitt dieses Dokuments)
+**Priority 3 -- architecturally known, but deliberately deferred:**
+- Teaming/multi-device coordination (9 REST endpoints confirmed, documented in
+  API_REFERENCE.md, needs a real multi-robot household for meaningful testing)
+- V1 edit command envelope format (discriminator key unknown)
+- p2maps auth mechanism (SigV4 assumption, structurally never confirmable from Prime's own code,
+  see C4 in an older section of this document)
 
-**Bewusst nicht geplant:**
-- Account-/App-UX-Oberflaeche (Survey-System, Notification-Verwaltung jenseits des Lesens,
-  Missionsbild-Freigabe) -- dokumentiert in API_REFERENCE.md, als niedrige Prioritaet fuer eine
-  Home-Automation-Bibliothek eingestuft
-- Weitere native Vertiefung zur commandDefs-Multi-Entry-Frage (Issue #9, siehe eigener Abschnitt) --
-  vier zurueckgenommene "definitive" Schluesse in dieser Untersuchung sprechen dagegen, weitere
-  Vtable-Arbeit zu investieren; nur noch echte Feldverifikation vorgesehen
+**Deliberately not planned:**
+- Account/app UX surface (survey system, notification management beyond reading,
+  mission image approval) -- documented in API_REFERENCE.md, ranked as low priority for a
+  home automation library
+- Further native investigation of the commandDefs multi-entry question (issue #9, see its own
+  section) -- four walked-back "definitive" conclusions in this investigation argue against
+  investing further vtable work; only genuine field verification is planned going forward
 
-## Nachtrag (fuenfzehnte Sitzung, selber Tag): DEFINITIVE Aufloesung -- die tatsaechliche Konfigurationsdatei gefunden
+## Addendum (fifteenth session, same day): DEFINITIVE resolution -- the actual configuration file found
 
-Auf "suche weiter" hin wurde der Konfigurations-Lookup (`PMIAssetServiceImpl::getProtocolConfig()`)
-weiterverfolgt. Dabei zunaechst ein ECHTER METHODENFEHLER in der eigenen Vtable-Lesung gefunden und
-korrigiert: die "vtable for X"-Symboladresse ist der Beginn des ABI-Vtable-*Blocks* (inkl.
-Offset-zu-Top + RTTI-Header), waehrend Objekte selbst einen um +0x10 verschobenen Zeiger speichern
-(bestaetigt aus dem Konstruktor: `add x9, x8, #0x10`, sowie unabhaengig aus der ELF-Relokationstabelle
-via `readelf -r`). Die fruehere Lesung war dadurch um 2 Vtable-Slots versetzt -- nach Korrektur zeigte
-sich Slot 0xA0 als `PMIAssetServiceImpl::getProtocolConfig()`, nicht `getNetworkInformation()`
-(bestaetigt via `readelf -r` Relokationseintrag `R_AARCH64_GLOB_DAT` -> exakt der erwartete
-Vtable-Symbolname).
+In response to "keep searching", the configuration lookup (`PMIAssetServiceImpl::getProtocolConfig()`)
+was pursued further. In the process, first found and corrected a GENUINE METHODOLOGICAL ERROR in my own
+vtable reading: the "vtable for X" symbol address is the start of the ABI vtable *block*
+(including offset-to-top + RTTI header), while objects themselves store a pointer shifted by +0x10
+(confirmed from the constructor: `add x9, x8, #0x10`, and independently from the ELF relocation table
+via `readelf -r`). The earlier reading was thus offset by 2 vtable slots -- after correction, it turned
+out slot 0xA0 was `PMIAssetServiceImpl::getProtocolConfig()`, not `getNetworkInformation()`
+(confirmed via a `readelf -r` relocation entry `R_AARCH64_GLOB_DAT` -> exactly the expected
+vtable symbol name).
 
-Von dort aus: `getProtocolConfig()` -> `core::ProtocolConfig::ProtocolConfig(string const&)` --
-ein KONSTRUKTOR, der einen rohen String entgegennimmt. Aufrufer statisch nicht auflösbar
-(daten-getriebener Aufruf, wie zuvor mehrfach gesehen) -- stattdessen wurde nach der zugrundeliegenden
-KONFIGURATIONSDATEI in der APK selbst gesucht, nicht mehr im Bytecode.
+From there: `getProtocolConfig()` -> `core::ProtocolConfig::ProtocolConfig(string const&)` --
+a CONSTRUCTOR that takes a raw string. Caller not statically resolvable
+(data-driven call, as seen several times before) -- instead, searched for the underlying
+CONFIGURATION FILE in the APK itself, no longer in the bytecode.
 
-**Gefunden: `res/raw/base_roomba_config.json`** (in der APK mitgeliefert, jetzt als
-[`docs/base_roomba_config_REFERENCE.json`](base_roomba_config_REFERENCE.json) gesichert) --
-129 Eintraege in `commandList`, jeder mit `commandId`, `topic`, `namedShadow` (und teils
-`httpMethod`/`urlPath` fuer REST-Kommandos). Das ist die **maßgebliche, tatsaechliche
-Konfigurationsquelle** fuer den Transportmechanismus jedes einzelnen Kommandos -- keine weitere
-Interpretation noetig.
+**Found: `res/raw/base_roomba_config.json`** (bundled in the APK, now saved as
+[`docs/base_roomba_config_REFERENCE.json`](base_roomba_config_REFERENCE.json)) --
+129 entries in `commandList`, each with `commandId`, `topic`, `namedShadow` (and sometimes
+`httpMethod`/`urlPath` for REST commands). This is the **authoritative, actual
+configuration source** for the transport mechanism of every single command -- no further
+interpretation needed.
 
-**Definitiver Befund fuer Missionsbefehle:**
+**Definitive finding for mission commands:**
 ```json
 {"commandId": "AssetControlCommand", "topic": "cmd", "namedShadow": "", "networkList": ["lss", "awsIot"]}
 ```
-`namedShadow` ist LEER -- Missionsbefehle nutzen den **klassischen (unbenannten) Shadow**, keinen
-benannten. Zum Vergleich, im selben JSON:
+`namedShadow` is EMPTY -- mission commands use the **classic (unnamed) shadow**, not a
+named one. For comparison, in the same JSON:
 ```json
 {"commandId": "SetBinPause", "topic": "delta", "namedShadow": "rw-settings", ...}
 {"commandId": "AssetScheduleCommand,Set", "topic": "delta", "namedShadow": "rw-schedule", ...}
 ```
-Settings und Zeitplaene nutzen tatsaechlich benannte Shadows (rw-settings/rw-schedule) --
-Missionsbefehle nicht. Das bestaetigt `send_mission_command()`s klassischen-Shadow-Ansatz
-DEFINITIV -- die Ruecknahme des "rw-settings"-Fixes in der vierzehnten Sitzung war also korrekt,
-jetzt aus Primaerquelle statt aus einer verworfenen Kette bestaetigt.
+Settings and schedules actually use named shadows (rw-settings/rw-schedule) --
+mission commands don't. This DEFINITIVELY confirms `send_mission_command()`'s classic-shadow
+approach -- so walking back the "rw-settings" fix in the fourteenth session was correct,
+now confirmed from a primary source instead of a discarded chain.
 
-**Bonusfund im selben JSON:** `ResetRobotCommand` zeigt den REST-Pfad tatsaechlich in Aktion
+**Bonus finding in the same JSON:** `ResetRobotCommand` actually shows the REST path in action
 (`"httpMethod": "POST", "urlPath": "/v1/%s/reset", "networkList": ["awsApiGateway", "lss"]`) --
-bestaetigt, dass `ProtocolAdapterRoombaApiGateway` (REST) fuer manche Kommandos wirklich genutzt
-wird, andere (wie `AssetControlCommand`) aber MQTT nehmen -- beides koexistiert, pro Kommando
-konfiguriert in genau dieser Datei.
+confirms that `ProtocolAdapterRoombaApiGateway` (REST) is genuinely used for some commands,
+while others (like `AssetControlCommand`) use MQTT instead -- both coexist, configured per
+command in exactly this file.
 
-**Methodische Lehre:** Dieselbe Lehre wie zuvor (thematische Plausibilitaet reicht nicht), aber
-diesmal mit einem zusaetzlichen Baustein: wenn eine native Kette wiederholt auf eine KONSTRUKTOR-
-EINGABE per rohem String hinauslaeuft, lohnt es sich, nach der zugrundeliegenden ROHDATEN-DATEI in
-der APK selbst zu suchen, statt den Bytecode weiter zu verfolgen -- die eigentliche "Wahrheit" lag
-die ganze Zeit in einer mitgelieferten JSON-Datei, nicht im kompilierten Code.
+**Methodological lesson:** The same lesson as before (thematic plausibility isn't enough), but
+this time with an additional element: if a native chain repeatedly ends up at a CONSTRUCTOR
+INPUT via a raw string, it's worth searching for the underlying RAW DATA FILE in
+the APK itself, instead of continuing to trace the bytecode -- the actual "truth" had been
+sitting in a bundled JSON file the whole time, not in the compiled code.
 
-171/171 Tests weiterhin gruen (Docstrings aktualisiert, keine Verhaltensaenderung noetig -- die
-Implementierung war schon korrekt), ruff sauber.
+171/171 tests still green (docstrings updated, no behavior change needed -- the
+implementation was already correct), ruff clean.
 
-## Nachtrag (dreizehnte Sitzung, selber Tag): systematischer Review + Doku-Ausbau
+## Addendum (thirteenth session, same day): systematic review + documentation expansion
 
-**Dokumentation ergaenzt:** `docs/API_REFERENCE.md` (vollstaendige Methoden-/Modelluebersicht mit
-Vertrauensmarkierungen pro Eintrag), `CHANGELOG.md`, `SECURITY.md`, `examples/` (drei lauffaehige
-Skripte: `basic_usage.py`, `favorites_and_history.py`, `mission_control.py` mit expliziter
-Sicherheitsabfrage vor jedem echten Kommando). Alle Codebeispiele gegen die echte API verifiziert.
+**Documentation added:** `docs/API_REFERENCE.md` (complete method/model overview with
+confidence markers per entry), `CHANGELOG.md`, `SECURITY.md`, `examples/` (three runnable
+scripts: `basic_usage.py`, `favorites_and_history.py`, `mission_control.py` with an explicit
+safety prompt before every real command). All code examples verified against the real API.
 
-**Systematischer Review, drei konkrete Funde:**
+**Systematic review, three concrete findings:**
 
-1. **Fehlende PrimeRobot-Wrapper**: `delete_map()`, `get_map_geojson_link()`, `download_map_bundle()`
-   existierten in `rest_client.py`, aber nie als `PrimeRobot`-Wrapper -- das Diagnoseskript musste
-   deshalb auf `robot._rest` zugreifen (privates Attribut). Alle drei ergaenzt, Diagnoseskript
-   entsprechend bereinigt. Gefunden durch simplen Abgleich `grep`-Methodennamen in rest_client.py
-   gegen `self._rest.`-Aufrufe in prime_robot.py.
-2. **Testabdeckungs-Check** (`pytest-cov`) deckte zwei echte Luecken auf:
-   - `prime_robot.py` bei 81% -- fast alle duennen REST-Passthrough-Wrapper hatten ueberhaupt
-     keinen Test. Tabellengetrieben mit `unittest.mock.create_autospec(PrimeRestClient)` behoben
-     (prueft dabei automatisch, dass Aufrufsignaturen zur echten Klasse passen) -- jetzt 95%.
-   - `auth.py` bei 55% -- die komplette `login()`-Orchestrierungskette (Discovery -> Gigya ->
-     iRobot) war NIE getestet, obwohl das der kritischste Einstiegspunkt der ganzen Bibliothek ist.
-     Eine fruehere bewusste Entscheidung ("integrationsfoermig, nicht einheitsfoermig") wurde
-     revidiert: eine `_FakeSequentialSession` haelt die drei aufeinanderfolgenden HTTP-Aufrufe nach,
-     10 neue Tests decken den Erfolgspfad UND alle "fail loudly"-Validierungsgates ab (fehlende
-     Credentials, fehlender einzelner Credential-Schluessel, fehlender mqtt-Endpunkt, Gigya-Fehler,
-     der bekannte "mqtt slot"-Rate-Limit-Sonderfall). Jetzt 94%.
-   - `mqtt_client.py` (78%) und `diagnostics.py`s `run()` (40%) bewusst NICHT weiter verfolgt --
-     echte Netzwerk-/Live-Account-Interna, strukturell so schwer sinnvoll zu mocken wie
-     `login()` frueher schien, aber diesmal zurecht: paho-Client-Konstruktion und das eigentliche
-     Live-Skript sind integrationsfoermig, nicht einheitsfoermig.
-3. Keine TODOs/FIXMEs im Code, keine Rueckgabetyp-Inkonsistenzen gefunden, `examples/` korrekt
-   nicht als Package-Daten gefuehrt.
+1. **Missing PrimeRobot wrappers**: `delete_map()`, `get_map_geojson_link()`, `download_map_bundle()`
+   existed in `rest_client.py`, but never as `PrimeRobot` wrappers -- the diagnostics script therefore
+   had to access `robot._rest` (a private attribute). All three added, diagnostics script
+   cleaned up accordingly. Found by simply comparing `grep`ed method names in rest_client.py
+   against `self._rest.` calls in prime_robot.py.
+2. **Test coverage check** (`pytest-cov`) uncovered two genuine gaps:
+   - `prime_robot.py` at 81% -- almost all thin REST passthrough wrappers had no test at
+     all. Fixed table-driven with `unittest.mock.create_autospec(PrimeRestClient)`
+     (which automatically checks that call signatures match the real class) -- now 95%.
+   - `auth.py` at 55% -- the complete `login()` orchestration chain (discovery -> Gigya ->
+     iRobot) had NEVER been tested, even though that's the most critical entry point of the whole
+     library. An earlier deliberate decision ("integration-shaped, not unit-shaped") was
+     revised: a `_FakeSequentialSession` replays the three sequential HTTP calls,
+     10 new tests cover the success path AND all "fail loudly" validation gates (missing
+     credentials, missing individual credential key, missing MQTT endpoint, Gigya error,
+     the known "mqtt slot" rate-limit special case). Now 94%.
+   - `mqtt_client.py` (78%) and `diagnostics.py`'s `run()` (40%) deliberately NOT pursued further --
+     genuine network/live-account internals, structurally as hard to meaningfully mock as
+     `login()` had seemed before, but rightly so this time: paho client construction and the
+     actual live script are integration-shaped, not unit-shaped.
+3. No TODOs/FIXMEs found in the code, no return-type inconsistencies found, `examples/` correctly
+   not tracked as package data.
 
-**Gesamtabdeckung: 88% -> 91%. 171/171 Tests gruen, ruff sauber.**
+**Overall coverage: 88% -> 91%. 171/171 tests green, ruff clean.**
 
 ---
 
-## Update (sechste Sitzung, selber Tag): volle Neu-Dekompilierung + sechs neue REST-Bereiche + native Sackgasse geklaert
+## Update (sixth session, same day): full re-decompilation + six new REST areas + native dead end clarified
 
-**Vollstaendige Neu-Dekompilierung** der frisch hochgeladenen APK (2.2.4) durchgefuehrt (24.983 Klassen,
-nur 56 Fehler -- alle 56 in EXAKT einer Klassenfamilie, `EditMapV1Request`). Das hat zwei fruehere
-Kernannahmen korrigiert und sechs komplett neue REST-Bereiche freigelegt.
+**Full re-decompilation** of the freshly uploaded APK (2.2.4) performed (24,983 classes,
+only 56 errors -- all 56 in EXACTLY one class family, `EditMapV1Request`). This corrected two
+earlier core assumptions and uncovered six completely new REST areas.
 
-### Korrektur 1: V1, nicht V2, ist der aktive Editier-Pfad
+### Correction 1: V1, not V2, is the active edit path
 
-`requestEditV2()` wird im gesamten App-Code **kein einziges Mal** aufgerufen -- nur `requestEditV1()`.
-Die 9 V1-Kommandos (RenameRoom, SplitRoom, MergeRooms, SetRoomType, SetRoomMetadata,
-SetPermanentAreas, DeletePermanentAreas, SetVirtualWalls, AdjustFurniture) sind jetzt in `models.py`
-implementiert (bytecode-bestaetigt via androguard, da jadx an genau dieser Klasse scheiterte).
-`rest_client.py::edit_map()` nutzt jetzt V1; der alte V2-Pfad ist unter `edit_map_v2()` erhalten,
-mit Warnung dass er unbenutzter Code ist.
+`requestEditV2()` is called **not a single time** anywhere in the entire app code -- only `requestEditV1()`.
+The 9 V1 commands (RenameRoom, SplitRoom, MergeRooms, SetRoomType, SetRoomMetadata,
+SetPermanentAreas, DeletePermanentAreas, SetVirtualWalls, AdjustFurniture) are now
+implemented in `models.py` (bytecode-confirmed via androguard, since jadx failed on exactly this class).
+`rest_client.py::edit_map()` now uses V1; the old V2 path is preserved under `edit_map_v2()`,
+with a warning that it's unused code.
 
-### Korrektur 2: `FavoriteV1`/Favoriten-Endpunkte vollstaendig, inkl. Bugfix
+### Correction 2: `FavoriteV1`/favorites endpoints complete, incl. bug fix
 
-Alle 5 Favoriten-Endpunkte implementiert. `order_favorite()` hatte einen echten Fehler
-(insert_at/insert_before/insert_after im Body statt als Query-Parameter) -- bytecode-bestaetigt
-korrigiert.
+All 5 favorites endpoints implemented. `order_favorite()` had a genuine bug
+(insert_at/insert_before/insert_after in the body instead of as query parameters) -- bytecode-confirmed
+and corrected.
 
-### Sechs neue REST-Bereiche gefunden und implementiert
+### Six new REST areas found and implemented
 
-Systematische Suche nach allen `urlString`/`"/v1/"`-Mustern im GESAMTEN App-Code (nicht nur
-p2maps/favorites) foerderte sechs bisher komplett unbekannte Bereiche zutage:
+A systematic search for all `urlString`/`"/v1/"` patterns across the ENTIRE app code (not just
+p2maps/favorites) turned up six previously completely unknown areas:
 
-| Bereich | Endpunkt | Status |
+| Area | Endpoint | Status |
 |---|---|---|
-| Missionshistorie | `GET /v1/{blid}/missionhistory` | **Vollstaendig implementiert**, alle Query-Parameter bestaetigt |
-| Zeitplaene | `GET/DELETE /v1/households/{id}/settings/schedule[/{id}]` | Implementiert, GET/DELETE bestaetigt, POST/PUT fuer create/update angenommen |
-| DND-Einstellungen | `GET/PUT /v1/households/{id}/settings/dnd` | Implementiert, beide Methoden bestaetigt |
-| Reinigungsprofile | `GET /v1/profiles?assetId=...&p2mapId=...` | Implementiert |
-| Standard-Routinen | `GET /v1/p2maps/{id}/routines/defaults` | Implementiert |
-| `/v1/user/households` (Haushaltsliste) | -- | **Toter Code** -- nirgends im App-Code aufgerufen, nicht implementiert |
+| Mission history | `GET /v1/{blid}/missionhistory` | **Fully implemented**, all query parameters confirmed |
+| Schedules | `GET/DELETE /v1/households/{id}/settings/schedule[/{id}]` | Implemented, GET/DELETE confirmed, POST/PUT for create/update assumed |
+| DND settings | `GET/PUT /v1/households/{id}/settings/dnd` | Implemented, both methods confirmed |
+| Cleaning profiles | `GET /v1/profiles?assetId=...&p2mapId=...` | Implemented |
+| Default routines | `GET /v1/p2maps/{id}/routines/defaults` | Implemented |
+| `/v1/user/households` (household list) | -- | **Dead code** -- not called anywhere in the app code, not implemented |
 
-`ScheduleOptions`/`HouseholdSchedule` (die Body-Struktur fuer create/update Zeitplaene) wurden nicht
-unter diesem Namen im dekompilierten Baum gefunden -- `create_schedules()`/`update_schedules()`
-nehmen daher rohes JSON entgegen statt eine moeglicherweise falsche Struktur vorzugeben.
+`ScheduleOptions`/`HouseholdSchedule` (the body structure for create/update schedules) weren't
+found under this name in the decompiled tree -- `create_schedules()`/`update_schedules()`
+therefore accept raw JSON instead of prescribing a possibly wrong structure.
 
-### Native Sackgasse geklaert (fuer Parallelchat, nicht library-blockierend)
+### Native dead end clarified (for the parallel chat, not blocking the library)
 
-Mehrsitzungen-lange Ghidra-Untersuchung (`FavoriteCommandType::ExecuteMission` -> iteriert
-`sendCommand` ueber `commandDefs`?) kam zu einem klaren, wenn auch negativen Ergebnis:
-`FavoritesDataUseCaseImpl::executeMissionForFavoriteId` validiert nur die Favoriten-ID, sendet aber
-nachweislich kein Kommando (JNI-Bruecke zeigt genau einen virtuellen Aufruf, die aufgerufene Methode
-greift nie auf ihr eigenes `FavoriteDataService`-Feld zu). Fuer die Bibliothek nicht blockierend, da
-das Wire-Format (`RoutineCommand` -> Shadow-Update) bereits unabhaengig davon vollstaendig bekannt ist.
+A multi-session-long Ghidra investigation (`FavoriteCommandType::ExecuteMission` -> iterates
+`sendCommand` over `commandDefs`?) came to a clear, if negative, result:
+`FavoritesDataUseCaseImpl::executeMissionForFavoriteId` only validates the favorite ID, but provably
+sends no command (the JNI bridge shows exactly one virtual call, the called method
+never accesses its own `FavoriteDataService` field). Not blocking for the library, since
+the wire format (`RoutineCommand` -> shadow update) is already fully known independently of this.
 
-### Test-Stand nach dieser Sitzung
+### Test status after this session
 
-123/123 Tests gruen, ruff sauber.
+123/123 tests green, ruff clean.
 
-### Nachtrag (siebte Sitzung, selber Tag): beide offen gelassenen Punkte doch geschlossen
+### Addendum (seventh session, same day): both open items closed after all
 
-Auf Nachfrage nochmal gruendlicher gesucht statt vorschnell aufzugeben:
+On follow-up, searched more thoroughly instead of giving up prematurely:
 
-- **ScheduleOptions/HouseholdSchedule/HouseholdScheduleUpdate/ScheduleTime**: existieren doch, jadx
-  hatte sie wie EditMapV1Request stillschweigend uebersprungen (nicht in der 56er-Fehlerzahl erfasst).
-  Alle Felder via androguard direkt aus der DEX gezogen und vollstaendig in `models.py` implementiert
-  (`ScheduleOptions`, `ScheduleTime`, `ScheduleDateEntry`, `ScheduleFrequency`-Enum,
-  `HouseholdSchedule`, `HouseholdScheduleUpdate`). `create_schedules()`/`update_schedules()` nehmen
-  jetzt die typisierten Modelle statt rohem JSON.
-- **`/v1/user/households` (Haushaltsliste)**: bewusst implementiert trotz Totcode-Status in der
-  aktuellen App-Version -- eine unbenutzte App-interne Referenz heisst nicht, dass der Endpunkt
-  serverseitig nicht existiert. HTTP-Methode (GET) reine REST-Konvention, nicht aus einer
-  Request-Klasse bestaetigt (im Gegensatz zu allen anderen hier dokumentierten Endpunkten).
+- **ScheduleOptions/HouseholdSchedule/HouseholdScheduleUpdate/ScheduleTime**: they do exist, jadx
+  had silently skipped them like EditMapV1Request (not counted in the 56 errors).
+  All fields pulled directly from the DEX via androguard and fully implemented in `models.py`
+  (`ScheduleOptions`, `ScheduleTime`, `ScheduleDateEntry`, `ScheduleFrequency` enum,
+  `HouseholdSchedule`, `HouseholdScheduleUpdate`). `create_schedules()`/`update_schedules()` now
+  take the typed models instead of raw JSON.
+- **`/v1/user/households` (household list)**: deliberately implemented despite dead-code status in the
+  current app version -- an unused app-internal reference doesn't mean the endpoint doesn't
+  exist server-side. HTTP method (GET) pure REST convention, not confirmed from a
+  request class (unlike all other endpoints documented here).
 
-124/124 Tests gruen nach diesem Nachtrag.
+124/124 tests green after this addendum.
 
-## Nachtrag 2 (achte Sitzung, selber Tag): systematischer Vollabgleich DEX vs. jadx-Ausgabe
+## Addendum 2 (eighth session, same day): systematic full comparison DEX vs. jadx output
+On follow-up, no longer searched individually for suspected gaps, but systematically
+compared ALL ~11,325 `com.irobot.*` classes from the DEX against the jadx output tree. Result:
+6755 are missing (after excluding R$ resource classes/BuildConfig) -- overwhelmingly UI layer
+(Compose screens, navigation, fragments), irrelevant for a cloud client library. Two
+subgroups, however, were highly relevant:
 
-Auf "suche weiter" hin nicht mehr einzeln nach vermuteten Luecken gesucht, sondern systematisch
-ALLE ~11.325 `com.irobot.*`-Klassen aus der DEX gegen den jadx-Ausgabebaum abgeglichen. Ergebnis:
-6755 fehlen (nach Ausschluss von R$-Ressourcenklassen/BuildConfig) -- weit ueberwiegend UI-Schicht
-(Compose-Screens, Navigation, Fragmente), fuer eine Cloud-Client-Bibliothek irrelevant. Zwei
-Untergruppen waren aber hochrelevant:
+**`com/irobot/data/missioncommand/datamodels`** (31 missing classes): a complete, never-before-
+seen preference/parameter system for mission commands. `CommandParams` (37 fields --
+suction power, pad wetness, carpet boost, room confinement, timebox, drive speed for
+steering commands, and much more), `Region`/`RegionType`, `CommandPolygon`/`CommandPolygonMetadata`,
+`PadWetnessParam`, plus the `MissionPreference` family (CleaningMode, CleaningPasses,
+ComboLiquidAmount, LiquidAmount, SoftwareScrub, VacuumPower as enums). All fully implemented in
+`models.py`, replacing the previous raw dicts in `RoutineCommand.params/regions/
+id_multipolys` (backward compatible -- raw dicts still work alongside).
 
-**`com/irobot/data/missioncommand/datamodels`** (31 fehlende Klassen): komplettes, bisher nie
-gesehenes Praeferenz-/Parameter-System fuer Missionsbefehle. `CommandParams` (37 Felder --
-Saugkraft, Wischnaesse, Teppich-Boost, Raumbegrenzung, Zeitbox, Fahrgeschwindigkeit fuer
-Steuerbefehle, u.v.m.), `Region`/`RegionType`, `CommandPolygon`/`CommandPolygonMetadata`,
-`PadWetnessParam`, plus die `MissionPreference`-Familie (CleaningMode, CleaningPasses,
-ComboLiquidAmount, LiquidAmount, SoftwareScrub, VacuumPower als Enums). Alles vollstaendig in
-`models.py` implementiert, ersetzt die bisherigen rohen dicts in `RoutineCommand.params/regions/
-id_multipolys` (abwaertskompatibel -- rohe dicts funktionieren weiterhin daneben).
+**`com/irobot/data/restservices/*`** (57 missing classes, selection processed): found `CreateFavoriteRequest`/
+`UpdateFavoriteRequest`/`CreateSchedulesRequest`/`UpdateSchedulesRequest` and read their
+`httpMethod` construction directly from the bytecode (`const-string "POST"`/`"PUT"` in the
+`<init>` method) -- so ALL four previously only "assumed" HTTP methods are now
+bytecode-confirmed: create favorite=POST, update=PUT, create schedule=POST,
+update=PUT. All affected docstrings updated.
 
-**`com/irobot/data/restservices/*`** (57 fehlende Klassen, Auswahl bearbeitet): `CreateFavoriteRequest`/
-`UpdateFavoriteRequest`/`CreateSchedulesRequest`/`UpdateSchedulesRequest` gefunden und deren
-`httpMethod`-Konstruktion direkt aus dem Bytecode gelesen (`const-string "POST"`/`"PUT"` in der
-`<init>`-Methode) -- damit sind ALLE vier bisher nur "angenommenen" HTTP-Methoden jetzt
-bytecode-bestaetigt: Favorite erstellen=POST, aktualisieren=PUT, Zeitplan erstellen=POST,
-aktualisieren=PUT. Alle betroffenen Docstrings aktualisiert.
-
-**Noch nicht bearbeitet, aber gefunden** (fuer eine kuenftige Sitzung): vollstaendige
-Missionshistorie-Antwortmodelle (`MissionHistory`, `MissionTimeline`, `MissionTimelineEvent`,
+**Not yet processed, but found** (for a future session): complete
+mission history response models (`MissionHistory`, `MissionTimeline`, `MissionTimelineEvent`,
 `PlanEvent`, `PolygonEvent`, `TravelEvent`, `TraversalEvent`, `MissionCommand`), `HouseholdSetting`
-(Response-Modell fuer DND/Zeitplan-Container), `DNDStatusResponse`/`DNDSchedule.DailySchedule`/
+(response model for the DND/schedule container), `DNDStatusResponse`/`DNDSchedule.DailySchedule`/
 `DNDSchedule.EndsAt`, `Routine`/`RoutineBuilderDefaults`/`RegionDefaults`/`OperatingModeProfile`
-(Antwortmodelle fuer Standard-Routinen), `CleaningProfile`/`CleaningProfile.ProfileType`. Aktuell
-geben alle betroffenen `get_*`-Methoden weiterhin rohes JSON zurueck -- funktioniert, ist aber nicht
-typisiert.
+(response models for default routines), `CleaningProfile`/`CleaningProfile.ProfileType`. Currently
+all affected `get_*` methods still return raw JSON -- works, but isn't
+typed.
 
-130/130 Tests gruen, ruff sauber nach diesem zweiten Nachtrag.
+130/130 tests green, ruff clean after this second addendum.
 
-## Nachtrag 3 (neunte Sitzung, selber Tag): Antwortmodelle fuer Missionshistorie, DND, Reinigungsprofile, Routinen
+## Addendum 3 (ninth session, same day): response models for mission history, DND, cleaning profiles, routines
 
-Die im zweiten Nachtrag gefundenen, aber noch offenen Antwortmodelle jetzt implementiert:
+The response models found but still open in the second addendum are now implemented:
 
 - **`MissionHistoryEntry`/`MissionCommandRecord`** (models.py::parse_mission_history()):
-  Top-Level-Felder von `MissionHistory` (Zeiten, `DoneCode`-Enum mit 19 Werten, Flaechendeckung,
-  Fehlercode, etc.) typisiert. `timeline` bleibt bewusst rohes JSON -- `MissionTimelineEvent` hat
-  20 moegliche Unterereignistypen (CommandEvent, DiscoveryEvent, ErrorEvent, ..., ZoneEvent), von
-  denen nur 4 (PlanEvent, PolygonEvent, TravelEvent, TraversalEvent) im Detail bytecode-inspiziert
-  wurden -- volle Typisierung aller 20 stand in keinem vertretbaren Verhaeltnis zum Nutzen.
-- **`CleaningProfile`** (mit `CommandParams.from_json()` als neuer Kehrfunktion zu `to_json()`).
-- **`DNDStatusResponse`** -- WICHTIGER Fund: es gibt ZWEI verschiedene DND-Repraesentationen im
-  App-Code (`DNDSchedule`-sealed-class mit DailySchedule/EndsAt-Untertypen fuer den PUT-Request-
-  Aufbau, und die flache `DNDStatusResponse` fuer die GET-Antwort) -- beide dokumentiert, nur
-  DNDStatusResponse implementiert (die tatsaechliche Antwortform).
-- **`HouseholdSetting`** -- settingId/settingType typisiert, `options` bleibt rohes dict
-  (HouseholdSettingOptions selbst nicht weiter untersucht, vermutlich polymorph je settingType).
-- **`Routine`/parse_default_routines()`** -- fuer get_default_routines(). `commandDefs` bleibt als
-  Liste roher dicts (in Analogie zu FavoriteV1.command_defs vermutlich List<RoutineCommand>, aber
-  nicht generisch bestaetigbar).
+  top-level fields of `MissionHistory` (times, `DoneCode` enum with 19 values, area coverage,
+  error code, etc.) typed. `timeline` deliberately remains raw JSON -- `MissionTimelineEvent` has
+  20 possible sub-event types (CommandEvent, DiscoveryEvent, ErrorEvent, ..., ZoneEvent), of
+  which only 4 (PlanEvent, PolygonEvent, TravelEvent, TraversalEvent) were inspected in detail via bytecode
+  -- fully typing all 20 was out of reasonable proportion to the benefit.
+- **`CleaningProfile`** (with `CommandParams.from_json()` as a new inverse function to `to_json()`).
+- **`DNDStatusResponse`** -- IMPORTANT finding: there are TWO different DND representations in the
+  app code (the `DNDSchedule` sealed class with DailySchedule/EndsAt subtypes for building the PUT
+  request, and the flat `DNDStatusResponse` for the GET response) -- both documented, only
+  DNDStatusResponse implemented (the actual response shape).
+- **`HouseholdSetting`** -- settingId/settingType typed, `options` remains a raw dict
+  (HouseholdSettingOptions itself not further investigated, presumably polymorphic per settingType).
+- **`Routine`/parse_default_routines()`** -- for get_default_routines(). `commandDefs` remains a
+  list of raw dicts (by analogy to FavoriteV1.command_defs presumably List<RoutineCommand>, but
+  not generically confirmable).
 
-Alle vier zugehoerigen `get_*()`-Methoden in rest_client.py geben weiterhin rohes JSON zurueck
-(unveraendertes Verhalten) -- die neuen `parse_*()`/`Klasse.from_json()`-Funktionen sind ein
-separater, optionaler Schritt, exakt wie bei `parse_map_bundle()`.
+All four corresponding `get_*()` methods in rest_client.py still return raw JSON
+(unchanged behavior) -- the new `parse_*()`/`Class.from_json()` functions are a
+separate, optional step, exactly like `parse_map_bundle()`.
 
-139/139 Tests gruen, ruff sauber nach diesem dritten Nachtrag.
+139/139 tests green, ruff clean after this third addendum.
 
-## Update (vierte Sitzung, selber Tag): "brauchen wir noch mehr Dekompilierung?"
+## Update (fourth session, same day): "do we need more decompilation?"
 
-**Kurze Antwort: nein, keine weitere Dekompilierung noetig -- aber eine
-breitere SUCHE im bereits Dekompilierten war es sehr wohl.** Die vorige
-Einstufung von C2 ("nicht wirtschaftlich weiter aufloesbar") war zu
-frueh aufgegeben. jadx/dex-Dateien sind in dieser Umgebung nicht mehr
-vorhanden (nur die bereits dekompilierten Java-Quellen aus einer
-frueheren Sitzung) -- ein Neuversuch mit anderen jadx-Einstellungen war
-also ohnehin nicht moeglich. Was stattdessen half: eine systematische
-Suche nach ALLEN `urlString = "..."`-Zuweisungen im gesamten p2maps-
-Quellbaum (`grep -rn 'urlString = "'`), statt sich auf die eine
-fehlgeschlagene Coroutine-Methode zu versteifen.
+**Short answer: no, no further decompilation needed -- but a
+broader SEARCH within what's already decompiled certainly was.** The previous
+classification of C2 ("not economically resolvable further") had been given up too
+early. jadx/dex files no longer exist in this environment (only the already
+decompiled Java sources from an earlier session) -- so a retry with different jadx
+settings wasn't possible anyway. What helped instead: a systematic
+search for ALL `urlString = "..."` assignments across the entire p2maps
+source tree (`grep -rn 'urlString = "'`), instead of fixating on the one
+failed coroutine method.
 
-### tar.gz-Frage vollstaendig aufgeloest
+### tar.gz question fully resolved
 
-`P2MapGeoJSONRequest.java` (bisher uebersehen) bestaetigt:
+`P2MapGeoJSONRequest.java` (previously overlooked) confirms:
 
     GET /v1/p2maps/{mapId}/versions/{mapVersion}/geojson?response_type=link
     Accept: application/json
 
-liefert (vermutlich) die vorsignierte URL, von der aus
-`fetchPersistentMap`/`fetchLatestPersistentMap`/`fetchMissionMap` ihr
-tar.gz-Kartenbuendel laden (das war bereits bestaetigt, siehe vorherige
-Sitzung). `response_type=binary` (Accept: application/gzip) laedt das
-Archiv direkt, ohne Umweg -- hier NICHT implementiert (braeuchte einen
-parametrisierbaren Accept-Header im SigV4-Signer). Implementiert als
-`get_map_geojson_link()`. Einzig noch offen: welcher JSON-Schluessel in
-der "link"-Antwort die eigentliche URL traegt -- keine eigene Response-
-Klasse im Quellcode gefunden, nur die Anfrage selbst.
+returns (presumably) the presigned URL, from which
+`fetchPersistentMap`/`fetchLatestPersistentMap`/`fetchMissionMap` load their
+tar.gz map bundle (this had already been confirmed, see the previous
+session). `response_type=binary` (Accept: application/gzip) loads the
+archive directly, with no detour -- NOT implemented here (would need a
+parametrizable Accept header in the SigV4 signer). Implemented as
+`get_map_geojson_link()`. Only thing still open: which JSON key in
+the "link" response carries the actual URL -- no dedicated response
+class found in the source code, only the request itself.
 
-### Zwei weitere, bisher komplett uebersehene Endpunkte gefunden
+### Two more, previously completely overlooked endpoints found
 
-- **`delete_map()`** -- `DeleteMapRequest.java`: trotz des Namens KEIN
-  HTTP DELETE, sondern `POST /v1/p2maps/{id}/settings
-  ?trigger_fast_updates=true` mit Body `{"visible": false}` -- ein
-  "soft delete" ueber denselben Endpunkt wie `set_map_name()`. Klein,
-  implementiert.
-- **`EditMapV1Request`** -- eine GANZE PARALLELE Editier-Kommando-
-  Vokabular (RenameRoom, AdjustFurniture, SetPermanentAreas,
+- **`delete_map()`** -- `DeleteMapRequest.java`: despite the name, NOT an
+  HTTP DELETE, but `POST /v1/p2maps/{id}/settings
+  ?trigger_fast_updates=true` with body `{"visible": false}` -- a
+  "soft delete" via the same endpoint as `set_map_name()`. Small,
+  implemented.
+- **`EditMapV1Request`** -- an ENTIRE PARALLEL edit command
+  vocabulary (RenameRoom, AdjustFurniture, SetPermanentAreas,
   DeletePermanentAreas, SplitRoom, MergeRooms, SetRoomType,
-  SetVirtualWalls -- 8 Kommandos), separat von der bereits
-  implementierten V2-Vokabular (10 Kommandos, teilweise ueberlappend,
-  teilweise anders benannt). `P2MapAPIEditRequestor` exponiert beide
-  Pfade (`requestEditV1`/`requestEditV2`) als gleichberechtigte
-  Alternativen -- vermutlich V1 fuer aeltere Firmware mit
-  eingeschraenkterem Funktionsumfang, V2 fuer neuere. Die Dispatch-
-  Logik (wer entscheidet wann V1 vs. V2) selbst ist wieder "nicht
-  decompiled". **NICHT implementiert** -- neu gefundene, echte Luecke,
-  vom Umfang her vergleichbar mit der bereits gebauten V2-Vokabular,
-  bewusst nicht in dieser Sitzung noch mit reingenommen.
+  SetVirtualWalls -- 8 commands), separate from the already
+  implemented V2 vocabulary (10 commands, partly overlapping,
+  partly named differently). `P2MapAPIEditRequestor` exposes both
+  paths (`requestEditV1`/`requestEditV2`) as equal
+  alternatives -- presumably V1 for older firmware with a
+  more limited feature set, V2 for newer. The dispatch
+  logic (who decides when V1 vs. V2) itself is again "not
+  decompiled". **NOT implemented** -- a newly found, genuine gap,
+  comparable in scope to the already-built V2 vocabulary,
+  deliberately not included in this session either.
 
-### Was das ueber die Restarbeit sagt
+### What this says about the remaining work
 
-Diese Sitzung zeigt: die verbleibenden C2-artigen Luecken sind nicht
-alle gleich hart. Manche (wie diese) sind reine "nicht breit genug
-gesucht"-Luecken, andere (Missionssteuerungs-Dispatch, p2maps-Auth-
-Mechanismus) sind echte native Grenzen. Vor dem naechsten "das ist
-nicht aufloesbar"-Schluss lohnt sich ein systematischer Grep ueber den
-gesamten Quellbaum nach dem gesuchten Muster (hier: URL-Fragmente),
-nicht nur ein gezielter Blick auf die eine Methode, die als Erstes
-fehlschlug.
+This session shows: the remaining C2-like gaps aren't all equally hard. Some (like this one) are pure "not searched broadly
+enough" gaps, others (mission control dispatch, the p2maps auth
+mechanism) are genuine native limits. Before the next "this is
+not resolvable" conclusion, it's worth doing a systematic grep across
+the entire source tree for the pattern being searched for (here: URL fragments),
+not just a targeted look at the one method that failed
+first.
 
 ---
-## Update (dritte Sitzung, selber Tag): native Disassemblierung + Rest
+## Update (third session, same day): native disassembly + REST
 
-**Werkzeuge:** `binutils-aarch64-linux-gnu` nachinstalliert (apt),
-damit `aarch64-linux-gnu-objdump -d` echte ARM64-Disassemblierung
-liefert (Standard-objdump auf diesem x86-64-System konnte das nicht).
-Kein Ghidra/IDA verfuegbar -- reine Rohdisassemblierung, Strings-
-Suche und manuelle ADRP/ADD-Adressverfolgung, kein automatischer
-Pseudocode.
+**Tools:** installed `binutils-aarch64-linux-gnu` (apt),
+so `aarch64-linux-gnu-objdump -d` provides real ARM64 disassembly
+(the standard objdump on this x86-64 system couldn't do this).
+No Ghidra/IDA available -- pure raw disassembly, strings
+search and manual ADRP/ADD address tracing, no automatic
+pseudocode.
 
-### Durchbruch: Missionssteuerung IST implementierbar (C1 halb revidiert)
+### Breakthrough: mission control IS implementable (C1 half-revised)
 
-Vorherige Einstufung ("strukturell harte native Grenze, nicht
-schliessbar") war nur zur Haelfte richtig:
+The previous classification ("structurally hard native limit, not
+closable") was only half right:
 
-- **Transport bestaetigt** via woertlichem Format-String in
-  `liblegacyCore.so`: `$aws/things/%s/shadow/update` (Adresse
-  0xde2a3a, gefunden ueber Cross-Referenz-Suche der ADRP/ADD-
-  Instruktionspaare, die auf diese Adresse zeigen). Kommandos laufen
-  ueber den bereits implementierten Shadow-update()-Pfad, nicht ueber
-  einen separaten Topic -- deckt sich mit der alten, nie bestaetigten
-  Vermutung aus CLOUD_SHADOW_PUSH_FINDINGS.md.
-- **Payload-Form bestaetigt** aus Kotlin-Quellcode (nicht nativ!):
-  `CommandWrapper` (@Serializable, ein Feld `cmd` mit
-  @SerialName("cmd")) wrapt `RoutineCommand` (@Serializable, alle
-  Feldnamen per @SerialName direkt aus dem Quellcode, nicht geraten).
-  `CommandType`-Enum-Werte ebenfalls per @SerialName bestaetigt,
-  inklusive zweier ueberraschender Abweichungen von den Kotlin-
-  Konstantennamen (CLEAN_SPOT -> "point_clean", nicht "clean_spot").
-- **Implementiert**: `models.py` (MissionCommandType, RoutineCommand),
+- **Transport confirmed** via a literal format string in
+  `liblegacyCore.so`: `$aws/things/%s/shadow/update` (address
+  0xde2a3a, found via cross-reference search of the ADRP/ADD
+  instruction pairs that point to this address). Commands go
+  through the already-implemented shadow update() path, not through
+  a separate topic -- consistent with the old, never-confirmed
+  assumption from CLOUD_SHADOW_PUSH_FINDINGS.md.
+- **Payload shape confirmed** from Kotlin source code (not native!):
+  `CommandWrapper` (@Serializable, one field `cmd` with
+  @SerialName("cmd")) wraps `RoutineCommand` (@Serializable, all
+  field names via @SerialName directly from the source code, not guessed).
+  `CommandType` enum values also confirmed via @SerialName,
+  including two surprising deviations from the Kotlin
+  constant names (CLEAN_SPOT -> "point_clean", not "clean_spot").
+- **Implemented**: `models.py` (MissionCommandType, RoutineCommand),
   `prime_robot.py::send_mission_command()`.
-- **Weiterhin offen**: der native `postCommand()`-Dispatch selbst
-  wurde nicht bis zum tatsaechlichen MQTT-Publish zurueckverfolgt --
-  mehrere Ebenen nicht-exportierter, symbolloser statischer Funktionen,
-  mit den verfuegbaren Werkzeugen nicht wirtschaftlich weiter
-  aufloesbar. Die hier dokumentierte Huelle kombiniert zwei
-  unabhaengig bestaetigte Fakten, nie GEMEINSAM live getestet.
+- **Still open**: the native `postCommand()` dispatch itself
+  wasn't traced all the way to the actual MQTT publish --
+  several levels of non-exported, symbol-less static functions,
+  not economically resolvable further with the available tools. The
+  envelope documented here combines two independently confirmed facts,
+  never tested TOGETHER live.
 
-### `irbt_topic_prefix`: Existenz doppelt bestaetigt, Inhalt weiterhin offen
+### `irbt_topic_prefix`: existence doubly confirmed, content still open
 
-Gefunden: `core::ServiceDiscoveryImpl::kIrbtTopicPrefixFieldName` /
-`kIotTopicPrefixFieldName` als echte Symbole (BSS-Sektion, `std::string`-
-Objekte mit statischer Initialisierung). Cross-Referenz-Suche auf die
-Initialisierungsstelle blieb erfolglos (vermutlich in einer nicht
-exportierten Funktion, die ueber die verfuegbaren Adressbereiche nicht
-gefunden wurde). Die FELDNAMEN-KONSTANTEN existieren also nachweislich
--- der literale JSON-Schluessel-STRING bleibt unbestaetigt.
+Found: `core::ServiceDiscoveryImpl::kIrbtTopicPrefixFieldName` /
+`kIotTopicPrefixFieldName` as real symbols (BSS section, `std::string`
+objects with static initialization). Cross-reference search for the
+initialization site was unsuccessful (presumably in a non-exported
+function, not found via the available address ranges). The FIELD NAME
+CONSTANTS thus provably exist -- the literal JSON key STRING
+remains unconfirmed.
 
-### Sonstige Aenderungen diese Sitzung
+### Other changes this session
 
-- **Nebenlaeufigkeitsschutz**: `self._client_lock` (`threading.Lock`)
-  in `mqtt_client.py` -- schliesst die vorher dokumentierte Luecke
-  zwischen `replace_token()` und `get_shadow()`/`update_shadow()`.
-  Mit echtem Multi-Thread-Test verifiziert (inkl. Gegenprobe: Test
-  schlaegt nachweislich fehl, wenn der Lock durch ein No-Op ersetzt
-  wird).
-- **Backpressure-Fehlersichtbarkeit**: verworfene Exception-Eintraege
-  werden jetzt als ERROR statt WARNING geloggt (verhindert den Verlust
-  nicht, macht ihn aber sichtbarer).
-- **Haushalt/Mehrgeraete (C5)**: kurz nachgeprueft -- nur native
-  Symbolnamen (`TeamingUIServiceImpl`), keine fuer p2maps relevanten
-  Kotlin-Modelle gefunden. Bleibt unveraendert offen, niedrige
-  Prioritaet.
-- **Housekeeping**: `py.typed`-Marker, GitHub-Actions-CI (Test-Matrix
-  3.11-3.13 + ruff-Lint, hat einen echten ungenutzten Import gefunden),
-  englisches nutzerseitiges README (Konvention: Englisch fuer GitHub-
-  Inhalte) -- die vorherige deutsche Fassung liegt jetzt unter
+- **Concurrency protection**: `self._client_lock` (`threading.Lock`)
+  in `mqtt_client.py` -- closes the previously documented gap
+  between `replace_token()` and `get_shadow()`/`update_shadow()`.
+  Verified with a real multi-thread test (including a counter-check: the test
+  provably fails if the lock is replaced with a no-op).
+- **Backpressure error visibility**: dropped exception entries
+  are now logged as ERROR instead of WARNING (doesn't prevent the loss,
+  but makes it more visible).
+- **Household/multi-device (C5)**: briefly re-checked -- only native
+  symbol names (`TeamingUIServiceImpl`), no Kotlin models relevant to p2maps found.
+  Remains open unchanged, low
+  priority.
+- **Housekeeping**: `py.typed` marker, GitHub Actions CI (test matrix
+  3.11-3.13 + ruff lint, found a genuine unused import),
+  English user-facing README (convention: English for GitHub
+  content) -- the previous German version now lives under
   `docs/DEVELOPMENT_NOTES.md`.
-- **Ader-Update-Entwurf**: `docs/ADER_UPDATE_DRAFT_2026-07-11.md` --
-  fasst die drei wichtigsten Funde dieser Sitzung zusammen (Shadow-
-  Transport fuer Kommandos, tar.gz-Kartenbuendel, Livemap-Fixed-Topic).
+- **Ader update draft**: `docs/ADER_UPDATE_DRAFT_2026-07-11.md` --
+  summarizes the three most important findings of this session (shadow
+  transport for commands, tar.gz map bundles, livemap fixed topic).
 
 ---
-## Update (spaeter am selben Tag): was seitdem bearbeitet wurde
+## Update (later the same day): what's been worked on since
 
-- **B1 (Livemap-Topic)**: umgebaut. `watch_live_map()` abonniert jetzt
-  sofort ein festes Topic (`mqtt.livemap_topic()`), `get_live_map_stream()`
-  laeuft als periodischer Hintergrund-Keep-Alive weiter. Braucht
-  `irbt_topic_prefix` aus `LoginResult` (neues, unsicheres Feld --
-  Discovery-JSON-Feldname geraten, nicht bestaetigt) -- fehlt der,
-  wirft `watch_live_map()` sofort einen klaren `RuntimeError` statt
-  still auf ein falsches Topic zu warten.
-- **B2 (Furniture-Felder)**: ZURUECKGEZOGEN, war ein Fehler meinerseits.
-  Ich hatte das Lese-Modell (P2MapFurnitureInfo) mit dem Editier-
-  Kommando verglichen. Die tatsaechliche Edit-Klasse
-  (EditMapV2Request.Furniture) hat wirklich nur 4 Felder -- kein
-  Nachbesserungsbedarf am bestehenden `Furniture`-Editierkommando.
-  `orientation`/`cleaning_area` gehoeren korrekt ins neue Lese-Modell
-  `FurnitureInfoRead` (siehe C3).
-- **C2 (fehlende Fetch-Endpunkte)**: `fetchActiveVersions` jetzt
-  bestaetigt und implementiert (`get_active_map_versions()` ->
-  `GET /v1/p2maps?robotId={blid}&visible=true`) -- die INNERE
-  Coroutine-Klasse (P2MapAPIFetching$fetchActiveVersions$2) dekompilierte
-  sauber, obwohl die aeussere Wrapper-Methode das nicht tat. Die
-  anderen drei (fetchPersistentMap/fetchLatestPersistentMap/
-  fetchMissionMap) bleiben unbestaetigt, aber mit neuem Kontext: das
-  Kartenbuendel ist ein **tar.gz-Archiv**, kein JSON -- heruntergeladen
-  von einer vorsignierten URL (`P2MapAPI.MapUnpacker.
-  fetchMapBundleContentHolder(mapId, mapVersion)` loest die URL auf,
-  bleibt "nicht decompiled"; eine zweite Methode mit derselben Signatur
-  aber direktem URL-Parameter zeigt dann nur noch "Download + Untar",
-  keine URL-Konstruktion mehr).
-- **C3 (Lese-Modelle)**: grosser Batch neuer Dataclasses in `models.py`
-  ergaenzt (RoomInfo, BorderInfo, TrajectoryInfo, CoverageInfo,
+- **B1 (livemap topic)**: rebuilt. `watch_live_map()` now immediately
+  subscribes to a fixed topic (`mqtt.livemap_topic()`), `get_live_map_stream()`
+  continues running as a periodic background keep-alive. Needs
+  `irbt_topic_prefix` from `LoginResult` (a new, uncertain field --
+  discovery JSON field name guessed, not confirmed) -- if it's missing,
+  `watch_live_map()` immediately raises a clear `RuntimeError` instead
+  of silently waiting on the wrong topic.
+- **B2 (furniture fields)**: WITHDRAWN, was a mistake on my part.
+  I had compared the read model (P2MapFurnitureInfo) with the edit
+  command. The actual edit class
+  (EditMapV2Request.Furniture) really only has 4 fields -- no
+  fix needed for the existing `Furniture` edit command.
+  `orientation`/`cleaning_area` correctly belong in the new read model
+  `FurnitureInfoRead` (see C3).
+- **C2 (missing fetch endpoints)**: `fetchActiveVersions` now
+  confirmed and implemented (`get_active_map_versions()` ->
+  `GET /v1/p2maps?robotId={blid}&visible=true`) -- the INNER
+  coroutine class (P2MapAPIFetching$fetchActiveVersions$2) decompiled
+  cleanly, even though the outer wrapper method didn't. The
+  other three (fetchPersistentMap/fetchLatestPersistentMap/
+  fetchMissionMap) remain unconfirmed, but with new context: the
+  map bundle is a **tar.gz archive**, not JSON -- downloaded
+  from a presigned URL (`P2MapAPI.MapUnpacker.
+  fetchMapBundleContentHolder(mapId, mapVersion)` resolves the URL,
+  remains "not decompiled"; a second method with the same signature
+  but a direct URL parameter then only shows "download + untar",
+  no more URL construction).
+- **C3 (read models)**: a large batch of new dataclasses added to `models.py`
+  (RoomInfo, BorderInfo, TrajectoryInfo, CoverageInfo,
   DockInfo, HazardInfo, NoMopZoneInfo, AdHocCleanZoneInfo,
   KeepOutZoneInfoRead, VirtualWallInfo, CleanZoneInfoRead,
-  FurnitureInfoRead) -- aber weiterhin KEIN Parser, der eine komplette
-  Antwort in diese Typen zerlegt (das Gesamt-Umschlagformat, jetzt als
-  tar.gz-Archiv bestaetigt, wurde nicht weiter untersucht).
-- **C1 (Missionssteuerung), C4 (Auth-Mechanismus), C5 (Haushalt)**:
-  unveraendert offen, siehe unten.
+  FurnitureInfoRead) -- but still NO parser that breaks a complete
+  response down into these types (the overall envelope format, now
+  confirmed to be a tar.gz archive, wasn't further investigated).
+- **C1 (mission control), C4 (auth mechanism), C5 (household)**:
+  remains open unchanged, see below.
 
 ---
 
-Systematischer Abgleich der heute (und in vorherigen Sitzungen)
-dekompilierten Prime-App-Quellen (`roomba_prime_decompiled.zip`,
-`roomba_prime_native_libs.zip`) gegen den tatsächlichen Bibliotheks-Code.
-Drei Fundkategorien: **(A)** implementiert und im Kern korrekt,
-**(B)** implementiert, aber mit einem konkreten Design-Fehler, **(C)**
-gar nicht implementiert — mit Unterscheidung, ob das ein schließbares
-Wissens-Loch ist oder eine echte native Grenze.
+Systematic comparison of the Prime app sources decompiled today (and in previous
+sessions) (`roomba_prime_decompiled.zip`,
+`roomba_prime_native_libs.zip`) against the actual library code.
+Three finding categories: **(A)** implemented and correct at its core,
+**(B)** implemented, but with a concrete design flaw, **(C)**
+not implemented at all — distinguishing whether it's a closable
+knowledge gap or a genuine native limit.
 
 ---
 
-## A. Implementiert und im Kern korrekt
+## A. Implemented and correct at its core
 
-- **Login-Fluss** (Discovery → Gigya → iRobot `/v2/login`) — Feldnamen,
-  Header, Payload-Form 1:1 bestätigt, sowohl gegen echte Classic-
-  Fixtures als auch gegen `ha_roomba_plus`s produktiven Code.
-- **AWS-IoT-Custom-Authorizer-Verbindung** (WebSocket, drei Auth-Header,
-  Shadow-Get/-Update) — live gegen echte Classic-Geräte getestet.
-- **p2maps-Editierbefehle** (`POST /v2/p2maps/{id}/versions`, 10
-  Kommandotypen) — auf Java-Quellcode-Ebene vollständig bestätigt.
-- **Kontinuierliche Dispatch-Schleifen, Token-Refresh, Backpressure** —
-  eigene Architekturentscheidungen, nicht aus der App übernommen, aber
-  in sich konsistent.
+- **Login flow** (discovery → Gigya → iRobot `/v2/login`) — field names,
+  headers, payload shape confirmed 1:1, both against real Classic
+  fixtures and against `ha_roomba_plus`'s production code.
+- **AWS IoT custom authorizer connection** (WebSocket, three auth headers,
+  shadow get/update) — live-tested against real Classic devices.
+- **p2maps edit commands** (`POST /v2/p2maps/{id}/versions`, 10
+  command types) — fully confirmed at the Java source code level.
+- **Continuous dispatch loops, token refresh, backpressure** —
+  own architectural decisions, not carried over from the app, but
+  internally consistent.
 
 ---
 
-## B. Implementiert, aber mit einem konkreten Design-Fehler
+## B. Implemented, but with a concrete design flaw
 
-### B1. watch_live_map() / get_live_map_stream() — falsches Modell
+### B1. watch_live_map() / get_live_map_stream() — wrong model
 
-**Was ich gebaut habe:** REST-Aufruf liefert ein `mqtt_topic`-Feld,
-das dann abonniert wird.
+**What I built:** a REST call returns an `mqtt_topic` field,
+which is then subscribed to.
 
-**Was die App tatsächlich tut** (`P2MapAPIFetching.observeLiveMap()`,
-heute erstmals im Detail gelesen):
+**What the app actually does** (`P2MapAPIFetching.observeLiveMap()`,
+read in detail for the first time today):
 
-1. Abonniert sofort ein festes Topic-Muster:
+1. Immediately subscribes to a fixed topic pattern:
    `mqttClient.subscribe(MQTTTopicPrefixType.irbt, "livemap/update", assetId)`
-   aufgelöst über `MQTTTopicResolverAdapter` zu
-   `{irbtTopicPrefix}/{identifier}` (exakte Verkettung von assetId und
-   "livemap/update" zu identifier nicht letztgültig bestätigt, aber
-   das Muster "fest, nicht aus der REST-Antwort" ist eindeutig).
-2. Der REST-Aufruf `GET /v1/p2maps/livemap` (mein get_live_map_stream())
-   ist in Wirklichkeit ein periodischer Keep-Alive-Ping
-   (`LiveMapKeepAlivePublisher`, Timer via refreshWindowMillis) — die
-   Antwort wird nirgends zur Topic-Ermittlung verwendet. Gezielt
-   geprüft: LiveMapStreamResponse.topic (das mqtt_topic-Feld) wird im
-   gesamten App-Code kein einziges Mal gelesen — nur beim Parsen
-   erzeugt, nie konsumiert.
+   resolved via `MQTTTopicResolverAdapter` into
+   `{irbtTopicPrefix}/{identifier}` (the exact concatenation of assetId and
+   "livemap/update" into identifier not conclusively confirmed, but
+   the pattern "fixed, not from the REST response" is clear).
+2. The REST call `GET /v1/p2maps/livemap` (my get_live_map_stream())
+   is actually a periodic keep-alive ping
+   (`LiveMapKeepAlivePublisher`, timer via refreshWindowMillis) — the
+   response is never used anywhere to determine the topic. Specifically
+   checked: LiveMapStreamResponse.topic (the mqtt_topic field) is read
+   not a single time anywhere in the entire app code — only created
+   when parsing, never consumed.
 
-**Konsequenz:** get_live_map_stream() ist als REST-Aufruf vermutlich
-richtig (deckt sich mit LiveMapStreamRequest), aber sein Zweck ist
-falsch verstanden — es ist ein Keep-Alive, kein "gib mir das Topic"-
-Aufruf. watch_live_map() müsste stattdessen sofort auf ein festes
-Topic abonnieren UND parallel periodisch den Keep-Alive-Ping senden,
-solange der Watcher läuft.
+**Consequence:** get_live_map_stream() is presumably correct as a REST call
+(matches LiveMapStreamRequest), but its purpose is
+misunderstood — it's a keep-alive, not a "give me the topic"
+call. watch_live_map() should instead immediately subscribe to a fixed
+topic AND in parallel periodically send the keep-alive ping,
+for as long as the watcher runs.
 
-**Neuer, echter Lückenteil:** irbtTopicPrefix/iotTopicPrefix fehlen
-komplett in auth.py's Discovery-Parsing — ohne die kann das feste
-Topic gar nicht zusammengesetzt werden. Exakter JSON-Feldname in der
-Discovery-Antwort nicht bestätigt (ServiceDiscoveryData ist eine
-native/JNI-Klasse, Feldnamen dort sind C++-Konvention, nicht
-zwangsläufig identisch mit dem Wire-JSON-Key).
+**New, genuine gap component:** irbtTopicPrefix/iotTopicPrefix are completely
+missing from auth.py's discovery parsing — without them, the fixed
+topic can't be assembled at all. Exact JSON field name in the
+discovery response not confirmed (ServiceDiscoveryData is a
+native/JNI class, field names there are C++ convention, not
+necessarily identical to the wire JSON key).
 
-**Empfehlung:** Nicht sofort umbauen — das ist eine grundlegende
-Architekturänderung an bereits getestetem Code. Erst klären: (a)
-exakter Discovery-Feldname für die Topic-Prefixes, (b) exakte
-Verkettungsreihenfolge in identifier. Bis dahin: watch_live_map()s
-Docstring um diesen Vorbehalt ergänzen.
+**Recommendation:** Don't rebuild immediately — this is a fundamental
+architecture change to already-tested code. First clarify: (a)
+exact discovery field name for the topic prefixes, (b) exact
+concatenation order in identifier. Until then: add this caveat to
+watch_live_map()'s docstring.
 
-### B2. Furniture-Editierbefehl — zwei Felder fehlen
+### B2. Furniture edit command — two fields missing
 
-Das reale Lesemodell P2MapFurnitureInfo hat cleaningArea: Polygon und
-orientation: double zusätzlich zu geometry/id/type/userEdited. Meine
-Furniture-Dataclass (für set_furniture) hat nur furniture_type,
-geometry, furniture_id, user_modified — kein cleaning_area, kein
-orientation. Wahrscheinlich Pflichtfelder beim Erstellen/Ändern von
-Möbeln, nicht nur beim Lesen.
+The real read model P2MapFurnitureInfo has cleaningArea: Polygon and
+orientation: double in addition to geometry/id/type/userEdited. My
+Furniture dataclass (for set_furniture) only has furniture_type,
+geometry, furniture_id, user_modified — no cleaning_area, no
+orientation. Likely required fields when creating/changing furniture,
+not just when reading.
 
 ---
 
-## C. Nicht implementiert
+## C. Not implemented
 
-### C1. Missionssteuerung (CLEAN/START/STOP/PAUSE/DOCK/etc.) — größte Lücke, aber strukturell hart
+### C1. Mission control (CLEAN/START/STOP/PAUSE/DOCK/etc.) — biggest gap, but structurally hard
 
-Vollständiges Kommando-Vokabular gefunden
-(com.irobot.data.missioncommand.datamodels.CommandType, 30 Werte):
+Complete command vocabulary found
+(com.irobot.data.missioncommand.datamodels.CommandType, 30 values):
 CLEAN, QUICK, SPOT, DOCK, START, PAUSE, RESUME, STOP, WAKE, RESET,
 FIND, WIPE, IPDONE, PROVDONE, RECHRG, TRAIN, EVAC, STOPEVAC, QUERYDOCK,
 TIDY, VIEWPOINT, STARTLOG, SKIP, FLREFILL, WASHPAD, DRYPAD, STOPPADDRY,
-FLUSHSLUICE, CLEAN_SPOT, START_CLEAN. RoutineCommand-Struktur (type,
+FLUSHSLUICE, CLEAN_SPOT, START_CLEAN. RoutineCommand structure (type,
 assetId, mapId, ordered, idMultipolys, params, regions, pmapVersionId,
-cleanAll, spotGeometry, favoriteId) ebenfalls bestätigt.
+cleanAll, spotGeometry, favoriteId) also confirmed.
 
-**Warum das (noch) nicht baubar ist:** MissionRepositoryImpl (der
-Kotlin-Code, der startMission() aufruft) delegiert an
+**Why this isn't (yet) buildable:** MissionRepositoryImpl (the
+Kotlin code that calls startMission()) delegates to
 MissionInitiation/ProductStatus/core::CommandTierAgentImpl::
-postCommand() — allesamt native JNI-Wrapper-Klassen. Die eigentliche
-Übertragung (MQTT-Topic? Shadow-desired-Zustand? REST?) passiert in
-liblegacyCore.so, für Java/Kotlin-Analyse unsichtbar. Das deckt sich
-mit der schon in CLOUD_SHADOW_PUSH_FINDINGS.md festgehaltenen offenen
-Frage ("kein Kommando-Topic in der APK gefunden... vermutlich über den
-Shadow-desired-Zustand, nie getestet") — heute erneut bestätigt, nicht
-aufgelöst.
+postCommand() — all native JNI wrapper classes. The actual
+transmission (MQTT topic? shadow desired state? REST?) happens in
+liblegacyCore.so, invisible to Java/Kotlin analysis. This matches
+the open question already noted in CLOUD_SHADOW_PUSH_FINDINGS.md
+("no command topic found in the APK... presumably via the
+shadow desired state, never tested") — confirmed again today, not
+resolved.
 
-**Das ist die fundamentalste fehlende Funktion der Bibliothek** — ohne
-sie kann man den Roboter nicht starten/stoppen. Aber: kein Wissens-Loch,
-das durch mehr Kotlin-Lesen zu schließen wäre. Nächster Schritt wäre
-entweder native Disassemblierung (über Symbolnamen hinaus) oder eine
-echte Traffic-Capture gegen ein Prime-Gerät.
+**This is the most fundamental missing feature of the library** — without
+it, the robot can't be started/stopped. But: not a knowledge gap
+that could be closed by reading more Kotlin. The next step would be
+either native disassembly (beyond symbol names) or a
+real traffic capture against a Prime device.
 
-### C2. p2maps-Lese-Endpunkte — Stand nach vierter Sitzung
+### C2. p2maps read endpoints — status after the fourth session
 
-P2MapFetching-Interface hat sechs Methoden:
+The P2MapFetching interface has six methods:
 
-| Methode | Status |
+| Method | Status |
 |---|---|
-| fetchMapMetadata | erledigt: `get_map_metadata()` |
-| fetchActiveVersions | erledigt: `get_active_map_versions()` |
-| observeLiveMap | teilweise: `watch_live_map()`, aber siehe B1 |
-| fetchPersistentMap / fetchLatestPersistentMap / fetchMissionMap | Endpunkt fuer den vorsignierten Download-Link jetzt bestaetigt (`get_map_geojson_link()`, siehe vierte Sitzung oben) -- das eigentliche Herunterladen+Entpacken des tar.gz-Buendels von dieser URL ist NICHT implementiert (waere ein einfacher HTTP-GET + tarfile-Entpacken, aber noch nicht gebaut) |
+| fetchMapMetadata | done: `get_map_metadata()` |
+| fetchActiveVersions | done: `get_active_map_versions()` |
+| observeLiveMap | partial: `watch_live_map()`, but see B1 |
+| fetchPersistentMap / fetchLatestPersistentMap / fetchMissionMap | the endpoint for the presigned download link is now confirmed (`get_map_geojson_link()`, see the fourth session above) -- the actual downloading+unpacking of the tar.gz bundle from this URL is NOT implemented (would be a simple HTTP GET + tarfile unpacking, but not built yet) |
 
-**Zusaetzlich gefunden, nicht implementiert:** `delete_map()` (klein,
-implementiert) und die parallele V1-Editier-Vokabular (gross, bewusst
-nicht implementiert -- siehe vierte Sitzung oben).
+**Also found, not implemented:** `delete_map()` (small,
+implemented) and the parallel V1 edit vocabulary (large, deliberately
+not implemented -- see the fourth session above).
 
-Fruehere Einschaetzung ("Method not decompiled", "nicht wirtschaftlich
-weiter aufloesbar") war zu pessimistisch -- eine breitere Suche im
-bereits vorhandenen Quellcode (nicht erneute Dekompilierung) loeste
-den Kern der Frage.
+Earlier assessment ("Method not decompiled", "not economically
+resolvable further") was too pessimistic -- a broader search within the
+already-available source code (not re-decompilation) resolved
+the core of the question.
 
-### C3. p2maps-Lese-Modelle (was IN einer Karte steckt) — komplett fehlend
+### C3. p2maps read models (what's IN a map) — completely missing
 
-models.py hat ausschließlich Editier-Kommando-Hüllen (was man SENDET).
-Für das, was fetchPersistentMap/fetchMissionMap/get_map_metadata
-tatsächlich ZURÜCKLIEFERN, existiert kein einziges Datenmodell.
-Bestätigt vorhandene, aber nicht abgebildete Lese-Typen: P2MapRoomInfo,
+models.py exclusively has edit command envelopes (what you SEND).
+For what fetchPersistentMap/fetchMissionMap/get_map_metadata
+actually RETURN, not a single data model exists.
+Confirmed to exist, but not modeled, read types: P2MapRoomInfo,
 P2MapBorderInfo, P2MapHazardInfo, P2MapTrajectoryInfo,
 P2MapCoverageInfo, P2MapDockInfo, P2MapFloorPlanInfo,
 P2MapNoMopZoneInfo, P2MapAdHocCleanZoneInfo, P2MapKeepOutZoneInfo,
 P2MapVirtualWallInfo, P2MapThresholdInfo, P2MapFurnitureInfo
-(Lese-Variante, siehe B2), P2MapRoomMetadata. get_map_metadata() gibt
-aktuell rohes, ungeparstes JSON zurück — ehrlich dokumentiert
-("Response shape not modeled yet"), aber eine große Lücke.
+(read variant, see B2), P2MapRoomMetadata. get_map_metadata() currently
+returns raw, unparsed JSON — honestly documented
+("response shape not modeled yet"), but a big gap.
 
-### C4. Auth-Mechanismus für p2maps — heute als strukturell unbestätigbar bestätigt
+### C4. Auth mechanism for p2maps — today confirmed as structurally unconfirmable
 
-AuthHTTPClientAdapter.perform() (der reale HTTP-Client-Pfad der
-Prime-App) delegiert die gesamte Anfrage — inklusive Signierung — an
-accountService.sendRequest(), wieder eine native Methode. Die
-SigV4-Annahme in rest_client.py/aws_sigv4.py stammt aus der
-Cross-Referenz mit ha_roomba_plus's cloud_api.py (Classic-Protokoll,
-eigene Reverse-Engineering-Quelle) — sie war und bleibt eine
-Analogie-Annahme, keine aus Primes eigenem Code bestätigte Tatsache.
-Heute neu: der Grund, warum sie nie aus Primes eigenem Code bestätigt
-werden kann, ist jetzt klar (native Delegation), nicht nur "nicht
-geprüft".
+AuthHTTPClientAdapter.perform() (the real HTTP client path of the
+Prime app) delegates the entire request — including signing — to
+accountService.sendRequest(), again a native method. The
+SigV4 assumption in rest_client.py/aws_sigv4.py comes from
+cross-referencing with ha_roomba_plus's cloud_api.py (Classic protocol,
+its own reverse-engineering source) — it was and remains an
+analogy assumption, not a fact confirmed from Prime's own code.
+New today: the reason why it can never be confirmed from Prime's own code
+is now clear (native delegation), not just "not
+checked".
 
-### C5. Haushalt/Mehrgeräte-Konzepte — nicht untersucht
+### C5. Household/multi-device concepts — not investigated
 
-teaming/capability_profiles wurden in früheren Sitzungen als Konzepte
-erwähnt (geteilter nativer Kern), heute nicht vertieft. Echte Lücke,
-aber niedrige Priorität ohne mehrere Testgeräte im Haushalt.
+Teaming/capability_profiles were mentioned as concepts in earlier
+sessions (shared native core), not pursued further today. A genuine gap,
+but low priority without multiple test devices in the household.
 
 ---
 
-## Priorisierter Vorschlag, nicht verbindlich
+## Prioritized proposal, non-binding
 
-1. **B1 (Livemap-Topic-Fix)** — betrifft eine bereits gebaute, getestete
-   Funktion; sollte vor allem Neuen korrigiert werden, sobald der
-   Discovery-Feldname für irbtTopicPrefix geklärt ist.
-2. **B2 (Furniture-Felder)** — klein, schnell zu ergänzen.
-3. **C3 (Lese-Modelle)** — großer, aber gut abgrenzbarer Batch, direkt
-   aus den heute gefundenen Klassennamen ableitbar.
-4. **C2 (fehlende Fetch-Endpunkte)** — braucht zuerst einen erneuten,
-   gezielten Dekompilierungsversuch für die vier "nicht decompiled"
-   Methoden.
-5. **C1 (Missionssteuerung)** — wichtigstes Feature, aber am schwersten
-   zu schließen. Realistischer nächster Schritt: gezielte native
-   Disassemblierung von CommandTierAgentImpl::postCommand() oder
-   Warten auf echte Traffic-Daten (Ader).
+1. **B1 (livemap topic fix)** — affects already-built, tested
+   functionality; should be corrected before anything new, once the
+   discovery field name for irbtTopicPrefix is clarified.
+2. **B2 (furniture fields)** — small, quick to add.
+3. **C3 (read models)** — large, but well-scoped batch, directly
+   derivable from the class names found today.
+4. **C2 (missing fetch endpoints)** — first needs another,
+   targeted decompilation attempt for the four "not decompiled"
+   methods.
+5. **C1 (mission control)** — the most important feature, but the hardest
+   to close. A realistic next step: targeted native
+   disassembly of CommandTierAgentImpl::postCommand() or
+   waiting for real traffic data (Ader).
 
-## Nachtrag (zweiunddreissigste Sitzung): get_settings()-Antwortinhalt endlich gesehen -- loest grossen Teil der Settings-Vokabelliste auf
+## Addendum (thirty-second session): get_settings() response content finally seen -- resolves a large part of the settings vocabulary list
 
-chairstacker hat nach dem korrigierten Reinstall erneut getestet -- diesmal mit tatsaechlichem
-Inhalt fuer `get_settings()` in der `--dump-config`-Datei (vorher war nur "Erfolg/Timeout" bekannt,
-nie der Inhalt selbst). Neues Modell `RobotSettings` gebaut, das den kompletten "rw-settings"-Shadow
-abdeckt: Kindersicherung, Lautstaerke, Zeitzone, Land, Cloud-Umgebung, Auto-Evac-Frequenz,
-Sprachliste, diverse "*Allowed"-Berechtigungsflags, Wischpad-Wasch-/Trocken-Zyklus-Einstellungen.
+chairstacker tested again after the corrected reinstall -- this time with actual
+content for `get_settings()` in the `--dump-config` file (previously only "success/timeout" was
+known, never the content itself). Built a new model `RobotSettings` that covers the complete
+"rw-settings" shadow: child lock, volume, timezone, country, cloud environment, auto-evac
+frequency, language list, various "*Allowed" permission flags, pad wash/dry cycle settings.
 
-Das loest einen erheblichen Teil der zuvor in `docs/API_REFERENCE.md` als "entdeckt, aber
-unmodelliert" gelisteten ~25 Settings-commandIds auf -- SetChildLock, SetAudioVolumePattern,
+This resolves a substantial part of the ~25 settings commandIds previously listed in
+`docs/API_REFERENCE.md` as "discovered, but unmodeled" -- SetChildLock, SetAudioVolumePattern,
 SetAutoEvacFrequency, SetRobotLanguageV2, SetMapUploadAllowedCommand, SetPadWashReturn/
-SetPadWashWetoutFrequency/SetPadDryDuration entsprechen jetzt direkt bestaetigten Feldern.
-Verbleibende ~12 (SetChargingLightRightPattern, SetDisplayLight, SetDemoMode, SetBinTypeDetect,
+SetPadWashWetoutFrequency/SetPadDryDuration now correspond directly to confirmed fields.
+The remaining ~12 (SetChargingLightRightPattern, SetDisplayLight, SetDemoMode, SetBinTypeDetect,
 SetDetergentCleaningSolution, PMapLearningAllowed/PMapContinuousLearningAllowed,
 SetNavStrategyCommand, WifiDeviceLocalizationAllowed/BleDeviceLocalizationAllowed,
 TileScanModeAllowed, SetAQIScale, SetAssetSetting/SetSmartHomeSettings/SetPrecheck, ImgUpload)
-tauchten in dieser einen Antwort nicht auf -- plausibel, da nicht jedes Geraet jede Einstellung
-aktiv hat (z.B. SetDetergentCleaningSolution nur fuer detergent-faehige Modelle relevant).
+didn't show up in this one response -- plausible, since not every device has every setting
+active (e.g. SetDetergentCleaningSolution only relevant for detergent-capable models).
 
-Nebenbei `PadWetnessParam.from_json()` ergaenzt (fehlte, obwohl `to_json()` schon lange existierte)
--- bestaetigt gegen echte Werte (`{"disposable": 3, "reusable": 1, "padPlate": 1}`).
+Also added `PadWetnessParam.from_json()` (was missing despite `to_json()` having existed for a long time)
+-- confirmed against real values (`{"disposable": 3, "reusable": 1, "padPlate": 1}`).
 
-Missionshistorie/Haushalt/Verschleissteile/Seriennummer/Kartenversionen in diesem Lauf identisch
-zu den vorherigen Daten (nur andere JSON-Schluesselreihenfolge) -- keine neuen Erkenntnisse dort,
-bereits vollstaendig verarbeitet.
+Mission history/household/consumable parts/serial number/map versions in this run identical
+to the previous data (just different JSON key order) -- no new insights there,
+already fully processed.
 
-250/250 Tests gruen (4 neue), ruff sauber.
+250/250 tests green (4 new), ruff clean.
 
-## Nachtrag (dreiunddreissigste Sitzung): wahrscheinliche Ursache fuer "get_settings() manchmal ja, manchmal nein" gefunden und behoben
+## Addendum (thirty-third session): likely cause found and fixed for "get_settings() sometimes yes, sometimes no"
 
-Auf die Frage "warum funktioniert get_settings() manchmal ja und manchmal nein" hin den eigenen
-Code (nicht die Serverantwort) genauer geprueft -- und einen echten, konkreten Kandidaten
-gefunden: `get_shadow()`/`update_shadow()` abonnierten die Antwort-Topics und publizierten die
-Anfrage SOFORT danach, ohne auf die SUBACK-Bestaetigung des Brokers zu warten. `subscribe()` in
-Paho ist selbst asynchron (queued nur das SUBSCRIBE-Paket). Kam die Antwort zurueck, BEVOR das
-SUBACK verarbeitet war, ging sie verloren -- der Client war zu diesem Zeitpunkt technisch noch
-nicht abonniert, exakt die Art nicht-deterministischer, netzwerk-timing-abhaengiger Race, die zu
-"gleiches Geraet, unterschiedliches Ergebnis" passt (chairstackers wiederholt beobachtete
-`get_settings()`-Inkonsistenz auf derselben BLID).
+In response to the question "why does get_settings() sometimes work and sometimes not", checked my own
+code (not the server response) more closely -- and found a genuine, concrete candidate:
+`get_shadow()`/`update_shadow()` subscribed to the response topics and published the
+request IMMEDIATELY after, without waiting for the broker's SUBACK confirmation. `subscribe()` in
+Paho is itself asynchronous (only queues the SUBSCRIBE packet). If the response came back BEFORE the
+SUBACK was processed, it was lost -- at that point the client was technically
+not yet subscribed, exactly the kind of non-deterministic, network-timing-dependent race that fits
+"same device, different result" (chairstacker's repeatedly observed
+`get_settings()` inconsistency on the same BLID).
 
-Warum betraf das bisher vor allem `get_settings()` und nicht den klassischen Shadow
-(`get_state()`, bislang immer erfolgreich)? Reine Vermutung, nicht bestaetigt: moeglicherweise
-unterscheidet sich die Antwortlatenz zwischen klassischem und benanntem Shadow geringfuegig,
-wodurch der klassische die Race in der Praxis fast immer "gewinnt" und der benannte haeufiger
-knapp verliert -- ohne Zugriff auf Timing-Messungen an einem echten Geraet bleibt das Spekulation.
+Why did this mostly affect `get_settings()` so far and not the classic shadow
+(`get_state()`, always successful so far)? Pure speculation, not confirmed: perhaps
+the response latency differs slightly between the classic and named shadow,
+causing the classic one to almost always "win" the race in practice while the named one more often
+narrowly loses -- without access to timing measurements on a real device this remains speculation.
 
-Behoben: neue `_subscribe_and_wait()`-Hilfsmethode wartet auf die SUBACK-Bestaetigung (ueber einen
-neuen `on_subscribe`-Callback) fuer alle betroffenen Topics, bevor publiziert wird -- in beiden
-Methoden. Bewusst kurzer interner Timeout (3s) fuer das Warten selbst, da SUBACKs typischerweise
-sehr schnell sind, anders als die eigentliche Shadow-Antwort.
+Fixed: new `_subscribe_and_wait()` helper method waits for the SUBACK confirmation (via a new
+`on_subscribe` callback) for all affected topics, before publishing -- in both
+methods. Deliberately short internal timeout (3s) for the waiting itself, since SUBACKs are typically
+very fast, unlike the actual shadow response.
 
-251/251 Tests gruen (1 neuer, gezielter Regressionstest gegen die Race-Reihenfolge; mehrere
-bestehende Tests brauchten eine kleine Anpassung am Fake-MQTT-Client, der jetzt `(result, mid)`
-zurueckgeben und eine simulierte SUBACK ausloesen muss, wie der echte Paho-Client). ruff sauber.
+251/251 tests green (1 new, targeted regression test against the race ordering; several
+existing tests needed a small adjustment to the fake MQTT client, which now needs to return
+`(result, mid)` and trigger a simulated SUBACK, like the real Paho client). ruff clean.
 
-Version auf 0.1.4a0 angehoben (Lehre aus der vorherigen Sitzung: nicht zu lange mit dem Bump
-warten, sonst erkennt `pip install --upgrade` bei Git-Installationen faelschlich "nichts zu tun").
+Version bumped to 0.1.4a0 (lesson from the previous session: don't wait too long with the bump,
+otherwise `pip install --upgrade` for git installs wrongly detects "nothing to do").
 
-**Nachtrag zur Nachtrag, selbe Sitzung:** Auf "was noch" hin systematisch nach WEITEREN Stellen
-mit demselben Muster gesucht (`grep` nach allen `.subscribe(`-Aufrufen im ganzen Modul) --
-zwei weitere gefunden: die dauerhafte `subscribe()`-Methode selbst (genutzt von
-`watch_state()`/`watch_live_map()`) und die Subscription-Wiederherstellung nach einem
-Token-Wechsel in `replace_token()`. Risiko dort milder (verpasste erste Nachricht statt verpasste
-einzige erwartete Antwort), aber aus Konsistenzgruenden ebenfalls auf `_subscribe_and_wait()`
-umgestellt. Danach: nur noch EINE einzige, kanonische `subscribe()`-Aufrufstelle im gesamten
-Modul (in `_subscribe_and_wait()` selbst) -- per `grep` bestaetigt, keine weiteren offenen Stellen.
+**Addendum to the addendum, same session:** In response to "what else", systematically searched for FURTHER
+places with the same pattern (`grep` for all `.subscribe(` calls across the whole module) --
+found two more: the persistent `subscribe()` method itself (used by
+`watch_state()`/`watch_live_map()`) and the subscription restoration after a
+token change in `replace_token()`. Milder risk there (missed first message instead of a missed
+single expected response), but switched to `_subscribe_and_wait()` for consistency
+anyway. After that: only ONE single, canonical `subscribe()` call site in the entire
+module (in `_subscribe_and_wait()` itself) -- confirmed via `grep`, no other open spots.
 
-252/252 Tests gruen (1 weiterer neuer Test), ruff sauber.
+252/252 tests green (1 further new test), ruff clean.
 
-## Nachtrag (vierunddreissigste Sitzung): Manuelles Missionsbefehl-Verifikationsskript gebaut
+## Addendum (thirty-fourth session): built a manual mission command verification script
 
-Auf die Bitte hin, chairstacker zu fragen, ob er bereit waere, Start/Stop/Pause zu verifizieren --
-und im Vorgriff darauf, falls er zustimmt -- ein separates, eigenstaendiges Skript
-(`verify_mission_commands.py`, Entry-Point `roombapy-prime-verify-commands`) gebaut. Bewusst
-GETRENNT von `diagnostics.py`, aus demselben Grund, aus dem `diagnostics.py` selbst nie
-automatisch Missionsbefehle sendet -- dieses Skript existiert nur fuer den Moment, in dem jemand
-das bewusst, einmalig und beobachtet tun moechte.
+In response to the request to ask chairstacker whether he'd be willing to verify start/stop/pause --
+and in anticipation of him agreeing -- built a separate, standalone script
+(`verify_mission_commands.py`, entry point `roombapy-prime-verify-commands`). Deliberately
+SEPARATE from `diagnostics.py`, for the same reason `diagnostics.py` itself never
+automatically sends mission commands -- this script only exists for the moment when someone
+wants to do that deliberately, once, and while watching.
 
-**Sicherheitsdesign, zweifach:**
-1. `--i-understand-this-will-move-my-robot` muss gesetzt sein, sonst bricht das Skript ab, bevor
-   es sich ueberhaupt einloggt.
-2. Vor JEDEM einzelnen Befehl eine eigene interaktive Bestaetigung (nicht nur einmal am Anfang) --
-   `_confirm()` akzeptiert ausschliesslich eindeutige Zustimmung ("j"/"ja"/"y"/"yes"), ein
-   versehentliches Enter zaehlt als Ablehnung, nicht als Zustimmung (per Test abgesichert).
+**Safety design, twofold:**
+1. `--i-understand-this-will-move-my-robot` must be set, or the script aborts before
+   it even logs in.
+2. A separate interactive confirmation before EVERY individual command (not just once at the start) --
+   `_confirm()` only accepts unambiguous consent ("j"/"ja"/"y"/"yes"), an
+   accidental Enter counts as a decline, not consent (secured by a test).
 
-**Ablauf:** Start (clean_all=True) -> Stop, konservativ als Standardpfad. Pause/Resume und Dock
-als separate, einzeln abgefragte Zusatzschritte. Vor und nach jedem gesendeten Befehl wird
-zusaetzlich `get_state()` abgerufen und der rohe Zustand angezeigt/erfasst -- ein aktiver
-Missionszustand wurde bisher noch nie eingefangen (alle bisherigen echten Antworten zeigten einen
-geladenen, aber nicht laufenden Roboter), das waere also selbst neue Information, unabhaengig vom
-Testergebnis.
+**Flow:** Start (clean_all=True) -> Stop, conservative as the default path. Pause/Resume and Dock
+as separate, individually-asked additional steps. Before and after every command sent,
+`get_state()` is additionally fetched and the raw state displayed/captured -- an active
+mission state had never been captured before (every prior real response showed a
+loaded but not running robot), so this would itself be new information, regardless of
+the test result.
 
-Nutzt dieselbe `Report`-/Redaktions-/Issue-Link-Infrastruktur wie `diagnostics.py`
-(wiederverwendet, nicht dupliziert) fuer einen konsistenten, teilbaren Abschlussbericht.
+Uses the same `Report`/redaction/issue-link infrastructure as `diagnostics.py`
+(reused, not duplicated) for a consistent, shareable final report.
 
-268/268 Tests gruen (16 neue, alle ohne echtes Netzwerk -- der eigentliche Zweck des Skripts ist
-per Natur nicht automatisiert testbar). Rauchtest bestaetigt: Sicherheitsgate greift korrekt ohne
-das Pflicht-Flag, `--blid` ist Pflicht (kein "erstes gefundenes Geraet" wie bei diagnostics.py),
-Build/Entry-Point verifiziert.
+268/268 tests green (16 new, all without a real network -- the actual purpose of the script is
+by its nature not automatable to test). Smoke test confirmed: the safety gate correctly fires without
+the required flag, `--blid` is required (no "first device found" like in diagnostics.py),
+build/entry point verified.
 
-Version bleibt 0.1.4a0 -- alles aus dieser Sitzung (Race-Condition-Fix + neues Skript) unter derselben, noch nicht extern verteilten Version gesammelt.
+Version stays at 0.1.4a0 -- everything from this session (race condition fix + new script) collected under the same, not yet externally distributed version.
+
+## Addendum (thirty-fifth session): switched script runtime output to English
+
+In response to a valid objection ("the complete library shouldn't respond in German, but in
+English -- more international"), translated the complete runtime output of both scripts
+(`diagnostics.py`, `verify_mission_commands.py`): report labels, status values (OK/
+FAILED/SKIPPED instead of OK/FEHLGESCHLAGEN/UEBERSPRUNGEN), interactive prompts, `--help` texts, as well as
+the name of the test favorite visible in the app. Internal code comments/docstrings (session
+notes explaining why the code is the way it is) deliberately remain German -- this only affects
+the actual user output.
+
+Systematically checked via AST scan (not just `grep`), to make sure no German
+strings remain in `print()`/`report.add()`/`_skip()`/`_confirm()`/`add_argument()` calls
+-- including f-string components, which a plain text `grep` could easily have missed.
+
+268/268 tests green (all affected expected values in the tests updated accordingly), ruff clean.
+Smoke test of both scripts confirmed consistently English output.
+
+Version bumped to 0.1.5a0 (a standalone, complete change, not an appendage to an
+ongoing session).

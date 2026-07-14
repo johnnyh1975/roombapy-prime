@@ -48,9 +48,9 @@ class _FakeMqttClient:
         self._next_mid = 1
 
     def subscribe(self, topic: str, qos: int = 0) -> tuple[int, int]:
-        """NEU (33. Sitzung): gibt jetzt (result, mid) zurueck wie das
-        echte Paho-Client -- und meldet sofort eine simulierte SUBACK-
-        Bestaetigung (Timing selbst ist hier nicht das Testziel)."""
+        """NEW (session 33): now returns (result, mid) like the real
+        Paho client -- and immediately reports a simulated SUBACK
+        confirmation (timing itself isn't the test target here)."""
         self.subscribed.append(topic)
         mid = self._next_mid
         self._next_mid += 1
@@ -211,9 +211,9 @@ def test_shadow_topic_helper() -> None:
 
 
 def test_livemap_topic_helper() -> None:
-    """SYNTHETIC/UNSICHER -- siehe mqtt_client.py's livemap_topic()-
-    Docstring: die exakte Verkettungsreihenfolge ist nicht letztgueltig
-    bestaetigt, dies testet nur die tatsaechlich implementierte Annahme."""
+    """SYNTHETIC/UNCERTAIN -- see mqtt_client.py's livemap_topic()
+    docstring: the exact concatenation order isn't conclusively
+    confirmed, this only tests the assumption actually implemented."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
     assert client.livemap_topic("irbt-prefix") == "irbt-prefix/BLID1/livemap/update"
 
@@ -355,14 +355,14 @@ def test_replace_token_before_connect_raises() -> None:
         client.replace_token(new_token)
 
 
-# --- self._client_lock: echter Nebenlaeufigkeitstest --------------------
+# --- self._client_lock: real concurrency test --------------------------
 
 def test_client_lock_serializes_get_shadow_and_replace_token() -> None:
-    """Echter Test mit OS-Threads (threading.Lock, nicht asyncio.Lock --
-    diese Methoden laufen ueber asyncio.to_thread, also echte Threads).
-    Bestaetigt, dass replace_token() wartet, bis ein laufender
-    get_shadow()-Aufruf fertig ist, statt gleichzeitig auf self._client
-    zuzugreifen -- schliesst die vorher dokumentierte Luecke."""
+    """Real test with OS threads (threading.Lock, not asyncio.Lock --
+    these methods run via asyncio.to_thread, so real threads).
+    Confirms that replace_token() waits until a running get_shadow()
+    call is done, instead of accessing self._client concurrently --
+    closes the previously documented gap."""
     import threading
     import time as time_module
 
@@ -409,10 +409,10 @@ def test_client_lock_serializes_get_shadow_and_replace_token() -> None:
 
 
 def test_get_shadow_waits_for_subscribe_confirmation_before_publishing() -> None:
-    """NEU (33. Sitzung) -- Regressionstest gegen die gefundene Race:
-    publish() darf erst erfolgen, NACHDEM alle SUBACKs bestaetigt wurden.
-    Simuliert eine verzoegerte SUBACK-Bestaetigung, um zu pruefen, dass
-    publish() tatsaechlich darauf wartet, statt sofort loszusenden."""
+    """NEW (session 33) -- regression test against the found race:
+    publish() may only happen AFTER all SUBACKs have been confirmed.
+    Simulates a delayed SUBACK confirmation to check that publish()
+    actually waits for it, instead of sending immediately."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="X")
     order: list[str] = []
 
@@ -453,9 +453,9 @@ def test_get_shadow_waits_for_subscribe_confirmation_before_publishing() -> None
 
 
 def test_persistent_subscribe_waits_for_confirmation() -> None:
-    """NEU (33. Sitzung) -- derselbe Fix wie bei get_shadow(), jetzt auch
-    fuer die dauerhafte subscribe()-Methode (watch_state()/
-    watch_live_map()) abgesichert."""
+    """NEW (session 33) -- the same fix as get_shadow(), now also
+    secured for the persistent subscribe() method (watch_state()/
+    watch_live_map())."""
     client, fake = _connected_client()
     client.subscribe("some/topic", lambda resp: None)
     assert "some/topic" in fake.subscribed

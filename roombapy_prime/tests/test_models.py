@@ -248,9 +248,9 @@ def test_dock_info_uses_point_not_polygon() -> None:
 # --- mission commands (CLEAN/START/STOP/PAUSE/DOCK/etc.) -----------------
 
 def test_mission_command_type_values_match_serialname_annotations() -> None:
-    """Werte sind die tatsaechlichen @SerialName-Wire-Strings, nicht die
-    Kotlin-Enum-Konstantennamen -- diese zwei sind bewusst unterschiedlich
-    geprueft, da sie im Quellcode auch unterschiedlich waren."""
+    """Values are the actual @SerialName wire strings, not the Kotlin
+    enum constant names -- these two are deliberately checked
+    separately, since they also differed in the source code."""
     from roombapy_prime.models import MissionCommandType
 
     assert MissionCommandType.CLEAN_SPOT.value == "point_clean"
@@ -293,7 +293,7 @@ def test_routine_command_to_json_optional_fields() -> None:
 
 
 def test_routine_command_to_shadow_desired_wraps_under_cmd_key() -> None:
-    """Bestaetigt aus CommandWrapper.java's @SerialName("cmd")."""
+    """Confirmed from CommandWrapper.java's @SerialName("cmd")."""
     from roombapy_prime.models import MissionCommandType, RoutineCommand
 
     cmd = RoutineCommand(command_type=MissionCommandType.STOP, asset_id="BLID123")
@@ -304,8 +304,8 @@ def test_routine_command_to_shadow_desired_wraps_under_cmd_key() -> None:
 
 
 def test_command_params_to_json_omits_none_fields() -> None:
-    """Bestaetigt (androguard): alle 37 Felder optional, nur gesetzte
-    Werte landen im JSON."""
+    """Confirmed (androguard): all 37 fields optional, only set
+    values end up in the JSON."""
     from roombapy_prime.models import CommandParams
 
     params = CommandParams(suction_level=3, room_confine=True)
@@ -324,7 +324,7 @@ def test_command_params_pad_wetness_nested() -> None:
 
 
 def test_region_to_json() -> None:
-    """Bestaetigt (androguard): id, name, params, type."""
+    """Confirmed (androguard): id, name, params, type."""
     from roombapy_prime.models import CommandParams, Region, RegionType
 
     region = Region(region_id="r1", region_type=RegionType.RID, name="Kitchen", params=CommandParams(speed=2))
@@ -334,7 +334,7 @@ def test_region_to_json() -> None:
 
 
 def test_command_polygon_to_json() -> None:
-    """Bestaetigt (androguard): id, metadata (furnitureId), poly."""
+    """Confirmed (androguard): id, metadata (furnitureId), poly."""
     from roombapy_prime.models import CommandPolygon, CommandPolygonMetadata
 
     polygon = CommandPolygon(
@@ -346,8 +346,8 @@ def test_command_polygon_to_json() -> None:
 
 
 def test_routine_command_with_typed_regions_and_params() -> None:
-    """NEU (11. Juli, achte Sitzung) -- RoutineCommand.regions/params
-    akzeptieren jetzt die typisierten Modelle statt nur rohe dicts."""
+    """NEW (July 11, eighth session) -- RoutineCommand.regions/params
+    now accept the typed models instead of just raw dicts."""
     from roombapy_prime.models import CommandParams, MissionCommandType, Region, RegionType, RoutineCommand
 
     cmd = RoutineCommand(
@@ -363,8 +363,8 @@ def test_routine_command_with_typed_regions_and_params() -> None:
 
 
 def test_routine_command_still_accepts_raw_dicts_for_backward_compat() -> None:
-    """Abwaertskompatibilitaet: raw dicts funktionieren weiterhin neben
-    den neuen typisierten Modellen."""
+    """Backward compatibility: raw dicts still work alongside the
+    new typed models."""
     from roombapy_prime.models import MissionCommandType, RoutineCommand
 
     cmd = RoutineCommand(
@@ -380,7 +380,7 @@ def test_routine_command_still_accepts_raw_dicts_for_backward_compat() -> None:
 
 
 def test_parse_mission_history_entry() -> None:
-    """NEU (11. Juli, neunte Sitzung) -- Top-Level-Felder bestaetigt aus
+    """NEW (July 11, ninth session) -- top-level fields confirmed from
     MissionHistory (androguard)."""
     from roombapy_prime.models import DoneCode, parse_mission_history
 
@@ -418,7 +418,7 @@ def test_parse_mission_history_accepts_raw_list() -> None:
 
 
 def test_parse_mission_history_unknown_done_code_falls_back_to_raw_string() -> None:
-    """Server kann neue doneCode-Werte einfuehren -- soll nicht crashen."""
+    """The server may introduce new doneCode values -- shouldn't crash."""
     from roombapy_prime.models import parse_mission_history
 
     entries = parse_mission_history([{"missionId": "m1", "done": "SOME_NEW_CODE"}])
@@ -426,8 +426,8 @@ def test_parse_mission_history_unknown_done_code_falls_back_to_raw_string() -> N
 
 
 def test_command_params_from_json_roundtrip() -> None:
-    """NEU (11. Juli, neunte Sitzung) -- from_json ist die Kehrfunktion
-    zu to_json."""
+    """NEW (July 11, ninth session) -- from_json is the inverse
+    function of to_json."""
     from roombapy_prime.models import CommandParams
 
     original = CommandParams(suction_level=3, room_confine=True, carpet_boost=False)
@@ -446,7 +446,7 @@ def test_command_params_from_json_with_pad_wetness() -> None:
 
 
 def test_cleaning_profile_from_json() -> None:
-    """Bestaetigt (androguard): profile, commandParams, regions."""
+    """Confirmed (androguard): profile, commandParams, regions."""
     from roombapy_prime.models import CleaningProfile, CleaningProfileType
 
     profile = CleaningProfile.from_json(
@@ -480,7 +480,7 @@ def test_household_setting_from_json() -> None:
 
 
 def test_parse_default_routines() -> None:
-    """Bestaetigt (androguard, routines/datamodels/Routine)."""
+    """Confirmed (androguard, routines/datamodels/Routine)."""
     from roombapy_prime.models import parse_default_routines
 
     routines = parse_default_routines(
@@ -494,7 +494,7 @@ def test_parse_default_routines() -> None:
 
 
 # =========================================================================
-# MissionTimelineEvent -- alle 20 Unterereignistypen (18. Sitzung)
+# MissionTimelineEvent -- all 20 sub-event types (session 18)
 # =========================================================================
 
 
@@ -562,8 +562,8 @@ def test_panorama_event_from_json() -> None:
 
 
 def test_plan_event_from_json_with_enum_list() -> None:
-    """Bestaetigt (androguard, jadx hatte diese Klasse uebersprungen) --
-    'ordered' hier eine Intra-Event-Eigenschaft, siehe Docstring."""
+    """Confirmed (androguard, jadx had skipped this class) --
+    'ordered' here is an intra-event property, see docstring."""
     from roombapy_prime.models import PlanEvent, PlanType, PlanUpcoming
 
     e = PlanEvent.from_json(
@@ -650,8 +650,8 @@ def test_tentative_location_event_from_json() -> None:
 
 
 def test_travel_event_from_json() -> None:
-    """AKTUALISIERT (31. Sitzung) -- echte Feldnamen (p2mapId/p2mapvId/
-    rid/zid/dest) und Kleinschreibung bei destination bestaetigt."""
+    """UPDATED (session 31) -- real field names (p2mapId/p2mapvId/
+    rid/zid/dest) and lowercase destination confirmed."""
     from roombapy_prime.models import TravelDestination, TravelEvent
 
     e = TravelEvent.from_json(
@@ -676,8 +676,8 @@ def test_travel_event_from_json() -> None:
 
 
 def test_traversal_event_from_json() -> None:
-    """AKTUALISIERT (31. Sitzung) -- echte Feldnamen und Kleinschreibung
-    bestaetigt."""
+    """UPDATED (session 31) -- real field names and lowercase
+    confirmed."""
     from roombapy_prime.models import TraversalEvent, TraversalType
 
     e = TraversalEvent.from_json({"p2mapId": "m1", "p2mapvId": "v1", "rid": "r1", "type": "zone", "zid": "z1"})
@@ -711,8 +711,8 @@ def test_zone_event_from_json() -> None:
 
 
 def test_mission_timeline_event_only_relevant_subfield_set() -> None:
-    """Nur EIN Unterfeld sollte gesetzt sein, passend zum 'type'-Wert --
-    alle anderen 19 bleiben None."""
+    """Only ONE sub-field should be set, matching the 'type' value --
+    all other 19 stay None."""
     from roombapy_prime.models import MissionTimelineEvent
 
     e = MissionTimelineEvent.from_json(
@@ -721,7 +721,7 @@ def test_mission_timeline_event_only_relevant_subfield_set() -> None:
     assert e.event_type == "zone"
     assert e.zone is not None
     assert e.zone.zone_id == "z1"
-    # alle anderen 19 Unterfelder muessen None bleiben
+    # all other 19 sub-fields must remain None
     other_fields = [
         e.command, e.discovery, e.error, e.evac, e.live_view, e.pad_dry, e.pad_wash,
         e.panorama, e.plan, e.polygon, e.refill, e.relocalizing, e.room, e.sub_room,
@@ -731,8 +731,8 @@ def test_mission_timeline_event_only_relevant_subfield_set() -> None:
 
 
 def test_mission_timeline_event_relocalizing_and_tentative_location_share_type() -> None:
-    """Bestaetigt (androguard): beide Felder nutzen denselben Typ
-    TentativeLocationEvent, aber sind unabhaengige Felder."""
+    """Confirmed (androguard): both fields use the same type
+    TentativeLocationEvent, but are independent fields."""
     from roombapy_prime.models import MissionTimelineEvent, TentativeLocationEvent
 
     e = MissionTimelineEvent.from_json(
@@ -770,12 +770,12 @@ def test_parse_mission_timeline_none_returns_empty_list() -> None:
 
 
 def test_mission_history_entry_populates_timeline_field() -> None:
-    """KORRIGIERT (31. Sitzung): der urspruengliche Test nutzte den
-    Schluessel "events", der in echten Daten nie existiert -- der
-    Fix war bis dahin unbemerkt komplett wirkungslos (timeline war bei
-    JEDER echten Mission leer). Test jetzt gegen den bestaetigten
-    echten Schluessel "finEvents" und die echten Feldnamen (rid/zid
-    statt regionId/zoneId)."""
+    """CORRECTED (session 31): the original test used the key
+    "events", which never exists in real data -- the fix was
+    completely ineffective, unnoticed, until then (timeline was empty
+    for EVERY real mission). Test now against the confirmed real key
+    "finEvents" and the real field names (rid/zid instead of
+    regionId/zoneId)."""
     from roombapy_prime.models import MissionHistoryEntry
 
     entry = MissionHistoryEntry.from_json(
@@ -796,16 +796,16 @@ def test_mission_history_entry_populates_timeline_field() -> None:
 
 
 def test_command_params_uses_swscrub_wire_key() -> None:
-    """KORRIGIERT (25. Sitzung) -- echter Wire-Schluessel ist "swScrub",
-    bestaetigt aus echter Missionshistorie (chairstacker), nicht die
-    urspruengliche Bytecode-Vermutung "scrub"."""
+    """CORRECTED (session 25) -- the real wire key is "swScrub",
+    confirmed from real mission history (chairstacker), not the
+    original bytecode guess "scrub"."""
     from roombapy_prime.models import CommandParams
 
     params = CommandParams(scrub=1)
     body = params.to_json()
 
     assert body == {"swScrub": 1}
-    assert "scrub" not in body  # alter, falscher Schluessel darf nicht mehr auftauchen
+    assert "scrub" not in body  # old, wrong key must no longer appear
 
 
 def test_command_params_swscrub_roundtrip() -> None:
@@ -818,7 +818,7 @@ def test_command_params_swscrub_roundtrip() -> None:
 
 
 def test_command_params_operating_mode() -> None:
-    """NEU (25. Sitzung) -- bestaetigt aus echter Missionshistorie."""
+    """NEW (session 25) -- confirmed from real mission history."""
     from roombapy_prime.models import CommandParams
 
     params = CommandParams.from_json({"operatingMode": 32})
@@ -827,8 +827,8 @@ def test_command_params_operating_mode() -> None:
 
 
 def test_region_type_values_are_lowercase() -> None:
-    """KORRIGIERT (25. Sitzung) -- echte Wire-Werte sind kleingeschrieben,
-    bestaetigt aus echter Missionshistorie (chairstacker: "rid"/"zid")."""
+    """CORRECTED (session 25) -- real wire values are lowercase,
+    confirmed from real mission history (chairstacker: "rid"/"zid")."""
     from roombapy_prime.models import RegionType
 
     assert RegionType.RID.value == "rid"
@@ -836,8 +836,8 @@ def test_region_type_values_are_lowercase() -> None:
 
 
 def test_routine_command_initiator_field() -> None:
-    """NEU (25. Sitzung) -- bestaetigt aus echter Missionshistorie
-    (Werte "cloud"/"rmtApp" beobachtet)."""
+    """NEW (session 25) -- confirmed from real mission history
+    (values "cloud"/"rmtApp" observed)."""
     from roombapy_prime.models import MissionCommandType, RoutineCommand
 
     cmd = RoutineCommand(command_type=MissionCommandType.CLEAN, asset_id="BLID123", initiator="rmtApp")
@@ -856,7 +856,7 @@ def test_routine_command_initiator_omitted_when_none() -> None:
 
 
 # =========================================================================
-# P2MapVersion / RoomMetadataEntry / RobotSerialInfo (26. Sitzung)
+# P2MapVersion / RoomMetadataEntry / RobotSerialInfo (session 26)
 # =========================================================================
 
 
@@ -899,12 +899,12 @@ def test_room_metadata_entry_parses_operating_mode_defaults_as_command_params() 
     assert isinstance(preset_512, CommandParams)
     assert preset_512.suction_level == 4
     assert preset_512.scrub == 1
-    assert preset_512.cleaning_profile == "deep"  # bestaetigt: "profile" mappt korrekt auf cleaning_profile
+    assert preset_512.cleaning_profile == "deep"  # confirmed: "profile" correctly maps to cleaning_profile
 
 
 def test_room_metadata_entry_optional_name() -> None:
-    """Manche Raeume haben einen nutzervergebenen Namen (z.B. "Bathroom"),
-    andere nicht -- bestaetigt aus echten Daten."""
+    """Some rooms have a user-assigned name (e.g. "Bathroom"), others
+    don't -- confirmed from real data."""
     from roombapy_prime.models import RoomMetadataEntry
 
     named = RoomMetadataEntry.from_json(
@@ -947,8 +947,8 @@ def test_p2map_version_from_json_with_multiple_rooms() -> None:
 
 
 def test_parse_active_map_versions_multiple_maps() -> None:
-    """Bestaetigt: ein Account kann mehrere P2MapVersion-Eintraege haben
-    (echte Daten zeigten "Whole House" + "Master_Bathroom")."""
+    """Confirmed: an account can have multiple P2MapVersion entries
+    (real data showed "Whole House" + "Master_Bathroom")."""
     from roombapy_prime.models import parse_active_map_versions
 
     maps = parse_active_map_versions(
@@ -971,9 +971,9 @@ def test_parse_active_map_versions_handles_none_and_empty() -> None:
 
 
 def test_robot_serial_info_from_json() -> None:
-    """Bestaetigt aus echter get_serial_number_data()-Antwort
-    (chairstacker) -- inkl. "family": "Roomba Combo", bestaetigt ein
-    Saug+Wisch-Kombigeraet."""
+    """Confirmed from a real get_serial_number_data() response
+    (chairstacker) -- including "family": "Roomba Combo", confirms a
+    vacuum+mop combo device."""
     from roombapy_prime.models import RobotSerialInfo
 
     info = RobotSerialInfo.from_json(
@@ -1003,13 +1003,13 @@ def test_robot_serial_info_from_json() -> None:
 
 
 # =========================================================================
-# Korrekturen aus dem zweiten diagnose.json-Teil (27. Sitzung)
+# Corrections from the second diagnose.json part (session 27)
 # =========================================================================
 
 
 def test_mission_history_entry_uses_confirmed_real_field_names() -> None:
-    """Regressionstest gegen den in dieser Sitzung gefundenen Bug:
-    fast alle Feldnamen waren falsch geraten (minutesRunning->runM,
+    """Regression test against the bug found in that session: almost
+    all field names had been wrongly guessed (minutesRunning->runM,
     minutesPaused->pauseM, minutesCharging->chrgM, minutesDone->doneM,
     squareFeetCovered->sqft, numberOfEvacuations->evacs,
     endedOnDock->eDock, robotId->robot_id, "command"->"cmd")."""
@@ -1045,8 +1045,8 @@ def test_mission_history_entry_uses_confirmed_real_field_names() -> None:
 
 
 def test_done_code_matches_real_lowercase_value() -> None:
-    """UEBERARBEITET (27. Sitzung) -- Werte sind kleingeschrieben,
-    bestaetigt aus echter Missionshistorie."""
+    """REVISED (session 27) -- values are lowercase, confirmed from
+    real mission history."""
     from roombapy_prime.models import DoneCode
 
     assert DoneCode.OK.value == "ok"
@@ -1054,8 +1054,8 @@ def test_done_code_matches_real_lowercase_value() -> None:
 
 
 def test_mission_command_record_regions_are_typed() -> None:
-    """NEU (27. Sitzung) -- regions ist jetzt list[Region] statt roher
-    Liste, params darin ist CommandParams-foermig."""
+    """NEW (session 27) -- regions is now list[Region] instead of a
+    raw list, params within it is CommandParams-shaped."""
     from roombapy_prime.models import CommandParams, MissionCommandRecord, Region, RegionType
 
     record = MissionCommandRecord.from_json(
@@ -1078,9 +1078,9 @@ def test_mission_command_record_regions_are_typed() -> None:
 
 
 def test_region_from_json_uses_region_id_key() -> None:
-    """NEU (27. Sitzung) -- Region.from_json() fehlte komplett; echte
-    Daten zeigen "region_id" als Schluessel beim Lesen (anders als
-    "id" beim Senden ueber to_json())."""
+    """NEW (session 27) -- Region.from_json() was completely missing;
+    real data shows "region_id" as the key when reading (unlike "id"
+    when sending via to_json())."""
     from roombapy_prime.models import Region, RegionType
 
     region = Region.from_json({"region_id": "15", "type": "rid"})
@@ -1090,7 +1090,7 @@ def test_region_from_json_uses_region_id_key() -> None:
 
 
 def test_command_params_no_auto_passes() -> None:
-    """NEU (27. Sitzung) -- bestaetigt aus get_state()s eingebettetem
+    """NEW (session 27) -- confirmed from get_state()'s embedded
     cleanSchedule2[].cmdStr."""
     from roombapy_prime.models import CommandParams
 
@@ -1141,14 +1141,14 @@ def test_robot_parts_info_from_json_with_multiple_parts() -> None:
 
 
 # =========================================================================
-# Household / HouseholdRobot / HouseholdUser (28. Sitzung)
+# Household / HouseholdRobot / HouseholdUser (session 28)
 # =========================================================================
 
 
 def test_household_from_json_with_robots_and_users() -> None:
-    """Bestaetigt aus echter get_user_households()-Antwort (chairstacker)
-    -- Endpunkt war als "im App-Code unbenutzt" dokumentiert, antwortet
-    aber tatsaechlich korrekt."""
+    """Confirmed from a real get_user_households() response
+    (chairstacker) -- the endpoint was documented as "unused in the
+    app code", but actually responds correctly."""
     from roombapy_prime.models import Household
 
     h = Household.from_json(
@@ -1194,9 +1194,9 @@ def test_parse_user_households_handles_none_and_empty() -> None:
 
 
 def test_mission_command_record_top_level_params() -> None:
-    """NEU (30. Sitzung) -- cmd.params ist ein eigenes Top-Level-Feld,
-    getrennt von regions[].params, bestaetigt aus echter
-    Missionshistorie (mal gesetzt z.B. {"profile": "light"}, mal null)."""
+    """NEW (session 30) -- cmd.params is its own top-level field,
+    separate from regions[].params, confirmed from real mission
+    history (sometimes set e.g. {"profile": "light"}, sometimes null)."""
     from roombapy_prime.models import MissionCommandRecord
 
     with_params = MissionCommandRecord.from_json({"command": "start", "params": {"profile": "light"}})
@@ -1208,12 +1208,12 @@ def test_mission_command_record_top_level_params() -> None:
 
 
 # =========================================================================
-# RobotSettings (32. Sitzung)
+# RobotSettings (session 32)
 # =========================================================================
 
 
 def test_pad_wetness_param_from_json() -> None:
-    """NEU (32. Sitzung) -- bestaetigt aus echter get_settings()-Antwort."""
+    """NEW (session 32) -- confirmed from a real get_settings() response."""
     from roombapy_prime.models import PadWetnessParam
 
     p = PadWetnessParam.from_json({"disposable": 3, "reusable": 1, "padPlate": 1})
@@ -1224,10 +1224,10 @@ def test_pad_wetness_param_from_json() -> None:
 
 
 def test_robot_settings_from_json_real_shape() -> None:
-    """Bestaetigt aus echter get_settings()-Antwort (chairstacker,
-    Roomba 405). Deckt einen grossen Teil der zuvor unmodellierten
-    Settings-Vokabelliste ab (childLock, audio.volume, autoevacFreq,
-    langs2, mapUploadAllowed, padDry*/padWash*, u.a.)."""
+    """Confirmed from a real get_settings() response (chairstacker,
+    Roomba 405). Covers a large part of the previously unmodeled
+    settings vocabulary (childLock, audio.volume, autoevacFreq,
+    langs2, mapUploadAllowed, padDry*/padWash*, among others)."""
     from roombapy_prime.models import RobotSettings
 
     s = RobotSettings.from_json(

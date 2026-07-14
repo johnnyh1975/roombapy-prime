@@ -77,13 +77,13 @@ async def test_set_setting_writes_named_shadow() -> None:
 
 @pytest.mark.asyncio
 async def test_send_mission_command_uses_classic_shadow() -> None:
-    """BESTAETIGT (15. Sitzung) -- siehe models.py's Missionssteuerungs-
-    Abschnitt und send_mission_command()'s Docstring. Definitiv bestaetigt
-    durch die tatsaechliche APK-Konfigurationsdatei
+    """CONFIRMED (session 15) -- see models.py's mission control section
+    and send_mission_command()'s docstring. Definitively confirmed by
+    the actual APK configuration file
     (res/raw/base_roomba_config.json): commandId "Control"/
-    "AssetControlCommand" hat namedShadow="" -- klassischer Shadow, nicht
-    "rw-settings" (das ist fuer Settings-Kommandos reserviert, ebenfalls
-    in derselben Datei bestaetigt)."""
+    "AssetControlCommand" has namedShadow="" -- classic shadow, not
+    "rw-settings" (that's reserved for settings commands, also
+    confirmed in the same file)."""
     from roombapy_prime.models import MissionCommandType, RoutineCommand
 
     robot, mqtt, _rest = _robot_with_mocks()
@@ -446,7 +446,7 @@ async def test_put_with_backpressure_drops_oldest_when_full(caplog) -> None:
     assert queue.qsize() == 2
     assert queue.get_nowait() == "b"  # "a" (oldest) was dropped
     assert queue.get_nowait() == "c"
-    assert "voll" in caplog.text
+    assert "full" in caplog.text
     assert "some/topic" in caplog.text
 
 
@@ -481,18 +481,18 @@ async def test_put_with_backpressure_dropping_an_exception_logs_error_level(capl
 
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(error_records) == 1
-    assert "FEHLER" in error_records[0].message
+    assert "an ERROR was dropped" in error_records[0].message
     assert queue.get_nowait() == "normal message"
 
 
 # =========================================================================
-# Systematischer Review-Fund (dreizehnte Sitzung): fast alle duennen
-# REST-Passthrough-Wrapper auf PrimeRobot hatten ueberhaupt keinen Test
-# (Coverage-Report zeigte 81% fuer prime_robot.py, fast ausschliesslich
-# unbenutzte Wrapper-Zeilen). Tabellengetrieben statt 20 Einzeltests --
-# create_autospec prueft dabei automatisch, dass die Aufrufsignaturen
-# zur echten PrimeRestClient-Klasse passen (haette z.B. den vorherigen
-# fehlenden-Wrapper-Fund noch vor jedem manuellen Review aufgedeckt).
+# Systematic review finding (thirteenth session): almost all thin
+# REST passthrough wrappers on PrimeRobot had no test at all (coverage
+# report showed 81% for prime_robot.py, almost entirely unused wrapper
+# lines). Table-driven instead of 20 individual tests -- create_autospec
+# also automatically checks that the call signatures match the real
+# PrimeRestClient class (would have caught the earlier missing-wrapper
+# finding even before any manual review).
 # =========================================================================
 
 
@@ -530,7 +530,7 @@ async def test_set_map_name_delegates() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_map_delegates() -> None:
-    """NEU (dreizehnte Sitzung) -- der Wrapper selbst war der Review-Fund."""
+    """NEW (thirteenth session) -- the wrapper itself was the review finding."""
     robot, rest = _robot_with_autospec_rest()
     rest.delete_map.return_value = {"deleted": True}
 
@@ -542,7 +542,7 @@ async def test_delete_map_delegates() -> None:
 
 @pytest.mark.asyncio
 async def test_get_map_geojson_link_delegates() -> None:
-    """NEU (dreizehnte Sitzung)."""
+    """NEW (thirteenth session)."""
     robot, rest = _robot_with_autospec_rest()
     rest.get_map_geojson_link.return_value = {"link": "https://example.invalid/x"}
 
@@ -554,7 +554,7 @@ async def test_get_map_geojson_link_delegates() -> None:
 
 @pytest.mark.asyncio
 async def test_download_map_bundle_delegates() -> None:
-    """NEU (dreizehnte Sitzung)."""
+    """NEW (thirteenth session)."""
     robot, rest = _robot_with_autospec_rest()
     rest.download_map_bundle.return_value = b"fake-bytes"
 
@@ -679,7 +679,7 @@ async def test_household_and_settings_delegate() -> None:
 
 @pytest.mark.asyncio
 async def test_robot_parts_and_serial_number_delegate() -> None:
-    """NEU (15. Sitzung) -- bestaetigt aus base_roomba_config.json."""
+    """NEW (session 15) -- confirmed from base_roomba_config.json."""
     robot, rest = _robot_with_autospec_rest()
     rest.get_robot_parts.return_value = {"parts": []}
     rest.reset_robot_parts.return_value = {"ok": True}
@@ -697,7 +697,7 @@ async def test_robot_parts_and_serial_number_delegate() -> None:
 
 @pytest.mark.asyncio
 async def test_echo_time_estimates_reset_notifications_delegate() -> None:
-    """NEU (16. Sitzung) -- bestaetigt aus base_roomba_config.json."""
+    """NEW (session 16) -- confirmed from base_roomba_config.json."""
     robot, rest = _robot_with_autospec_rest()
     rest.poll_echo_value.return_value = {"ok": True}
     rest.get_time_estimates.return_value = {"minutes": 30}
