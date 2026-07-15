@@ -1466,3 +1466,57 @@ this conversation's record. Both were fully reapplied from the conversation hist
 recovery, re-verified against the same 273/273 green test suite, and re-packaged immediately
 rather than continuing further before securing a checkpoint. No conclusions or evidence were
 lost -- everything above reflects the work as originally done, not a reconstruction from memory.
+
+## Addendum (fortieth session): RobotStatusV2 -- a real, bytecode-confirmed status model, but an unresolved question of where it actually lives
+
+In response to a direct question ("doesn't roombapy-prime already have a robot status --
+cleaning/charging/etc.?"), went looking for a structured mission/cleaning status model, since
+`get_state()` currently only exposes raw JSON.
+
+**Found: `com.irobot.data.maps.datamodels.RobotStatus.RobotStatusV2`**, fed by
+`com.irobot.home.datarepository.RobotStatusV2Repository`/`RobotStatusV2RepositoryImpl` (which
+explicitly holds a `kotlinx.serialization.json.Json` instance -- confirms this is genuinely
+JSON-deserialized, not a native-only structure like several other things in this document).
+Confirmed via androguard that this class has a companion `RobotStatusV2$$serializer` with its
+own `<clinit>` -- and reading that `<clinit>`'s bytecode directly (extracting the literal string
+arguments passed one by one to `PluginGeneratedSerialDescriptor.addElement()`) gave the actual,
+confirmed wire keys, the same confidence level as `CleaningProfileRequest`'s query parameters:
+`robot_state`, `buttons`, `dock_controls`, `errors`, `conditional_errors`, `localization_args`,
+`p2mapId`, `p2mapvId` (these two camelCase, everything else here snake_case -- confirmed as-is,
+not a typo), `battery_level`, `is_charging`, `is_robot_on_dock`.
+
+**Critical, unresolved caveat, reported honestly rather than glossed over:** it is NOT confirmed
+that this structure is what actually shows up in `get_state()`'s `reported` object. The one real
+capture of that available (chairstacker, idle robot) has a completely different, unrelated set
+of top-level keys (`digiCap`, `nsmip`, `cap`, `cleanSchedule2`, `schedHold`, `sku`,
+`svcEndpoints`, `soldAsSku`) -- none of which match anything here. Two honest possibilities,
+neither ruled out: this comes from an entirely different, not-yet-identified source, or these
+fields only populate while a mission is actually active (which no prior capture has ever caught
+-- every previous real response was from an idle robot).
+
+**Also found, and deliberately NOT modeled:** the richer status concepts a person would actually
+want (mission phase, a human-readable "cleaning"/"paused"/"returning to dock" status,
+elapsed/remaining time, current cycle) live in a separate class,
+`core::RobotStatusV2Constants` -- `PHASE`, `CYCLE`, `RESOLVED_MISSION_STATUS`, `REMAINING_TIME`,
+`ELAPSED_TIME`, `PAUSE_TIME_REMAINING` among roughly 60 total field-name constants. This class,
+however, has no `<clinit>` at all -- it's backed by a native djinni `$CppProxy` (same
+fundamental limitation as `ServiceDiscoveryData`/`SettingsData` elsewhere in this document),
+meaning its actual wire VALUES can't be extracted this way. A large, genuinely useful enum was
+found alongside it, `com.irobot.data.maps.datamodels.mission.ResolvedMissionStatus` (~40 values
+including `CLEANING`, `PAUSED`, `READY`, `SENDING_COMMAND_START`, `RETURN_TO_DOCK`,
+`DOCK_EVACUATING`, `TIDYING_UP`) -- confirms the concept and roughly what the possible values
+are, but not the literal wire key/value strings, so not modeled as an actual enum here -- would
+need real data to do safely, consistent with this project's standing rule against building
+models without concrete field evidence.
+
+**Implemented:** `models.py` gained `RobotStatusV2` (frozen dataclass, the 11 confirmed fields)
+and `parse_robot_status_v2()` (returns `None` if none of the confirmed keys are present in the
+given dict, rather than a misleadingly "successful" all-`None` object).
+`verify_mission_commands.py`'s `_show_state()` now attempts this parse on every before/after
+`get_state()` call during the Start/Pause/Stop/Dock test flow, prints the result (or an explicit
+"not found" message) alongside the raw reported dict, and includes both in the diagnostic
+capture that flows into `--dump-config`-equivalent output -- so the next live run can help
+settle the unresolved data-source question with real evidence, one way or the other.
+
+277/277 tests green (7 new), ruff clean. Kept under 0.1.6a0, same consolidation as the rest of
+this session's work.

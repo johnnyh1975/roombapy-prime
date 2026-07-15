@@ -56,11 +56,13 @@ import getpass
 import os
 import sys
 import webbrowser
+from dataclasses import asdict
 from typing import Any
 
 import aiohttp
 
 from .diagnostics import Report, _redact_raw_capture, build_issue_url
+from .models import parse_robot_status_v2
 from .prime_factory import PrimeFactory
 
 
@@ -76,12 +78,28 @@ def _confirm(prompt: str) -> bool:
 async def _show_state(robot: Any, label: str) -> dict[str, Any] | None:
     """Fetches get_state() and displays the raw reported state -- a
     state during an ACTIVE mission has never been captured before, so
-    this is itself new information, regardless of the test result."""
+    this is itself new information, regardless of the test result.
+
+    UPDATED (session 40): also attempts to parse RobotStatusV2 out of
+    the reported dict (see models.py's RobotStatusV2 section for the
+    full evidence trail and the unresolved question of whether this
+    structure actually lives here at all -- the one real capture
+    available before this session showed no matching fields). Reports
+    a clear "not found" message rather than silently saying nothing,
+    since a None result here is itself a meaningful data point (either
+    for "wrong location" or "not present outside an active mission").
+    Returns both the raw reported dict and the parse attempt so callers
+    can include both in a diagnostic capture."""
     try:
         state = await robot.get_state()
         reported = state.payload.get("state", {}).get("reported", {}) if isinstance(state.payload, dict) else {}
         print(f"\n  [{label}] get_state().reported = {reported}")
-        return reported
+        status_v2 = parse_robot_status_v2(reported)
+        if status_v2 is not None:
+            print(f"  [{label}] RobotStatusV2 parsed: {status_v2}")
+        else:
+            print(f"  [{label}] RobotStatusV2: none of the confirmed wire keys found in this dict")
+        return {"reported": reported, "robot_status_v2": asdict(status_v2) if status_v2 is not None else None}
     except Exception as exc:  # noqa: BLE001
         print(f"\n  [{label}] get_state() failed: {type(exc).__name__}: {exc}")
         return None

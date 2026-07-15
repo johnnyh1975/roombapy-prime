@@ -6,21 +6,28 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.5-alpha.** Runs, is tested (200+ unit tests), builds
-> and installs cleanly. As of this release, it has been **run
-> successfully against one real Prime/V4 account** (login, MQTT
-> connection, most REST reads, and one reversible write operation —
-> creating/deleting a favorite — all confirmed working) — but mission
-> commands and map editing remain **completely unverified against a
-> live device**, and only one robot model has been tested so far. See
+> **Status: v0.1.6-alpha.** Runs, is tested (277+ unit tests), builds
+> and installs cleanly. **Run twice against one real Prime/V4 account.**
+> First run: login, MQTT connection, and most REST reads confirmed
+> working; a reversible write (creating/deleting a favorite) also
+> confirmed working. Second run additionally tried mission commands for
+> the first time — and found the original approach (`send_mission_command()`,
+> via the device shadow) doesn't work at all: every attempt timed out
+> with zero response. The actual transport turned out to be a
+> completely different MQTT topic, now implemented as
+> `send_simple_command()` — corroborated both by this library's own
+> native disassembly and independently by a third-party project that
+> reports it working, but **not yet live-tested by this library
+> itself**. Map editing is also still unverified against a live device,
+> and only one robot model has been tested so far. See
 > [Confidence & known gaps](#confidence--known-gaps) before relying on
 > any of it, especially anything that sends a command to your robot.
 
 ## Features
 
 - **Login & session** — account login (Gigya + AWS Custom Authorizer), automatic MQTT token refresh
-- **Live state** — current robot status, one-shot (`get_state()`) or continuous (`watch_state()`)
-- **Mission control** — start/stop/pause/resume/dock and the rest of the 30-command vocabulary (`send_mission_command()`)
+- **Live state** — current robot status, one-shot (`get_state()`) or continuous (`watch_state()`); an optional, bytecode-confirmed `RobotStatusV2` parser for structured battery/charging/dock fields, though it's unconfirmed whether this structure actually appears in `get_state()`'s response yet (see the confidence table)
+- **Mission control** — start/stop/pause/resume/dock via `send_simple_command()`, the corrected transport (see the status note above); the richer, region-aware `send_mission_command()` remains available but is now believed incorrect for basic use
 - **Favorites** — list, create, update, delete, reorder saved cleaning routines
 - **Maps** — read map metadata and active versions, edit rooms/zones/furniture/virtual walls, watch the live map while cleaning, download+unpack the full map bundle
 - **Schedules** — recurring cleaning schedules per household (list, create, update, delete)
@@ -77,10 +84,7 @@ maps = await robot.get_active_map_versions()
 
 # Sends a real command to the robot — see the status warning above
 # and the confidence table below before trying this against a real device.
-from roombapy_prime.models import RoutineCommand, MissionCommandType
-await robot.send_mission_command(
-    RoutineCommand(command_type=MissionCommandType.CLEAN, asset_id=robot.blid)
-)
+await robot.send_simple_command("start")  # or "stop"/"pause"/"resume"/"dock"
 ```
 
 There's more — schedules, DND settings, map editing, live map streaming.
@@ -104,16 +108,19 @@ confirms it.
 
 | Area | Confidence | Why |
 |---|---|---|
-| Login flow | High | Live-tested against real Classic-protocol accounts; Prime shares the same native auth core per binary analysis |
-| MQTT/shadow connection | High | Live-tested (Classic devices via cloud shadow) |
-| Reading state/favorites/mission history | High (format), unverified (live) | Field names and types confirmed directly from decompiled source/bytecode, not guessed |
+| Login flow | High | Live-tested against real Classic-protocol accounts; Prime shares the same native auth core per binary analysis, and now live-tested against a real Prime account too |
+| MQTT/shadow connection | High | Live-tested against a real Prime account (and previously against Classic devices) |
+| Reading state/favorites/mission history | High (format), partially live-tested | Field names and types confirmed directly from decompiled source/bytecode; several read endpoints (state, favorites, mission history, active map versions, household listing) confirmed live against a real account |
 | AWS SigV4 signing | High (algorithm), unverified (applied to this API) | Byte-identical to a separate, production-tested implementation |
-| Sending mission commands | High | Transport confirmed from the actual APK-bundled configuration file (`res/raw/base_roomba_config.json` — see `docs/base_roomba_config_REFERENCE.json`), not just decompiled logic: the `"Control"`/`"AssetControlCommand"` entry has `"namedShadow": ""` (classic shadow), distinct from settings (`"rw-settings"`) and schedules (`"rw-schedule"`) in the same file. Payload shape is source-confirmed separately. Still never sent to a live server. |
+| Sending mission commands (`send_simple_command()`) | Medium-high (transport), unverified (live) | The device-shadow approach (`send_mission_command()`) was live-tested and confirmed **not working** — every attempt timed out with zero response. The actual transport (a dedicated, non-shadow MQTT topic) is corroborated two independent ways: this library's own native disassembly of the APK, and separately a third-party, unaffiliated project reporting this exact path working against a real device. Strong circumstantial evidence, but not yet confirmed by this library's own live test. |
+| Sending mission commands, region-based (`send_mission_command()`) | Low | Kept only for this use case; the simple payload has no known way to express regions/zones. Confirmed **not working** for basic commands (see above) — unconfirmed either way for the region-based case, since no source (including the third-party corroboration above) has verified it |
+| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Whether this structure actually appears in `get_state()`'s response is unresolved — the one real capture available shows unrelated top-level keys entirely |
 | Map editing | Medium (structure), unverified (practice) | Confirmed from source, never sent to a real server |
 | Deeply nested response fields (map bundle internals) | Low-medium | Modeled where it was cheap to; raw JSON is always available as a fallback where it wasn't. Mission history's 20 timeline sub-event types are now fully typed (`MissionTimelineEvent`), no longer in this category. |
 
 **Known unresolved gaps:**
 - Whether the exact JSON envelope for map-edit commands matches the server's expectations (the field names are confirmed; the wrapping shape around them is inferred by analogy)
+- Whether `RobotStatusV2` (see table above) actually appears in `get_state()`'s response at all, and if so, where
 - Multi-robot household / teaming concepts, beyond basic settings scoping
 - Exact file naming inside downloaded map bundles
 
@@ -139,7 +146,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-200+ tests, all passing — structural checks against decompiled source,
+277+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -200,8 +207,12 @@ roombapy-prime-verify-commands --username you@example.com --country-code US \
 
 Both the `--i-understand-...` flag *and* an interactive yes/no prompt before every individual
 command are required — declining any prompt skips that step. Runs a conservative start→stop test
-by default, with pause/resume and dock offered as separate, individually-opt-in steps. Produces
-the same kind of shareable report as `roombapy-prime-validate`, including `--dump-config` support.
+by default, with pause/resume and dock offered as separate, individually-opt-in steps, via
+`send_simple_command()` (see the confidence table above for the transport correction this
+implies). Before and after every command, it also attempts to parse the `RobotStatusV2` model out
+of the reported state and shows the result — useful real-world data for settling whether/where
+that structure actually appears. Produces the same kind of shareable report as
+`roombapy-prime-validate`, including `--dump-config` support.
 
 ## Documentation
 

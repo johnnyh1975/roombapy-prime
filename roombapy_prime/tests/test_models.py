@@ -1287,3 +1287,66 @@ def test_robot_settings_handles_missing_optional_nested_objects() -> None:
     assert s.pad_wetness is None
     assert s.svc_deployment_id is None
     assert s.languages_raw is None
+
+
+# =========================================================================
+# RobotStatusV2 (session 40)
+# =========================================================================
+
+
+def test_robot_status_v2_from_json_confirmed_wire_keys() -> None:
+    """Uses exactly the bytecode-confirmed wire keys (session 40) --
+    including the camelCase p2mapId/p2mapvId alongside the otherwise
+    snake_case fields, confirmed as-is, not a typo."""
+    from roombapy_prime.models import RobotStatusV2
+
+    status = RobotStatusV2.from_json({
+        "robot_state": 2,
+        "battery_level": 87,
+        "is_charging": False,
+        "is_robot_on_dock": False,
+        "p2mapId": "map-1",
+        "p2mapvId": "v1",
+        "dock_controls": ["evac"],
+        "errors": [],
+        "conditional_errors": [],
+        "buttons": ["clean"],
+        "localization_args": {"k": "v"},
+    })
+
+    assert status.robot_state == 2
+    assert status.battery_level == 87
+    assert status.is_charging is False
+    assert status.is_robot_on_dock is False
+    assert status.current_p2map_id == "map-1"
+    assert status.current_p2map_version_id == "v1"
+    assert status.dock_controls == ["evac"]
+    assert status.buttons == ["clean"]
+    assert status.localization_args == {"k": "v"}
+
+
+def test_parse_robot_status_v2_returns_none_when_absent() -> None:
+    """NEW (session 40) -- the honest, unresolved caveat this class
+    carries: most real dicts handed to it (e.g. the one confirmed real
+    get_state() capture, an idle robot with 8 unrelated top-level keys)
+    legitimately won't contain this structure at all. parse_robot_status_v2()
+    must return None rather than an all-None object that would look like
+    a misleadingly successful, empty parse."""
+    from roombapy_prime.models import parse_robot_status_v2
+
+    real_idle_reported_shape = {
+        "digiCap": {}, "nsmip": {}, "cap": {}, "cleanSchedule2": [],
+        "schedHold": False, "sku": "i7", "svcEndpoints": {}, "soldAsSku": "i7",
+    }
+    assert parse_robot_status_v2(real_idle_reported_shape) is None
+    assert parse_robot_status_v2({}) is None
+    assert parse_robot_status_v2(None) is None
+
+
+def test_parse_robot_status_v2_returns_object_when_present() -> None:
+    from roombapy_prime.models import RobotStatusV2, parse_robot_status_v2
+
+    result = parse_robot_status_v2({"robot_state": 1, "is_charging": True})
+    assert isinstance(result, RobotStatusV2)
+    assert result.robot_state == 1
+    assert result.is_charging is True

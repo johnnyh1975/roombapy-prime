@@ -10,6 +10,18 @@ This file only tracks what changed from a user's point of view.
 
 ## [0.1.6a0] - 2026-07-14
 
+### Added
+
+- **New, optional `RobotStatusV2` model** (`models.py::parse_robot_status_v2()`) exposing
+  `robot_state`, `battery_level`, `is_charging`, `is_robot_on_dock`, `current_p2map_id`/
+  `current_p2map_version_id`, `dock_controls`, `errors`, `conditional_errors`, `buttons`, and
+  `localization_args` -- all bytecode-confirmed wire keys, directly read from the real
+  `@Serializable` class's serializer descriptor. **Important caveat**: it is NOT confirmed that
+  this structure is part of `get_state()`'s response -- the one real capture available shows a
+  completely different set of top-level keys. `verify_mission_commands.py` now attempts this
+  parse before/after every command and includes the result in the diagnostic capture, so the
+  next live run can help settle where (or whether) this structure actually appears.
+
 ### Fixed
 
 - **`get_notifications()`'s `app_version` default corrected from `"1.0"` to `"2.2.4"`.** The

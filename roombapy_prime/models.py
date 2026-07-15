@@ -3178,3 +3178,128 @@ class RobotSettings:
             vac_high=data.get("vacHigh"),
             languages_raw=data.get("langs2"),
         )
+
+
+# =========================================================================
+# RobotStatusV2 (session 40)
+# =========================================================================
+#
+# STATUS: NEW. In response to a direct question about whether this library
+# already exposes a structured "is the robot cleaning/charging/docked"
+# status, went looking -- found this real, concrete Kotlin
+# @Serializable class (com.irobot.data.maps.datamodels.RobotStatus.
+# RobotStatusV2), fed by com.irobot.home.datarepository.
+# RobotStatusV2Repository / RobotStatusV2RepositoryImpl (which explicitly
+# holds a kotlinx.serialization.json.Json instance -- confirms this is
+# genuinely JSON-deserialized, not a native-only structure).
+#
+# WIRE KEYS CONFIRMED via bytecode (RobotStatusV2$$serializer's <clinit>,
+# reading the literal strings passed to PluginGeneratedSerialDescriptor.
+# addElement() one by one -- the same confidence level as
+# CleaningProfileRequest's query parameters, i.e. a direct read of the
+# real serialization logic, not a guess):
+#   robot_state, buttons, dock_controls, errors, conditional_errors,
+#   localization_args, p2mapId, p2mapvId (note: these two are camelCase,
+#   everything else here is snake_case -- confirmed as-is, not a typo),
+#   battery_level, is_charging, is_robot_on_dock.
+#
+# CRITICAL, UNRESOLVED CAVEAT: it is NOT confirmed that this structure is
+# what shows up in get_state()'s "reported" object. The one real
+# get_state() capture available (chairstacker, session 25/28, robot
+# idle at the time) has a completely different, unrelated set of top-level
+# keys (digiCap, nsmip, cap, cleanSchedule2, schedHold, sku, svcEndpoints,
+# soldAsSku) -- none of which match anything here. Two honest
+# possibilities, neither ruled out: (a) these fields come from an
+# entirely different, not-yet-identified data source (a separate REST
+# endpoint or MQTT topic), or (b) they only populate in get_state()'s
+# response while an actual mission is active, which no prior capture of
+# this library has ever caught (every previous real response was from an
+# idle robot). from_json() below is therefore written DEFENSIVELY: it
+# tries the top level of whatever dict it's given first, since that's
+# the most direct reading, but this is a guess about placement, not a
+# confirmed envelope. Deliberately exposed as its own parse function
+# (parse_robot_status_v2()) rather than folded into get_state()'s return
+# type, so callers can try it against real data without this library
+# assuming where it lives.
+#
+# The richer status concepts a person would actually want (mission phase,
+# a human-readable "cleaning"/"paused"/"returning to dock" status,
+# elapsed/remaining time, current cycle) live in a SEPARATE, native-only
+# class (core::RobotStatusV2Constants -- PHASE, CYCLE,
+# RESOLVED_MISSION_STATUS, REMAINING_TIME, ELAPSED_TIME,
+# PAUSE_TIME_REMAINING among ~60 total field-name constants) that is
+# itself backed by a native djinni CppProxy (no <clinit>, values filled
+# in by native code at runtime) -- same fundamental limitation as
+# ServiceDiscoveryData/SettingsData elsewhere in this file. A large,
+# genuinely useful enum was found alongside it
+# (com.irobot.data.maps.datamodels.mission.ResolvedMissionStatus, ~40
+# values including CLEANING, PAUSED, READY, SENDING_COMMAND_START,
+# RETURN_TO_DOCK, DOCK_EVACUATING, TIDYING_UP) -- confirms the CONCEPT of
+# a rich, human-readable mission status exists and roughly what its
+# possible values are, but not the literal wire key or value strings, so
+# NOT modeled here as an enum -- would need real data to do safely.
+
+
+@dataclass(frozen=True)
+class RobotStatusV2:
+    """See the module section comment above for the full evidence trail
+    and the unresolved data-source caveat. All 11 fields below are
+    bytecode-confirmed wire keys, but this class itself is NOT confirmed
+    to be part of get_state()'s response -- treat any successful parse
+    as a data point to report back, not an assumption to build on."""
+
+    robot_state: int | None = None
+    battery_level: int | None = None
+    is_charging: bool | None = None
+    is_robot_on_dock: bool | None = None
+    current_p2map_id: str | None = None
+    current_p2map_version_id: str | None = None
+    dock_controls: list[Any] = field(default_factory=list)
+    errors: list[Any] = field(default_factory=list)
+    conditional_errors: list[Any] = field(default_factory=list)
+    buttons: list[Any] = field(default_factory=list)
+    localization_args: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "RobotStatusV2":
+        return cls(
+            robot_state=data.get("robot_state"),
+            battery_level=data.get("battery_level"),
+            is_charging=data.get("is_charging"),
+            is_robot_on_dock=data.get("is_robot_on_dock"),
+            current_p2map_id=data.get("p2mapId"),
+            current_p2map_version_id=data.get("p2mapvId"),
+            dock_controls=data.get("dock_controls") or [],
+            errors=data.get("errors") or [],
+            conditional_errors=data.get("conditional_errors") or [],
+            buttons=data.get("buttons") or [],
+            localization_args=data.get("localization_args") or {},
+        )
+
+    @classmethod
+    def any_field_present(cls, data: dict[str, Any]) -> bool:
+        """Helper for callers deciding whether a parse attempt found
+        anything real, as opposed to an all-None/empty result from a
+        dict that simply doesn't contain this structure at all (see the
+        unresolved data-source caveat above -- most real dicts handed to
+        this class will legitimately not contain it)."""
+        keys = (
+            "robot_state", "battery_level", "is_charging", "is_robot_on_dock",
+            "p2mapId", "p2mapvId", "dock_controls", "errors",
+            "conditional_errors", "buttons", "localization_args",
+        )
+        return any(k in data for k in keys)
+
+
+def parse_robot_status_v2(data: dict[str, Any] | None) -> RobotStatusV2 | None:
+    """NEW (session 40). Attempts to parse RobotStatusV2 out of a dict --
+    typically get_state()'s `state.reported` (or `state.desired`)
+    sub-object, though where this structure actually lives is itself
+    unconfirmed, see the module section comment above. Returns None if
+    the dict is empty/missing or none of the 11 known keys are present
+    (RobotStatusV2.any_field_present()), rather than returning an
+    all-None object that would misleadingly look like a successful,
+    empty parse."""
+    if not data or not RobotStatusV2.any_field_present(data):
+        return None
+    return RobotStatusV2.from_json(data)

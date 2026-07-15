@@ -27,12 +27,33 @@ def test_confirm_only_accepts_explicit_affirmatives(answer, expected, monkeypatc
 
 @pytest.mark.asyncio
 async def test_show_state_extracts_reported_dict() -> None:
+    """UPDATED (session 40) -- return shape now wraps the raw reported
+    dict together with a RobotStatusV2 parse attempt (None here, since
+    this dict has none of the confirmed wire keys)."""
     robot = AsyncMock()
     robot.get_state.return_value = ShadowResponse(topic="t", payload={"state": {"reported": {"foo": "bar"}}})
 
     result = await _show_state(robot, "test")
 
-    assert result == {"foo": "bar"}
+    assert result == {"reported": {"foo": "bar"}, "robot_status_v2": None}
+
+
+@pytest.mark.asyncio
+async def test_show_state_reports_robot_status_v2_when_present() -> None:
+    """NEW (session 40) -- if the reported dict happens to contain any
+    of RobotStatusV2's confirmed wire keys, the parse attempt is
+    included (as a plain dict, JSON-safe for the diagnostic capture)."""
+    robot = AsyncMock()
+    robot.get_state.return_value = ShadowResponse(
+        topic="t",
+        payload={"state": {"reported": {"robot_state": 2, "is_charging": True}}},
+    )
+
+    result = await _show_state(robot, "test")
+
+    assert result["reported"] == {"robot_state": 2, "is_charging": True}
+    assert result["robot_status_v2"]["robot_state"] == 2
+    assert result["robot_status_v2"]["is_charging"] is True
 
 
 @pytest.mark.asyncio
