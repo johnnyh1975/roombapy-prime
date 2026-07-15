@@ -340,13 +340,15 @@ class PrimeMqttClient:
         the strongest kind of corroboration available without a live
         test of our own against this exact path.
 
-        STILL UNCONFIRMED BY THIS LIBRARY ITSELF: this exact topic has
-        not yet been live-tested by a roombapy-prime user. The
-        "irbt_topic_prefix" value itself remains the same
-        long-standing uncertainty documented in auth.py's LoginResult
-        (field NAME in the discovery JSON response still unconfirmed,
-        only the underlying native concept and its necessity for both
-        this and the live-map topic)."""
+        UPDATE (session 43): the "irbt_topic_prefix" VALUE extraction
+        itself is now confirmed (see auth.py's LoginResult docstring --
+        real field name "irbtTopics", real confirmed value
+        "v011-irbthbu" from a live account, byte-identical to the
+        third-party project's example value above). What remains
+        UNCONFIRMED BY THIS LIBRARY ITSELF is whether the resulting
+        topic, once correctly built, actually gets a real robot to
+        react when published to -- that's the next thing a live test
+        needs to settle."""
         return f"{irbt_topic_prefix}/things/{self._blid}/cmd"
 
     def publish_cmd(self, irbt_topic_prefix: str, command: str, initiator: str = "localApp") -> None:

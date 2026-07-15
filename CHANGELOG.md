@@ -8,6 +8,16 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.8a0] - 2026-07-15
+
+### Fixed
+
+- **`irbt_topic_prefix`/`iot_topic_prefix` definitively resolved.** A live account confirmed the
+  real discovery-response field names are `irbtTopics`/`iotTopics` (not `irbtTopicPrefix`/
+  `iotTopicPrefix` as guessed since introducing this field). `send_simple_command()` and
+  `watch_live_map()` can now actually build their target topic on accounts where this previously
+  came back empty.
+
 ## [0.1.7a0] - 2026-07-15
 
 ### Added

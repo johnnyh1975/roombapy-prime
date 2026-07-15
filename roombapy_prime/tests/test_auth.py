@@ -414,3 +414,42 @@ async def test_login_topic_prefixes_default_to_none_when_absent() -> None:
 
     assert result.irbt_topic_prefix is None
     assert result.iot_topic_prefix is None
+
+
+@pytest.mark.asyncio
+async def test_login_extracts_confirmed_topic_prefixes() -> None:
+    """DEFINITIVELY CONFIRMED (session 43, chairstacker) -- regression
+    test against ever reverting to the wrong, previously-guessed field
+    names ("irbtTopicPrefix"/"iotTopicPrefix"). Real keys are
+    "irbtTopics"/"iotTopics" (plural "Topics", not "TopicPrefix").
+    Values below are the real, confirmed values from a live account,
+    not placeholders -- see auth.py's LoginResult docstring for the
+    full story, including the independent confirmation this "v011-
+    irbthbu" value gives for the third-party GitHub project cited in
+    the thirty-ninth session."""
+    discovery_with_confirmed_fields = {
+        "current_deployment": "prod",
+        "deployments": {
+            "prod": {
+                "mqtt": "mqtt.example.invalid",
+                "httpBase": "https://api.example.invalid",
+                "httpBaseAuth": "https://api-auth.example.invalid",
+                "irbtTopics": "v011-irbthbu",
+                "iotTopics": "$aws",
+            }
+        },
+        "gigya": {"datacenter_domain": "eu1.gigya.com", "api_key": "fake-api-key"},
+    }
+    session = _FakeSequentialSession(
+        [
+            _FakeResp(200, json_body=discovery_with_confirmed_fields),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+        ]
+    )
+
+    result = await login(session, "user@example.com", "hunter2", "US")
+
+    assert result.irbt_topic_prefix == "v011-irbthbu"
+    assert result.iot_topic_prefix == "$aws"
+    assert result.deployment["irbtTopics"] == "v011-irbthbu"

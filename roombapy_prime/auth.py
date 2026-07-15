@@ -173,17 +173,10 @@ class LoginResult:
     these should fail loudly at login(), not with a confusing KeyError
     deep inside a later REST call).
 
-    irbt_topic_prefix / iot_topic_prefix: NEW, UNCERTAIN. Needed to
-    build MQTT topics outside the shadow system (e.g. the live map
-    topic, see mqtt_client.py's livemap_topic()) -- confirmed as a
-    CONCEPT (core::MQTTTopicResolverAdapter.resolve() returns
-    "{prefix}/{identifier}", the prefix comes from a
-    "ServiceDiscoveryData" structure), but the JSON field names here
-    ("irbtTopicPrefix"/"iotTopicPrefix") are a best guess from the
-    native getter names (getIrbtTopicPrefix()/getIotTopicPrefix()),
-    NOT read from a real JSON response. Optional (None if absent/
-    wrongly named) -- not a gate failure at login, since the
-    uncertainty is too high to enforce this strictly.
+    irbt_topic_prefix / iot_topic_prefix: CONFIRMED (session 43, see
+    below) -- this field's long uncertainty is resolved. Needed to
+    build MQTT topics outside the shadow system (mission commands via
+    cmd_topic(), the live map topic via livemap_topic()).
 
     UPDATE (session 36): traced the two underlying native constants
     (core::ServiceDiscoveryImpl::kIotTopicPrefixFieldName /
@@ -229,7 +222,27 @@ class LoginResult:
     corrected mission-control path built on this. The literal
     discovery-response JSON key itself remains the same long-standing
     guess ("irbtTopicPrefix"/"iotTopicPrefix") -- not resolved by any
-    of this, only its importance is now much clearer."""
+    of this, only its importance is now much clearer.
+
+    UPDATE (session 43): DEFINITIVELY RESOLVED. chairstacker's
+    diagnostics run (using the new _report_topic_prefix_status()
+    reporting from session 41) showed the guessed keys really were
+    wrong, and the follow-up --dump-config capture showed the actual
+    deployment object in full. The real keys are "irbtTopics" and
+    "iotTopics" (plural "Topics", not "TopicPrefix" as guessed --
+    close, but not exact). Confirmed real values from a live account:
+    `irbtTopics: "v011-irbthbu"`, `iotTopics: "$aws"`. Two things this
+    also confirms in passing: (1) "v011" matches the same account's
+    `svcDeplId: "v011"` -- the same correlation already suspected from
+    session 28's "v007" observation on a different account, now
+    confirmed as a general pattern (`irbtTopics ==
+    f"{svcDeplId}-irbthbu"`), though the field itself should still be
+    read directly rather than reconstructed from svcDeplId. (2) the
+    "v011-irbthbu" value is byte-for-byte identical to the example
+    value shown in the third-party GitHub project cited in the
+    thirty-ninth session's update -- as strong a confirmation as this
+    project could hope for that project's corroboration was genuine,
+    not coincidental. `login()` updated to read the correct keys."""
 
     mqtt_endpoint: str
     http_base: str
@@ -339,8 +352,11 @@ async def login(
         deployment=deployment,
         # Best-guess field names (see LoginResult docstring) -- .get(),
         # not a gate failure, since it's too uncertain to enforce strictly.
-        irbt_topic_prefix=deployment.get("irbtTopicPrefix"),
-        iot_topic_prefix=deployment.get("iotTopicPrefix"),
+        # CONFIRMED (session 43, chairstacker): real keys are "irbtTopics"/
+        # "iotTopics" (plural "Topics", not "TopicPrefix" as previously
+        # guessed) -- see LoginResult's docstring for the full story.
+        irbt_topic_prefix=deployment.get("irbtTopics"),
+        iot_topic_prefix=deployment.get("iotTopics"),
     )
     _LOGGER.info("roombapy-prime: authenticated, %d robot(s) found", len(result.robots))
     return result

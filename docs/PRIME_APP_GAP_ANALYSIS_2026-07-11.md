@@ -26,9 +26,8 @@ corroboration) than the superseded shadow-based approach ever had. Treat mission
 unreachable through analysis):
 - Exact envelope format of the V1 edit commands (discriminator key unknown, custom
   serializer not decompilable)
-- `irbt_topic_prefix`'s exact JSON field name (concept confirmed necessary -- now live-confirmed
-  WRONG for at least one real account, no longer just "unconfirmed"; diagnostics now report the
-  actual deployment-object keys to help find the real one, see the forty-first session)
+- `irbt_topic_prefix`'s exact JSON field name -- RESOLVED (session 43): real keys are
+  "irbtTopics"/"iotTopics", confirmed live from a real account (see the forty-third session)
 - p2maps auth mechanism: the SigV4 assumption remains an analogy to Classic, Prime's own code
   provably delegates to a native `accountService.sendRequest()` -- in principle never
   confirmable from Kotlin/Java code, only through a real traffic capture
@@ -1623,3 +1622,65 @@ map-edit verification script) was deliberately consolidated under 0.1.6a0 rather
 individually. After the forty-second session concluded, the version was bumped to **0.1.7a0**,
 covering all of it as one release-worthy unit -- see `CHANGELOG.md` for the consolidated,
 user-facing summary.
+
+## Addendum (forty-third session): irbt_topic_prefix definitively resolved -- the diagnostics from the forty-first/forty-second sessions worked exactly as intended
+
+chairstacker ran all three scripts with the new diagnostics from last session, and this time
+shared the actual `--dump-config` content for the discovery deployment object. This is the
+payoff of deliberately NOT guessing a third field name and instead fixing the underlying
+capture gap first -- exactly the outcome that approach was for.
+
+**The real deployment object, in full (chairstacker, live account):**
+```json
+{
+  "awsRegion": "us-east-1", "discoveryTTL": 86400,
+  "httpBase": "https://unauth3.prod.iot.irobotapi.com",
+  "httpBaseAuth": "https://auth3.prod.iot.irobotapi.com",
+  "httpProdSecBaseAuth": "https://certificatefactory.prod.security.irobotapi.com",
+  "iotTopics": "$aws", "irbtTopics": "v011-irbthbu",
+  "mqtt": "a2uowfjvhio0fa-ats.iot.us-east-1.amazonaws.com",
+  "mqttApp": "a2uowfjvhio0fa-ats.iot.us-east-1.amazonaws.com",
+  "svcDeplId": "v011", "userServicesBase": "prod.user-services.irobotapi.com",
+  "vStream": "https://vstream.prod.user-services.irobotapi.com",
+  "mqttAts": "a2uowfjvhio0fa-ats.iot.us-east-1.amazonaws.com"
+}
+```
+
+**The real keys are `irbtTopics` and `iotTopics`** -- plural "Topics", not "TopicPrefix" as
+guessed since the fifteenth session. Close, but not exact; exactly the kind of near-miss that
+static analysis alone (native getter names `getIrbtTopicPrefix()`/`getIotTopicPrefix()`) could
+never have resolved, and real data settled immediately. `login()` in `auth.py` updated
+accordingly, with a dedicated regression test using these exact real values.
+
+**Three things this single capture confirms all at once:**
+1. `iotTopics: "$aws"` -- confirms the classic shadow's hardcoded `"$aws"` prefix
+   (`_shadow_base()`) IS the same concept as `iot_topic_prefix`, just already hardcoded directly
+   rather than read from this field. No code change needed there, but resolves what this field
+   conceptually represents.
+2. `svcDeplId: "v011"` matches the `"v011"` in `irbtTopics: "v011-irbthbu"` -- confirms the
+   `irbtTopics == f"{svcDeplId}-irbthbu"` pattern already suspected from session 28's "v007"
+   observation on a different account, now confirmed as a general pattern across two different
+   accounts/deployments. The field should still be read directly rather than reconstructed from
+   `svcDeplId`, but this is a nice independent cross-check that the value is correctly understood.
+3. `"v011-irbthbu"` is **byte-for-byte identical** to the example value shown in the third-party
+   GitHub project (`lvigilantecorreo-commits/roomba-v4`) cited in the thirty-ninth session -- as
+   strong a confirmation as this project could hope for that that project's corroboration was
+   genuine and current, not a stale or coincidental match.
+
+**The mission-command run itself skipped all 7 commands** (as designed -- the early-exit logic
+from the forty-second session fired correctly, reporting the missing prefix once instead of
+repeating the same failure seven times). With the field name now fixed, the NEXT run should be
+the first one to actually attempt `send_simple_command()` with a real, correctly-built topic --
+still not confirmed working end-to-end (whether the topic construction and payload shape
+actually make a real robot react remains the open question), but the "can't even build the
+topic" blocker is gone.
+
+**The map-edit script also ran, safely, and found nothing to test on:** "no room with an
+existing name was found across any active map version" -- `_pick_test_room()`'s safety
+requirement (an already-named room, so there's something known-good to revert to) worked exactly
+as designed, but this particular account doesn't currently have any named rooms. Not a bug --
+this account would need a room manually named in the real app first before this specific test
+could run at all. Low priority, entirely optional.
+
+287/287 tests green (1 new regression test using the real confirmed values), ruff clean. Version
+bumped to 0.1.8a0.
