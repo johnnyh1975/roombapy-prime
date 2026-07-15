@@ -279,17 +279,100 @@ class PrimeMqttClient:
         return f"{_shadow_base(self._blid, named)}/{suffix}"
 
     def livemap_topic(self, irbt_topic_prefix: str) -> str:
-        """NEW, UNCERTAIN. Builds the fixed live-map topic pattern the
-        way the real app uses it (core::MQTTTopicResolverAdapter.resolve()
-        -> "{prefix}/{identifier}", mqttClient.subscribe(irbt,
+        """UPDATED (session 39). Builds the fixed live-map topic pattern
+        the way the real app uses it (core::MQTTTopicResolverAdapter.
+        resolve() -> "{prefix}/{identifier}", mqttClient.subscribe(irbt,
         "livemap/update", assetId) in P2MapAPIFetching.observeLiveMap())
         -- NOT a shadow topic, completely independent of get_shadow()/
-        update_shadow(). The exact concatenation order of blid and
-        "livemap/update" into a single "identifier" isn't conclusively
-        confirmed -- assumed here as "{blid}/livemap/update" (the most
-        plausible reading of the three subscribe() arguments), not read
-        directly from the wire format."""
-        return f"{irbt_topic_prefix}/{self._blid}/livemap/update"
+        update_shadow().
+
+        Now includes a "things/" segment (previously
+        "{prefix}/{blid}/livemap/update", missing it) -- by analogy to
+        cmd_topic()'s now much more strongly evidenced pattern
+        (independently confirmed both by this library's own native
+        disassembly AND by a third-party, unaffiliated, MIT-licensed
+        implementation that reports actually working against a real
+        device, see cmd_topic()'s docstring). This is still an
+        ANALOGY, not a direct confirmation for livemap specifically --
+        that third-party project's own status table lists live-map/
+        room-cleaning as unconfirmed too. If this breaks something that
+        previously worked, the old, "things/"-less form may need to be
+        restored -- watch_live_map() was itself never live-tested
+        successfully before this change either way."""
+        return f"{irbt_topic_prefix}/things/{self._blid}/livemap/update"
+
+    def cmd_topic(self, irbt_topic_prefix: str) -> str:
+        """NEW (session 39). Mission commands (start/pause/stop/resume/
+        dock/find/evac/reset/etc.) do NOT go through the device shadow
+        at all, unlike this library's previous assumption (see
+        update_shadow()'s docstring and prime_robot.py's
+        send_mission_command(), both now believed WRONG for this
+        purpose).
+
+        CORRECTED basis: a live test against a real account
+        (chairstacker, session 39) showed every attempt via
+        update_shadow() timing out with zero response (not even
+        /rejected) -- consistent with publishing to a topic the shadow
+        service doesn't recognize at all, not a permission or payload
+        problem on an otherwise-correct topic. Independently, this
+        library's own native disassembly (objdump on libcorebase.so)
+        found the literal format string "/things/%s/cmd" -- a
+        DIFFERENT topic family from "$aws/things/%s/shadow/update"
+        (which does exist in liblegacyCore.so, but is presumably used
+        for something else, e.g. the settings/schedule "delta"
+        mechanism, not mission commands). This matches
+        base_roomba_config.json's own "topic" field for mission-control
+        commandIds ("Control", "AssetControlCommand"): the value is
+        literally "cmd", a THIRD category distinct from "shadow" (used
+        by GetThingShadow, confirmed working) and "delta" (used by
+        settings/schedule commands) -- not just a coincidental label.
+
+        Independently, a third-party, unaffiliated GitHub project
+        (lvigilantecorreo-commits/roomba-v4, MIT-licensed, reverse-
+        engineered via mitmproxy + APK strings + Ghidra, author reports
+        the exact command actually moved a real robot) documents this
+        same topic shape explicitly: "{irbt_topics}/things/{BLID}/cmd",
+        with a simple payload {"command": ..., "time": ..., "initiator":
+        ...} -- see publish_cmd()'s docstring. This is an external,
+        unverified-by-us source, not an Anthropic/roombapy-prime
+        finding -- but the topic pattern it describes independently
+        matches this library's own native string discovery, which is
+        the strongest kind of corroboration available without a live
+        test of our own against this exact path.
+
+        STILL UNCONFIRMED BY THIS LIBRARY ITSELF: this exact topic has
+        not yet been live-tested by a roombapy-prime user. The
+        "irbt_topic_prefix" value itself remains the same
+        long-standing uncertainty documented in auth.py's LoginResult
+        (field NAME in the discovery JSON response still unconfirmed,
+        only the underlying native concept and its necessity for both
+        this and the live-map topic)."""
+        return f"{irbt_topic_prefix}/things/{self._blid}/cmd"
+
+    def publish_cmd(self, irbt_topic_prefix: str, command: str, initiator: str = "localApp") -> None:
+        """NEW (session 39). Publishes a simple mission command via
+        cmd_topic() -- see that method's docstring for the full
+        evidence trail. Payload shape {"command": str, "time": int,
+        "initiator": str} matches the third-party project's
+        documented, reportedly-working format exactly -- "time" is a
+        Unix timestamp in SECONDS (not millis), "initiator" defaults
+        to "localApp" (their literal, observed value) as opposed to
+        the "cloud"/"rmtApp" values seen in this library's own
+        confirmed mission HISTORY data (session 25) -- those are
+        presumably what gets RECORDED afterward, not necessarily what
+        the app itself sends when initiating live.
+
+        Deliberately FIRE-AND-FORGET, no response wait: unlike
+        get_shadow()/update_shadow(), there is no known
+        accepted/rejected acknowledgment topic for this command family
+        -- the third-party project's own account of how this was
+        confirmed working describes observing the physical robot react,
+        not any MQTT-level acknowledgment. Callers who want
+        confirmation should poll get_state() afterward instead."""
+        assert self._client is not None, "call connect() first"
+        topic = self.cmd_topic(irbt_topic_prefix)
+        payload = json.dumps({"command": command, "time": int(time.time()), "initiator": initiator})
+        self._client.publish(topic, payload=payload, qos=1)
 
     def subscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
         """Register a callback that fires on EVERY message on this topic,

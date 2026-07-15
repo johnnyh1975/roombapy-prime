@@ -211,11 +211,38 @@ def test_shadow_topic_helper() -> None:
 
 
 def test_livemap_topic_helper() -> None:
-    """SYNTHETIC/UNCERTAIN -- see mqtt_client.py's livemap_topic()
-    docstring: the exact concatenation order isn't conclusively
-    confirmed, this only tests the assumption actually implemented."""
+    """UPDATED (session 39) -- now includes "things/" by analogy to
+    cmd_topic()'s much more strongly evidenced pattern (independently
+    confirmed by native disassembly and a third-party implementation).
+    See livemap_topic()'s docstring: still an analogy for THIS specific
+    topic, not a direct confirmation."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
-    assert client.livemap_topic("irbt-prefix") == "irbt-prefix/BLID1/livemap/update"
+    assert client.livemap_topic("irbt-prefix") == "irbt-prefix/things/BLID1/livemap/update"
+
+
+def test_cmd_topic_helper() -> None:
+    """NEW (session 39) -- confirmed both by this library's own native
+    disassembly (libcorebase.so's literal "/things/%s/cmd" format
+    string) and independently by a third-party, unaffiliated project
+    that reports this exact topic working against a real device. See
+    cmd_topic()'s docstring for the full evidence trail."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+    assert client.cmd_topic("irbt-prefix") == "irbt-prefix/things/BLID1/cmd"
+
+
+def test_publish_cmd_sends_expected_payload_shape() -> None:
+    """NEW (session 39) -- payload shape {"command", "time", "initiator"}
+    matches the third-party project's documented, reportedly-working
+    format exactly."""
+    client, fake = _connected_client(blid="BLID1")
+    client.publish_cmd("irbt-prefix", "start", initiator="localApp")
+    assert len(fake.published) == 1
+    topic, payload = fake.published[0]
+    assert topic == "irbt-prefix/things/BLID1/cmd"
+    body = json.loads(payload)
+    assert body["command"] == "start"
+    assert body["initiator"] == "localApp"
+    assert isinstance(body["time"], int)
 
 
 def test_subscribe_delivers_every_message_not_just_first() -> None:

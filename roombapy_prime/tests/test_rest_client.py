@@ -234,8 +234,8 @@ async def test_get_favorites_non_list_response_is_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_create_favorite_sends_body_and_query() -> None:
-    """ASSUMED, not confirmed (POST method) -- see create_favorite()'s
-    docstring."""
+    """CONFIRMED (POST method, via CreateFavoriteRequest.<init>) -- see
+    create_favorite()'s docstring."""
     from roombapy_prime.models import FavoriteV1, MissionCommandType, RoutineCommand
 
     session = _FakeSession()
@@ -440,7 +440,11 @@ async def test_set_dnd_settings_puts_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_cleaning_profiles_query() -> None:
+async def test_get_cleaning_profiles_query_with_map() -> None:
+    """CORRECTED (session 38) -- confirmed directly from
+    CleaningProfileRequest.getQueryParams()'s decompiled Kotlin logic:
+    "robotId" (not "asset_id"), plus "includeSmart": "true" whenever
+    p2map_id is present."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -450,7 +454,22 @@ async def test_get_cleaning_profiles_query() -> None:
     call = session.calls[0]
     assert call.method == "GET"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/profiles"
-    assert call.params == {"asset_id": "asset1", "p2map_id": "map1"}
+    assert call.params == {"robotId": "asset1", "includeSmart": "true", "p2map_id": "map1"}
+
+
+@pytest.mark.asyncio
+async def test_get_cleaning_profiles_query_without_map() -> None:
+    """CORRECTED (session 38) -- when p2map_id is absent, the real
+    query drops the map id entirely and sends "includeSmart": "false"
+    instead."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_cleaning_profiles("asset1")
+
+    call = session.calls[0]
+    assert call.params == {"robotId": "asset1", "includeSmart": "false"}
 
 
 @pytest.mark.asyncio

@@ -16,8 +16,18 @@ SAFETY DESIGN (doubly secured, both levels are mandatory):
    aborts.
 
 FLOW (deliberately conservative, not a full cleaning cycle):
-  START (clean_all=True) -> brief pause, during which the robot should
-  react -> STOP. Optional, asked individually: PAUSE/RESUME, DOCK.
+  START -> brief pause, during which the robot should react -> STOP.
+  Optional, asked individually: PAUSE/RESUME, DOCK.
+
+UPDATED (session 39): sends via send_simple_command() (the
+"{irbt_topic_prefix}/things/{blid}/cmd" topic), not
+send_mission_command() (the shadow-update path this script itself was
+the first to confirm times out with zero response against a real
+account -- see prime_robot.py's send_simple_command()/
+send_mission_command() docstrings for the full evidence trail). This
+simpler payload has no known way to express clean_all/regions, so a
+plain verb ("start"/"stop"/"pause"/"resume"/"dock") is sent instead of
+a full RoutineCommand.
 
 Before AND after every command sent, get_state() is additionally
 fetched and the raw reported state is displayed -- an active mission
@@ -51,7 +61,6 @@ from typing import Any
 import aiohttp
 
 from .diagnostics import Report, _redact_raw_capture, build_issue_url
-from .models import MissionCommandType, RoutineCommand
 from .prime_factory import PrimeFactory
 
 
@@ -82,26 +91,36 @@ async def _run_command(
     robot: Any,
     report: Report,
     raw_capture: dict[str, Any],
-    command_type: MissionCommandType,
+    command: str,
     label: str,
-    clean_all: bool = False,
 ) -> bool:
     """Explicitly asks for confirmation before sending, shows the state
     before/after, and afterward asks what the user actually observed on
     the real robot. Returns True if the user confirmed it worked as
-    expected."""
-    cmd = RoutineCommand(command_type=command_type, asset_id=robot.blid, clean_all=clean_all)
+    expected.
+
+    UPDATED (session 39): now uses send_simple_command() (the
+    "{irbt_topic_prefix}/things/{blid}/cmd" path), not
+    send_mission_command() (the shadow-update path this script itself
+    was the first to confirm times out with zero response). See
+    prime_robot.py's send_simple_command()/send_mission_command()
+    docstrings for the full evidence trail. `command` is now a plain
+    verb string ("start"/"stop"/"pause"/"resume"/"dock"), not a
+    RoutineCommand -- this simpler payload has no known way to express
+    clean_all/regions, so that option is gone from this script for
+    now."""
     print(f"\n{'=' * 60}")
-    print(f"NEXT COMMAND: {label} ({command_type.value})")
-    print(f"About to send: {cmd.to_json()}")
+    print(f"NEXT COMMAND: {label} ({command})")
+    print(f'About to send: {{"command": "{command}", "initiator": "localApp"}} via the cmd topic')
     if not _confirm(f'Send "{label}" to the real robot now?'):
         report.add(label, "SKIPPED", "not confirmed by user")
         return False
 
     before = await _show_state(robot, f"{label}: before")
     try:
-        await robot.send_mission_command(cmd)
-        print("  Command sent, no error from the server.")
+        await robot.send_simple_command(command)
+        print("  Command published, no error raised (this path is fire-and-forget -- no")
+        print("  server acknowledgment is expected, see send_simple_command()'s docstring).")
     except Exception as exc:  # noqa: BLE001
         report.add(label, "FAILED", f"{type(exc).__name__}: {exc}")
         return False
@@ -116,7 +135,7 @@ async def _run_command(
     if observed:
         report.add(label, "OK", "confirmed by user on the real robot")
     else:
-        report.add(label, "FAILED", "server accepted the command, but the robot did NOT react as expected")
+        report.add(label, "FAILED", "command published without error, but the robot did NOT react as expected")
     return observed
 
 
@@ -132,24 +151,24 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         report.add("MQTT connection", "OK")
 
         print("\n== Core test: Start -> Stop ==")
-        started = await _run_command(robot, report, raw_capture, MissionCommandType.START, "Start (clean_all)", clean_all=True)
+        started = await _run_command(robot, report, raw_capture, "start", "Start")
 
         if started:
-            await _run_command(robot, report, raw_capture, MissionCommandType.STOP, "Stop")
+            await _run_command(robot, report, raw_capture, "stop", "Stop")
         else:
             report.add("Stop", "SKIPPED", "Start was not confirmed, Stop doesn't make sense without a running mission")
 
         print("\n== Optional additional tests ==")
         if _confirm("Also test Pause/Resume? (needs a freshly started mission)"):
-            if await _run_command(robot, report, raw_capture, MissionCommandType.START, "Start (for pause test)", clean_all=True):
-                await _run_command(robot, report, raw_capture, MissionCommandType.PAUSE, "Pause")
-                await _run_command(robot, report, raw_capture, MissionCommandType.RESUME, "Resume")
-                await _run_command(robot, report, raw_capture, MissionCommandType.STOP, "Stop (after pause test)")
+            if await _run_command(robot, report, raw_capture, "start", "Start (for pause test)"):
+                await _run_command(robot, report, raw_capture, "pause", "Pause")
+                await _run_command(robot, report, raw_capture, "resume", "Resume")
+                await _run_command(robot, report, raw_capture, "stop", "Stop (after pause test)")
         else:
             report.add("Pause/Resume", "SKIPPED", "not chosen by user")
 
         if _confirm("Also test Dock? (sends the robot back to its charging station)"):
-            await _run_command(robot, report, raw_capture, MissionCommandType.DOCK, "Dock")
+            await _run_command(robot, report, raw_capture, "dock", "Dock")
         else:
             report.add("Dock", "SKIPPED", "not chosen by user")
 

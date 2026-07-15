@@ -183,7 +183,53 @@ class LoginResult:
     native getter names (getIrbtTopicPrefix()/getIotTopicPrefix()),
     NOT read from a real JSON response. Optional (None if absent/
     wrongly named) -- not a gate failure at login, since the
-    uncertainty is too high to enforce this strictly."""
+    uncertainty is too high to enforce this strictly.
+
+    UPDATE (session 36): traced the two underlying native constants
+    (core::ServiceDiscoveryImpl::kIotTopicPrefixFieldName /
+    kIrbtTopicPrefixFieldName) further via native disassembly. Found
+    them used as key arguments to a generic
+    `AccountServiceImpl::sendUserRequest(key, callback)` call inside
+    `onAccountInfoRefreshed()`, right alongside near-identical
+    conditional checks for account country/locale/notification-center/
+    commercial-messages settings -- a pattern that reads more like "sync
+    this one account attribute via its own request if a pending-change
+    flag is set" than "read this key out of the discovery response
+    body". This is new, genuine context, but doesn't resolve the
+    original question -- if anything, it opens a competing hypothesis
+    (these values might come from a follow-up account-info fetch,
+    not from ServiceDiscoveryData/login discovery directly) that
+    wasn't previously considered. The literal JSON key string itself
+    remains unfound either way (it's stored in a std::string bss
+    global, filled in by a static initializer that couldn't be
+    isolated among the many other things AccountServiceImpl's
+    translation unit initializes at load time). Still needs either a
+    real traffic capture or a substantially deeper native trace to
+    resolve -- not further pursued this session.
+
+    UPDATE (session 39): the underlying CONCEPT and its NECESSITY are
+    now much more strongly evidenced, even though the literal JSON
+    field name here is still unconfirmed. A live test (chairstacker)
+    showed every mission command sent via update_shadow() (the classic
+    shadow -- this library's previous best guess for mission control)
+    timing out with zero response. Independently, this library's own
+    native disassembly (objdump on libcorebase.so) found the literal
+    format string "/things/%s/cmd" -- a topic family entirely separate
+    from the shadow system, requiring exactly this kind of prefix.
+    Separately, a third-party, unaffiliated GitHub project
+    (lvigilantecorreo-commits/roomba-v4, MIT-licensed, author reports
+    the command actually moving a real robot) documents the same shape
+    explicitly: "{irbt_topics}/things/{BLID}/cmd", confirming the
+    prefix is genuinely required for mission control, not just the
+    live-map topic as previously assumed. This is an external,
+    unverified-by-us source, but its topic pattern independently
+    matches this library's own native string discovery -- see
+    mqtt_client.py's cmd_topic()/publish_cmd() docstrings for the full
+    trail and prime_robot.py's send_simple_command() for the new,
+    corrected mission-control path built on this. The literal
+    discovery-response JSON key itself remains the same long-standing
+    guess ("irbtTopicPrefix"/"iotTopicPrefix") -- not resolved by any
+    of this, only its importance is now much clearer."""
 
     mqtt_endpoint: str
     http_base: str

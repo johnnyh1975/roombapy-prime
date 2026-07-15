@@ -432,29 +432,44 @@ class PrimeRestClient:
         url = f"{self._http_base_auth}/v1/households/{household_id}/settings/dnd"
         return await self._request("PUT", url, body=settings)
 
-    async def get_cleaning_profiles(self, asset_id: str, p2map_id: str) -> dict[str, Any]:
+    async def get_cleaning_profiles(self, asset_id: str, p2map_id: str | None = None) -> dict[str, Any]:
         """GET /v1/profiles -- NEW (July 11, sixth session). CONFIRMED
         from CleaningProfileRequest (httpMethod = "GET").
 
-        CORRECTION ATTEMPT (session 33): query parameter names changed
-        from "assetId"/"p2mapId" (Kotlin property names, NEVER verified
-        via @SerialName) to "asset_id"/"p2map_id" (snake_case). Reason:
-        a real live call (chairstacker) failed with HTTP 400 as soon as
-        this endpoint became reachable at all (previously never reached
-        due to the p2map_id extraction bug in the diagnostics script).
-        Snake_case is the consistently confirmed pattern in EVERY
-        other real response in this library (robot_id, household_id,
-        p2map_id, active_p2mapv_id, user_p2mapv_id) -- camelCase
-        practically never occurs in confirmed responses. Still: UNLIKE
-        the similar geojson_link fix, this is not a confirmation via
-        actually observed values, but an informed guess following the
-        same pattern -- if the next live test still shows HTTP 400, the
-        guess was wrong and the actual cause lies elsewhere (e.g. a
-        missing header or a completely different parameter name).
-        Response shape NOW modeled (ninth session) --
-        models.py::CleaningProfile.from_json() per entry."""
+        CORRECTED (session 38): the previous query parameter names
+        ("asset_id"/"p2map_id") were wrong and are the confirmed cause
+        of a live HTTP 400 (chairstacker). Read directly from
+        CleaningProfileRequest.getQueryParams()'s decompiled Kotlin
+        logic (jadx, cleanly decompiled -- not a guess this time):
+          - robot/asset id key is "robotId" (NotificationCenterConsts
+            .IN_APP_NAV_QUERY_PARAM_ROBOT_ID's literal value) --
+            camelCase, NOT "asset_id" as previously assumed.
+          - map id key is "p2map_id" (PushNotificationConsts
+            .PERSISTENT_MAP_ID's literal value) -- this one was
+            already correct.
+          - a THIRD query parameter, "includeSmart", was completely
+            missing before: "true" whenever p2map_id is present and
+            non-blank, "false" otherwise -- and in the "false" case,
+            p2map_id itself is dropped from the query entirely (not
+            sent even as an empty string). `p2map_id` is therefore
+            made optional here to mirror that real branching, not
+            just to be permissive.
+
+        NOT yet live-verified with this corrected query shape -- the
+        previous snake_case attempt (session 33) was itself an
+        unconfirmed guess that turned out wrong; this one is a direct
+        bytecode read, a much stronger basis, but still unconfirmed
+        against a real server until re-tested. Response shape modeled
+        (ninth session) -- models.py::CleaningProfile.from_json() per
+        entry."""
         url = f"{self._http_base_auth}/v1/profiles"
-        return await self._request("GET", url, query={"asset_id": asset_id, "p2map_id": p2map_id})
+        query = {"robotId": asset_id}
+        if p2map_id:
+            query["includeSmart"] = "true"
+            query["p2map_id"] = p2map_id
+        else:
+            query["includeSmart"] = "false"
+        return await self._request("GET", url, query=query)
 
     async def get_default_routines(self, p2map_id: str) -> dict[str, Any]:
         """GET /v1/p2maps/{p2mapId}/routines/defaults -- NEW (July 11,
@@ -545,7 +560,7 @@ class PrimeRestClient:
         url = f"{self._http_base_auth}/v1/{blid}/reset"
         return await self._request("POST", url)
 
-    async def get_notifications(self, blid: str, app_version: str = "1.0") -> dict[str, Any]:
+    async def get_notifications(self, blid: str, app_version: str = "2.2.4") -> dict[str, Any]:
         """GET /v1/robots/{blid}/timeline -- NEW (session 16). CONFIRMED
         from base_roomba_config.json (commandId "GetNotifications",
         urlPath="/v1/robots/%s/timeline?event_type=HKC&
@@ -553,14 +568,23 @@ class PrimeRestClient:
         event_type value not resolved (abbreviation unknown) -- carried
         over 1:1 from the configuration file, not guessed.
 
-        KNOWN, UNRESOLVED BUG (session 25): live against a real account
-        (chairstacker), this call fails with HTTP 400. The URL itself
-        matches the configuration file -- the error is presumably in
-        the `app_version` placeholder value ("1.0"), which the server
-        might reject as invalid (the real app presumably sends its
-        actual version number, not a generic placeholder), or in a
-        missing header/parameter that isn't visible in the
-        configuration file. Do NOT treat this as working until this is
+        KNOWN BUG, LIKELY CAUSE NOW IDENTIFIED (session 36): live against a
+        real account (chairstacker, session 25), this call failed with
+        HTTP 400 using the previous placeholder value ("1.0") -- a value
+        with zero evidentiary basis, never anything but a guess. The
+        analyzed APK's own `com.irobot.home.BuildConfig.VERSION_NAME`
+        and the `AndroidManifest.xml`'s `android:versionName` both
+        confirm the real app build used for this analysis was "2.2.4" --
+        a strong candidate for what `app_version` is actually meant to
+        carry (the calling app's own version string), now used as the
+        default here instead of the old placeholder. NOT yet live-tested
+        with this corrected value -- the real Prime app in the field may
+        since have moved to a newer version than "2.2.4", so this
+        remains a best-effort default, not a guaranteed-correct one. If
+        this call still fails with the corrected value, the cause lies
+        elsewhere (missing header/parameter not visible in the
+        configuration file, or a version the server no longer accepts).
+        Do NOT treat this as working until this is
         resolved."""
         url = f"{self._http_base_auth}/v1/robots/{blid}/timeline"
         return await self._request(

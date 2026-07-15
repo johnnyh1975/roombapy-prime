@@ -7,11 +7,20 @@ This summary captures what applies NOW, without needing to search the history.
 
 **Fully implemented and bytecode-/source-code-confirmed:**
 Auth chain, MQTT shadow client, all 11 P2Map read endpoints + read models, V1 edit vocabulary
-(9 commands, the actually active path), mission control (`RoutineCommand` incl. `CommandParams`
-with 37 fields, `Region`/`CommandPolygon`/`PadWetnessParam`), favorites (all 5 endpoints incl. HTTP
+(9 commands, the actually active path), favorites (all 5 endpoints incl. HTTP
 methods), schedules (`ScheduleOptions`/`HouseholdSchedule`, all 4 HTTP methods confirmed), DND
 settings, cleaning profiles, default routines, mission history (request AND response top level),
 tar.gz map bundles (download+unpacking), household listing (despite dead-code status on the app side).
+
+**Mission control -- CORRECTED (session 39), see that addendum for the full story:** the
+`RoutineCommand`/`CommandParams` payload structure (37 fields, `Region`/`CommandPolygon`/
+`PadWetnessParam`) is still believed correctly modeled, but the TRANSPORT this summary line used
+to claim ("sent via the classic device shadow, `send_mission_command()`") was live-tested and
+failed completely (zero response, not even a rejection). The corrected transport --
+`send_simple_command()`, a dedicated non-shadow MQTT topic -- is itself not yet live-confirmed
+either, though it rests on much stronger evidence (independent native + third-party
+corroboration) than the superseded shadow-based approach ever had. Treat mission control as
+"actively being corrected," not "solved," until a live test of the new path exists.
 
 **Genuine, but NOT further resolvable gaps** (need a real device or are structurally
 unreachable through analysis):
@@ -1292,3 +1301,168 @@ Smoke test of both scripts confirmed consistently English output.
 
 Version bumped to 0.1.5a0 (a standalone, complete change, not an appendage to an
 ongoing session).
+
+## Addendum (thirty-sixth session): full English translation of internal code comments/docstrings, plus a concrete lead on the get_notifications() bug
+
+**Translation completed.** The thirty-fifth session had deliberately left internal code
+comments and docstrings in German (only user-facing runtime output was translated). On
+follow-up, all of it -- every docstring and comment across the entire library and test
+suite, plus this document itself -- was translated to English too, checked incrementally
+against the full test suite and a fresh, isolated build+install after every batch, to catch
+any accidental drift from a misplaced edit. 268/268 tests green throughout, ruff clean,
+functional smoke tests re-run against the exact real-data shapes this project's bug fixes
+target (finEvents timeline parsing, MissionHistoryEntry field names, Region send/read key
+difference, RobotSettings) to make sure the translation pass changed no behavior, only
+language.
+
+**A concrete lead on the `get_notifications()` HTTP 400 bug (session 25).** The decompiled
+APK's own `com.irobot.home.BuildConfig.VERSION_NAME` and `AndroidManifest.xml`'s
+`android:versionName` both confirm `"2.2.4"` as the real app build version used throughout
+this whole analysis -- a much stronger candidate for the `app_version` query parameter than
+the old `"1.0"` placeholder, which had no evidentiary basis at all (just a generic guess).
+No call site for this specific parameter could be found in the decompiled Kotlin/Java source
+(the URL dispatch for config-driven commands like this one is native, same limitation as
+`ResetRobotCommand` and others), so this remains the strongest available evidence, not a
+certainty -- and the real Prime app in the field may since have moved past "2.2.4" to a newer
+version. Default changed in `rest_client.py`/`prime_robot.py`; still needs a live re-test
+against a real account to confirm whether this actually resolves the HTTP 400, or whether
+the cause lies elsewhere (missing header/parameter not visible in `base_roomba_config.json`).
+
+268/268 tests green (1 updated for the new default value), ruff clean. Version bumped to
+0.1.6a0.
+
+**A second, unrelated finding from the same "what else" pass:** while systematically checking
+every documented uncertainty marker in the library for staleness (not just looking for new
+native leads), found that `models.py`'s favorites section header comment still said the create/
+update favorite HTTP methods were "ASSUMED... jadx silently didn't emit... no error reported for
+it" -- a leftover from the fourth session, genuinely contradicted by the sixth session's later,
+authoritative finding (`CreateFavoriteRequest`/`UpdateFavoriteRequest`'s `<init>` bytecode
+directly confirms POST/PUT, already correctly reflected in `rest_client.py`'s own docstrings and
+used as the CHANGELOG-worthy finding at the time). A pure documentation inconsistency between two
+places in the same file describing the same fact differently, not a behavior bug -- fixed the
+stale comment and a matching stale test docstring in `test_rest_client.py` to both say CONFIRMED,
+consistent with the rest of the codebase.
+
+**Also checked and left alone, genuinely still open (not stale):** `order_favorite()`'s
+uncertainty about which insert_at/insert_before/insert_after combination(s) the server accepts,
+`set_dnd_settings()`'s exact body field format, `get_map_geojson_link()`'s response JSON key name,
+and `get_time_estimates()`'s request body shape -- searched again for a dedicated request class
+for the latter specifically (none found in the decompiled sources), confirming the existing
+"not investigated" docstring is accurate, not an oversight.
+
+**A native investigation attempt on `irbt_topic_prefix` (the other genuinely open item from the
+top summary) that didn't resolve the core question, but found new context worth recording.**
+Traced the underlying native constants (`core::ServiceDiscoveryImpl::kIotTopicPrefixFieldName`/
+`kIrbtTopicPrefixFieldName`) via disassembly of `liblegacyCore.so` far enough to find them used as
+key arguments to a generic `AccountServiceImpl::sendUserRequest(key, callback)` call inside
+`onAccountInfoRefreshed()`, alongside near-identical conditional checks for account country/
+locale/notification-center/commercial-messages settings. This reads more like "sync this one
+account attribute via its own request when a pending-change flag is set" than "read this key out
+of the discovery response body" -- opening a competing hypothesis (a follow-up account-info fetch,
+not the login discovery response) that hadn't previously been considered. The literal JSON key
+string itself still couldn't be isolated (stored in a bss global filled in by a static initializer
+not distinguishable from the many others in the same translation unit) -- the original conclusion
+stands: needs either a real traffic capture or substantially deeper native work, not resolved by
+this pass. Documented as new context in `auth.py`'s docstring, not as a resolution.
+
+## Addendum (thirty-eighth session): second live run -- get_cleaning_profiles() query parameters corrected via direct bytecode read
+
+chairstacker ran the updated script (0.1.5a0 at the time, before the app_version fix landed) all
+the way through for the first time, including the previously-untested writing/mission-command
+path. Two read-side findings and one enormous mission-control finding came out of this run.
+
+**`get_notifications()` still failed with the old `"1.0"` placeholder** -- expected, since the
+tester was still on 0.1.5a0, before the app_version fix from the thirty-sixth session had been
+installed. Not a new finding, just confirms the fix hadn't been picked up yet.
+
+**`get_cleaning_profiles()` failed live with HTTP 400** using the session-33 "informed guess"
+query (`asset_id`/`p2map_id`, snake_case). This time, instead of guessing again, the actual
+`CleaningProfileRequest.java` source was re-read in full (not just the URL path, which had already
+been read before) -- its `getQueryParams()` method builds the query from two named constants:
+`NotificationCenterConsts.IN_APP_NAV_QUERY_PARAM_ROBOT_ID` (resolves to the literal string
+`"robotId"`, camelCase) and `PushNotificationConsts.PERSISTENT_MAP_ID` (resolves to `"p2map_id"` --
+this one had actually been right all along). A completely missing THIRD parameter,
+`"includeSmart"`, was also found: `"true"` whenever a non-blank p2mapId is present, `"false"`
+otherwise -- and in the `"false"` branch, p2mapId itself is dropped from the query entirely, not
+sent as an empty string. Fixed accordingly, `p2map_id` made optional to mirror this branching.
+Unlike the app_version fix (an inferred candidate) or the session-33 guess (an informed but
+wrong pattern-match), this one is a direct read of the real Kotlin query-building logic --
+the strongest possible basis short of a live retest, which is still pending.
+
+## Addendum (thirty-ninth session): mission control fails live via the shadow-update path -- corrected via independent native + third-party corroboration
+
+The same run also attempted the full mission-control flow via `verify_mission_commands.py`:
+Start, Start-for-pause-test, and Dock all failed identically -- `ShadowError: No response to
+UPDATE on $aws/things/{blid}/shadow within 8.0s`. This is the first live test this library has
+ever had of `send_mission_command()`/`update_shadow()` for actual mission control, and it failed
+completely: not a rejection, not a malformed-payload error, but total silence from the shadow
+service for every single attempt.
+
+**Root cause found: mission commands were never meant to go through the device shadow at all.**
+Re-examining `base_roomba_config.json` -- the same file that had already been used to confirm the
+classic-vs-named shadow question back in the fifteenth session -- with fresh eyes turned up
+something that had been misread the first time: cross-referencing the `"topic"` field across ALL
+77 `commandList` entries (not just the one "Control" entry in isolation) shows it's a
+discriminator with distinct categories, not an incidental label. `"shadow"` (2 commandIds,
+including `GetThingShadow` -- confirmed live as `get_state()`'s classic shadow GET), `"delta"` (57
+commandIds, all settings/schedule writes -- confirmed live as `update_shadow()`'s desired-state
+mechanism for those), and `"cmd"` (exactly 4 commandIds: `Control`, `AssetControlCommand`,
+`ResetRobotCommand`, `StartMatterCommissioning`). Mission commands fall into their own, third
+category, entirely separate from both `"shadow"` and `"delta"` -- the original interpretation
+("`namedShadow`: `""` means classic shadow, therefore send via `.../shadow/update`") had missed
+this distinction, reading `"cmd"` as an incidental detail rather than a meaningful discriminator.
+
+**Independent native corroboration, found via fresh disassembly of `libcorebase.so`:** a
+targeted search for a "cmd"-specific topic string (as opposed to the already-known
+`"$aws/things/%s/shadow/update"` in `liblegacyCore.so`) turned up a literal, distinct format
+string: `"/things/%s/cmd"`, immediately preceded in `.rodata` by the string `"Processing command
+<<%s>>"` -- strong contextual confirmation this is used for command dispatch, not shadow
+operations. Cross-referencing its address in the disassembled `.text` section found exactly one
+usage site.
+
+**Independent, external corroboration:** a third-party, unaffiliated GitHub project
+(`lvigilantecorreo-commits/roomba-v4`, MIT-licensed) documents this exact topic shape explicitly:
+`"{irbt_topics}/things/{BLID}/cmd"`, with a simple payload `{"command": ..., "time": ...,
+"initiator": ...}` -- its author reports this actually moved a real robot, reverse-engineered via
+mitmproxy traffic capture, APK string analysis, and Ghidra, independently of this project. This is
+an external, unverified-by-us source -- but its topic pattern independently matches this
+library's own native string discovery, found completely separately. Two unrelated
+reverse-engineering efforts converging on the identical topic pattern is about as strong a signal
+as is available without a live test of our own against this exact path.
+
+**Implemented:** `mqtt_client.py` gained `cmd_topic()` (builds
+`"{irbt_topic_prefix}/things/{blid}/cmd"`) and `publish_cmd()` (publishes
+`{"command", "time", "initiator"}`, fire-and-forget -- no known accepted/rejected acknowledgment
+exists for this topic family, unlike the shadow system). `prime_robot.py` gained
+`send_simple_command(command: str, initiator: str = "localApp")`, using this new path.
+`send_mission_command()` (the old shadow-update path) is kept, but its docstring now documents
+it as strongly suspected wrong for basic commands, retained only as a possible (equally
+unconfirmed) fallback for the region-based use case (`RoutineCommand.regions`/`params`), which
+no source -- including the third-party project, whose own status table lists room-cleaning as
+unconfirmed too -- has verified either way. `livemap_topic()` was also updated to include a
+`"things/"` segment, by analogy to the now much more strongly evidenced `cmd_topic()` pattern --
+this one remains an analogy, not a direct confirmation, since neither corroborating source
+speaks to the live-map topic specifically. `verify_mission_commands.py` updated to send via the
+new path; the `clean_all`/regions option is gone from that script for now, since the simple
+payload has no known way to express it.
+
+**Honest framing:** this is the single most consequential change to the library's mission-control
+path since the project began, but it remains UNCONFIRMED BY ROOMBAPY-PRIME ITSELF -- no live test
+of this exact new path has been run yet. The evidence is unusually strong for a pre-live-test
+finding (two independent reverse-engineering efforts agreeing on the same literal topic string),
+but "unusually strong circumstantial evidence" is still not the same as "confirmed working." The
+next live run against a real account is what would actually settle this.
+
+273/273 tests green (7 new/updated across mqtt_client, prime_robot, verify_mission_commands),
+ruff clean. Kept under 0.1.6a0 (bundled with the get_notifications/stale-comment fixes from the
+thirty-sixth/thirty-seventh sessions) rather than bumping again, on request.
+
+**Operational note:** partway through this session, the sandbox environment used for this
+analysis became completely unresponsive for an extended period (all code-execution tools failing)
+before recovering on its own, and on recovery had reverted to an earlier checkpoint (the last
+downloaded package, from the end of the thirty-seventh session) -- losing the get_cleaning_profiles
+fix and the entire mission-control topic correction described above from disk, though not from
+this conversation's record. Both were fully reapplied from the conversation history after
+recovery, re-verified against the same 273/273 green test suite, and re-packaged immediately
+rather than continuing further before securing a checkpoint. No conclusions or evidence were
+lost -- everything above reflects the work as originally done, not a reconstruction from memory.

@@ -1107,13 +1107,12 @@ MapEditCommandV1 = (
 #
 # REST endpoints confirmed from FavoriteCommonRequest.java (base URL)
 # and the three separately existing subclasses (Delete/Fetch/Order --
-# HTTP method explicitly set there):
-#   GET    /v1/user/favorites?app_edition=1                    (fetch)
-#   POST   /v1/user/favorites?app_edition=1                     (create, ASSUMED -- jadx silently
-#                                                                 didn't emit the specific lambda
-#                                                                 class for this, no error reported
-#                                                                 for it)
-#   PUT    /v1/user/favorites/{favoriteId}?app_edition=1        (update, also ASSUMED)
+# HTTP method explicitly set there), plus CreateFavoriteRequest/
+# UpdateFavoriteRequest (found later, eighth session -- see
+# rest_client.py's create_favorite()/update_favorite() docstrings):
+#   GET    /v1/user/favorites?app_edition=1                    (fetch, CONFIRMED)
+#   POST   /v1/user/favorites?app_edition=1                     (create, CONFIRMED)
+#   PUT    /v1/user/favorites/{favoriteId}?app_edition=1        (update, CONFIRMED)
 #   DELETE /v1/user/favorites/{favoriteId}?app_edition=1        (delete, CONFIRMED)
 #   PUT    /v1/user/favorites/{favoriteId}/order?app_edition=1  (order, CONFIRMED)
 #

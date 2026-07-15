@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from roombapy_prime.diagnostics import Report
-from roombapy_prime.models import MissionCommandType
 from roombapy_prime.mqtt_client import ShadowResponse
 from roombapy_prime.verify_mission_commands import _confirm, _run_command, _show_state
 
@@ -51,15 +50,15 @@ async def test_show_state_handles_failure_gracefully() -> None:
 @pytest.mark.asyncio
 async def test_run_command_skips_when_user_declines(monkeypatch) -> None:
     """Wenn der Nutzer die Sende-Bestaetigung ablehnt, wird NICHTS
-    gesendet -- send_mission_command darf nicht aufgerufen werden."""
+    gesendet -- send_simple_command darf nicht aufgerufen werden."""
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     robot = AsyncMock()
     robot.blid = "BLID123"
     report = Report()
 
-    result = await _run_command(robot, report, {}, MissionCommandType.START, "Start")
+    result = await _run_command(robot, report, {}, "start", "Start")
 
-    robot.send_mission_command.assert_not_called()
+    robot.send_simple_command.assert_not_called()
     assert result is False
     assert report.results[0].status == "SKIPPED"
 
@@ -78,12 +77,9 @@ async def test_run_command_sends_and_records_success(monkeypatch) -> None:
     report = Report()
     raw_capture: dict = {}
 
-    result = await _run_command(robot, report, raw_capture, MissionCommandType.START, "Start", clean_all=True)
+    result = await _run_command(robot, report, raw_capture, "start", "Start")
 
-    robot.send_mission_command.assert_awaited_once()
-    sent_command = robot.send_mission_command.call_args[0][0]
-    assert sent_command.command_type == MissionCommandType.START
-    assert sent_command.clean_all is True
+    robot.send_simple_command.assert_awaited_once_with("start")
     assert result is True
     assert report.results[0].status == "OK"
     assert "Start (before)" in raw_capture
@@ -104,7 +100,7 @@ async def test_run_command_records_failure_when_robot_did_not_react(monkeypatch)
     robot.get_state.return_value = ShadowResponse(topic="t", payload={"state": {"reported": {}}})
     report = Report()
 
-    result = await _run_command(robot, report, {}, MissionCommandType.START, "Start")
+    result = await _run_command(robot, report, {}, "start", "Start")
 
     assert result is False
     assert report.results[0].status == "FAILED"
@@ -118,10 +114,10 @@ async def test_run_command_records_server_error(monkeypatch) -> None:
     robot = AsyncMock()
     robot.blid = "BLID123"
     robot.get_state.return_value = ShadowResponse(topic="t", payload={"state": {"reported": {}}})
-    robot.send_mission_command.side_effect = RuntimeError("server said no")
+    robot.send_simple_command.side_effect = RuntimeError("server said no")
     report = Report()
 
-    result = await _run_command(robot, report, {}, MissionCommandType.START, "Start")
+    result = await _run_command(robot, report, {}, "start", "Start")
 
     assert result is False
     assert report.results[-1].status == "FAILED"

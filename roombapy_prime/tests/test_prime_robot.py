@@ -77,13 +77,14 @@ async def test_set_setting_writes_named_shadow() -> None:
 
 @pytest.mark.asyncio
 async def test_send_mission_command_uses_classic_shadow() -> None:
-    """CONFIRMED (session 15) -- see models.py's mission control section
-    and send_mission_command()'s docstring. Definitively confirmed by
-    the actual APK configuration file
-    (res/raw/base_roomba_config.json): commandId "Control"/
-    "AssetControlCommand" has namedShadow="" -- classic shadow, not
-    "rw-settings" (that's reserved for settings commands, also
-    confirmed in the same file)."""
+    """Tests the mechanics of send_mission_command() (still routes
+    through update_shadow() with the classic/unnamed shadow) --
+    NOT a claim that this is the correct transport for mission
+    control anymore. See that method's docstring (session 39): this
+    approach is now STRONGLY SUSPECTED WRONG for basic commands,
+    superseded by send_simple_command(). Kept here only to verify the
+    method still does what it's documented to do, for the
+    region-based use case that remains a possible fallback."""
     from roombapy_prime.models import MissionCommandType, RoutineCommand
 
     robot, mqtt, _rest = _robot_with_mocks()
@@ -93,6 +94,33 @@ async def test_send_mission_command_uses_classic_shadow() -> None:
     await robot.send_mission_command(cmd)
 
     mqtt.update_shadow.assert_called_once_with({"cmd": cmd.to_json()}, None, 8.0)
+
+
+@pytest.mark.asyncio
+async def test_send_simple_command_publishes_via_cmd_topic() -> None:
+    """NEW (session 39) -- the corrected mission-control path. Verifies
+    routing only (real topic/payload construction is tested in
+    test_mqtt_client.py's test_cmd_topic_helper/
+    test_publish_cmd_sends_expected_payload_shape)."""
+    robot, mqtt, _rest = _robot_with_mocks()
+
+    await robot.send_simple_command("start")
+
+    mqtt.publish_cmd.assert_called_once_with("irbt-fake-prefix", "start", "localApp")
+
+
+@pytest.mark.asyncio
+async def test_send_simple_command_without_topic_prefix_raises_immediately() -> None:
+    """Same missing-prefix gate as watch_live_map() -- see
+    test_watch_live_map_without_topic_prefix_raises_immediately."""
+    mqtt = MagicMock()
+    rest = MagicMock()
+    robot = PrimeRobot(blid="BLID123", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None)
+
+    with pytest.raises(RuntimeError, match="irbt_topic_prefix"):
+        await robot.send_simple_command("start")
+
+    mqtt.publish_cmd.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -714,4 +742,4 @@ async def test_echo_time_estimates_reset_notifications_delegate() -> None:
     rest.reset_robot.assert_awaited_once_with("BLID123")
 
     assert await robot.get_notifications() == {"events": []}
-    rest.get_notifications.assert_awaited_once_with("BLID123", "1.0")
+    rest.get_notifications.assert_awaited_once_with("BLID123", "2.2.4")

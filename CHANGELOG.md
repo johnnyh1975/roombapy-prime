@@ -8,6 +8,39 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.6a0] - 2026-07-14
+
+### Fixed
+
+- **`get_notifications()`'s `app_version` default corrected from `"1.0"` to `"2.2.4"`.** The
+  previous placeholder value had zero evidentiary basis and was the suspected cause of this
+  call's known HTTP 400 failure against a real account. The analyzed APK's own
+  `BuildConfig.VERSION_NAME` and `AndroidManifest.xml`'s `versionName` both confirm "2.2.4" as
+  the real app version used for this analysis -- a much stronger candidate for what this
+  parameter is meant to carry. Not yet live-verified with the corrected value.
+- **Stale documentation fixed**: a leftover comment in `models.py` and a matching test docstring
+  still described the create/update favorite HTTP methods as "assumed", contradicted by a later
+  session's bytecode confirmation already reflected everywhere else in the codebase. No behavior
+  change -- documentation consistency only.
+- **`get_cleaning_profiles()`'s query parameters corrected.** Directly bytecode-confirmed this
+  time (`CleaningProfileRequest.getQueryParams()`): the robot-id key is `"robotId"` (camelCase,
+  not `"asset_id"`), and a third, previously entirely missing parameter, `"includeSmart"`
+  (`"true"`/`"false"`), is now sent. `p2map_id` is now optional to match the real branching
+  logic. Not yet live-verified with the corrected shape.
+
+### Changed
+
+- **Mission control (`start`/`stop`/`pause`/`resume`/`dock`/etc.) no longer sent via the device
+  shadow.** A live test confirmed every attempt via the previous `send_mission_command()`
+  (shadow-update) path timed out with zero response. New `send_simple_command()` sends via a
+  different, dedicated MQTT topic (`{irbt_topic_prefix}/things/{blid}/cmd`) with a simple
+  `{"command", "time", "initiator"}` payload — confirmed both by this library's own native
+  disassembly and independently by a third-party, unaffiliated implementation reporting this
+  path working against a real device. `send_mission_command()` is kept for the region-based use
+  case (still unconfirmed by any source), but is no longer the recommended path for basic
+  commands. `verify_mission_commands.py` updated to use the new path. See
+  `docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md` for the full evidence trail.
+
 ## [0.1.5a0] - 2026-07-14
 
 ### Changed
@@ -16,6 +49,10 @@ This file only tracks what changed from a user's point of view.
   now in English** (report labels, status values, prompts, `--help` text). Previously this was in
   German. Internal code comments/docstrings (explaining implementation history) remain in German
   as before — this change only affects what a user actually sees when running the tools.
+
+  *(Correction, added later: internal code comments/docstrings were subsequently also fully
+  translated to English in a separate pass -- see the commit history for the full extent of that
+  change, not tracked as its own version bump here.)*
 
 ## [0.1.4a0] - 2026-07-14
 

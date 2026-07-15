@@ -216,41 +216,80 @@ class PrimeRobot:
         return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
 
     async def send_mission_command(self, command: RoutineCommand, timeout: float = 8.0) -> ShadowResponse:
-        """CONFIRMED (session 15) -- see models.py's mission control
-        section for the payload derivation.
+        """STRONGLY SUSPECTED WRONG (session 39) -- kept for the
+        region-based/richer use case (RoutineCommand.regions/params),
+        which remains unconfirmed by any source. For basic mission
+        control (start/pause/stop/resume/dock/etc.), use
+        send_simple_command() instead -- see its docstring for the full
+        story of why this method is now believed incorrect.
 
-        Sends via the CLASSIC (unnamed) shadow. This is now definitively
-        confirmed -- no longer through bytecode interpretation, but
-        through the actual configuration file bundled in the APK
-        (res/raw/base_roomba_config.json, "commandList" entry for
-        commandId "Control"):
+        Originally CONFIRMED (session 15) via
+        base_roomba_config.json's "Control" commandId entry:
 
             {"commandId": "Control", "topic": "cmd", "namedShadow": ""}
 
-        For comparison, in the same JSON (confirms "rw-settings" for
-        settings, independent of the Kotlin/native derivation):
+        MISREADING CORRECTED (session 39): "namedShadow": "" was read
+        as "classic (unnamed) shadow, therefore send via
+        $aws/things/{blid}/shadow/update" -- but cross-referencing the
+        "topic" field across ALL 77 commandIds in the same file (not
+        just this one entry in isolation) shows "topic" is itself a
+        discriminator with (at least) three distinct categories:
+        "shadow" (2 commandIds, incl. GetThingShadow -- confirmed live
+        as get_state()'s classic shadow GET), "delta" (57 commandIds,
+        all settings/schedule-style writes -- confirmed live as
+        update_shadow()'s desired-state mechanism), and "cmd" (4
+        commandIds: Control, AssetControlCommand, ResetRobotCommand,
+        StartMatterCommissioning). "cmd" being its own category,
+        distinct from both "shadow" and "delta", was the clue that got
+        missed the first time -- mission commands were never meant to
+        go through the shadow /update mechanism at all. "namedShadow":
+        "" for a "cmd"-category entry doesn't mean "classic shadow";
+        it's presumably just not applicable to this category.
 
-            {"commandId": "SetBinPause", "topic": "delta",
-             "namedShadow": "rw-settings"}
-            {"commandId": "AssetScheduleCommand,Set", "topic": "delta",
-             "namedShadow": "rw-schedule"}
-
-        The "namedShadow": "" for "Control" is the decisive difference
-        -- mission commands don't use a named shadow, unlike settings
-        ("rw-settings") and schedules ("rw-schedule"). This file was
-        only found after a promising but incorrect native chain (vtable
-        slot counting error, see this method's version history) had
-        pointed the way there (PMIAssetServiceImpl::getProtocolConfig()
-        -> ProtocolConfig::ProtocolConfig(string) -> exactly this JSON
-        file as constructor input).
-
-        NEVER sent to a real server -- transport (now confirmed from
-        the actual configuration file) and payload shape
-        (RoutineCommand field names) still have never been tested
-        live TOGETHER."""
+        A live test (chairstacker, session 39) confirms this
+        practically: every attempt via this method (update_shadow())
+        timed out with ZERO response -- not even /rejected, which is
+        consistent with publishing to a topic the AWS IoT shadow
+        service doesn't recognize as a shadow topic at all, not a
+        payload or permission problem on an otherwise-valid one."""
         return await asyncio.to_thread(
             self._mqtt.update_shadow, command.to_shadow_desired(), None, timeout
         )
+
+    async def send_simple_command(self, command: str, initiator: str = "localApp") -> None:
+        """NEW (session 39) -- the corrected mission-control path,
+        replacing send_mission_command() for basic commands. See
+        mqtt_client.py's cmd_topic()/publish_cmd() docstrings for the
+        full evidence trail (this library's own native disassembly of
+        libcorebase.so independently corroborated by a third-party,
+        unaffiliated GitHub project that reports this exact path
+        working against a real device).
+
+        `command` is a plain string, not MissionCommandType -- the
+        confirmed verb set from that third-party project is narrower
+        than this library's own 30-value enum (start, pause, stop,
+        resume, dock, find, evac, reset, StartOnDemandOta) -- pass
+        MissionCommandType.START.value etc. if you want enum safety, or
+        a plain string for anything not yet in the enum.
+
+        Needs irbt_topic_prefix (see __init__/auth.py's LoginResult),
+        same requirement as watch_live_map() -- raises RuntimeError
+        immediately if missing, rather than silently publishing to a
+        malformed topic.
+
+        NOT region-aware -- there is no known way to specify
+        rooms/zones/CommandParams through this simple payload shape.
+        For that, RoutineCommand/send_mission_command() may still be
+        the right (if unconfirmed) tool -- or an entirely different,
+        not-yet-discovered mechanism may be needed. Fire-and-forget, no
+        response wait -- see publish_cmd()'s docstring for why. NOT YET
+        live-tested by this library itself."""
+        if self._irbt_topic_prefix is None:
+            raise RuntimeError(
+                "send_simple_command() needs irbt_topic_prefix (from LoginResult) -- "
+                "missing here, so the correct topic can't be built."
+            )
+        await asyncio.to_thread(self._mqtt.publish_cmd, self._irbt_topic_prefix, command, initiator)
 
     # --- REST-based p2maps operations (already natively async) -------
 
@@ -396,7 +435,9 @@ class PrimeRobot:
     async def set_dnd_settings(self, household_id: str, settings: dict) -> dict:
         return await self._rest.set_dnd_settings(household_id, settings)
 
-    async def get_cleaning_profiles(self, asset_id: str, p2map_id: str) -> dict:
+    async def get_cleaning_profiles(self, asset_id: str, p2map_id: str | None = None) -> dict:
+        """NEW (session 6) -- see rest_client.py::get_cleaning_profiles(). `p2map_id` is
+        optional, matching the real query construction (session 38)."""
         return await self._rest.get_cleaning_profiles(asset_id, p2map_id)
 
     async def get_default_routines(self, p2map_id: str) -> dict:
@@ -429,8 +470,9 @@ class PrimeRobot:
         see rest_client.py::reset_robot()."""
         return await self._rest.reset_robot(self.blid)
 
-    async def get_notifications(self, app_version: str = "1.0") -> dict:
-        """NEW (session 16) -- see rest_client.py::get_notifications()."""
+    async def get_notifications(self, app_version: str = "2.2.4") -> dict:
+        """NEW (session 16) -- see rest_client.py::get_notifications(). Default
+        `app_version` updated in session 36, see that method's docstring."""
         return await self._rest.get_notifications(self.blid, app_version)
 
     # --- Continuous dispatch loops --------------------------------------

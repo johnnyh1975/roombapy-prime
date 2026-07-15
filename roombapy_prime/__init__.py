@@ -32,4 +32,4 @@ Module structure:
     diagnostics.py     -- live validation script against a real account
 """
 
-__version__ = "0.1.5a0"
+__version__ = "0.1.6a0"
