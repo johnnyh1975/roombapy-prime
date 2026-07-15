@@ -61,7 +61,7 @@ from typing import Any
 
 import aiohttp
 
-from .diagnostics import Report, _redact_raw_capture, build_issue_url
+from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
 from .models import parse_robot_status_v2
 from .prime_factory import PrimeFactory
 
@@ -167,6 +167,25 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         report.add("Login", "OK", f"BLID={robot.blid}")
         await robot.connect()
         report.add("MQTT connection", "OK")
+
+        # NEW (session 41): a live test (chairstacker) first showed send_simple_command()
+        # failing outright because irbt_topic_prefix came back None -- report this clearly
+        # UP FRONT, before wasting the user's time confirming commands that will just fail
+        # with the same error every time.
+        _report_topic_prefix_status(report, robot)
+        if raw_capture is not None:
+            raw_capture["Discovery deployment object (for irbt_topic_prefix)"] = robot.deployment
+        if getattr(robot, "_irbt_topic_prefix", None) is None:
+            print(
+                "\nirbt_topic_prefix is missing for this account -- every mission command "
+                "below would fail with the same error. Skipping the rest of this run; see "
+                "the report above for the actual discovery-response keys, which is what's "
+                "needed to fix this properly."
+            )
+            for label in ("Start", "Stop", "Start (for pause test)", "Pause", "Resume", "Stop (after pause test)", "Dock"):
+                report.add(label, "SKIPPED", "irbt_topic_prefix missing -- see report above")
+            await robot.disconnect()
+            return report, raw_capture
 
         print("\n== Core test: Start -> Stop ==")
         started = await _run_command(robot, report, raw_capture, "start", "Start")

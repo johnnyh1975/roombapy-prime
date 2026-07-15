@@ -42,6 +42,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from .auth import LoginResult
 from .mqtt_client import PrimeMqttClient, ShadowResponse
@@ -118,8 +119,15 @@ class PrimeRobot:
 
     irbt_topic_prefix: NEW, UNCERTAIN (see auth.py's LoginResult
     docstring and mqtt_client.py's livemap_topic()). Needed for
-    watch_live_map() -- without it, watch_live_map() immediately raises
-    a clear error, instead of silently waiting on the wrong topic."""
+    watch_live_map()/send_simple_command() -- without it, both
+    immediately raise a clear error, instead of silently waiting on/
+    publishing to the wrong topic.
+
+    deployment: NEW (session 41). The raw discovery-response deployment
+    object, kept around so diagnostics.py can report its actual keys
+    when irbt_topic_prefix/iot_topic_prefix guessing turns out wrong (as
+    a live test first showed) -- not used by PrimeRobot itself for
+    anything beyond exposing it for diagnostics."""
 
     def __init__(
         self,
@@ -128,12 +136,14 @@ class PrimeRobot:
         rest_client: PrimeRestClient,
         relogin: Relogin | None = None,
         irbt_topic_prefix: str | None = None,
+        deployment: dict[str, Any] | None = None,
     ) -> None:
         self.blid = blid
         self._mqtt = mqtt_client
         self._rest = rest_client
         self._relogin = relogin
         self._irbt_topic_prefix = irbt_topic_prefix
+        self.deployment = deployment or {}
         self._refresh_task: asyncio.Task[None] | None = None
 
     async def connect(self, timeout: float = 10.0) -> None:

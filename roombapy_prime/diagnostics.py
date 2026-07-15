@@ -234,6 +234,42 @@ def _report_device_info(report: Report, state: Any) -> None:
     report.add("Device info extracted from get_state()", "OK", detail)
 
 
+def _report_topic_prefix_status(report: Report, robot: Any) -> None:
+    """NEW (session 41). A live test (chairstacker) first showed
+    irbt_topic_prefix coming back None -- the guessed discovery-response
+    field names ("irbtTopicPrefix"/"iotTopicPrefix") don't match reality
+    for this account. Rather than guess again without evidence (this
+    project's own standing rule against exactly that), report the
+    ACTUAL keys present in the raw discovery deployment object
+    (robot.deployment, see auth.py's LoginResult/prime_robot.py's
+    PrimeRobot -- previously a local variable, discarded after login(),
+    with no way to inspect it when the guess turned out wrong; now
+    captured specifically so this diagnostic can exist).
+
+    Uses _shallow_summary() (structure only, never values) -- the
+    deployment object may contain endpoint URLs/config that shouldn't be
+    fully dumped into a shared report, but the KEY NAMES are exactly
+    what's needed to fix the guess."""
+    prefix = getattr(robot, "_irbt_topic_prefix", None)
+    if prefix is not None:
+        report.add("irbt_topic_prefix (from discovery response)", "OK", f"found: {prefix!r}")
+        return
+    deployment = getattr(robot, "deployment", None) or {}
+    if not deployment:
+        report.add(
+            "irbt_topic_prefix (from discovery response)",
+            "FAILED",
+            "not found, AND robot.deployment itself is empty -- can't report candidate keys",
+        )
+        return
+    report.add(
+        "irbt_topic_prefix (from discovery response)",
+        "FAILED",
+        "guessed keys \"irbtTopicPrefix\"/\"iotTopicPrefix\" not present -- "
+        f"actual deployment object structure: {_shallow_summary(deployment)}",
+    )
+
+
 def _report_tier_inference(report: Report, settings_result: Any) -> None:
     """NEW (session 21), WEAKENED (session 25) -- the same device BLID
     produced DIFFERENT results in two consecutive runs (once success,
@@ -279,6 +315,19 @@ async def run(
             report.add("Login", "FAILED", f"{type(exc).__name__}: {exc}")
             print("\nLogin failed -- all further checks will be skipped.")
             return report
+
+        _report_topic_prefix_status(report, robot)
+        if raw_capture is not None:
+            # NEW (session 42): _report_topic_prefix_status() above only shows the
+            # deployment object's STRUCTURE (key names/types, via _shallow_summary()) --
+            # deliberately conservative for the always-printed report. But confirming
+            # the real irbt_topic_prefix field name needs an actual VALUE (something
+            # shaped like "v0NN-irbthbu") to know which key is the right one, not just
+            # its name. --dump-config's redaction (usernames/passwords, not general
+            # values) is a fundamentally different, already-accepted trust boundary
+            # than the always-printed report, so the raw deployment object is captured
+            # here, not there.
+            raw_capture["Discovery deployment object (for irbt_topic_prefix)"] = robot.deployment
 
         print("\n== MQTT / shadow state ==")
         try:

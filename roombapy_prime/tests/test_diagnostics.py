@@ -187,6 +187,53 @@ def test_report_tier_inference_ephemeral_when_settings_failed() -> None:
     assert "EPHEMERAL" in report.results[0].detail
 
 
+class _FakeRobotForTopicPrefix:
+    def __init__(self, irbt_topic_prefix: str | None, deployment: dict | None = None) -> None:
+        self._irbt_topic_prefix = irbt_topic_prefix
+        self.deployment = deployment or {}
+
+
+def test_report_topic_prefix_status_ok_when_found() -> None:
+    from roombapy_prime.diagnostics import Report, _report_topic_prefix_status
+
+    report = Report()
+    robot = _FakeRobotForTopicPrefix("v011-irbthbu")
+    _report_topic_prefix_status(report, robot)
+
+    assert report.results[0].status == "OK"
+    assert "v011-irbthbu" in report.results[0].detail
+
+
+def test_report_topic_prefix_status_reports_actual_deployment_keys_when_missing() -> None:
+    """NEW (session 41) -- regression test against the bug a live test
+    found: the guessed keys don't match reality for this account. Must
+    report the ACTUAL deployment keys, not silently fail with no
+    actionable information."""
+    from roombapy_prime.diagnostics import Report, _report_topic_prefix_status
+
+    report = Report()
+    robot = _FakeRobotForTopicPrefix(None, deployment={"httpBase": "x", "mqtt": "y", "someOtherKey": "z"})
+    _report_topic_prefix_status(report, robot)
+
+    assert report.results[0].status == "FAILED"
+    assert "httpBase" in report.results[0].detail
+    assert "someOtherKey" in report.results[0].detail
+    # values must NOT leak, only structure/types (same rule as _shallow_summary elsewhere)
+    assert "\"x\"" not in report.results[0].detail
+    assert "'x'" not in report.results[0].detail
+
+
+def test_report_topic_prefix_status_handles_empty_deployment() -> None:
+    from roombapy_prime.diagnostics import Report, _report_topic_prefix_status
+
+    report = Report()
+    robot = _FakeRobotForTopicPrefix(None, deployment={})
+    _report_topic_prefix_status(report, robot)
+
+    assert report.results[0].status == "FAILED"
+    assert "empty" in report.results[0].detail
+
+
 def test_shallow_summary_dict_shows_keys_and_types() -> None:
     from roombapy_prime.diagnostics import _shallow_summary
 

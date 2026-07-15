@@ -26,7 +26,9 @@ corroboration) than the superseded shadow-based approach ever had. Treat mission
 unreachable through analysis):
 - Exact envelope format of the V1 edit commands (discriminator key unknown, custom
   serializer not decompilable)
-- `irbt_topic_prefix`'s exact JSON field name (concept confirmed, string not found)
+- `irbt_topic_prefix`'s exact JSON field name (concept confirmed necessary -- now live-confirmed
+  WRONG for at least one real account, no longer just "unconfirmed"; diagnostics now report the
+  actual deployment-object keys to help find the real one, see the forty-first session)
 - p2maps auth mechanism: the SigV4 assumption remains an analogy to Classic, Prime's own code
   provably delegates to a native `accountService.sendRequest()` -- in principle never
   confirmable from Kotlin/Java code, only through a real traffic capture
@@ -1520,3 +1522,104 @@ settle the unresolved data-source question with real evidence, one way or the ot
 
 277/277 tests green (7 new), ruff clean. Kept under 0.1.6a0, same consolidation as the rest of
 this session's work.
+
+## Addendum (forty-first session): third live run -- 23/23 reads green, and a genuine new bug found in mission control's prerequisite
+
+chairstacker ran both scripts again. The `roombapy-prime-validate` result is the best this
+project has ever had: **23 OK, 0 failed, 3 skipped** (the 3 skips are the deliberately-never-
+automatic ones -- favorite write round-trip without `--allow-writes`, mission commands, map
+editing). Both fixes from the thirty-eighth session are confirmed working live for the first
+time (`get_notifications`, `get_cleaning_profiles`). Four endpoints that had never been reached
+before now succeed: `get_map_metadata`, `get_schedules`, `get_dnd_settings`, and the full map
+bundle download+unpack cycle (8 files found). Device info extraction shows the complete `cap`
+object for the first time (35 capability fields: `carpetBoost: 3`, `suctionLvl: 4`, `maps: 6`,
+`p2maps: 1`, etc. -- previously only known to exist, never seen in full). `state.reported`'s
+8 top-level keys are IDENTICAL to the previous capture (same idle robot) -- consistent with,
+though not proof of, the "`RobotStatusV2`-adjacent fields only appear during an active mission"
+hypothesis from the fortieth session, rather than "wrong data source entirely."
+
+**`roombapy-prime-verify-commands` found a new, genuine bug**, though: every single command
+attempt (`Start`, `Start` again, `Dock`) failed identically with
+`RuntimeError: send_simple_command() needs irbt_topic_prefix (from LoginResult) -- missing
+here`. This is `irbt_topic_prefix` itself -- the long-standing, always-labeled-uncertain guess
+at the discovery-response field name (`"irbtTopicPrefix"`/`"iotTopicPrefix"`) -- coming back
+`None` for a real account, for the first time actually tested.
+
+**Deliberately did NOT guess a third field name.** This project's own standing rule (never build
+without concrete field evidence, revert speculative work when evidence is absent) applies just
+as much to a third guess as it did to the first two. The real blocker turned out to be more basic
+than "wrong field name": the raw discovery deployment object (where `irbt_topic_prefix` is meant
+to come from) was never actually captured anywhere -- `login()` used it as a local variable and
+discarded it, so even after this bug surfaced, there was no way to inspect what keys were
+actually present.
+
+**Fixed the capture gap, not the guess.** `LoginResult` gained a `deployment` field (the raw
+discovery deployment dict), threaded through `PrimeRobot` (also gained a `deployment` attribute)
+via `PrimeFactory.create_prime_robot()`. New `_report_topic_prefix_status()` in `diagnostics.py`
+reports either the found prefix (if the guess ever turns out right for some account) or the
+*actual* keys present in the deployment object via `_shallow_summary()` (structure/types only,
+never values, consistent with this project's existing redaction discipline) -- called from both
+`roombapy-prime-validate` (right after login) and `roombapy-prime-verify-commands` (same place,
+plus an early exit with a clear explanation instead of repeating the identical failure for every
+remaining command, which is what happened in this run).
+
+**Next live run should finally reveal the real field name** -- something this project has been
+guessing at since the fifteenth session's original discovery of the concept, now finally
+positioned to be settled with actual evidence instead of another guess.
+
+280/280 tests green (3 new for `_report_topic_prefix_status`), ruff clean. Kept under 0.1.6a0.
+
+## Addendum (forty-second session): --dump-config now captures the deployment object, and a new, deliberately narrow map-edit verification script
+
+Two follow-ups in response to direct questions.
+
+**"Do we need the diagnostics file too?"** -- yes. `_report_topic_prefix_status()` from the
+forty-first session only shows the deployment object's STRUCTURE (key names/types, via
+`_shallow_summary()`) in the always-printed report -- deliberately conservative there, since that
+report gets shared without a second thought. But actually confirming which key is
+`irbt_topic_prefix` needs an actual VALUE (something shaped like `"v0NN-irbthbu"`) to distinguish
+it from other candidate keys, not just a key name. `--dump-config`'s redaction (usernames/
+passwords, not general values) is a different, already-accepted trust boundary than the
+always-printed report -- so the raw deployment object is now captured there specifically, in all
+three scripts (`roombapy-prime-validate`, `roombapy-prime-verify-commands`, and the new
+`roombapy-prime-verify-map-edit` below).
+
+**"Can we build a similar diagnostic for map editing?"** -- yes, but deliberately much narrower in
+scope than `verify_mission_commands.py`. Map editing (`edit_map()`, the V1 command family) has
+categorically weaker evidence than mission commands did before their own live test: mission
+commands had two independently converging sources (this project's own native disassembly, and a
+third-party project's live-tested implementation) before ever being tried live. Map editing's V1
+envelope format has NO such corroboration from anywhere -- it's an analogy assumption from the V2
+pattern, never independently confirmed. A wrong guess for a mission command was safely observable
+as complete silence (confirmed, not dangerous). A wrong guess for a map edit command could, in
+principle, be accepted by the server in a way that changes real map data unexpectedly -- lower
+probability than a clean rejection, but nonzero, and unlike a mission command, a botched edit
+could persist and need manual cleanup in the real app afterward.
+
+For that reason, the new `roombapy-prime-verify-map-edit` script deliberately tests exactly ONE
+operation: renaming an existing, already-named room to a clearly-marked test name
+(`"{original} [roombapy-prime-test]"`), then immediately back. `_pick_test_room()` specifically
+requires the room to already have a name -- a nameless room is never chosen, since
+`RenameRoomV1.name` is a required string with no confirmed way to "clear" it back to nothing,
+meaning a nameless room would have no safe revert path. Nothing else from the V1 vocabulary
+(SplitRoom, MergeRooms, SetPermanentAreas, DeletePermanentAreas, SetVirtualWalls, AdjustFurniture)
+is attempted -- several of those aren't cleanly reversible even in principle (a merge/split can't
+be undone by calling some inverse operation, since the original boundary information is gone).
+
+Also, unlike the mission-command script (which treats an error-free server response as success),
+this script explicitly asks the user to confirm the name change in the real app before marking
+either the rename or the revert as OK -- an accepted HTTP response only proves the server didn't
+reject the request, not that anything actually changed, which matters more here given the
+complete absence of independent corroboration for this envelope format.
+
+286/286 tests green (6 new, for `_pick_test_room()`'s room-selection logic -- the script's `run()`
+orchestration itself is intentionally not unit-tested, consistent with this project's existing
+boundary for `diagnostics.py`/`verify_mission_commands.py`'s own `run()` functions). ruff clean.
+New CLI entry point `roombapy-prime-verify-map-edit` registered. Kept under 0.1.6a0.
+
+**Version note:** all of the thirty-ninth/fortieth/forty-first/forty-second sessions' work
+(mission control transport correction, `RobotStatusV2`, `irbt_topic_prefix` diagnostics, the new
+map-edit verification script) was deliberately consolidated under 0.1.6a0 rather than bumped
+individually. After the forty-second session concluded, the version was bumped to **0.1.7a0**,
+covering all of it as one release-worthy unit -- see `CHANGELOG.md` for the consolidated,
+user-facing summary.

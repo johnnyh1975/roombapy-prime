@@ -28,7 +28,7 @@ import json
 import logging
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from json.decoder import JSONDecodeError
 from typing import Any
@@ -238,6 +238,15 @@ class LoginResult:
     robots: dict[str, dict[str, Any]]
     connection_tokens: list[ConnectionToken]
     raw: dict[str, Any]
+    deployment: dict[str, Any] = field(default_factory=dict)
+    """NEW (session 41). The raw discovery-response deployment object
+    (`disc["deployments"][disc["current_deployment"]]`) -- previously a
+    local variable inside login(), discarded after use, meaning there was
+    no way to inspect it even when irbt_topic_prefix/iot_topic_prefix
+    guessing turned out wrong. A live test (chairstacker) confirmed
+    exactly that: both guessed keys came back missing. Captured here so
+    diagnostics.py can report the actual keys present, closing the loop
+    instead of guessing again without evidence."""
     irbt_topic_prefix: str | None = None
     iot_topic_prefix: str | None = None
 
@@ -327,6 +336,7 @@ async def login(
         robots=login_result.get("robots") or {},
         connection_tokens=connection_tokens,
         raw=login_result,
+        deployment=deployment,
         # Best-guess field names (see LoginResult docstring) -- .get(),
         # not a gate failure, since it's too uncertain to enforce strictly.
         irbt_topic_prefix=deployment.get("irbtTopicPrefix"),

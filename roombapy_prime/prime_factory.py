@@ -83,4 +83,5 @@ class PrimeFactory:
             rest_client=rest_client,
             relogin=relogin,
             irbt_topic_prefix=login_result.irbt_topic_prefix,
+            deployment=login_result.deployment,
         )

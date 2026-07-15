@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.6-alpha.** Runs, is tested (277+ unit tests), builds
+> **Status: v0.1.7-alpha.** Runs, is tested (286+ unit tests), builds
 > and installs cleanly. **Run twice against one real Prime/V4 account.**
 > First run: login, MQTT connection, and most REST reads confirmed
 > working; a reversible write (creating/deleting a favorite) also
@@ -115,7 +115,7 @@ confirms it.
 | Sending mission commands (`send_simple_command()`) | Medium-high (transport), unverified (live) | The device-shadow approach (`send_mission_command()`) was live-tested and confirmed **not working** — every attempt timed out with zero response. The actual transport (a dedicated, non-shadow MQTT topic) is corroborated two independent ways: this library's own native disassembly of the APK, and separately a third-party, unaffiliated project reporting this exact path working against a real device. Strong circumstantial evidence, but not yet confirmed by this library's own live test. |
 | Sending mission commands, region-based (`send_mission_command()`) | Low | Kept only for this use case; the simple payload has no known way to express regions/zones. Confirmed **not working** for basic commands (see above) — unconfirmed either way for the region-based case, since no source (including the third-party corroboration above) has verified it |
 | `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Whether this structure actually appears in `get_state()`'s response is unresolved — the one real capture available shows unrelated top-level keys entirely |
-| Map editing | Medium (structure), unverified (practice) | Confirmed from source, never sent to a real server |
+| Map editing | Medium (structure), unverified (practice) | Confirmed from source, never sent to a real server. No independent corroboration for the envelope format exists anywhere, unlike mission commands -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
 | Deeply nested response fields (map bundle internals) | Low-medium | Modeled where it was cheap to; raw JSON is always available as a fallback where it wasn't. Mission history's 20 timeline sub-event types are now fully typed (`MissionTimelineEvent`), no longer in this category. |
 
 **Known unresolved gaps:**
@@ -146,7 +146,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-277+ tests, all passing — structural checks against decompiled source,
+286+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -213,6 +213,25 @@ implies). Before and after every command, it also attempts to parse the `RobotSt
 of the reported state and shows the result — useful real-world data for settling whether/where
 that structure actually appears. Produces the same kind of shareable report as
 `roombapy-prime-validate`, including `--dump-config` support.
+
+### Verifying map edits (rename a room)
+
+Map editing has categorically weaker evidence than mission commands do — no independent
+corroboration of the V1 envelope format exists anywhere, so this script is deliberately much
+narrower and more cautious. It only tests one thing: renaming an existing, already-named room to
+a clearly-marked test name, then immediately back.
+
+```bash
+roombapy-prime-verify-map-edit --username you@example.com --country-code US \
+    --blid YOUR_ROBOT_BLID --i-understand-this-will-edit-my-map
+```
+
+Same doubly-secured safety design as the mission-command script. Unlike that script, it also asks
+you to confirm the change in the real app before treating either step as successful — an accepted
+HTTP response only proves the server didn't reject the request, not that anything actually
+changed, which matters more here given the lack of outside confirmation for this command family.
+Deliberately does **not** attempt splitting/merging rooms, deleting permanent areas, virtual
+walls, or furniture — several of those aren't cleanly reversible even in principle.
 
 ## Documentation
 

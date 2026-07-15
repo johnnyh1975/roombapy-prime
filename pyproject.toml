@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime"
-version = "0.1.6a0"
+version = "0.1.7a0"
 description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,6 +31,7 @@ Changelog = "https://github.com/johnnyh1975/roombapy-prime/blob/main/CHANGELOG.m
 [project.scripts]
 roombapy-prime-validate = "roombapy_prime.diagnostics:main"
 roombapy-prime-verify-commands = "roombapy_prime.verify_mission_commands:main"
+roombapy-prime-verify-map-edit = "roombapy_prime.verify_map_edit:main"
 
 [project.optional-dependencies]
 test = [

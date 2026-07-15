@@ -8,10 +8,32 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
-## [0.1.6a0] - 2026-07-14
+## [0.1.7a0] - 2026-07-15
 
 ### Added
 
+- **New `roombapy-prime-verify-map-edit` script.** Map editing (`edit_map()`) has never been
+  tested against a real device -- unlike mission commands, there's no external corroboration for
+  its envelope format, so this script is deliberately narrower and more cautious than
+  `roombapy-prime-verify-commands`: it only tests renaming an existing, already-named room to a
+  clearly-marked test name and immediately back, never the riskier, less-reversible operations
+  (split/merge rooms, delete permanent areas, virtual walls, furniture). Same safety design
+  (explicit flag + per-step confirmation) as the mission-command script, plus explicit
+  confirmation in the real app (not just an accepted HTTP response) before treating either step
+  as successful.
+- **`--dump-config` now also captures the raw discovery deployment object** (in
+  `roombapy-prime-validate`, `roombapy-prime-verify-commands`, and the new
+  `roombapy-prime-verify-map-edit`), redacted the same way as everything else -- needed to
+  actually resolve `irbt_topic_prefix`'s real field name with real values, not just the key names
+  the always-printed report already shows.
+- **Diagnostic reporting for `irbt_topic_prefix`.** A live test confirmed the guessed discovery-
+  response field names ("irbtTopicPrefix"/"iotTopicPrefix") don't match reality for at least one
+  real account — `send_simple_command()` failed outright as a result. Rather than guess again,
+  `LoginResult`/`PrimeRobot` now capture and expose the raw discovery deployment object, and both
+  `roombapy-prime-validate` and `roombapy-prime-verify-commands` report its actual keys (structure
+  only, never values) when the guess comes back empty — closing the loop with real evidence
+  instead of another blind guess. `roombapy-prime-verify-commands` also now exits early with a
+  clear explanation instead of repeating the same failure for every command.
 - **New, optional `RobotStatusV2` model** (`models.py::parse_robot_status_v2()`) exposing
   `robot_state`, `battery_level`, `is_charging`, `is_robot_on_dock`, `current_p2map_id`/
   `current_p2map_version_id`, `dock_controls`, `errors`, `conditional_errors`, `buttons`, and
