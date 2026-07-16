@@ -116,6 +116,52 @@ def _pick_test_room(map_versions: list[Any]) -> tuple[str, str, str] | None:
     return None
 
 
+def _room_names_from_bundle(parsed_bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """NEW (session 44). If get_active_map_versions()'s rooms_metadata
+    doesn't have a named room, the real, app-visible room names might
+    live in the downloaded map bundle instead -- a completely
+    different, less-confirmed data source (RoomInfo, from the bundle's
+    "rooms" file, has no from_json() in this library precisely because
+    its wire format was never confirmed -- unlike RoomMetadataEntry).
+    This is pure investigation, not a model: extracts only room_id/
+    name/type-shaped fields from whatever raw dict the bundle's
+    "rooms" file actually contains, so the real structure can be seen
+    without guessing at it.
+
+    DELIBERATELY EXCLUDES geometry/polygon/coordinate fields FROM THIS
+    DIAGNOSTIC REPORT SPECIFICALLY -- consistent with this project's
+    existing rule (see diagnostics.py's map bundle handling) that a
+    floor plan is considerably more personal than most other data this
+    library captures, and this report is the kind of thing people
+    casually paste into a public GitHub issue without thinking about
+    it. This is NOT a statement that the library shouldn't support
+    geometry -- models.py's RoomInfo already has a `geometry` field,
+    unaffected by this function, and will genuinely be needed for
+    building an actual map/floor-plan feature later. This function
+    only controls what THIS diagnostic script prints/captures for a
+    shared report, nothing about the library's own data model. If the
+    real field name for room names turns out to be something this
+    filter doesn't recognize, it may need to be adjusted -- but erring
+    toward showing less, not more, until the actual shape is
+    confirmed."""
+    rooms_file = None
+    for key in ("rooms", "rooms.json"):
+        if key in parsed_bundle:
+            rooms_file = parsed_bundle[key]
+            break
+    if not isinstance(rooms_file, list):
+        return []
+
+    geometry_like = {"geometry", "polygon", "simplified_geometry", "simplifiedgeometry", "coordinates", "poly"}
+    result = []
+    for entry in rooms_file:
+        if not isinstance(entry, dict):
+            continue
+        filtered = {k: v for k, v in entry.items() if k.lower() not in geometry_like}
+        result.append(filtered)
+    return result
+
+
 async def run(username: str, password: str, country_code: str, blid: str) -> tuple[Report, dict[str, Any]]:
     report = Report()
     raw_capture: dict[str, Any] = {}
@@ -142,13 +188,50 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
 
         picked = _pick_test_room(map_versions)
         if picked is None:
-            report.add(
-                "Finding a named room to test on",
-                "SKIPPED",
-                "no room with an existing name was found across any active map version -- "
-                "this test needs a room to already have a name, so it has something known-good "
-                "to revert back to. Nothing was sent.",
+            print(
+                "\nNo room with a name was found via get_active_map_versions() -- checking the "
+                "downloaded map bundle instead, in case the real, app-visible room names live "
+                "there (a different, less-confirmed data source -- see _room_names_from_bundle()'s "
+                "docstring). Geometry/polygon fields are deliberately never shown or captured."
             )
+            bundle_rooms: list[dict[str, Any]] = []
+            for version in map_versions:
+                p2map_id = getattr(version, "p2map_id", None)
+                p2mapv_id = getattr(version, "active_p2mapv_id", None)
+                if not (p2map_id and p2mapv_id):
+                    continue
+                try:
+                    link = await robot.get_map_geojson_link(p2map_id, p2mapv_id)
+                    url = next((v for v in link.values() if isinstance(v, str) and v.startswith("http")), None)
+                    if not url:
+                        continue
+                    bundle_bytes = await robot.download_map_bundle(url)
+                    from .models import parse_map_bundle
+
+                    parsed = parse_map_bundle(bundle_bytes)
+                    bundle_rooms.extend(_room_names_from_bundle(parsed))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  (map bundle check for {p2map_id!r} failed: {type(exc).__name__}: {exc})")
+            if bundle_rooms:
+                report.add(
+                    "Finding a named room to test on",
+                    "SKIPPED",
+                    "no named room via get_active_map_versions(), but the map bundle's own "
+                    f"\"rooms\" file DOES contain room entries -- non-geometry fields found: "
+                    f"{bundle_rooms}. This test doesn't use this data source (its wire format "
+                    "is unconfirmed, see _room_names_from_bundle()'s docstring) -- sharing this "
+                    "would help confirm it for a future version. Nothing was sent.",
+                )
+                raw_capture["Map bundle room entries (geometry excluded)"] = bundle_rooms
+            else:
+                report.add(
+                    "Finding a named room to test on",
+                    "SKIPPED",
+                    "no room with an existing name was found via get_active_map_versions(), AND "
+                    "the map bundle's \"rooms\" file (if present at all) had no recognizable "
+                    "name field either. This test needs a room to already have a name, so it "
+                    "has something known-good to revert back to. Nothing was sent.",
+                )
             await robot.disconnect()
             return report, raw_capture
         p2map_id, room_id, original_name = picked

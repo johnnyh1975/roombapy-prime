@@ -8,7 +8,38 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.9a0] - 2026-07-15
+
+### Added
+
+- **`roombapy-prime-validate --dump-config` now captures a type-only structure summary of every
+  file in the downloaded map bundle**, not just their filenames. This is the only way to confirm
+  the wire format of any of the 12 map-bundle read models in `models.py` (`RoomInfo`,
+  `BorderInfo`, `TrajectoryInfo`, `CoverageInfo`, `DockInfo`, `HazardInfo`, and 6 more) — none of
+  which have ever been checked against real data (none have a `from_json()` yet). Safe by
+  construction: reuses the existing `_shallow_summary()` helper, which never reveals actual
+  values (including geometry coordinates), only field names and generic type/length markers —
+  verified with a dedicated regression test against realistic GeoJSON-shaped data specifically,
+  not just the simpler flat-dict case the pre-existing leak test covered.
+- **`roombapy-prime-verify-map-edit` now investigates the map bundle** when no named room is
+  found via `get_active_map_versions()` (as happened on a real account whose rooms are named in
+  the app, but not in that response). Downloads and unpacks the map bundle, looking at its
+  separate "rooms" file for names instead — extracting only non-geometry fields (never
+  coordinates/polygons; consistent with this project's standing rule that a floor plan is more
+  personal than most other data captured here, and this is a report people might paste into a
+  public issue). This is investigation, not a new confirmed model — `RoomInfo`'s wire format
+  remains unconfirmed either way; the goal is to get real data to build that on next.
+
 ## [0.1.8a0] - 2026-07-15
+
+### Confirmed
+
+- **Mission control works.** `send_simple_command()` (`start`/`stop`/`pause`/`resume`/`dock`) was
+  live-tested against a real robot for the first time and confirmed working end to end — the
+  robot actually reacted to every single command, watched and confirmed by a real user, not just
+  "no error was raised." This resolves the single most important open question this library has
+  had since the project began. See `docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md` for the full
+  evidence trail that led here.
 
 ### Fixed
 
@@ -16,7 +47,7 @@ This file only tracks what changed from a user's point of view.
   real discovery-response field names are `irbtTopics`/`iotTopics` (not `irbtTopicPrefix`/
   `iotTopicPrefix` as guessed since introducing this field). `send_simple_command()` and
   `watch_live_map()` can now actually build their target topic on accounts where this previously
-  came back empty.
+  came back empty. This was the fix that made the mission control confirmation above possible.
 
 ## [0.1.7a0] - 2026-07-15
 

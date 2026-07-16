@@ -12,15 +12,16 @@ methods), schedules (`ScheduleOptions`/`HouseholdSchedule`, all 4 HTTP methods c
 settings, cleaning profiles, default routines, mission history (request AND response top level),
 tar.gz map bundles (download+unpacking), household listing (despite dead-code status on the app side).
 
-**Mission control -- CORRECTED (session 39), see that addendum for the full story:** the
+**Mission control -- CONFIRMED LIVE (session 44), see that addendum for the full story:** basic
+commands (`start`/`stop`/`pause`/`resume`/`dock`, via `send_simple_command()`, a dedicated
+non-shadow MQTT topic) were live-tested against a real robot and confirmed working -- the robot
+was watched and confirmed to actually react to every command, the biggest open question this
+project has had since its first session. The old shadow-based approach
+(`send_mission_command()`) was separately confirmed NOT working for this. The
 `RoutineCommand`/`CommandParams` payload structure (37 fields, `Region`/`CommandPolygon`/
-`PadWetnessParam`) is still believed correctly modeled, but the TRANSPORT this summary line used
-to claim ("sent via the classic device shadow, `send_mission_command()`") was live-tested and
-failed completely (zero response, not even a rejection). The corrected transport --
-`send_simple_command()`, a dedicated non-shadow MQTT topic -- is itself not yet live-confirmed
-either, though it rests on much stronger evidence (independent native + third-party
-corroboration) than the superseded shadow-based approach ever had. Treat mission control as
-"actively being corrected," not "solved," until a live test of the new path exists.
+`PadWetnessParam`) remains believed correctly modeled for the region-based use case, which is
+still unconfirmed by any source -- that part of `send_mission_command()` is kept only for that,
+now-narrower purpose.
 
 **Genuine, but NOT further resolvable gaps** (need a real device or are structurally
 unreachable through analysis):
@@ -1684,3 +1685,93 @@ could run at all. Low priority, entirely optional.
 
 287/287 tests green (1 new regression test using the real confirmed values), ruff clean. Version
 bumped to 0.1.8a0.
+
+## Addendum (forty-fourth session): mission control CONFIRMED LIVE -- the biggest milestone of this project -- plus a room-naming mystery investigated
+
+chairstacker ran the mission-command script again with the `irbt_topic_prefix` fix in place.
+**Result: 10 OK, 0 failed, 0 skipped -- Start, Stop, Pause, Resume, and Dock all confirmed by the
+user actually watching the robot react**, not just an error-free response. This is the single
+most important open question this entire project has had, since the very first session's
+classification of mission control as "structurally hard, not economically resolvable." It's
+resolved now, live, on a real device.
+
+This closes out the whole arc that started in the thirty-ninth session: the original shadow-
+based approach was confirmed not working, two independent sources converged on a different
+topic pattern, the missing `irbt_topic_prefix` value blocked testing that path at all, this
+project deliberately fixed the underlying capture gap instead of guessing a third field name,
+and the real value turned up byte-identical to the third-party project's example -- and now, at
+the end of that whole chain, the actual command works. `docs/API_REFERENCE.md`/`README.md`
+updated to reflect this as confirmed, not just strongly evidenced.
+
+**The room rename test surfaced something worth investigating properly.** chairstacker's account
+has named rooms in the real app (screenshot shown: named rooms inside two maps, "Whole House" and
+"Master_Bathroom") -- but `_pick_test_room()` found none via `get_active_map_versions()`'s
+`rooms_metadata`. chairstacker asked a sharp, specific question: could the space in "Whole House"
+be the cause? Worth answering directly: no -- Python dict/string handling doesn't care about
+spaces in values, and "Whole House"/"Master_Bathroom" are themselves MAP names (`P2MapVersion
+.name`), not individual room names in the first place, so they were never going through the same
+code path being questioned.
+
+The more likely explanation: `RoomMetadataEntry.name` (from `get_active_map_versions()`) may
+simply not be where the app-visible room names actually come from at all -- there's a
+COMPLETELY SEPARATE model, `RoomInfo`, sourced from the downloaded map bundle's own "rooms"
+file, which also has a `name` field. Critically, `RoomInfo` has no `from_json()` in this
+library -- unlike `RoomMetadataEntry`, its wire format was never confirmed by real data, only
+the underlying Kotlin class's field names were. Building a fallback on it would just be trading
+one guess for another.
+
+**Response: investigate, don't guess.** `verify_map_edit.py` now, when no named room is found via
+metadata, downloads and unpacks the map bundle and looks at its "rooms" file instead --
+extracting ONLY non-geometry fields (room_id/name/type-shaped keys), explicitly filtering out
+anything geometry/polygon/coordinate-shaped. This isn't a new confirmed model, just a way to see
+the real structure so one can be built correctly next time, consistent with this project's
+whole methodology.
+
+**Clarified on request, mid-session:** the geometry exclusion here is scoped specifically to
+this diagnostic report (which people paste into public GitHub issues without necessarily
+thinking about it) -- it is NOT a statement that the library shouldn't support geometry.
+`models.py`'s `RoomInfo` already has a `geometry` field and will genuinely be needed once an
+actual map/floor-plan feature gets built. The two concerns (what a shared debug report should
+print vs. what the library's data model should support) are separate, and this investigation
+function only touches the former.
+
+291/291 tests green (4 new for `_room_names_from_bundle()`, including a dedicated regression
+test against ever leaking a geometry-shaped key under any casing), ruff clean.
+
+## Addendum (forty-fifth session): confirming ALL 12 map-bundle read models at once, not just rooms
+
+On follow-up ("do we have the right API names for the other bundle content types -- can't we get
+this from a bundle request"), the honest answer was checked directly: NONE of the 12 map-bundle
+read models in `models.py` (`RoomInfo`, `BorderInfo`, `TrajectoryInfo`, `CoverageInfo`,
+`DockInfo`, `HazardInfo`, `NoMopZoneInfo`, `AdHocCleanZoneInfo`, `KeepOutZoneInfoRead`,
+`VirtualWallInfo`, `CleanZoneInfoRead`, `FurnitureInfoRead`) have a `from_json()` -- every single
+one was confirmed from Kotlin class field names only, never checked against real bundle content.
+The forty-fourth session's `_room_names_from_bundle()` addressed this for rooms specifically, but
+the user's question was broader: can this be settled for everything at once, from data this
+project can already fetch (`download_map_bundle()`/`parse_map_bundle()` already work, confirmed
+live)?
+
+**Realized `_shallow_summary()` is already safe for this, no new filtering needed.** Re-reading
+its implementation: it recurses at most 2 levels deep and returns `type(data).__name__` (or
+`"..."` once the depth limit is hit) for any leaf value -- it was ALREADY incapable of leaking an
+actual coordinate number, string, or ID, by construction, since it never returns the value
+itself, only its type or a truncation marker. This means the `_room_names_from_bundle()`
+approach (explicitly filtering out geometry-shaped KEYS) was more restrictive than strictly
+necessary for a general structure-confirmation purpose -- correct for that function's specific
+job (showing actual room NAME text, which needed a different, narrower kind of care), but not
+the right tool for confirming field names across all 12 models at once.
+
+**Implemented:** `diagnostics.py`'s existing map-bundle handling (previously capturing ONLY
+filenames into `raw_capture`, deliberately, per the twenty-fourth session's privacy reasoning)
+now ALSO captures `{filename: _shallow_summary(content) for filename, content in parsed.items()}`
+for every file. One `roombapy-prime-validate --dump-config` run should now surface the real
+field names for all 12 currently-unconfirmed models simultaneously, rather than needing a
+separate investigation per model.
+
+**Added a dedicated regression test** (`test_shallow_summary_safe_for_geojson_geometry`) against
+a realistic GeoJSON Polygon shape specifically -- the pre-existing leak test only covered a
+simple flat dict (address/email strings), not nested coordinate arrays, and this new reliance on
+the function's safety property for genuinely sensitive floor-plan data deserved its own direct
+verification rather than assuming the simpler test generalizes.
+
+292/292 tests green (1 new), ruff clean.

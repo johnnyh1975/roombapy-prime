@@ -265,6 +265,38 @@ def test_shallow_summary_never_leaks_actual_values() -> None:
     assert "user@example.com" not in str(result)
 
 
+def test_shallow_summary_safe_for_geojson_geometry() -> None:
+    """NEW (session 45) -- dedicated regression test for the new
+    reliance this project places on _shallow_summary(): capturing a
+    type-only structure summary of an ENTIRE map bundle (session 45's
+    diagnostics.py change) rests on this function never leaking actual
+    coordinate values for realistic GeoJSON-shaped geometry, not just
+    the simple flat dicts the pre-existing leak test covers. A floor
+    plan's actual coordinates are exactly the kind of thing this
+    project has repeatedly said is more personal than most other data
+    it captures -- this test exists so that property is verified
+    directly against a realistic shape, not just assumed to generalize
+    from the simpler existing test."""
+    from roombapy_prime.diagnostics import _shallow_summary
+
+    realistic_room_with_geometry = {
+        "room_id": "abc123",
+        "name": "Living Room",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[3.14159, 2.71828], [1.41421, 1.73205], [2.23606, 1.61803]]],
+        },
+    }
+
+    result = _shallow_summary(realistic_room_with_geometry)
+    result_str = str(result)
+
+    for coordinate in ("3.14159", "2.71828", "1.41421", "1.73205", "2.23606", "1.61803"):
+        assert coordinate not in result_str
+    # field names themselves are fine to show -- only their VALUES must never appear
+    assert "geometry" in result_str
+
+
 # =========================================================================
 # Raw capture + redaction for --dump-config (session 24)
 # =========================================================================

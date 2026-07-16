@@ -6,22 +6,19 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.8-alpha.** Runs, is tested (287+ unit tests), builds
-> and installs cleanly. **Run twice against one real Prime/V4 account.**
-> First run: login, MQTT connection, and most REST reads confirmed
-> working; a reversible write (creating/deleting a favorite) also
-> confirmed working. Second run additionally tried mission commands for
-> the first time — and found the original approach (`send_mission_command()`,
-> via the device shadow) doesn't work at all: every attempt timed out
-> with zero response. The actual transport turned out to be a
-> completely different MQTT topic, now implemented as
-> `send_simple_command()` — corroborated both by this library's own
-> native disassembly and independently by a third-party project that
-> reports it working, but **not yet live-tested by this library
-> itself**. Map editing is also still unverified against a live device,
-> and only one robot model has been tested so far. See
-> [Confidence & known gaps](#confidence--known-gaps) before relying on
-> any of it, especially anything that sends a command to your robot.
+> **Status: v0.1.9-alpha.** Runs, is tested (292+ unit tests), builds
+> and installs cleanly. **Mission control is confirmed working** —
+> `send_simple_command()` (`start`/`stop`/`pause`/`resume`/`dock`) was
+> live-tested against a real robot and every single command was
+> watched and confirmed by a real user, not just "no error was
+> raised." This resolves the biggest open question this library has
+> had since the project began. Also confirmed live: login, MQTT
+> connection, the large majority of REST reads, and a reversible write
+> (creating/deleting a favorite). Map editing (renaming rooms, etc.)
+> remains unverified against a live device, and only one robot model
+> has been tested so far. See
+> [Confidence & known gaps](#confidence--known-gaps) for the full,
+> honest breakdown before relying on any of it.
 
 ## Features
 
@@ -82,8 +79,8 @@ favorites = await robot.get_favorites()
 history = await robot.get_mission_history(robot.blid, max_reports=10)
 maps = await robot.get_active_map_versions()
 
-# Sends a real command to the robot — see the status warning above
-# and the confidence table below before trying this against a real device.
+# Sends a real command to the robot — confirmed working live (see the
+# status note above), but it still moves your actual robot.
 await robot.send_simple_command("start")  # or "stop"/"pause"/"resume"/"dock"
 ```
 
@@ -112,8 +109,8 @@ confirms it.
 | MQTT/shadow connection | High | Live-tested against a real Prime account (and previously against Classic devices) |
 | Reading state/favorites/mission history | High (format), partially live-tested | Field names and types confirmed directly from decompiled source/bytecode; several read endpoints (state, favorites, mission history, active map versions, household listing) confirmed live against a real account |
 | AWS SigV4 signing | High (algorithm), unverified (applied to this API) | Byte-identical to a separate, production-tested implementation |
-| Sending mission commands (`send_simple_command()`) | Medium-high (transport), unverified (live) | The device-shadow approach (`send_mission_command()`) was live-tested and confirmed **not working** — every attempt timed out with zero response. The actual transport (a dedicated, non-shadow MQTT topic) is corroborated two independent ways: this library's own native disassembly of the APK, and separately a third-party, unaffiliated project reporting this exact path working against a real device. Strong circumstantial evidence, but not yet confirmed by this library's own live test. |
-| Sending mission commands, region-based (`send_mission_command()`) | Low | Kept only for this use case; the simple payload has no known way to express regions/zones. Confirmed **not working** for basic commands (see above) — unconfirmed either way for the region-based case, since no source (including the third-party corroboration above) has verified it |
+| Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
+| Sending mission commands, region-based (`send_mission_command()`) | Low | Kept only for this use case; the simple payload has no known way to express regions/zones. Confirmed **not working** for basic commands (see above, now superseded by `send_simple_command()`) — unconfirmed either way for the region-based case, since no source has verified it |
 | `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Whether this structure actually appears in `get_state()`'s response is unresolved — the one real capture available shows unrelated top-level keys entirely |
 | Map editing | Medium (structure), unverified (practice) | Confirmed from source, never sent to a real server. No independent corroboration for the envelope format exists anywhere, unlike mission commands -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
 | Deeply nested response fields (map bundle internals) | Low-medium | Modeled where it was cheap to; raw JSON is always available as a fallback where it wasn't. Mission history's 20 timeline sub-event types are now fully typed (`MissionTimelineEvent`), no longer in this category. |
@@ -146,7 +143,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-287+ tests, all passing — structural checks against decompiled source,
+292+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to

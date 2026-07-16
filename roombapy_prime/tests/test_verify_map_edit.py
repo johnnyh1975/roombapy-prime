@@ -68,3 +68,74 @@ def test_test_suffix_is_clearly_identifiable() -> None:
     the marker that makes the temporary test name recognizable to a
     person looking at their real app."""
     assert "roombapy-prime-test" in _TEST_SUFFIX
+
+
+# =========================================================================
+# _room_names_from_bundle() (session 44)
+# =========================================================================
+
+
+def test_room_names_from_bundle_extracts_non_geometry_fields() -> None:
+    from roombapy_prime.verify_map_edit import _room_names_from_bundle
+
+    parsed_bundle = {
+        "rooms": [
+            {"room_id": "r1", "name": "Kitchen", "geometry": {"type": "Polygon", "coordinates": [[[0, 0]]]}},
+            {"room_id": "r2", "name": "Bedroom", "simplified_geometry": {"huge": "data"}},
+        ],
+        "borders": [{"geometry": "should never be reached anyway"}],
+    }
+
+    result = _room_names_from_bundle(parsed_bundle)
+
+    assert result == [{"room_id": "r1", "name": "Kitchen"}, {"room_id": "r2", "name": "Bedroom"}]
+
+
+def test_room_names_from_bundle_never_leaks_geometry_keys() -> None:
+    """Regression test against this function's core privacy property
+    (see its docstring): a floor plan is more personal than most other
+    data this project captures -- geometry/polygon/coordinate fields
+    must never appear in the result, under any key-name casing."""
+    from roombapy_prime.verify_map_edit import _room_names_from_bundle
+
+    parsed_bundle = {
+        "rooms": [
+            {
+                "room_id": "r1",
+                "name": "Living Room",
+                "Geometry": "x",
+                "POLYGON": "y",
+                "Coordinates": "z",
+                "poly": "w",
+                "simplifiedGeometry": "v",
+            }
+        ]
+    }
+
+    result = _room_names_from_bundle(parsed_bundle)
+
+    assert result == [{"room_id": "r1", "name": "Living Room"}]
+    for entry in result:
+        for key in entry:
+            assert "geo" not in key.lower()
+            assert "poly" not in key.lower()
+            assert "coord" not in key.lower()
+
+
+def test_room_names_from_bundle_returns_empty_when_no_rooms_file() -> None:
+    from roombapy_prime.verify_map_edit import _room_names_from_bundle
+
+    assert _room_names_from_bundle({"borders": [], "hazard": []}) == []
+    assert _room_names_from_bundle({}) == []
+
+
+def test_room_names_from_bundle_defensive_against_malformed_entries() -> None:
+    """A rooms file entry that isn't a dict (unexpected shape) must be
+    skipped, not crash the whole investigation."""
+    from roombapy_prime.verify_map_edit import _room_names_from_bundle
+
+    parsed_bundle = {"rooms": ["not-a-dict", {"room_id": "r1", "name": "Office"}, None]}
+
+    result = _room_names_from_bundle(parsed_bundle)
+
+    assert result == [{"room_id": "r1", "name": "Office"}]

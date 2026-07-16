@@ -448,6 +448,20 @@ async def run(
                             # personal than most other data captured here.
                             if raw_capture is not None:
                                 raw_capture["Map bundle (filenames only)"] = sorted(parsed.keys())
+                                # NEW (session 45): ALSO capture a type-only structure
+                                # summary of every file via _shallow_summary() -- this is
+                                # safe (never reveals actual values, incl. geometry
+                                # coordinates, only field names/types/list lengths, same
+                                # privacy guarantee as everywhere else _shallow_summary()
+                                # is used in this file) and is the only way to confirm the
+                                # wire format of ANY of the 12 map-bundle read models in
+                                # models.py (RoomInfo, BorderInfo, TrajectoryInfo,
+                                # CoverageInfo, DockInfo, HazardInfo, and 6 more) --
+                                # NONE of them have a from_json() yet, precisely because
+                                # none of them have ever been checked against real data.
+                                raw_capture["Map bundle structure (types only, never values)"] = {
+                                    filename: _shallow_summary(content) for filename, content in parsed.items()
+                                }
                         except Exception as exc:  # noqa: BLE001
                             report.add("Unpacking map bundle", "FAILED", f"{type(exc).__name__}: {exc}")
                 else:
