@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.9-alpha.** Runs, is tested (292+ unit tests), builds
+> **Status: v0.1.9-alpha.** Runs, is tested (332+ unit tests), builds
 > and installs cleanly. **Mission control is confirmed working** —
 > `send_simple_command()` (`start`/`stop`/`pause`/`resume`/`dock`) was
 > live-tested against a real robot and every single command was
@@ -14,9 +14,10 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 > raised." This resolves the biggest open question this library has
 > had since the project began. Also confirmed live: login, MQTT
 > connection, the large majority of REST reads, and a reversible write
-> (creating/deleting a favorite). Map editing (renaming rooms, etc.)
+> (creating/deleting a favorite) -- now across two independent
+> accounts, not just one. Map editing (renaming rooms, etc.)
 > remains unverified against a live device, and only one robot model
-> has been tested so far. See
+> (the same SKU on both accounts tested) has been confirmed so far. See
 > [Confidence & known gaps](#confidence--known-gaps) for the full,
 > honest breakdown before relying on any of it.
 
@@ -110,16 +111,17 @@ confirms it.
 | Reading state/favorites/mission history | High (format), partially live-tested | Field names and types confirmed directly from decompiled source/bytecode; several read endpoints (state, favorites, mission history, active map versions, household listing) confirmed live against a real account |
 | AWS SigV4 signing | High (algorithm), unverified (applied to this API) | Byte-identical to a separate, production-tested implementation |
 | Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
-| Sending mission commands, region-based (`send_mission_command()`) | Low | Kept only for this use case; the simple payload has no known way to express regions/zones. Confirmed **not working** for basic commands (see above, now superseded by `send_simple_command()`) — unconfirmed either way for the region-based case, since no source has verified it |
-| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Whether this structure actually appears in `get_state()`'s response is unresolved — the one real capture available shows unrelated top-level keys entirely |
-| Map editing | Medium (structure), unverified (practice) | Confirmed from source, never sent to a real server. No independent corroboration for the envelope format exists anywhere, unlike mission commands -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
-| Deeply nested response fields (map bundle internals) | Low-medium | Modeled where it was cheap to; raw JSON is always available as a fallback where it wasn't. Mission history's 20 timeline sub-event types are now fully typed (`MissionTimelineEvent`), no longer in this category. |
+| Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is a new, reasoned-but-unconfirmed hypothesis (see its docstring) — favor a `favorite_id`-referencing command over hand-built regions if experimenting with it |
+| Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. HTTP methods separately confirmed. Never sent to a real server. |
+| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Whether this structure actually appears in `get_state()`'s response is unresolved — two independent real captures (two different accounts, same idle-robot state) both show unrelated top-level keys entirely, strengthening but not resolving the open question |
+| Map editing | **High (envelope + 8/9 commands' fields), unverified (practice)** | The request envelope (`{"edit_cmd": ..., "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (several were wrong camelCase guesses, now corrected). `SetRoomMetadata`/`VirtualWall`'s internal discriminator use hand-written custom serializers and remain unconfirmed. Never sent to a real server -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
+| Deeply nested response fields (map bundle internals) | **High (fields), unverified (envelope details)** | All 12 map-bundle content types (rooms, borders, hazards, trajectories, etc.) now have confirmed wire formats via bytecode (`RoomFeature` and 10 others) — each is a standard GeoJSON Feature with nested `properties`. Still open: the bundle's own manifest filename, and whether per-type files use a bare list or a `FeatureCollection` wrapper. Mission history's 20 timeline sub-event types are also fully typed (`MissionTimelineEvent`). |
 
 **Known unresolved gaps:**
-- Whether the exact JSON envelope for map-edit commands matches the server's expectations (the field names are confirmed; the wrapping shape around them is inferred by analogy)
+- The discriminator value inside a map-edit command's `"edit_cmd"` envelope (the envelope shape itself and 8/9 commands' own field names are now bytecode-confirmed — only which `"type"` string selects each command, and `SetRoomMetadata`/`VirtualWall`'s custom-serializer internals, remain unconfirmed)
 - Whether `RobotStatusV2` (see table above) actually appears in `get_state()`'s response at all, and if so, where
 - Multi-robot household / teaming concepts, beyond basic settings scoping
-- Exact file naming inside downloaded map bundles
+- The map bundle manifest's own filename within the archive (every OTHER content type's filename is now confirmed via the manifest itself)
 
 Full details, including what was tried and why some things remain
 unconfirmed, are in
@@ -143,7 +145,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-292+ tests, all passing — structural checks against decompiled source,
+332+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to

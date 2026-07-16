@@ -431,7 +431,13 @@ async def run(
                     "no active_p2mapv_id found in get_active_map_versions()'s response",
                 )
             if isinstance(geojson_link, dict):
-                url = next((v for v in geojson_link.values() if isinstance(v, str) and v.startswith("http")), None)
+                # CORRECTED (session 48): "map_url" is now confirmed via
+                # P2MapURL$$serializer -- tried first, falling back to the old
+                # any-http-looking-value heuristic in case a real response ever
+                # doesn't match (belt and suspenders, cheap to keep both).
+                url = geojson_link.get("map_url") or next(
+                    (v for v in geojson_link.values() if isinstance(v, str) and v.startswith("http")), None
+                )
                 if url:
                     bundle = await _try(report, "Downloading map bundle (download_map_bundle)", _fetch_bundle(robot, url))
                     if bundle is not None:
@@ -453,12 +459,13 @@ async def run(
                                 # safe (never reveals actual values, incl. geometry
                                 # coordinates, only field names/types/list lengths, same
                                 # privacy guarantee as everywhere else _shallow_summary()
-                                # is used in this file) and is the only way to confirm the
-                                # wire format of ANY of the 12 map-bundle read models in
-                                # models.py (RoomInfo, BorderInfo, TrajectoryInfo,
-                                # CoverageInfo, DockInfo, HazardInfo, and 6 more) --
-                                # NONE of them have a from_json() yet, precisely because
-                                # none of them have ever been checked against real data.
+                                # is used in this file). UPDATE (session 47): the map-bundle
+                                # read models this was written to help confirm (RoomInfo,
+                                # BorderInfo, etc.) have since been resolved via bytecode
+                                # (see models/map_bundle.py's RoomFeature and neighbors) -- this capture
+                                # remains useful as a cross-check against real bundle data,
+                                # and for the still-unconfirmed manifest filename/
+                                # FeatureCollection-vs-bare-list wrapping question.
                                 raw_capture["Map bundle structure (types only, never values)"] = {
                                     filename: _shallow_summary(content) for filename, content in parsed.items()
                                 }
@@ -641,6 +648,10 @@ async def _round_trip_favorite_test(robot: Any, report: Report) -> None:
 
     created_id = None
     if isinstance(created, dict):
+        # CORRECTED (session 48): "favorite_id" is now confirmed via
+        # FavoriteIdResponse$$serializer's <clinit> -- not just the first of
+        # several guessed fallback candidates anymore, though the fallbacks are
+        # kept for defensiveness against an unexpected real response shape.
         created_id = created.get("favorite_id") or created.get("favoriteId") or created.get("id")
 
     if not created_id:
@@ -705,6 +716,21 @@ def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
         "sessiontoken",
         "email",
         "username",
+        # NEW (session 54, security hardening pass): these credential
+        # field names exist elsewhere in this codebase
+        # (ConnectionToken.iot_token/iot_signature,
+        # RobotLoginEntry.user_cert/password, CloudCredentials
+        # .cognito_id) but were never added here -- no CURRENT
+        # raw_capture call site actually captures a ConnectionToken/
+        # RobotLoginEntry/CloudCredentials object, so this was a latent
+        # gap rather than an active leak, but this function's whole
+        # purpose is to be a general-purpose safety net for whatever
+        # gets captured, not just the specific fields anyone happened
+        # to test against. Added for defense in depth.
+        "iot_token",
+        "iot_signature",
+        "user_cert",
+        "cognitoid",
     }
     if isinstance(data, dict):
         result = {}

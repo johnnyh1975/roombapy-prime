@@ -48,15 +48,21 @@ from .auth import LoginResult
 from .mqtt_client import PrimeMqttClient, ShadowResponse
 from .rest_client import PrimeRestClient
 from .models import (
+    DNDStatusResponse,
     FavoriteV1,
     HouseholdSchedule,
     LiveMapStreamInit,
     MapEditCommand,
     MapEditCommandV1,
     MapUpdateMessage,
+    P2MapData,
     PositionUpdateMessage,
+    RobotPartsInfo,
+    RobotSerialInfo,
     RoutineCommand,
+    RoutinesDefaultsResponse,
     ScheduleOptions,
+    SchedulesResponse,
     parse_livemap_message_data,
 )
 
@@ -211,7 +217,7 @@ class PrimeRobot:
 
         Response shape NOW fully confirmed (session 32, real live
         response): for a typed result, apply
-        models.py::RobotSettings.from_json() to
+        models/robot_info.py::RobotSettings.from_json() to
         response.payload["state"]["reported"] (same nesting as
         get_state()). Covers things like child lock, volume, timezone,
         pad wash settings, language list, auto-evac frequency --
@@ -301,6 +307,52 @@ class PrimeRobot:
             )
         await asyncio.to_thread(self._mqtt.publish_cmd, self._irbt_topic_prefix, command, initiator)
 
+    async def send_routine_command_via_cmd_topic(self, command: RoutineCommand) -> None:
+        """EXPERIMENTAL, UNCONFIRMED (session 46) -- a well-reasoned
+        hypothesis for the region-aware case send_simple_command()
+        explicitly can't cover, NOT a confirmed working path. Read
+        this whole docstring before using it against a real device.
+
+        THE HYPOTHESIS: send_simple_command()'s confirmed-working
+        payload ({"command": str, "time": int, "initiator": str}) and
+        RoutineCommand.to_json()'s own, independently-confirmed field
+        mapping (see models/mission_control.py's RoutineCommand docstring, confirmed
+        via @SerialName annotations in the decompiled source) share
+        TWO exact key names: "command" (from RoutineCommand.type) and
+        "initiator" (RoutineCommand's own confirmed field). This is
+        not likely to be coincidence -- it suggests cmd_topic() may
+        accept RoutineCommand's fuller structure (region_id/params/
+        p2map_id/favorite_id and the rest), with "time" added on top,
+        rather than being a fundamentally different, unrelated schema
+        that happens to share two names.
+
+        WHAT THIS METHOD DOES: publishes `command.to_json()` merged
+        with a "time" field to cmd_topic(), via
+        mqtt_client.py's publish_cmd_payload(). Nothing more.
+
+        WHY THIS HAS NOT BEEN LIVE-TESTED: unlike the original
+        transport question (where a wrong guess just produced silence,
+        confirmed safe), a wrong guess HERE could mean a real device
+        accepts a malformed but plausible-looking command and behaves
+        unpredictably -- not zero risk, unlike the topic-discovery
+        problem this hypothesis descends from. If experimenting with
+        this, favor a `favorite_id`-based RoutineCommand (referencing
+        an existing, already-defined favorite/routine the person set
+        up themselves in the real app) over hand-built `regions` --
+        that way the actual room/zone definitions come from something
+        already confirmed correct by the app itself, not from this
+        library's own unconfirmed region-construction logic.
+
+        Same requirements/behavior as send_simple_command(): needs
+        irbt_topic_prefix, fire-and-forget (no response wait, see
+        publish_cmd()'s docstring for why)."""
+        if self._irbt_topic_prefix is None:
+            raise RuntimeError(
+                "send_routine_command_via_cmd_topic() needs irbt_topic_prefix (from LoginResult) "
+                "-- missing here, so the correct topic can't be built."
+            )
+        await asyncio.to_thread(self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, command.to_json())
+
     # --- REST-based p2maps operations (already natively async) -------
 
     async def get_active_map_versions(self) -> list[dict]:
@@ -309,7 +361,9 @@ class PrimeRobot:
         existed for a while."""
         return await self._rest.get_active_map_versions(self.blid)
 
-    async def get_map_metadata(self, p2map_id: str) -> dict:
+    async def get_map_metadata(self, p2map_id: str) -> P2MapData:
+        """UPDATED (session 51) -- now returns a parsed P2MapData, see
+        rest_client.py::get_map_metadata()'s docstring."""
         return await self._rest.get_map_metadata(p2map_id)
 
     async def set_map_name(self, p2map_id: str, name: str) -> dict:
@@ -340,7 +394,7 @@ class PrimeRobot:
 
     async def edit_map(self, p2map_id: str, command: MapEditCommandV1) -> dict:
         """NEW (July 11, fourth session) -- command is now one of the
-        9 V1 command dataclasses from models.py (RenameRoomV1,
+        9 V1 command dataclasses from models/map_editing.py (RenameRoomV1,
         SplitRoomV1, MergeRoomsV1, ...) -- the actually active path
         (see rest_client.py's docstring, PRIME_APP_GAP_ANALYSIS). For
         the unused V2 path see edit_map_v2()."""
@@ -417,7 +471,10 @@ class PrimeRobot:
             supported_done_codes=supported_done_codes,
         )
 
-    async def get_schedules(self, household_id: str) -> dict:
+    async def get_schedules(self, household_id: str) -> SchedulesResponse:
+        """UPDATED (session 51) -- now returns a parsed
+        SchedulesResponse, see rest_client.py::get_schedules()'s
+        docstring."""
         return await self._rest.get_schedules(household_id)
 
     async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict:
@@ -439,7 +496,9 @@ class PrimeRobot:
         rest_client.py::get_user_households()'s docstring."""
         return await self._rest.get_user_households()
 
-    async def get_dnd_settings(self, household_id: str) -> dict:
+    async def get_dnd_settings(self, household_id: str) -> DNDStatusResponse:
+        """UPDATED (session 53) -- now returns a parsed
+        DNDStatusResponse, see rest_client.py's docstring."""
         return await self._rest.get_dnd_settings(household_id)
 
     async def set_dnd_settings(self, household_id: str, settings: dict) -> dict:
@@ -450,19 +509,23 @@ class PrimeRobot:
         optional, matching the real query construction (session 38)."""
         return await self._rest.get_cleaning_profiles(asset_id, p2map_id)
 
-    async def get_default_routines(self, p2map_id: str) -> dict:
+    async def get_default_routines(self, p2map_id: str) -> RoutinesDefaultsResponse:
+        """UPDATED (session 53) -- now returns a parsed
+        RoutinesDefaultsResponse, see rest_client.py's docstring."""
         return await self._rest.get_default_routines(p2map_id)
 
-    async def get_robot_parts(self) -> dict:
-        """NEW (session 15) -- see rest_client.py::get_robot_parts()."""
+    async def get_robot_parts(self) -> RobotPartsInfo:
+        """NEW (session 15) -- see rest_client.py::get_robot_parts().
+        UPDATED (session 53) -- now returns a parsed RobotPartsInfo."""
         return await self._rest.get_robot_parts(self.blid)
 
     async def reset_robot_parts(self) -> dict:
         """NEW (session 15) -- see rest_client.py::reset_robot_parts()."""
         return await self._rest.reset_robot_parts(self.blid)
 
-    async def get_serial_number_data(self) -> dict:
-        """NEW (session 15) -- see rest_client.py::get_serial_number_data()."""
+    async def get_serial_number_data(self) -> RobotSerialInfo:
+        """NEW (session 15) -- see rest_client.py::get_serial_number_data().
+        UPDATED (session 53) -- now returns a parsed RobotSerialInfo."""
         return await self._rest.get_serial_number_data(self.blid)
 
     async def poll_echo_value(self) -> dict:

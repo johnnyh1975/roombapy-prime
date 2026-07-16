@@ -38,19 +38,50 @@ import aiohttp
 from .auth import CloudCredentials, LoginResult
 from .aws_sigv4 import AwsSigV4Signer
 from .models import (
+    DNDStatusResponse,
     FavoriteV1,
     HouseholdSchedule,
     LiveMapStreamInit,
     MapEditCommand,
     MapEditCommandV1,
     MissionCommandType,
+    P2MapData,
+    RobotPartsInfo,
+    RobotSerialInfo,
     RoutineCommand,
+    RoutinesDefaultsResponse,
     ScheduleOptions,
+    SchedulesResponse,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 Relogin = Callable[[], Awaitable[LoginResult]]
+
+
+def _path_segment(value: str) -> str:
+    """NEW (session 54, security hardening pass). Every identifier this
+    library embeds into a URL path (BLIDs, p2map IDs, favorite IDs,
+    household IDs, etc.) was previously interpolated directly via an
+    f-string, with no escaping at all. In this library's own normal
+    usage these values typically come from a trusted source (this
+    library's own login/API responses, or values a developer passes
+    directly) -- but this library provides no protection at all if a
+    consuming application (e.g. a Home Assistant integration built on
+    top of this, which is an explicit goal for this project) ever lets
+    a corrupted config value or, in principle, untrusted input reach
+    one of these parameters. A value like `"../whatever"` or one
+    containing a literal `/` could redirect the request to an
+    unintended path on the same host.
+
+    `urllib.parse.quote(value, safe="")` is a no-op for any
+    legitimate identifier this API actually uses (BLIDs, UUIDs, and
+    similar are alphanumeric/hyphen strings, unaffected by
+    URL-encoding) -- this is purely additive safety, not a behavior
+    change for any well-formed input. Applied at every URL
+    construction site in this file that embeds a caller-supplied
+    identifier."""
+    return urllib.parse.quote(str(value), safe="")
 
 
 class RestError(Exception):
@@ -90,12 +121,16 @@ class PrimeRestClient:
         self._credentials = credentials
         self._relogin = relogin
 
-    async def get_map_metadata(self, p2map_id: str) -> dict[str, Any]:
-        """GET /v1/p2maps/{p2mapId}. Response shape not modeled yet
-        (P2MapMetadata's real fields weren't captured in the analysis
-        session) -- returns the raw parsed JSON for now."""
-        url = f"{self._http_base_auth}/v1/p2maps/{p2map_id}"
-        return await self._request("GET", url)
+    async def get_map_metadata(self, p2map_id: str) -> P2MapData:
+        """GET /v1/p2maps/{p2mapId}. CORRECTED (session 51): response
+        shape is now confirmed via P2MapData$$serializer -- p2map_id,
+        active_p2mapv_id, create_time, last_p2mapv_ts, state, visible,
+        name, user_orientation_rad. Previously returned raw JSON
+        ("response shape not modeled yet") -- now parsed into
+        P2MapData directly."""
+        url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(p2map_id)}"
+        data = await self._request("GET", url)
+        return P2MapData.from_json(data)
 
     async def get_active_map_versions(self, blid: str) -> list[dict[str, Any]]:
         """GET /v1/p2maps?robotId={blid}&visible=true -- NEW (July 11),
@@ -111,7 +146,7 @@ class PrimeRestClient:
         `active_p2mapv_id` (that's the map version ID),
         `last_p2mapv_ts`, `state`, `visible`, `name`, `rooms_metadata`.
         Still passed through here as raw JSON -- for a typed result
-        use models.py::parse_active_map_versions() (NEW, session 26,
+        use models/robot_info.py::parse_active_map_versions() (NEW, session 26,
         includes room metadata with reusable CommandParams presets per
         operating mode)."""
         url = f"{self._http_base_auth}/v1/p2maps"
@@ -139,10 +174,18 @@ class PrimeRestClient:
         would need a parametrizable Accept header, which aws_sigv4.py
         doesn't currently offer.
 
-        Response shape (which JSON key carries the actual URL) remains
-        UNCONFIRMED -- no dedicated response class found in the source
-        code, only the request itself. Raw JSON passed through."""
-        url = f"{self._http_base_auth}/v1/p2maps/{map_id}/versions/{map_version}/geojson"
+        CORRECTED (session 48): the response shape (which JSON key
+        carries the actual URL) is now confirmed via
+        P2MapURL$$serializer's <clinit> -- the key is `map_url`.
+        Previously marked entirely unconfirmed ("no dedicated response
+        class found") -- that class does exist
+        (com.irobot.irobotdata.maps.internal.p2maps.editing.common.
+        responses.P2MapURL), it just wasn't found in the earlier
+        source-code search. Still returned as raw JSON here (not worth
+        a dedicated dataclass for a single field), but callers can now
+        reliably do `result["map_url"]` instead of guessing among
+        candidate keys."""
+        url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(map_id)}/versions/{_path_segment(map_version)}/geojson"
         return await self._request("GET", url, query={"response_type": "link"})
 
     async def download_map_bundle(self, url: str) -> bytes:
@@ -159,7 +202,7 @@ class PrimeRestClient:
         corrupt the signature the server expects.
 
         Returns the raw bytes (tar.gz archive) -- for unpacking and
-        parsing see models.py::parse_map_bundle(). Separate from
+        parsing see models/map_bundle.py::parse_map_bundle(). Separate from
         _request(), since this URL doesn't live under
         self._http_base_auth (typically an S3 bucket or similar CDN
         host) and therefore shouldn't go through this class's SigV4
@@ -175,8 +218,16 @@ class PrimeRestClient:
             return await resp.read()
 
     async def set_map_name(self, p2map_id: str, name: str) -> dict[str, Any]:
-        """POST /v1/p2maps/{p2mapId}/settings, body {"type": name}."""
-        return await self._post_settings(p2map_id, {"type": name})
+        """POST /v1/p2maps/{p2mapId}/settings, body {"name": ...}.
+
+        CORRECTED (session 51): confirmed directly via
+        EditMapSettingsRequest$Command$SetName$$serializer's
+        <clinit> -- real field name is `name`, NOT `type` as
+        previously implemented. This was a genuine bug: sending
+        `{"type": name}` would very likely have been silently ignored
+        or rejected by the real server, not just an unconfirmed
+        guess that happened to work."""
+        return await self._post_settings(p2map_id, {"name": name})
 
     async def set_map_orientation(self, p2map_id: str, orientation_rad: float) -> dict[str, Any]:
         """POST /v1/p2maps/{p2mapId}/settings, body {"user_orientation_rad": ...}.
@@ -200,14 +251,16 @@ class PrimeRestClient:
             POST /v1/p2maps/{p2mapId}/settings?trigger_fast_updates=true
             Body: {"visible": false}
 
-        Field name "visible" found without a @SerialName in the
-        original -- presumably serializes directly under the property
-        name, not guessed but also not additionally secured by an
-        explicit annotation like the other fields."""
+        Field name "visible" -- CONFIRMED (session 50, re-verification
+        pass) directly via DeleteMapRequest$Body$$serializer's
+        <clinit>: this is the class's only field, confirmed the same
+        way as the rest of this project's `$$serializer` findings, not
+        merely "found without a @SerialName, presumably" as this
+        docstring said before that specific check."""
         return await self._post_settings(p2map_id, {"visible": False})
 
     async def _post_settings(self, p2map_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self._http_base_auth}/v1/p2maps/{p2map_id}/settings"
+        url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(p2map_id)}/settings"
         return await self._request("POST", url, query={"trigger_fast_updates": "true"}, body=body)
 
     async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict[str, Any]:
@@ -223,23 +276,34 @@ class PrimeRestClient:
 
         Response shape (the updated P2PersistentMap, per the Kotlin
         repository interfaces) not modeled -- raw JSON."""
-        url = f"{self._http_base_auth}/v2/p2maps/{p2map_id}/versions"
+        url = f"{self._http_base_auth}/v2/p2maps/{_path_segment(p2map_id)}/versions"
         return await self._request("POST", url, body=command.to_command_body())
 
     async def edit_map(self, p2map_id: str, command: MapEditCommandV1) -> dict[str, Any]:
         """POST /v1/p2maps/{p2mapId}/versions -- NEW (July 11, fourth
-        session), the ACTUALLY ACTIVE edit path (see models.py's V1
+        session), the ACTUALLY ACTIVE edit path (see models/map_editing.py's V1
         section and PRIME_APP_GAP_ANALYSIS): every single edit
         operation in the app code calls requestEditV1(), never
         requestEditV2(). Replaces the previous default assumption
         (edit_map() = V2) -- the old path is now separately available
         under edit_map_v2(), with a warning that it's unused code.
 
-        Response shape not modeled -- raw JSON. The exact envelope
-        format of the command itself is an analogy assumption, see
-        MapEditCommandV1's module docstring in models.py."""
-        url = f"{self._http_base_auth}/v1/p2maps/{p2map_id}/versions"
-        return await self._request("POST", url, body=command.to_v1_command_body())
+        CORRECTED (session 48): the request body envelope is now
+        confirmed via EditMapV1Request$Body$$serializer --
+        {"edit_cmd": {...the command's own fields...}, "response_type":
+        "..."}, not the previously-assumed flat structure. See
+        MapEditCommandV1's module docstring in models/map_editing.py for the full
+        story, including which parts remain unconfirmed (the
+        discriminator inside "edit_cmd", and SetRoomMetadata/
+        VirtualWall's own custom serializers). `response_type`'s
+        correct value for an EDIT (as opposed to the already-confirmed
+        "link"/"binary" values for FETCHING a map) is not confirmed --
+        left as a simple default here, honestly not verified.
+
+        Response shape not modeled -- raw JSON."""
+        url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(p2map_id)}/versions"
+        body = {"edit_cmd": command.to_v1_command_body(), "response_type": "link"}
+        return await self._request("POST", url, body=body)
 
     async def get_live_map_stream(self, blid: str) -> LiveMapStreamInit:
         """GET /v1/p2maps/livemap?robotId={blid} -> the MQTT topic to
@@ -252,7 +316,7 @@ class PrimeRestClient:
     # --- Favorites (FavoriteV1) -------------------------------------------
     #
     # NEW (July 11, fourth session). Base URL and app_edition query param
-    # confirmed from FavoriteCommonRequest.java, see models.py's
+    # confirmed from FavoriteCommonRequest.java, see models/favorites.py's
     # favorites section for the full derivation including which
     # HTTP methods are confirmed vs. assumed.
 
@@ -271,8 +335,12 @@ class PrimeRestClient:
         session: CreateFavoriteRequest.<init> sets httpMethod = "POST"
         directly, androguard bytecode inspection -- previously only
         assumed, since jadx had silently skipped the lambda class for
-        this). Response per the Kotlin interface is a FavoriteIdResponse
-        -- passed through here as raw JSON."""
+        this). Response is a FavoriteIdResponse -- CORRECTED (session
+        48): its one field's real key is confirmed via
+        FavoriteIdResponse$$serializer's <clinit> to be `favorite_id`,
+        not a guessed/heuristically-detected key. Passed through here
+        as raw JSON (not worth a dedicated dataclass for one field),
+        but callers can now reliably do `result["favorite_id"]`."""
         url = f"{self._http_base_auth}/v1/user/favorites"
         return await self._request(
             "POST", url, query=self._FAVORITES_QUERY, body=favorite.to_json()
@@ -282,7 +350,7 @@ class PrimeRestClient:
         """PUT /v1/user/favorites/{favoriteId}?app_edition=1 --
         CONFIRMED (eighth session: UpdateFavoriteRequest.<init> sets
         httpMethod = "PUT" directly -- previously only assumed)."""
-        url = f"{self._http_base_auth}/v1/user/favorites/{favorite_id}"
+        url = f"{self._http_base_auth}/v1/user/favorites/{_path_segment(favorite_id)}"
         return await self._request(
             "PUT", url, query=self._FAVORITES_QUERY, body=favorite.to_json()
         )
@@ -290,7 +358,7 @@ class PrimeRestClient:
     async def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
         """DELETE /v1/user/favorites/{favoriteId}?app_edition=1 --
         CONFIRMED (DeleteFavoriteRequest, httpMethod = "DELETE")."""
-        url = f"{self._http_base_auth}/v1/user/favorites/{favorite_id}"
+        url = f"{self._http_base_auth}/v1/user/favorites/{_path_segment(favorite_id)}"
         return await self._request("DELETE", url, query=self._FAVORITES_QUERY)
 
     async def order_favorite(
@@ -311,7 +379,7 @@ class PrimeRestClient:
         httpBody found for this request. Presumably exactly one of the
         three is expected -- which combination(s) the server actually
         accepts is not confirmed."""
-        url = f"{self._http_base_auth}/v1/user/favorites/{favorite_id}/order"
+        url = f"{self._http_base_auth}/v1/user/favorites/{_path_segment(favorite_id)}/order"
         query = dict(self._FAVORITES_QUERY)
         if insert_at is not None:
             query["insert_at"] = str(insert_at)
@@ -344,11 +412,11 @@ class PrimeRestClient:
         joined with commas -- confirmed from
         ProvisioningErrorConstants.LAST_ERROR_INTERNAL_LINE_DELIMITER =
         ","). Response shape NOW modeled (ninth session) --
-        models.py::parse_mission_history() converts this method's
+        models/mission_history.py::parse_mission_history() converts this method's
         result into a list of typed MissionHistoryEntry objects
         (analogous to parse_map_bundle() -- a separate, optional step
         rather than automatic conversion here)."""
-        url = f"{self._http_base_auth}/v1/{blid}/missionhistory"
+        url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/missionhistory"
         query: dict[str, str] = {}
         if max_reports is not None:
             query["maxReports"] = str(max_reports)
@@ -362,19 +430,24 @@ class PrimeRestClient:
             query["supportedDoneCodes"] = ",".join(supported_done_codes)
         return await self._request("GET", url, query=query)
 
-    async def get_schedules(self, household_id: str) -> dict[str, Any]:
+    async def get_schedules(self, household_id: str) -> SchedulesResponse:
         """GET /v1/households/{householdId}/settings/schedule -- NEW
         (July 11, sixth session). CONFIRMED from SchedulesCommonRequest/
         FetchSchedulesRequest (httpMethod = "GET", urlString without a
-        householdScheduleId suffix). Response shape (SchedulesList) not
-        modeled -- raw JSON."""
-        url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule"
-        return await self._request("GET", url)
+        householdScheduleId suffix). CORRECTED (session 51): the
+        response shape (SchedulesResponse -> household_schedules ->
+        SchedulesList) is now confirmed via SchedulesResponse$$serializer/
+        SchedulesList$$serializer -- previously the class names had
+        been found but not their fields, so this returned raw JSON.
+        Now parsed directly."""
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule"
+        data = await self._request("GET", url)
+        return SchedulesResponse.from_json(data)
 
     async def delete_schedule(self, household_id: str, household_schedule_id: str) -> dict[str, Any]:
         """DELETE /v1/households/{householdId}/settings/schedule/{id} --
         CONFIRMED from DeleteSchedulesRequest (httpMethod = "DELETE")."""
-        url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule/{household_schedule_id}"
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule/{_path_segment(household_schedule_id)}"
         return await self._request("DELETE", url)
 
     async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict[str, Any]:
@@ -382,8 +455,8 @@ class PrimeRestClient:
         CONFIRMED (eighth session: CreateSchedulesRequest.<init> sets
         httpMethod = "POST" directly, androguard bytecode inspection --
         previously only assumed). Field structure also confirmed, see
-        models.py::ScheduleOptions."""
-        url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule"
+        models/schedules_dnd.py::ScheduleOptions."""
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule"
         return await self._request("POST", url, body={"schedules": [s.to_json() for s in schedules]})
 
     async def update_schedules(
@@ -392,8 +465,8 @@ class PrimeRestClient:
         """PUT /v1/households/{householdId}/settings/schedule/{id} --
         CONFIRMED (eighth session: UpdateSchedulesRequest.<init> sets
         httpMethod = "PUT" directly -- previously only assumed). Field
-        structure confirmed, see models.py::HouseholdSchedule."""
-        url = f"{self._http_base_auth}/v1/households/{household_id}/settings/schedule/{household_schedule_id}"
+        structure confirmed, see models/schedules_dnd.py::HouseholdSchedule."""
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule/{_path_segment(household_schedule_id)}"
         return await self._request("PUT", url, body={"schedules": [s.to_json() for s in schedules]})
 
     async def get_user_households(self) -> dict[str, Any]:
@@ -410,26 +483,31 @@ class PrimeRestClient:
         Response shape confirmed: household_id, owner_cognito_id,
         household_name (observed: "#AUTO_GENERATED_HOUSEHOLD#"),
         has_precise_location, household_robots, household_users. For a
-        typed result use models.py::parse_user_households()."""
+        typed result use models/robot_info.py::parse_user_households()."""
         url = f"{self._http_base_auth}/v1/user/households"
         return await self._request("GET", url)
 
-    async def get_dnd_settings(self, household_id: str) -> dict[str, Any]:
+    async def get_dnd_settings(self, household_id: str) -> DNDStatusResponse:
         """GET /v1/households/{householdId}/settings/dnd -- NEW (July
         11, sixth session). CONFIRMED from DNDGetRequest (httpMethod
-        = "GET"). Response shape NOW modeled (ninth session) --
-        models.py::DNDStatusResponse.from_json(). IMPORTANT: see
+        = "GET"). Response shape confirmed (ninth session) --
+        models/schedules_dnd.py::DNDStatusResponse. IMPORTANT: see
         DNDStatusResponse's docstring for the distinction from the
-        separate DNDSchedule class family."""
-        url = f"{self._http_base_auth}/v1/households/{household_id}/settings/dnd"
-        return await self._request("GET", url)
+        separate DNDSchedule class family.
+
+        CORRECTED (session 53): actually parsed into DNDStatusResponse
+        now -- same architectural gap as get_robot_parts()/
+        get_serial_number_data(), see get_robot_parts()'s docstring."""
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/dnd"
+        data = await self._request("GET", url)
+        return DNDStatusResponse.from_json(data)
 
     async def set_dnd_settings(self, household_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         """PUT /v1/households/{householdId}/settings/dnd -- CONFIRMED
         from DNDPutRequest (httpMethod = "PUT"). Exact body format
         (time-window fields) not further investigated -- raw JSON
         passed through."""
-        url = f"{self._http_base_auth}/v1/households/{household_id}/settings/dnd"
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/dnd"
         return await self._request("PUT", url, body=settings)
 
     async def get_cleaning_profiles(self, asset_id: str, p2map_id: str | None = None) -> dict[str, Any]:
@@ -460,7 +538,7 @@ class PrimeRestClient:
         unconfirmed guess that turned out wrong; this one is a direct
         bytecode read, a much stronger basis, but still unconfirmed
         against a real server until re-tested. Response shape modeled
-        (ninth session) -- models.py::CleaningProfile.from_json() per
+        (ninth session) -- models/robot_info.py::CleaningProfile.from_json() per
         entry."""
         url = f"{self._http_base_auth}/v1/profiles"
         query = {"robotId": asset_id}
@@ -471,16 +549,23 @@ class PrimeRestClient:
             query["includeSmart"] = "false"
         return await self._request("GET", url, query=query)
 
-    async def get_default_routines(self, p2map_id: str) -> dict[str, Any]:
+    async def get_default_routines(self, p2map_id: str) -> RoutinesDefaultsResponse:
         """GET /v1/p2maps/{p2mapId}/routines/defaults -- NEW (July 11,
         sixth session). Automatically generated cleaning suggestions
         per map (e.g. "whole home", "kitchen only"). Response shape
-        NOW modeled (ninth session) --
-        models.py::parse_default_routines()."""
-        url = f"{self._http_base_auth}/v1/p2maps/{p2map_id}/routines/defaults"
-        return await self._request("GET", url)
+        confirmed (forty-ninth session) --
+        models/robot_info.py::RoutinesDefaultsResponse.
 
-    async def get_robot_parts(self, blid: str) -> dict[str, Any]:
+        CORRECTED (session 53): actually parsed into
+        RoutinesDefaultsResponse now (which also captures
+        routine_builder_defaults, previously not exposed here at all)
+        -- same architectural gap as get_robot_parts() and others, see
+        that method's docstring."""
+        url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(p2map_id)}/routines/defaults"
+        data = await self._request("GET", url)
+        return RoutinesDefaultsResponse.from_json(data)
+
+    async def get_robot_parts(self, blid: str) -> RobotPartsInfo:
         """GET /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
         from the actual APK configuration file
         (res/raw/base_roomba_config.json, commandId "GetRobotParts":
@@ -488,15 +573,20 @@ class PrimeRestClient:
         networkList=["awsApiGateway"]) -- a primary source, not
         bytecode interpretation.
 
-        Response shape NOW confirmed (session 27, real live response
-        from chairstacker): robot_id, num_parts, parts (list with
-        part_id, counter, minutes_remaining, count_type e.g.
+        Response shape confirmed (session 27, real live response from
+        chairstacker): robot_id, num_parts, parts (list with part_id,
+        counter, minutes_remaining, count_type e.g.
         "combo_missions"/"pad_washes_used"/"minutes"/"evacs",
-        count_remaining, count_used, counter_category, reset_by). Raw
-        JSON passed through here -- for a typed result use
-        models.py::RobotPartsInfo.from_json()."""
-        url = f"{self._http_base_auth}/v1/robots/{blid}/parts"
-        return await self._request("GET", url)
+        count_remaining, count_used, counter_category, reset_by).
+
+        CORRECTED (session 53): actually parsed into RobotPartsInfo
+        now, rather than returning raw JSON with a docstring pointing
+        at a parser that was never called -- a genuine architectural
+        gap found during a broader review, not new field-level
+        information."""
+        url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
+        data = await self._request("GET", url)
+        return RobotPartsInfo.from_json(data)
 
     async def reset_robot_parts(self, blid: str) -> dict[str, Any]:
         """POST /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
@@ -505,24 +595,28 @@ class PrimeRestClient:
         Presumably resets consumable-part counters (e.g. after a part
         replacement) -- body shape not investigated, raw JSON passed
         through."""
-        url = f"{self._http_base_auth}/v1/robots/{blid}/parts"
+        url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
         return await self._request("POST", url)
 
-    async def get_serial_number_data(self, blid: str) -> dict[str, Any]:
+    async def get_serial_number_data(self, blid: str) -> RobotSerialInfo:
         """GET /v1/robots?robot_id={blid} -- NEW (session 15). CONFIRMED
         from the same configuration file (commandId "GetSerialNumberData",
         httpMethod=GET, urlPath="/v1/robots?robot_id=%s").
 
-        Response shape NOW confirmed (session 26, real live response
+        Response shape confirmed (session 26, real live response
         from chairstacker): RobotID, SerialNumber, built_as_sku,
         family_variant, is_raas, is_refurbished, is_smartcare,
         min_utc_reg_date, name (user-assigned robot name, e.g.
         "House_Bot"), sku, series (e.g. "G1"), family (e.g.
         "Roomba Combo" -- confirms a vacuum+mop combo device),
-        serial_history. Raw JSON passed through here -- for a typed
-        result use models.py::RobotSerialInfo.from_json()."""
+        serial_history.
+
+        CORRECTED (session 53): actually parsed into RobotSerialInfo
+        now -- same architectural gap as get_robot_parts(), see that
+        method's docstring."""
         url = f"{self._http_base_auth}/v1/robots"
-        return await self._request("GET", url, query={"robot_id": blid})
+        data = await self._request("GET", url, query={"robot_id": blid})
+        return RobotSerialInfo.from_json(data)
 
     async def poll_echo_value(self, blid: str) -> dict[str, Any]:
         """POST /v1/robots/{blid}/echo -- NEW (session 16). CONFIRMED
@@ -533,7 +627,7 @@ class PrimeRestClient:
         from the native analysis. Body shape unknown -- presumably
         empty or a simple trigger, no payload needed for the simplest
         case. No body included, until proven otherwise."""
-        url = f"{self._http_base_auth}/v1/robots/{blid}/echo"
+        url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/echo"
         return await self._request("POST", url)
 
     async def get_time_estimates(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -557,7 +651,7 @@ class PrimeRestClient:
         operation -- the name and "write": true suggest this triggers
         a REAL, potentially consequential action on the device. Never
         live-tested. Don't call this lightly."""
-        url = f"{self._http_base_auth}/v1/{blid}/reset"
+        url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/reset"
         return await self._request("POST", url)
 
     async def get_notifications(self, blid: str, app_version: str = "2.2.4") -> dict[str, Any]:
@@ -586,7 +680,7 @@ class PrimeRestClient:
         configuration file, or a version the server no longer accepts).
         Do NOT treat this as working until this is
         resolved."""
-        url = f"{self._http_base_auth}/v1/robots/{blid}/timeline"
+        url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/timeline"
         return await self._request(
             "GET",
             url,

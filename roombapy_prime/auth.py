@@ -71,11 +71,20 @@ class CloudCredentials:
     Expiration is an ISO-8601 string ("2026-07-10T17:29:39+00:00"),
     NOT a Unix-epoch int like ConnectionToken.expires -- a different
     format convention for the same login response payload, carried
-    over unchanged from the original code."""
+    over unchanged from the original code.
+
+    UPDATE (session 52): secret_key/session_token are now `repr=False`
+    -- a genuine, pre-existing gap found while adding a similarly
+    credential-bearing new model (RobotLoginEntry). Without this, the
+    default dataclass repr would print the full secret key/session
+    token in plain text on any accidental print()/log/exception
+    traceback involving this object -- exactly the kind of thing this
+    project has otherwise been careful about (e.g. never logging full
+    tokens elsewhere), just missed here until now."""
 
     access_key_id: str
-    secret_key: str
-    session_token: str
+    secret_key: str = field(repr=False)
+    session_token: str = field(repr=False)
     cognito_id: str
     expiration: datetime | None = None
 
@@ -121,11 +130,16 @@ class ConnectionToken:
         than required, since a Prime/V4 response's exact shape for these
         two fields hasn't been verified — don't let a missing/differently
         -shaped field here be fatal for something otherwise usable.
+
+    UPDATE (session 52): iot_token/iot_signature are now `repr=False`
+    -- same fix, same reason as CloudCredentials' secret_key/
+    session_token (see that class' docstring). These are genuine
+    connection credentials and shouldn't appear in a default repr.
     """
 
     client_id: str
-    iot_token: str
-    iot_signature: str
+    iot_token: str = field(repr=False)
+    iot_signature: str = field(repr=False)
     iot_authorizer_name: str
     expires: int | None
     devices: list[str]
@@ -151,6 +165,93 @@ class ConnectionToken:
             return None
         current = now if now is not None else time.time()
         return self.expires - current
+
+
+@dataclass(frozen=True)
+class RobotCapabilities:
+    """NEW (session 52). CONFIRMED via
+    Robot$Capabilities$$serializer's <clinit>: binFullDetect, addOnHw,
+    oMode, pose, ota, multiPass. Nested inside RobotLoginEntry.cap."""
+
+    bin_full_detect: Any | None = None
+    add_on_hw: Any | None = None
+    o_mode: Any | None = None
+    pose: Any | None = None
+    ota: Any | None = None
+    multi_pass: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "RobotCapabilities":
+        return cls(
+            bin_full_detect=data.get("binFullDetect"),
+            add_on_hw=data.get("addOnHw"),
+            o_mode=data.get("oMode"),
+            pose=data.get("pose"),
+            ota=data.get("ota"),
+            multi_pass=data.get("multiPass"),
+        )
+
+
+@dataclass(frozen=True)
+class RobotDigitalCapabilities:
+    """NEW (session 52). CONFIRMED via
+    Robot$DigitalCapabilities$$serializer's <clinit>: smartClean.
+    Nested inside RobotLoginEntry.digi_cap."""
+
+    smart_clean: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "RobotDigitalCapabilities":
+        return cls(smart_clean=data.get("smartClean"))
+
+
+@dataclass(frozen=True)
+class RobotLoginEntry:
+    """NEW (session 52) -- REPLACES the previous completely-unmodeled
+    `dict[str, Any]` shape of `LoginResult.robots`' per-BLID entries.
+    Found while doing a broader sweep of the `foundation/models`
+    package (a different one from `missioncommand`/`maps` covered by
+    prior sessions) -- CONFIRMED via `Robot$$serializer`'s `<clinit>`:
+    id, password, sku, softwareVer, name, cap (RobotCapabilities),
+    digiCap (RobotDigitalCapabilities), svcDeplId, user_cert.
+
+    `cap`/`digiCap` matching the exact top-level keys already seen in
+    real `get_state()` capture data (chairstacker's account) is a nice
+    independent cross-check that this is genuinely the same concept.
+
+    SECURITY NOTE: `password`/`user_cert` are genuine credential
+    material for this specific robot (distinct from the account-level
+    CloudCredentials/ConnectionToken) -- both marked `repr=False`,
+    following the same fix applied to CloudCredentials/ConnectionToken
+    in this same session, for the same reason (a default dataclass
+    repr would otherwise print them in plain text on any accidental
+    print()/log/traceback)."""
+
+    robot_id: str | None = None
+    password: str | None = field(default=None, repr=False)
+    sku: str | None = None
+    software_version: str | None = None
+    name: str | None = None
+    cap: RobotCapabilities | None = None
+    digi_cap: RobotDigitalCapabilities | None = None
+    svc_deployment_id: str | None = None
+    user_cert: str | None = field(default=None, repr=False)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "RobotLoginEntry":
+        cap_raw = data.get("cap")
+        digi_cap_raw = data.get("digiCap")
+        return cls(
+            robot_id=data.get("id"),
+            password=data.get("password"),
+            sku=data.get("sku"),
+            software_version=data.get("softwareVer"),
+            name=data.get("name"),
+            cap=RobotCapabilities.from_json(cap_raw) if isinstance(cap_raw, dict) else None,
+            digi_cap=RobotDigitalCapabilities.from_json(digi_cap_raw) if isinstance(digi_cap_raw, dict) else None,
+            svc_deployment_id=data.get("svcDeplId"),
+            user_cert=data.get("user_cert"),
+        )
 
 
 @dataclass(frozen=True)
@@ -242,13 +343,24 @@ class LoginResult:
     value shown in the third-party GitHub project cited in the
     thirty-ninth session's update -- as strong a confirmation as this
     project could hope for that project's corroboration was genuine,
-    not coincidental. `login()` updated to read the correct keys."""
+    not coincidental. `login()` updated to read the correct keys.
+
+    UPDATE (session 52): a fourth, independent confirmation, this time
+    directly from the app's own bytecode rather than live/external
+    data. A systematic `$$serializer` scan (the same technique behind
+    most of this project's other confirmed models) found
+    `DiscoveryResponse$Deployment$$serializer`, whose confirmed fields
+    include `iotTopics`/`irbtTopics` -- an exact, direct bytecode match
+    for the field names chairstacker's real account had already
+    settled. This closes the loop about as completely as this kind of
+    question can be closed: live account data, an independent
+    third-party project, and the app's own compiled source all agree."""
 
     mqtt_endpoint: str
     http_base: str
     http_base_auth: str
     credentials: CloudCredentials
-    robots: dict[str, dict[str, Any]]
+    robots: dict[str, "RobotLoginEntry"]
     connection_tokens: list[ConnectionToken]
     raw: dict[str, Any]
     deployment: dict[str, Any] = field(default_factory=dict)
@@ -341,12 +453,13 @@ async def login(
             raise AuthError(f"Missing '{key}' in iRobot credentials response", login_result)
     credentials = CloudCredentials.from_json(creds_raw)
 
+    raw_robots = login_result.get("robots") or {}
     result = LoginResult(
         mqtt_endpoint=mqtt_endpoint,
         http_base=deployment["httpBase"],
         http_base_auth=http_base_auth,
         credentials=credentials,
-        robots=login_result.get("robots") or {},
+        robots={blid: RobotLoginEntry.from_json(v) for blid, v in raw_robots.items()},
         connection_tokens=connection_tokens,
         raw=login_result,
         deployment=deployment,

@@ -245,6 +245,33 @@ def test_publish_cmd_sends_expected_payload_shape() -> None:
     assert isinstance(body["time"], int)
 
 
+def test_publish_cmd_payload_sends_arbitrary_dict_via_cmd_topic() -> None:
+    """NEW (session 46) -- EXPERIMENTAL, UNCONFIRMED path (see
+    prime_robot.py's send_routine_command_via_cmd_topic() for the full
+    hypothesis this supports). Verifies the payload passed through
+    unchanged except for the added "time" field."""
+    client, fake = _connected_client(blid="BLID1")
+    client.publish_cmd_payload("irbt-prefix", {"command": "start", "robot_id": "BLID1", "regions": []})
+    assert len(fake.published) == 1
+    topic, payload = fake.published[0]
+    assert topic == "irbt-prefix/things/BLID1/cmd"
+    body = json.loads(payload)
+    assert body["command"] == "start"
+    assert body["robot_id"] == "BLID1"
+    assert body["regions"] == []
+    assert isinstance(body["time"], int)
+
+
+def test_publish_cmd_payload_does_not_override_existing_time_field() -> None:
+    """If the caller's payload already has a "time" key, it must not
+    be silently overwritten -- setdefault(), not unconditional
+    assignment."""
+    client, fake = _connected_client(blid="BLID1")
+    client.publish_cmd_payload("irbt-prefix", {"command": "start", "time": 12345})
+    _, payload = fake.published[0]
+    assert json.loads(payload)["time"] == 12345
+
+
 def test_subscribe_delivers_every_message_not_just_first() -> None:
     client, fake = _connected_client()
     received: list[dict] = []

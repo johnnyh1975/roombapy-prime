@@ -190,35 +190,54 @@ def test_hazard_type_values_match_java_source() -> None:
     assert len(list(HazardType)) == 16
 
 
-def test_room_info_holds_fields() -> None:
-    from roombapy_prime.models import RoomInfo
+def test_room_feature_from_json_confirmed_structure() -> None:
+    """REBUILT (session 47) -- REPLACES test_room_info_holds_fields.
+    RoomInfo (flat) no longer exists; the confirmed real structure is a
+    GeoJSON Feature with a nested Properties object, see RoomFeature's
+    docstring for the full evidence trail."""
+    from roombapy_prime.models import RoomFeature
 
-    poly = Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]])
-    room = RoomInfo(room_id="r1", geometry=poly, name="Kitchen", room_type=RoomType.KITCHEN)
+    room = RoomFeature.from_json({
+        "type": "Feature",
+        "id": "r1",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]]},
+        "properties": {"name": "Kitchen", "type": "KITCHEN", "adjacentRoomIDs": ["r2"]},
+    })
 
-    assert room.room_id == "r1"
-    assert room.name == "Kitchen"
-    assert room.room_type == RoomType.KITCHEN
-    assert room.adjacent_room_ids == []
+    assert room.feature_id == "r1"
+    assert room.feature_type == "Feature"
+    assert room.properties.name == "Kitchen"
+    assert room.properties.room_type == "KITCHEN"
+    assert room.properties.adjacent_room_ids == ["r2"]
+    assert room.geometry.coordinates == [[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]]
 
 
-def test_furniture_info_read_has_fields_the_edit_command_lacks() -> None:
-    """Confirms the corrected understanding: orientation/cleaning_area
-    belong to the READ model, not the edit command (see module
-    docstring for the earlier mistake this corrects)."""
-    from roombapy_prime.models import FurnitureInfoRead
+def test_furniture_feature_from_json_has_fields_the_edit_command_lacks() -> None:
+    """REBUILT (session 47) -- REPLACES
+    test_furniture_info_read_has_fields_the_edit_command_lacks.
+    Confirms the corrected understanding: orientation/cleaning_area
+    belong to the READ model's Properties, not the edit command (see
+    module docstring for the earlier mistake this corrects)."""
+    from roombapy_prime.models import FurnitureFeature
 
-    poly = Polygon(coordinates=[[(0.0, 0.0)]])
-    info = FurnitureInfoRead(
-        furniture_id="f1", geometry=poly, furniture_type=FurnitureType.SOFA,
-        user_edited=True, orientation=1.57, cleaning_area=poly,
-    )
+    furniture = FurnitureFeature.from_json({
+        "type": "Feature",
+        "id": "f1",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
+        "properties": {
+            "type": 2, "source": "user", "orientation": 1.57,
+            "cleaningArea": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
+        },
+    })
 
-    assert info.orientation == 1.57
-    assert info.cleaning_area is poly
+    assert furniture.properties.orientation == 1.57
+    assert furniture.properties.cleaning_area is not None
+    assert furniture.properties.furniture_type == FurnitureType.SOFA
 
     # the edit-side Furniture dataclass genuinely has no such fields
     from roombapy_prime.models import Furniture
+
+    poly = Polygon(coordinates=[[(0.0, 0.0)]])
     edit_furniture = Furniture(furniture_type=FurnitureType.SOFA, geometry=poly)
     assert not hasattr(edit_furniture, "orientation")
     assert not hasattr(edit_furniture, "cleaning_area")
@@ -237,12 +256,251 @@ def test_multi_polygon_to_geojson() -> None:
     assert geojson["coordinates"][0] == [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]]
 
 
-def test_dock_info_uses_point_not_polygon() -> None:
-    from roombapy_prime.models import DockInfo
+def test_dock_feature_uses_point_not_polygon() -> None:
+    """REBUILT (session 47) -- REPLACES test_dock_info_uses_point_not_polygon."""
+    from roombapy_prime.models import DockFeature, Point
 
-    dock = DockInfo(geometry=(1.0, 2.0), orientation=0.5)
-    assert dock.geometry == (1.0, 2.0)
-    assert dock.orientation == 0.5
+    dock = DockFeature.from_json({
+        "type": "Feature",
+        "id": "d1",
+        "geometry": {"type": "Point", "coordinates": [1.0, 2.0]},
+        "properties": {"orientation": 0.5},
+    })
+    assert dock.geometry == Point(coordinates=(1.0, 2.0))
+    assert dock.properties.orientation == 0.5
+
+
+# --- NEW map-bundle Feature models (session 47) ---------------------------
+
+
+def test_border_feature_properties_confirmed_empty() -> None:
+    """CONFIRMED (session 47): BorderFeature$Properties has NO custom
+    fields beyond the shared Feature envelope -- confirmed empty, not
+    an oversight."""
+    from roombapy_prime.models import BorderFeature
+
+    border = BorderFeature.from_json({
+        "type": "Feature", "id": "b1",
+        "geometry": {"type": "MultiPolygon", "coordinates": [[[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]]]},
+    })
+    assert border.feature_id == "b1"
+    assert len(border.geometry.coordinates) == 1
+
+
+def test_coverage_feature_from_json() -> None:
+    from roombapy_prime.models import CoverageFeature
+
+    coverage = CoverageFeature.from_json({
+        "type": "Feature", "id": "c1",
+        "geometry": {"type": "MultiPolygon", "coordinates": []},
+        "properties": {"operatingModes": [1, 2]},
+    })
+    assert coverage.properties.operating_modes == [1, 2]
+
+
+def test_trajectory_feature_from_json() -> None:
+    from roombapy_prime.models import TrajectoryFeature
+
+    traj = TrajectoryFeature.from_json({
+        "type": "Feature", "id": "t1",
+        "geometry": {"type": "LineString", "coordinates": [[0.0, 0.0], [1.0, 1.0]]},
+        "properties": {"index": 3, "operatingModes": [5]},
+    })
+    assert traj.properties.index == 3
+    assert traj.geometry.coordinates == [(0.0, 0.0), (1.0, 1.0)]
+
+
+def test_policy_zone_feature_replaces_three_previously_separate_guesses() -> None:
+    """NEW (session 47) -- confirms PolicyZoneFeature is the single,
+    now-confirmed type covering what used to be three separate,
+    unconfirmed guesses (NoMopZoneInfo/KeepOutZoneInfoRead/
+    VirtualWallInfo), discriminated by zone_type/threshold_type."""
+    from roombapy_prime.models import PolicyZoneFeature
+
+    zone = PolicyZoneFeature.from_json({
+        "type": "Feature", "id": "z1",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
+        "properties": {"type": "no_mop", "threshold_type": "soft"},
+    })
+    assert zone.properties.zone_type == "no_mop"
+    assert zone.properties.threshold_type == "soft"
+
+
+def test_clean_zone_feature_has_name_unlike_adhoc() -> None:
+    from roombapy_prime.models import AdHocCleanZoneFeature, CleanZoneFeature
+
+    clean_zone = CleanZoneFeature.from_json({
+        "type": "Feature", "id": "cz1",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
+        "properties": {"name": "Under the couch"},
+    })
+    assert clean_zone.properties.name == "Under the couch"
+
+    adhoc = AdHocCleanZoneFeature.from_json({
+        "type": "Feature", "id": "az1",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
+    })
+    assert not hasattr(adhoc, "properties")  # confirmed empty, no Properties object at all
+
+
+def test_floor_plan_feature_from_json() -> None:
+    from roombapy_prime.models import FloorPlanFeature
+
+    fp = FloorPlanFeature.from_json({
+        "type": "Feature", "id": "fp1",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
+        "properties": {"type": "hardwood", "roomId": "r1"},
+    })
+    assert fp.properties.floor_type == "hardwood"
+    assert fp.properties.room_id == "r1"
+
+
+def test_floor_type_feature_from_json() -> None:
+    """EXPERIMENTAL per its own package name in the decompiled source
+    (see FloorTypeFeature's docstring)."""
+    from roombapy_prime.models import FloorTypeFeature
+
+    ft = FloorTypeFeature.from_json({
+        "type": "Feature", "id": "ft1",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
+        "properties": {"type": "tile"},
+    })
+    assert ft.properties.floor_type == "tile"
+
+
+def test_bundle_manifest_from_json_resolves_file_naming_question() -> None:
+    """NEW (session 47) -- this DEFINITIVELY resolves the "exact file
+    naming inside the tar.gz bundle" question open since the fifth
+    session: each ManifestFeature names the real filepath for that
+    content type."""
+    from roombapy_prime.models import BundleManifest
+
+    manifest = BundleManifest.from_json({
+        "metadata": {"id": "m1"},
+        "features": [
+            {"type": "rooms", "filepath": "rooms.geojson", "schemaVersion": 1},
+            {"type": "borders", "filepath": "borders.geojson", "schemaVersion": 1},
+        ],
+        "experimentalFeatures": [{"type": "floorType", "filepath": "floor_type.geojson", "schemaVersion": 1}],
+    })
+
+    assert len(manifest.features) == 2
+    assert manifest.features[0].content_type == "rooms"
+    assert manifest.features[0].filepath == "rooms.geojson"
+    assert len(manifest.experimental_features) == 1
+    assert manifest.experimental_features[0].filepath == "floor_type.geojson"
+
+
+def test_bundle_metadata_source_from_json() -> None:
+    from roombapy_prime.models import BundleMetadataSource
+
+    source = BundleMetadataSource.from_json({
+        "missionStartTime": 1700000000, "mapUploadTime": 1700000100, "type": "picea",
+    })
+    assert source.mission_start_time == 1700000000
+    assert source.source_type == "picea"
+
+
+# --- V1 edit commands (session 48) -- confirmed wire formats -------------
+
+
+def test_rename_room_v1_confirmed_field_names() -> None:
+    """CORRECTED (session 48): confirmed via
+    EditMapV1Request$Command$RenameRoom$$serializer -- room_id/
+    room_name, not the previously-guessed id/name."""
+    from roombapy_prime.models import RenameRoomV1
+
+    body = RenameRoomV1(room_id="r1", name="Kitchen").to_v1_command_body()
+    assert body == {"type": "RenameRoom", "room_id": "r1", "room_name": "Kitchen"}
+
+
+def test_split_room_v1_confirmed_field_names() -> None:
+    from roombapy_prime.models import SplitRoomV1
+
+    body = SplitRoomV1(room_id="r1", split_points=[(0.0, 0.0), (1.0, 1.0)]).to_v1_command_body()
+    assert body == {"type": "SplitRoom", "room_id": "r1", "split_points": [[0.0, 0.0], [1.0, 1.0]]}
+
+
+def test_merge_rooms_v1_confirmed_field_name() -> None:
+    """CORRECTED (session 48): confirmed via
+    EditMapV1Request$Command$MergeRooms$$serializer -- room_ids, not
+    the previously-guessed ids."""
+    from roombapy_prime.models import MergeRoomsV1
+
+    body = MergeRoomsV1(ids=["r1", "r2"]).to_v1_command_body()
+    assert body == {"type": "MergeRooms", "room_ids": ["r1", "r2"]}
+
+
+def test_set_room_type_v1_confirmed_field_names() -> None:
+    """CORRECTED (session 48): confirmed via
+    EditMapV1Request$Command$SetRoomType$$serializer -- room_id/
+    type_id, not the previously-guessed id/type."""
+    from roombapy_prime.models import RoomType, SetRoomTypeV1
+
+    body = SetRoomTypeV1(room_id="r1", room_type=RoomType.KITCHEN).to_v1_command_body()
+    assert body == {"type": "SetRoomType", "room_id": "r1", "type_id": int(RoomType.KITCHEN)}
+
+
+def test_set_permanent_areas_v1_confirmed_field_name() -> None:
+    """CORRECTED (session 48): confirmed via
+    EditMapV1Request$Command$SetPermanentAreas$$serializer --
+    area_points (snake_case), not the previously-guessed areaPoints."""
+    from roombapy_prime.models import PermanentAreaV1, SetPermanentAreasV1
+
+    poly = Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0)]])
+    area = PermanentAreaV1(area_id="a1", name="Zone", geometry=poly)
+    body = SetPermanentAreasV1(areas=[area]).to_v1_command_body()
+
+    assert body["type"] == "SetPermanentAreas"
+    assert "area_points" in body
+    assert "areaPoints" not in body
+    assert body["area_points"][0]["id"] == "a1"
+
+
+def test_delete_permanent_areas_v1_confirmed_field_name() -> None:
+    """CORRECTED (session 48): confirmed via
+    EditMapV1Request$Command$DeletePermanentAreas$$serializer --
+    area_ids (snake_case), not the previously-guessed areaIDs."""
+    from roombapy_prime.models import DeletePermanentAreasV1
+
+    body = DeletePermanentAreasV1(area_ids=["a1", "a2"]).to_v1_command_body()
+    assert body == {"type": "DeletePermanentAreas", "area_ids": ["a1", "a2"]}
+
+
+def test_set_virtual_walls_v1_confirmed_field_name() -> None:
+    """CORRECTED (session 48): confirmed via
+    EditMapV1Request$Command$SetVirtualWalls$$serializer -- the
+    unusual abbreviation `virwall`, not the previously-guessed
+    `walls`. The internal Linear/Rectangle/NoMopZone discriminator
+    remains unconfirmed (custom serializer, see the module docstring)."""
+    from roombapy_prime.models import SetVirtualWallsV1, VirtualWallLinearV1
+
+    wall = VirtualWallLinearV1(wall_id="w1", from_pos=(0.0, 0.0), to_pos=(1.0, 1.0))
+    body = SetVirtualWallsV1(walls=[wall]).to_v1_command_body()
+
+    assert body["type"] == "SetVirtualWalls"
+    assert "virwall" in body
+    assert "walls" not in body
+
+
+def test_adjust_furniture_v1_confirmed_field_names() -> None:
+    """CORRECTED (session 48): confirmed via
+    EditMapV1Request$Command$AdjustFurniture$$serializer --
+    furniture_list/package (snake_case, and "package" not
+    "packageInfo"), not the previously-guessed furnitureList/
+    packageInfo. timestamp was already correct."""
+    from roombapy_prime.models import AdjustFurnitureV1, FurnitureItemV1
+
+    poly = Polygon(coordinates=[[(0.0, 0.0)]])
+    item = FurnitureItemV1(furniture_id="f1", furniture_type=FurnitureType.SOFA, geometry=poly)
+    body = AdjustFurnitureV1(furniture_list=[item], timestamp=123).to_v1_command_body()
+
+    assert body["type"] == "AdjustFurniture"
+    assert body["timestamp"] == 123
+    assert "furniture_list" in body
+    assert "package" in body
+    assert "furnitureList" not in body
+    assert "packageInfo" not in body
 
 
 # --- mission commands (CLEAN/START/STOP/PAUSE/DOCK/etc.) -----------------
@@ -469,6 +727,28 @@ def test_dnd_status_response_from_json() -> None:
     assert dnd.status == {"active": True}
 
 
+def test_dnd_daily_schedule_to_json_confirmed_keys() -> None:
+    """NEW (session 46) -- confirmed directly from
+    DNDSchedule$DailySchedule$$serializer's <clinit>. See
+    DNDDailySchedule's docstring for the still-open envelope/
+    discriminator question (how this combines under DNDSchedule)."""
+    from roombapy_prime.models import DNDDailySchedule
+
+    body = DNDDailySchedule(daily_start=1320, daily_end=420).to_json()
+
+    assert body == {"dailyStart": 1320, "dailyEnd": 420}
+
+
+def test_dnd_ends_at_to_json_confirmed_key() -> None:
+    """NEW (session 46) -- confirmed directly from
+    DNDSchedule$EndsAt$$serializer's <clinit>."""
+    from roombapy_prime.models import DNDEndsAt
+
+    body = DNDEndsAt(ends_at=1752600000).to_json()
+
+    assert body == {"endsAt": 1752600000}
+
+
 def test_household_setting_from_json() -> None:
     from roombapy_prime.models import HouseholdSetting
 
@@ -479,18 +759,212 @@ def test_household_setting_from_json() -> None:
     assert setting.options == {"foo": "bar"}
 
 
+def test_household_setting_options_from_json_confirmed_fields() -> None:
+    """NEW (session 48) -- REPLACES the "structure not investigated"
+    placeholder. Confirmed via HouseholdSettingOptions$$serializer's
+    <clinit>: household demographic info (adult/kid/pet counts)."""
+    from roombapy_prime.models import HouseholdSettingOptions
+
+    opts = HouseholdSettingOptions.from_json({
+        "last_user_modified": 1700000000,
+        "hh_adults": 2,
+        "hh_kids": 1,
+        "hh_pets": 3,
+        "hh_adults_kids_prefer_not_to_answer": False,
+        "hh_pets_prefer_not_to_answer": False,
+        "hh_location_factor": "urban",
+    })
+
+    assert opts.hh_adults == 2
+    assert opts.hh_kids == 1
+    assert opts.hh_pets == 3
+    assert opts.hh_location_factor == "urban"
+
+
+def test_p2map_data_from_json_confirmed_fields() -> None:
+    """NEW (session 51) -- REPLACES the "response shape not modeled
+    yet" placeholder for get_map_metadata(). Confirmed via
+    P2MapData$$serializer's <clinit>. The last two fields match
+    set_map_name()/set_map_orientation()'s own confirmed write-side
+    keys exactly."""
+    from roombapy_prime.models import P2MapData
+
+    data = P2MapData.from_json({
+        "p2map_id": "m1",
+        "active_p2mapv_id": "v1",
+        "create_time": 1700000000,
+        "last_p2mapv_ts": 1700000100,
+        "state": "active",
+        "visible": True,
+        "name": "Downstairs",
+        "user_orientation_rad": 1.57,
+    })
+
+    assert data.p2map_id == "m1"
+    assert data.active_p2mapv_id == "v1"
+    assert data.name == "Downstairs"
+    assert data.visible is True
+    assert data.user_orientation_rad == 1.57
+
+
+def test_schedules_response_from_json_confirmed_envelope() -> None:
+    """NEW (session 51) -- the confirmed top-level envelope for
+    get_schedules(), previously entirely unmodeled (the class NAMES
+    had been found in an earlier session, not their fields).
+    Confirmed via SchedulesResponse$$serializer/
+    SchedulesList$$serializer."""
+    from roombapy_prime.models import SchedulesResponse
+
+    response = SchedulesResponse.from_json({
+        "household_schedules": [
+            {"household_schedule_id": "hs1", "schedules": [{"schedule_id": "s1"}, {"schedule_id": "s2"}]},
+        ]
+    })
+
+    assert len(response.household_schedules) == 1
+    assert response.household_schedules[0].household_schedule_id == "hs1"
+    assert len(response.household_schedules[0].schedules) == 2
+
+
+def test_schedules_response_handles_empty_envelope() -> None:
+    from roombapy_prime.models import SchedulesResponse
+
+    response = SchedulesResponse.from_json({})
+    assert response.household_schedules == []
+
+
+def test_p2map_edit_partial_success_from_json() -> None:
+    """NEW (session 51) -- one of edit_map()'s possible response
+    shapes, confirmed via P2MapEditPartialSuccess$$serializer. See the
+    class docstring: which shape actually comes back isn't confirmed."""
+    from roombapy_prime.models import P2MapEditPartialSuccess
+
+    result = P2MapEditPartialSuccess.from_json({"status": "ok", "p2mapv_id": "v1", "p2map_metadata": {"a": 1}})
+    assert result.status == "ok"
+    assert result.p2mapv_id == "v1"
+    assert result.p2map_metadata == {"a": 1}
+
+
+def test_p2map_edit_success_fallback_from_json() -> None:
+    """NEW (session 51) -- confirmed via
+    P2MapEditSuccessFallback$$serializer -- has an extra `map_url`
+    field vs. P2MapEditPartialSuccess."""
+    from roombapy_prime.models import P2MapEditSuccessFallback
+
+    result = P2MapEditSuccessFallback.from_json({"status": "ok", "map_url": "https://x", "p2mapv_id": "v1"})
+    assert result.map_url == "https://x"
+    assert result.p2mapv_id == "v1"
+
+
+def test_response_error_from_error_container() -> None:
+    """NEW (session 51) -- confirmed via ResponseError$$serializer AND
+    the field-identical P2MapError -- modeled once, shared."""
+    from roombapy_prime.models import ResponseError
+
+    err = ResponseError.from_error_container({"error": {"code": 400, "message": "bad request"}})
+    assert err is not None
+    assert err.code == 400
+    assert err.message == "bad request"
+
+
+def test_response_error_from_error_container_missing_returns_none() -> None:
+    from roombapy_prime.models import ResponseError
+
+    assert ResponseError.from_error_container({"something_else": {}}) is None
+
+
+def test_response_error_message_from_message_container_capital_m() -> None:
+    """Regression test for the confirmed, unusual capital-M key
+    ("Message", not "message") -- MessageContainer$$serializer."""
+    from roombapy_prime.models import ResponseError
+
+    assert ResponseError.message_from_message_container({"Message": "not found"}) == "not found"
+    assert ResponseError.message_from_message_container({"message": "wrong case"}) is None
+
+
+# =========================================================================
+# ScheduleOptions.to_json() (session 46) -- corrected wire keys
+# =========================================================================
+
+
+def test_schedule_options_to_json_uses_confirmed_snake_case_keys() -> None:
+    """CORRECTED (session 46) -- regression test against ever
+    reverting to the wrong, previously-guessed camelCase keys.
+    Confirmed directly from ScheduleOptions$$serializer's <clinit>:
+    robot_id (not assetId), end_commands (not endCommands),
+    created_time (not createdTime), force_cloud (not forceCloud)."""
+    from roombapy_prime.models import RoutineCommand, MissionCommandType, ScheduleOptions
+
+    end_cmd = RoutineCommand(command_type=MissionCommandType.STOP, asset_id="a1")
+    options = ScheduleOptions(
+        asset_id="asset1",
+        name="Evening",
+        end_commands=[end_cmd],
+        created_time="2026-07-15T00:00:00Z",
+        force_cloud=True,
+    )
+
+    body = options.to_json()
+
+    assert body["robot_id"] == "asset1"
+    assert body["end_commands"] == [end_cmd.to_json()]
+    assert body["created_time"] == "2026-07-15T00:00:00Z"
+    assert body["force_cloud"] is True
+    assert "assetId" not in body
+    assert "endCommands" not in body
+    assert "createdTime" not in body
+    assert "forceCloud" not in body
+
+
 def test_parse_default_routines() -> None:
-    """Confirmed (androguard, routines/datamodels/Routine)."""
+    """CORRECTED (session 49): confirmed via Routine$$serializer --
+    "commanddefs" (all lowercase, no separator) and "time_estimate"
+    (snake_case), not the previously-guessed "commandDefs"/
+    "timeEstimate"."""
     from roombapy_prime.models import parse_default_routines
 
     routines = parse_default_routines(
-        {"routines": [{"name": "Whole Home", "commandDefs": [{"command": "clean"}], "timeEstimate": 30}]}
+        {"routines": [{"name": "Whole Home", "commanddefs": [{"command": "clean"}], "time_estimate": 30}]}
     )
 
     assert len(routines) == 1
     assert routines[0].name == "Whole Home"
     assert routines[0].time_estimate == 30
     assert routines[0].command_defs == [{"command": "clean"}]
+
+
+def test_routines_defaults_response_from_json_full_envelope() -> None:
+    """NEW (session 49) -- the confirmed top-level envelope for
+    get_default_routines(), including routine_builder_defaults, which
+    the older parse_default_routines() helper never captured at all."""
+    from roombapy_prime.models import RoutinesDefaultsResponse
+
+    response = RoutinesDefaultsResponse.from_json({
+        "routines": [{"name": "Whole Home"}],
+        "routine_builder_defaults": {
+            "regions": [
+                {
+                    "type": "room",
+                    "operating_mode": "vacuum",
+                    "by_operating_mode": {"vacuum": {"params": {"suction": 3}, "profile_type": "standard"}},
+                }
+            ]
+        },
+    })
+
+    assert len(response.routines) == 1
+    assert response.routines[0].name == "Whole Home"
+    assert response.routine_builder_defaults is not None
+    region = response.routine_builder_defaults.regions[0]
+    assert region.region_type == "room"
+    assert region.by_operating_mode["vacuum"].profile_type == "standard"
+
+
+def test_routines_defaults_response_handles_missing_builder_defaults() -> None:
+    from roombapy_prime.models import RoutinesDefaultsResponse
+
+    response = RoutinesDefaultsResponse.from_json({"routines": []})
+    assert response.routine_builder_defaults is None
 
 
 # =========================================================================
@@ -1297,7 +1771,12 @@ def test_robot_settings_handles_missing_optional_nested_objects() -> None:
 def test_robot_status_v2_from_json_confirmed_wire_keys() -> None:
     """Uses exactly the bytecode-confirmed wire keys (session 40) --
     including the camelCase p2mapId/p2mapvId alongside the otherwise
-    snake_case fields, confirmed as-is, not a typo."""
+    snake_case fields, confirmed as-is, not a typo.
+
+    UPDATE (session 49): dock_controls/buttons/errors/conditional_errors
+    are now typed (DockControl/RobotStatusButton/RobotStatusError), no
+    longer list[Any] -- test data updated to properly-shaped dict
+    elements accordingly."""
     from roombapy_prime.models import RobotStatusV2
 
     status = RobotStatusV2.from_json({
@@ -1307,10 +1786,10 @@ def test_robot_status_v2_from_json_confirmed_wire_keys() -> None:
         "is_robot_on_dock": False,
         "p2mapId": "map-1",
         "p2mapvId": "v1",
-        "dock_controls": ["evac"],
+        "dock_controls": [{"control": "evac", "status": "ok"}],
         "errors": [],
         "conditional_errors": [],
-        "buttons": ["clean"],
+        "buttons": [{"status": "pressed", "action": "clean"}],
         "localization_args": {"k": "v"},
     })
 
@@ -1320,8 +1799,8 @@ def test_robot_status_v2_from_json_confirmed_wire_keys() -> None:
     assert status.is_robot_on_dock is False
     assert status.current_p2map_id == "map-1"
     assert status.current_p2map_version_id == "v1"
-    assert status.dock_controls == ["evac"]
-    assert status.buttons == ["clean"]
+    assert status.dock_controls[0].control == "evac"
+    assert status.buttons[0].action == "clean"
     assert status.localization_args == {"k": "v"}
 
 

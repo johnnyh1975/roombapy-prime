@@ -124,6 +124,38 @@ async def test_send_simple_command_without_topic_prefix_raises_immediately() -> 
 
 
 @pytest.mark.asyncio
+async def test_send_routine_command_via_cmd_topic_publishes_full_payload() -> None:
+    """NEW (session 46) -- EXPERIMENTAL, UNCONFIRMED path, see the
+    method's own docstring for the full hypothesis and risk caveat.
+    Verifies routing only: command.to_json() gets passed through to
+    publish_cmd_payload() unchanged."""
+    from roombapy_prime.models import MissionCommandType, RoutineCommand
+
+    robot, mqtt, _rest = _robot_with_mocks()
+    cmd = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID123", favorite_id="fav1")
+
+    await robot.send_routine_command_via_cmd_topic(cmd)
+
+    mqtt.publish_cmd_payload.assert_called_once_with("irbt-fake-prefix", cmd.to_json())
+
+
+@pytest.mark.asyncio
+async def test_send_routine_command_via_cmd_topic_without_topic_prefix_raises_immediately() -> None:
+    """Same missing-prefix gate as send_simple_command()/watch_live_map()."""
+    from roombapy_prime.models import MissionCommandType, RoutineCommand
+
+    mqtt = MagicMock()
+    rest = MagicMock()
+    robot = PrimeRobot(blid="BLID123", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None)
+    cmd = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID123")
+
+    with pytest.raises(RuntimeError, match="irbt_topic_prefix"):
+        await robot.send_routine_command_via_cmd_topic(cmd)
+
+    mqtt.publish_cmd_payload.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_rest_backed_methods_delegate_directly() -> None:
     robot, _mqtt, rest = _robot_with_mocks()
 

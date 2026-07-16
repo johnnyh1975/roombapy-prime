@@ -371,10 +371,26 @@ class PrimeMqttClient:
         confirmed working describes observing the physical robot react,
         not any MQTT-level acknowledgment. Callers who want
         confirmation should poll get_state() afterward instead."""
+        self.publish_cmd_payload(irbt_topic_prefix, {"command": command, "initiator": initiator})
+
+    def publish_cmd_payload(self, irbt_topic_prefix: str, payload: dict[str, Any]) -> None:
+        """NEW (session 46). Lower-level sibling of publish_cmd() --
+        publishes an ARBITRARY payload dict to cmd_topic(), adding a
+        "time" field (Unix seconds) if not already present. Exists for
+        prime_robot.py's send_routine_command_via_cmd_topic() -- see
+        that method's docstring for why a richer payload than
+        publish_cmd()'s simple {command, time, initiator} might also
+        be accepted here, and for the significant, elevated risk
+        caveat that comes with sending anything richer than the basic
+        confirmed-working case to this topic.
+
+        Same fire-and-forget behavior as publish_cmd() -- see that
+        method's docstring for why."""
         assert self._client is not None, "call connect() first"
         topic = self.cmd_topic(irbt_topic_prefix)
-        payload = json.dumps({"command": command, "time": int(time.time()), "initiator": initiator})
-        self._client.publish(topic, payload=payload, qos=1)
+        full_payload = {**payload}
+        full_payload.setdefault("time", int(time.time()))
+        self._client.publish(topic, payload=json.dumps(full_payload), qos=1)
 
     def subscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
         """Register a callback that fires on EVERY message on this topic,

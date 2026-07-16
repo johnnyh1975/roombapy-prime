@@ -361,6 +361,33 @@ def test_redact_raw_capture_masks_sensitive_keys() -> None:
     assert result["batteryLevel"] == 80  # nicht sensibel, bleibt sichtbar
 
 
+def test_redact_raw_capture_masks_credential_field_names() -> None:
+    """NEW (session 54, security hardening) -- regression test for a
+    latent gap found during a security review: ConnectionToken's
+    iot_token/iot_signature and RobotLoginEntry's user_cert weren't
+    covered by the key-based redaction, only the AWS Cognito
+    credential field names were. No current raw_capture call site
+    actually captures these objects, but this function's whole purpose
+    is to be a general-purpose safety net, not just cover the specific
+    fields anyone happened to test against."""
+    from roombapy_prime.diagnostics import _redact_raw_capture
+
+    data = {
+        "iot_token": "super-secret-mqtt-token",
+        "iot_signature": "super-secret-signature",
+        "user_cert": "-----BEGIN CERTIFICATE-----FAKE-----",
+        "cognitoId": "eu-west-1:00000000-0000-0000-0000-000000000000",
+        "sku": "i7",  # not sensitive, should remain visible
+    }
+    result = _redact_raw_capture(data, [])
+
+    assert result["iot_token"] == "[REDACTED]"
+    assert result["iot_signature"] == "[REDACTED]"
+    assert result["user_cert"] == "[REDACTED]"
+    assert result["cognitoId"] == "[REDACTED]"
+    assert result["sku"] == "i7"
+
+
 def test_redact_raw_capture_replaces_literal_secrets_in_strings() -> None:
     from roombapy_prime.diagnostics import _redact_raw_capture
 

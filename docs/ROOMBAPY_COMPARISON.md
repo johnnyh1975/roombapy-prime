@@ -10,7 +10,7 @@ Quellcode, kein Auszug/keine Rekonstruktion.
 | `remote_client.py` | `mqtt_client.py` | Gleicher Zweck (MQTT-Transport), **strukturell inkompatibel** (siehe 2) |
 | `roomba.py` | `prime_robot.py` | Gleicher Zweck (öffentliche Klasse), **anderes Protokoll-Paradigma** (siehe 3) |
 | `roomba_factory.py` | `prime_factory.py` | Gleiches Muster übernehmbar (siehe 4) |
-| `roomba_info.py` | `models.py` | Gleicher Zweck, `mashumaro`-Pattern übernehmbar (siehe 4) |
+| `roomba_info.py` | `models/` (package since session 55) | Gleicher Zweck, `mashumaro`-Pattern übernehmbar (siehe 4) |
 | `discovery.py` | — kein Äquivalent | mDNS-Broadcast-Discovery im lokalen Netz — für Prime irrelevant, es gibt kein "lokales Netz" |
 | `getpassword.py` | — kein Äquivalent | BLE-basierte Passwort-Abholung vom Gerät selbst — Prime nutzt Account-Login, kein Geräte-BLE |
 | `const.py` | — noch nicht angelegt | Fehlercode-Tabellen, siehe 4 |
@@ -71,7 +71,8 @@ passt nicht zum Anfrage/Antwort-Charakter des Cloud-Wegs.
   ```python
   firmware: str = field(metadata=field_options(alias="sw"))
   ```
-  Lohnt sich jetzt besonders für `models.py`, da aus der heutigen
+  Lohnt sich jetzt besonders für `models/` (seit Sitzung 55 ein Paket statt einer
+  einzelnen Datei), da aus der heutigen
   Analyse schon recht viel Rohschema bekannt ist (RoomType/FurnitureType-
   Enums, `connection_tokens`-Feldnamen, p2maps-Kommando-Payloads) — sauberer
   als die aktuelle rohe Dict-Indizierung in `auth.py`.

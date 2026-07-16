@@ -100,15 +100,51 @@ class _FakeSession:
         return self._responses.pop(0)
 
 
+def test_path_segment_encodes_traversal_and_slash_characters() -> None:
+    """NEW (session 54, security hardening pass) -- direct unit test
+    for _path_segment(), the helper added after a security review found
+    every URL-path identifier (BLIDs, map IDs, favorite IDs, etc.) was
+    previously interpolated via a raw f-string with no escaping at all.
+    A value containing "/" or ".." could otherwise redirect the request
+    to an unintended path on the same host."""
+    from roombapy_prime.rest_client import _path_segment
+
+    assert _path_segment("../../etc/passwd") == "..%2F..%2Fetc%2Fpasswd"
+    assert _path_segment("a/b") == "a%2Fb"
+    # legitimate identifiers are a no-op -- purely additive safety
+    assert _path_segment("BLID123") == "BLID123"
+    assert _path_segment("map-uuid-1234") == "map-uuid-1234"
+
+
+@pytest.mark.asyncio
+async def test_get_map_metadata_rejects_path_traversal_in_id() -> None:
+    """Regression test proving the fix actually reaches a real
+    call site, not just the helper in isolation: a p2map_id containing
+    a "/" must not be able to redirect the request path."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_map_metadata("../admin")
+
+    call = session.calls[0]
+    assert "/../admin" not in call.url
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/..%2Fadmin"
+
+
 @pytest.mark.asyncio
 async def test_get_map_metadata_url_and_response() -> None:
+    """UPDATED (session 51): get_map_metadata() now returns a parsed
+    P2MapData (confirmed via P2MapData$$serializer), not raw JSON."""
     session = _FakeSession()
-    session.queue_response(payload={"id": "map123"})
+    session.queue_response(payload={"p2map_id": "map123", "name": "Downstairs", "visible": True})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
     result = await client.get_map_metadata("map123")
 
-    assert result == {"id": "map123"}
+    assert result.p2map_id == "map123"
+    assert result.name == "Downstairs"
+    assert result.visible is True
     assert session.calls[0].method == "GET"
     assert session.calls[0].url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123"
 
@@ -129,6 +165,10 @@ async def test_requests_are_signed_with_sigv4() -> None:
 
 @pytest.mark.asyncio
 async def test_set_map_name_body_and_query() -> None:
+    """CORRECTED (session 51): confirmed via
+    EditMapSettingsRequest$Command$SetName$$serializer -- real key is
+    "name", not "type" as previously implemented (a genuine bug, not
+    just an unconfirmed guess)."""
     session = _FakeSession()
     session.queue_response(payload={"ok": True})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -140,7 +180,7 @@ async def test_set_map_name_body_and_query() -> None:
     assert call.method == "POST"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123/settings"
     assert call.params == {"trigger_fast_updates": "true"}
-    assert call.body_json == {"type": "Erdgeschoss"}
+    assert call.body_json == {"name": "Erdgeschoss"}
 
 
 @pytest.mark.asyncio
@@ -338,14 +378,21 @@ async def test_get_mission_history_no_params() -> None:
 
 @pytest.mark.asyncio
 async def test_get_schedules_url() -> None:
+    """UPDATED (session 51): get_schedules() now returns a parsed
+    SchedulesResponse (confirmed via SchedulesResponse$$serializer/
+    SchedulesList$$serializer), not raw JSON."""
     session = _FakeSession()
-    session.queue_response(payload={"schedules": []})
+    session.queue_response(payload={
+        "household_schedules": [{"household_schedule_id": "hs1", "schedules": [{"schedule_id": "s1"}]}]
+    })
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    await client.get_schedules("hh1")
+    result = await client.get_schedules("hh1")
 
     assert session.calls[0].url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule"
     assert session.calls[0].method == "GET"
+    assert len(result.household_schedules) == 1
+    assert result.household_schedules[0].household_schedule_id == "hs1"
 
 
 @pytest.mark.asyncio
@@ -363,6 +410,9 @@ async def test_delete_schedule_url() -> None:
 
 @pytest.mark.asyncio
 async def test_create_schedules_posts_body() -> None:
+    """CORRECTED (session 46) -- real key is "robot_id" (confirmed via
+    ScheduleOptions$$serializer's <clinit>), not "assetId" as
+    previously guessed."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -375,12 +425,16 @@ async def test_create_schedules_posts_body() -> None:
     assert call.method == "POST"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule"
     assert call.body_json == {
-        "schedules": [{"assetId": "asset1", "name": "Morning", "frequency": "WEEKLY"}]
+        "schedules": [{"robot_id": "asset1", "name": "Morning", "frequency": "WEEKLY"}]
     }
 
 
 @pytest.mark.asyncio
 async def test_update_schedules_puts_body() -> None:
+    """CORRECTED (session 46) -- real keys are "schedule_id" (on
+    HouseholdSchedule) and "robot_id" (on ScheduleOptions), both
+    confirmed via their respective $$serializer <clinit>s, not
+    "scheduleId"/"assetId" as previously guessed."""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -392,7 +446,7 @@ async def test_update_schedules_puts_body() -> None:
     assert call.method == "PUT"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule/sched1"
     assert call.body_json == {
-        "schedules": [{"scheduleId": "sched1", "options": {"assetId": "asset1", "name": "Evening"}}]
+        "schedules": [{"schedule_id": "sched1", "options": {"robot_id": "asset1", "name": "Evening"}}]
     }
 
 
@@ -414,15 +468,21 @@ async def test_get_user_households_url() -> None:
 
 @pytest.mark.asyncio
 async def test_get_dnd_settings_url() -> None:
+    """UPDATED (session 53): get_dnd_settings() now returns a parsed
+    DNDStatusResponse, not raw JSON -- a genuine architectural gap
+    found in a broader review (the confirmed model existed since the
+    ninth session, but was never actually wired in)."""
     session = _FakeSession()
-    session.queue_response(payload={})
+    session.queue_response(payload={"dailyStart": 1320, "dailyEnd": 420})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    await client.get_dnd_settings("hh1")
+    result = await client.get_dnd_settings("hh1")
 
     call = session.calls[0]
     assert call.method == "GET"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/dnd"
+    assert result.daily_start == 1320
+    assert result.daily_end == 420
 
 
 @pytest.mark.asyncio
@@ -474,30 +534,38 @@ async def test_get_cleaning_profiles_query_without_map() -> None:
 
 @pytest.mark.asyncio
 async def test_get_default_routines_url() -> None:
+    """UPDATED (session 53): now returns a parsed RoutinesDefaultsResponse
+    -- same architectural gap as get_dnd_settings(), see that test."""
     session = _FakeSession()
-    session.queue_response(payload={})
+    session.queue_response(payload={"routines": [{"name": "Whole Home"}]})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    await client.get_default_routines("map1")
+    result = await client.get_default_routines("map1")
 
     call = session.calls[0]
     assert call.method == "GET"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map1/routines/defaults"
+    assert len(result.routines) == 1
+    assert result.routines[0].name == "Whole Home"
 
 
 @pytest.mark.asyncio
 async def test_get_robot_parts_url() -> None:
     """Confirmed from base_roomba_config.json (commandId "GetRobotParts"),
-    not from bytecode interpretation."""
+    not from bytecode interpretation. UPDATED (session 53): now
+    returns a parsed RobotPartsInfo -- same architectural gap as
+    get_dnd_settings(), see that test."""
     session = _FakeSession()
-    session.queue_response(payload={})
+    session.queue_response(payload={"robot_id": "BLID123", "num_parts": 2, "parts": []})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    await client.get_robot_parts("BLID123")
+    result = await client.get_robot_parts("BLID123")
 
     call = session.calls[0]
     assert call.method == "GET"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/robots/BLID123/parts"
+    assert result.robot_id == "BLID123"
+    assert result.num_parts == 2
 
 
 @pytest.mark.asyncio
@@ -516,17 +584,21 @@ async def test_reset_robot_parts_url() -> None:
 
 @pytest.mark.asyncio
 async def test_get_serial_number_data_query() -> None:
-    """Confirmed from base_roomba_config.json (commandId "GetSerialNumberData")."""
+    """Confirmed from base_roomba_config.json (commandId "GetSerialNumberData").
+    UPDATED (session 53): now returns a parsed RobotSerialInfo -- same
+    architectural gap as get_dnd_settings(), see that test."""
     session = _FakeSession()
-    session.queue_response(payload={})
+    session.queue_response(payload={"sku": "i7", "name": "House_Bot"})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    await client.get_serial_number_data("BLID123")
+    result = await client.get_serial_number_data("BLID123")
 
     call = session.calls[0]
     assert call.method == "GET"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/robots"
     assert call.params == {"robot_id": "BLID123"}
+    assert result.sku == "i7"
+    assert result.name == "House_Bot"
 
 
 @pytest.mark.asyncio
@@ -547,8 +619,11 @@ async def test_edit_map_v2_sends_command_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_edit_map_v1_sends_command_envelope() -> None:
-    """edit_map() -- NEW (July 11, fourth session), the actually
-    active path (see PRIME_APP_GAP_ANALYSIS)."""
+    """CORRECTED (session 48) -- both the envelope
+    ({"edit_cmd": ..., "response_type": ...}) and the field name
+    ("room_ids", not "ids") are now confirmed via
+    EditMapV1Request$Body$$serializer/
+    EditMapV1Request$Command$MergeRooms$$serializer."""
     from roombapy_prime.models import MergeRoomsV1
 
     session = _FakeSession()
@@ -560,7 +635,10 @@ async def test_edit_map_v1_sends_command_envelope() -> None:
     call = session.calls[0]
     assert result == {"updated": True}
     assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123/versions"
-    assert call.body_json == {"command": "MergeRooms", "ids": ["a", "b"]}
+    assert call.body_json == {
+        "edit_cmd": {"type": "MergeRooms", "room_ids": ["a", "b"]},
+        "response_type": "link",
+    }
 
 
 @pytest.mark.asyncio
@@ -719,7 +797,13 @@ async def test_403_with_relogin_retries_once_with_new_credentials() -> None:
 
     result = await client.get_map_metadata("map123")
 
-    assert result == {"ok": True}
+    # UPDATED (session 51): get_map_metadata() now returns a parsed P2MapData
+    # (see test_get_map_metadata_url_and_response) -- {"ok": True} has no
+    # recognized P2MapData field, so this parses to all-None. This test's
+    # actual focus is the retry mechanism below, not the parsing itself.
+    from roombapy_prime.models import P2MapData
+
+    assert result == P2MapData()
     assert relogin_calls == [1]
     assert len(session.calls) == 2
     # the retried request must be signed with the NEW credentials

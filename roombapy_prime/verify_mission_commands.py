@@ -81,7 +81,7 @@ async def _show_state(robot: Any, label: str) -> dict[str, Any] | None:
     this is itself new information, regardless of the test result.
 
     UPDATED (session 40): also attempts to parse RobotStatusV2 out of
-    the reported dict (see models.py's RobotStatusV2 section for the
+    the reported dict (see models/robot_info.py's RobotStatusV2 section for the
     full evidence trail and the unresolved question of whether this
     structure actually lives here at all -- the one real capture
     available before this session showed no matching fields). Reports

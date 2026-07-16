@@ -16,7 +16,7 @@ converging pieces of evidence for the correct transport (this
 project's own native disassembly, and a third-party project reporting
 success). Map editing (`edit_map()`, the V1 command family) has NO
 such corroboration -- the exact JSON envelope around each command's
-`to_v1_command_body()` output (see models.py's V1 section) is an
+`to_v1_command_body()` output (see models/map_editing.py's V1 section) is an
 ANALOGY assumption from the V2 pattern, never independently confirmed
 by anyone. A wrong guess for a mission command was safely observable
 as "nothing happened" (confirmed: zero response, not a crash). A wrong
@@ -101,7 +101,7 @@ def _pick_test_room(map_versions: list[Any]) -> tuple[str, str, str] | None:
     Deliberately requires an EXISTING name, not just any room: this
     script's whole safety design rests on being able to revert to a
     known-good original value. RenameRoomV1's `name` field is a plain
-    required string (see models.py) -- there's no confirmed way to
+    required string (see models/map_editing.py) -- there's no confirmed way to
     "clear" a name back to none, so a room that currently has no name
     is not a safe candidate for this test at all, regardless of how
     the test itself goes."""
@@ -120,13 +120,18 @@ def _room_names_from_bundle(parsed_bundle: dict[str, Any]) -> list[dict[str, Any
     """NEW (session 44). If get_active_map_versions()'s rooms_metadata
     doesn't have a named room, the real, app-visible room names might
     live in the downloaded map bundle instead -- a completely
-    different, less-confirmed data source (RoomInfo, from the bundle's
-    "rooms" file, has no from_json() in this library precisely because
-    its wire format was never confirmed -- unlike RoomMetadataEntry).
-    This is pure investigation, not a model: extracts only room_id/
-    name/type-shaped fields from whatever raw dict the bundle's
-    "rooms" file actually contains, so the real structure can be seen
-    without guessing at it.
+    different data source. UPDATE (session 47): this used to be a
+    completely unconfirmed model (RoomInfo had no from_json() at all);
+    the bundle's real structure has since been bytecode-confirmed
+    (see models/map_bundle.py's RoomFeature/RoomFeatureProperties) -- a GeoJSON
+    Feature with room_id/name/type nested under "properties", not the
+    flat shape this function's raw dict-scanning approach assumed.
+    This function is kept as a pre-model, raw investigation tool
+    regardless (still useful for confirming the exact FILE that
+    contains rooms, and cross-checking real data against the now-
+    confirmed model), extracting only room_id/name/type-shaped fields
+    from whatever raw dict the bundle's "rooms" file actually
+    contains.
 
     DELIBERATELY EXCLUDES geometry/polygon/coordinate fields FROM THIS
     DIAGNOSTIC REPORT SPECIFICALLY -- consistent with this project's
@@ -135,7 +140,7 @@ def _room_names_from_bundle(parsed_bundle: dict[str, Any]) -> list[dict[str, Any
     library captures, and this report is the kind of thing people
     casually paste into a public GitHub issue without thinking about
     it. This is NOT a statement that the library shouldn't support
-    geometry -- models.py's RoomInfo already has a `geometry` field,
+    geometry -- models/map_bundle.py's RoomFeature already has a `geometry` field,
     unaffected by this function, and will genuinely be needed for
     building an actual map/floor-plan feature later. This function
     only controls what THIS diagnostic script prints/captures for a
@@ -202,7 +207,10 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
                     continue
                 try:
                     link = await robot.get_map_geojson_link(p2map_id, p2mapv_id)
-                    url = next((v for v in link.values() if isinstance(v, str) and v.startswith("http")), None)
+                    # CORRECTED (session 48): "map_url" confirmed via P2MapURL$$serializer.
+                    url = link.get("map_url") or next(
+                        (v for v in link.values() if isinstance(v, str) and v.startswith("http")), None
+                    )
                     if not url:
                         continue
                     bundle_bytes = await robot.download_map_bundle(url)

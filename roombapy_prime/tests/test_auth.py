@@ -176,6 +176,50 @@ def test_cloud_credentials_from_real_smart_tier_fixture(fixtures_dir: Path) -> N
     assert creds.session_token
 
 
+def test_robot_login_entry_from_real_smart_tier_fixture(fixtures_dir: Path) -> None:
+    """NEW (session 52) -- RobotLoginEntry (confirmed via
+    Robot$$serializer, found while sweeping the foundation/models
+    package) against the same real fixture already used for
+    CloudCredentials -- this fixture's "robots" entry has genuine,
+    anonymized-but-authentic field content matching every confirmed
+    key exactly."""
+    from roombapy_prime.auth import RobotLoginEntry
+
+    data = _load(fixtures_dir, "login_response_smart_tier.json")
+    (blid, robot_raw), = data["robots"].items()
+    robot = RobotLoginEntry.from_json(robot_raw)
+
+    assert blid == "1111111111111111"
+    assert robot.sku == "i755640"
+    assert robot.software_version == "v2.x.x-fixture"
+    assert robot.name == "Roomba"
+    assert robot.svc_deployment_id == "v007"
+    assert robot.cap is not None
+    assert robot.cap.bin_full_detect == 2
+    assert robot.cap.multi_pass == 2
+    assert robot.digi_cap is not None
+    # password/user_cert ARE present in the real fixture -- confirm they parse,
+    # without asserting their literal value in this test's output (see the
+    # repr=False protection on both fields, tested separately below)
+    assert robot.password is not None
+
+
+def test_robot_login_entry_password_and_user_cert_hidden_from_repr() -> None:
+    """Regression test for the session-52 security fix: a default
+    dataclass repr would otherwise print credential material in plain
+    text on any accidental print()/log/traceback."""
+    from roombapy_prime.auth import RobotLoginEntry
+
+    robot = RobotLoginEntry.from_json({"password": "SUPERSECRET", "user_cert": "CERTDATA123", "sku": "i7"})
+
+    assert "SUPERSECRET" not in repr(robot)
+    assert "CERTDATA123" not in repr(robot)
+    assert "i7" in repr(robot)  # non-sensitive fields still show normally
+    # the actual values are still accessible, just not in the default repr
+    assert robot.password == "SUPERSECRET"
+    assert robot.user_cert == "CERTDATA123"
+
+
 def test_cloud_credentials_missing_expiration_is_defensive() -> None:
     """SYNTHETIC -- both real fixtures have Expiration present. Confirms
     the defensive .get() handling doesn't blow up if a future response
@@ -282,7 +326,8 @@ async def test_login_full_success_chain() -> None:
     assert result.mqtt_endpoint == "mqtt.example.invalid"
     assert result.http_base_auth == "https://api-auth.example.invalid"
     assert result.credentials.access_key_id == "AKIDEXAMPLE"
-    assert result.robots == {"BLID123": {}}
+    assert "BLID123" in result.robots
+    assert result.robots["BLID123"].robot_id is None  # empty fixture entry, see test below for real fields
     assert len(session.calls) == 3
     assert session.calls[0].startswith("GET")
     assert session.calls[1].startswith("POST")

@@ -56,7 +56,7 @@ await robot.connect()
 
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.get_state(timeout=8.0) -> ShadowResponse` | 🟢 | The classic/unnamed shadow — identity, capabilities, current mission status. |
+| `robot.get_state(timeout=8.0) -> ShadowResponse` | 🟢 | The classic/unnamed shadow — identity, capabilities, current mission status. `models.parse_robot_status_v2(state.payload...)` can attempt to extract a structured `RobotStatusV2` (battery/charging/dock status, bytecode-confirmed fields) from the reported state, but whether this structure actually appears there at all is unresolved — see that function's docstring. |
 | `robot.get_settings(timeout=8.0) -> ShadowResponse` | 🟢 | The named `"rw-settings"` shadow — only responds on SMART-tier devices, per binary analysis. |
 | `robot.set_setting(key, value, timeout=8.0) -> ShadowResponse` | 🟡 | Writes into the `rw-settings` shadow. |
 | `robot.watch_state(named=None, *, queue_maxsize=100) -> AsyncIterator[ShadowResponse]` | 🟢 | Yields every shadow delta as it arrives, until the generator is closed/cancelled. Bounded queue, drops oldest on overflow (logged). Pass `named="rw-settings"` to watch that shadow instead of the default. |
@@ -70,14 +70,13 @@ async for delta in robot.watch_state():
 
 ## Mission control
 
-The single largest confidence gap in the library — see the README's
-confidence table before relying on this against a real robot.
-
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.send_mission_command(command: RoutineCommand, timeout=8.0) -> ShadowResponse` | 🟢 (transport), 🟡 (payload never live-tested) | Publishes the command wrapped as `{"state":{"desired":{"cmd": ...}}}` to the **classic (unnamed) shadow**. Confirmed from the actual APK-bundled config file (`res/raw/base_roomba_config.json`) — the `"Control"`/`"AssetControlCommand"` entries both have `"namedShadow": ""`, unlike settings (`"rw-settings"`) or schedules (`"rw-schedule"`) in the same file. This is a primary-source confirmation, not decompiled-logic inference. Payload shape is separately source-confirmed. Never sent to a live server. |
+| `robot.send_simple_command(command: str, initiator="localApp") -> None` | 🟢 **confirmed live** | `"start"`/`"stop"`/`"pause"`/`"resume"`/`"dock"` — live-tested against a real robot, watched and confirmed by a real user actually reacting, not just an error-free response. Publishes `{"command", "time", "initiator"}` to a dedicated non-shadow MQTT topic (`{irbt_topic_prefix}/things/{blid}/cmd`) — see `mqtt_client.py`'s `cmd_topic()`/`publish_cmd()` for the full evidence trail. Fire-and-forget: no response wait, since there's no known server acknowledgment for this topic — poll `get_state()` afterward if you want confirmation. This is now the recommended way to do basic mission control. |
+| `robot.send_routine_command_via_cmd_topic(command: RoutineCommand) -> None` | 🟡 **experimental, unconfirmed** | For region-aware commands (specific rooms/zones, favorites) that `send_simple_command()` can't express. A reasoned hypothesis (the confirmed simple payload and `RoutineCommand`'s own confirmed fields share two exact key names — not coincidence), but NOT live-tested, and the risk profile is different from the topic-discovery case: a wrong guess here could mean a real device accepts something malformed and behaves unpredictably. Favor a `favorite_id`-referencing command over hand-built `regions` if experimenting with this. |
+| `robot.send_mission_command(command: RoutineCommand, timeout=8.0) -> ShadowResponse` | 🔴 **confirmed NOT working for basic commands** | The original approach (device shadow) — live-tested and found to time out with zero response for `start`/`stop`/etc. Kept only for the region-based use case above, which no source has verified either way. Do not use this for basic mission control — use `send_simple_command()` instead. |
 
-**`RoutineCommand`** — the payload for the above. Key fields:
+**`RoutineCommand`** — the payload for the two `RoutineCommand`-based methods above. Key fields:
 
 ```python
 from roombapy_prime.models import RoutineCommand, MissionCommandType, CommandParams
@@ -106,7 +105,7 @@ fields (`velocity_left`/`velocity_right`). `Region` pairs a `RegionType`
 | Method | Confidence | Notes |
 |---|---|---|
 | `robot.get_favorites() -> list[FavoriteV1]` | 🟢 | The only one of the five favorites endpoints with both HTTP method *and* response shape fully confirmed. |
-| `robot.create_favorite(favorite: FavoriteV1) -> dict` | 🟢 | POST, confirmed from bytecode (`CreateFavoriteRequest.<init>`). |
+| `robot.create_favorite(favorite: FavoriteV1) -> dict` | 🟢 | POST, confirmed from bytecode (`CreateFavoriteRequest.<init>`). Response key confirmed via bytecode (session 48): `favorite_id`. |
 | `robot.update_favorite(favorite_id, favorite: FavoriteV1) -> dict` | 🟢 | PUT, confirmed the same way. |
 | `robot.delete_favorite(favorite_id) -> dict` | 🟢 | DELETE, confirmed. |
 | `robot.order_favorite(favorite_id, *, insert_at=None, insert_before=None, insert_after=None) -> dict` | 🟢 | PUT; the three params are query parameters, not body fields (a real bug was caught and fixed here — see gap analysis). |
@@ -121,15 +120,16 @@ fields (`velocity_left`/`velocity_right`). `Region` pairs a `RegionType`
 
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.get_active_map_versions() -> list[dict]` | 🟢 | Confirmed field names from a real response (26th session): `p2map_id`, `active_p2mapv_id` (the map version), `name`, `state`, `visible`, `rooms_metadata`. For a typed result use `models.py::parse_active_map_versions()` — includes per-room `operating_mode_defaults`, which reuse `CommandParams` directly. |
-| `robot.get_map_metadata(p2map_id) -> dict` | 🟢 | |
-| `robot.set_map_name(p2map_id, name) -> dict` | 🟢 | |
-| `robot.set_map_orientation(p2map_id, orientation_rad) -> dict` | 🟢 | Clamped to (-π, π]. |
-| `robot.edit_map(p2map_id, command: MapEditCommandV1) -> dict` | 🟡 | **The actually-used path** (V1) — every room/zone/furniture/wall edit in the app goes through this. Envelope discriminator format around the confirmed field names is inferred by analogy, not confirmed. |
+| `robot.get_active_map_versions() -> list[dict]` | 🟢 | Confirmed field names from a real response (26th session): `p2map_id`, `active_p2mapv_id` (the map version), `name`, `state`, `visible`, `rooms_metadata`. For a typed result use `models/robot_info.py::parse_active_map_versions()` — includes per-room `operating_mode_defaults`, which reuse `CommandParams` directly. |
+| `robot.get_map_metadata(p2map_id) -> P2MapData` | 🟢 | Now returns a parsed `P2MapData` (`p2map_id`, `active_p2mapv_id`, `name`, `visible`, `user_orientation_rad`, etc.), confirmed via bytecode — previously raw JSON. |
+| `robot.set_map_name(p2map_id, name) -> dict` | 🟢 | Body `{"name": ...}` — CORRECTED (session 51): was sending `{"type": name}`, a genuine bug, confirmed and fixed via bytecode (`EditMapSettingsRequest.Command.SetName`). |
+| `robot.set_map_orientation(p2map_id, orientation_rad) -> dict` | 🟢 | Clamped to (-π, π]. Body `{"user_orientation_rad": ...}`, confirmed via bytecode. |
+| `robot.edit_map(p2map_id, command: MapEditCommandV1) -> dict` | 🟢 (envelope + 8/9 commands' fields), 🔴 (inner discriminator) | **The actually-used path** (V1) — every room/zone/furniture/wall edit in the app goes through this. The outer envelope (`{"edit_cmd": {...}, "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (session 48) — several were wrong camelCase guesses, now corrected. `SetRoomMetadata`/the `VirtualWall` Linear/Rectangle/NoMopZone discriminator use hand-written custom serializers and remain unconfirmed. The discriminator value inside `edit_cmd` itself (`"type": "<CommandName>"`) is a plausible default assumption, not independently confirmed. |
 | `robot.edit_map_v2(p2map_id, command: MapEditCommand) -> dict` | — | The app-side dead code path (confirmed never called by the app itself). Kept for completeness; prefer `edit_map()`. |
 | `robot.get_live_map_stream() -> LiveMapStreamInit` | 🟢 | REST call that's actually a keep-alive ping, not a topic fetch — see `watch_live_map()`. |
 | `robot.watch_live_map(*, queue_maxsize=100, keep_alive_interval=10.0) -> AsyncIterator[...]` | 🟢 (topic pattern), 🟡 (concatenation order) | Subscribes to the fixed livemap topic directly; the REST call above just keeps the stream alive in the background. |
-| `robot._rest.download_map_bundle(url) -> bytes` + `models.parse_map_bundle(data) -> dict` | 🟢 (mechanism), 🔴 (file naming inside the archive) | Deliberately unsigned GET — the app opens the pre-signed URL directly, no auth headers. |
+| `robot.get_map_geojson_link(map_id, map_version) -> dict` | 🟢 | Fetches the presigned download URL for the map bundle below. Response key confirmed via bytecode (session 48): `map_url` — read directly from the native Kotlin `P2MapURL` class's serializer (not a Python model in this library, just the evidence source — a single field wasn't worth its own dataclass; use `result["map_url"]` directly). Previously entirely unconfirmed. |
+| `robot._rest.download_map_bundle(url) -> bytes` + `models.parse_map_bundle(data) -> dict` | 🟢 (mechanism + content structure, session 47), 🟡 (manifest's own filename in the archive) | Deliberately unsigned GET — the app opens the pre-signed URL directly, no auth headers. Every content type (rooms, borders, hazards, etc.) is a confirmed GeoJSON Feature — see the map read-models table below. The bundle's own `BundleManifest` names the real filepath for every OTHER content type; only the manifest's own filename within the archive is still unconfirmed. |
 
 `edit_map()` takes one of 9 V1 command dataclasses: `RenameRoomV1`,
 `SplitRoomV1`, `MergeRoomsV1`, `SetRoomTypeV1`, `SetRoomMetadataV1`,
@@ -142,7 +142,7 @@ fields (`velocity_left`/`velocity_right`). `Region` pairs a `RegionType`
 
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.get_schedules(household_id) -> dict` | 🟢 | |
+| `robot.get_schedules(household_id) -> SchedulesResponse` | 🟢 | Now returns a parsed `SchedulesResponse` (→ list of `SchedulesList` → list of schedules), confirmed via bytecode — previously raw JSON. |
 | `robot.create_schedules(household_id, schedules: list[ScheduleOptions]) -> dict` | 🟢 | POST, confirmed from bytecode. |
 | `robot.update_schedules(household_id, household_schedule_id, schedules: list[HouseholdSchedule]) -> dict` | 🟢 | PUT, confirmed. |
 | `robot.delete_schedule(household_id, household_schedule_id) -> dict` | 🟢 | DELETE. |
@@ -162,18 +162,18 @@ analogy to favorites, not generically confirmable from bytecode), and
 
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.get_user_households() -> dict` | 🔴 | Implemented despite being dead code in the current app version — the endpoint likely still exists server-side even though nothing in the app calls it. HTTP method is REST convention, not confirmed from a request class like everything else here. |
-| `robot.get_dnd_settings(household_id) -> dict` | 🟢 | Response form: see `DNDStatusResponse.from_json()`. |
+| `robot.get_user_households() -> dict` | 🔴 | Implemented despite being dead code in the current app version — the endpoint likely still exists server-side even though nothing in the app calls it. HTTP method is REST convention, not confirmed from a request class like everything else here. Response entries can be parsed further via `HouseholdSetting.from_json()`/`HouseholdSettingOptions.from_json()` (the latter — household demographic info, adult/kid/pet counts — confirmed via bytecode, session 48). |
+| `robot.get_dnd_settings(household_id) -> DNDStatusResponse` | 🟢 | Now returns a parsed `DNDStatusResponse` directly (previously raw JSON despite the model existing since the ninth session). |
 | `robot.set_dnd_settings(household_id, settings: dict) -> dict` | 🟢 (method), 🔴 (body shape) | |
-| `robot.get_cleaning_profiles(asset_id, p2map_id) -> dict` | 🟢 | See `CleaningProfile.from_json()` — `DEEP`/`LIGHT`/`NORMAL`/`SMART`, each with its own `CommandParams`. |
-| `robot.get_default_routines(p2map_id) -> dict` | 🟢 | Auto-generated per-map cleaning suggestions. See `parse_default_routines()`. |
-| `robot.get_robot_parts() -> dict` | 🟢 | Consumable part status (filter/brush/battery wear, unconfirmed which). Confirmed from `res/raw/base_roomba_config.json` (a primary-source config file bundled in the APK), not decompiled logic — see `docs/base_roomba_config_REFERENCE.json`. |
+| `robot.get_cleaning_profiles(asset_id, p2map_id=None) -> dict` | 🟢 (query params, session 38), 🔴 (response envelope) | Query params corrected via direct bytecode read: `robotId`/`includeSmart`/`p2map_id` (not the previously-guessed `asset_id`/`p2map_id`) — `p2map_id` now optional, matching real branching logic. Response envelope itself still unconfirmed (only the per-entry `CleaningProfile.from_json()` shape is) — `DEEP`/`LIGHT`/`NORMAL`/`SMART`, each with its own `CommandParams`. |
+| `robot.get_default_routines(p2map_id) -> RoutinesDefaultsResponse` | 🟢 | Auto-generated per-map cleaning suggestions. Now returns a parsed `RoutinesDefaultsResponse` (also captures `routine_builder_defaults`, previously not exposed at all), confirmed via bytecode. |
+| `robot.get_robot_parts() -> RobotPartsInfo` | 🟢 | Consumable part status (filter/brush/battery wear, unconfirmed which). Confirmed from `res/raw/base_roomba_config.json` (a primary-source config file bundled in the APK), not decompiled logic — see `docs/base_roomba_config_REFERENCE.json`. Now returns a parsed `RobotPartsInfo` directly. |
 | `robot.reset_robot_parts() -> dict` | 🟢 (method), 🔴 (body shape) | Same source as above; presumably resets a part's wear counter after replacement. |
-| `robot.get_serial_number_data() -> dict` | 🟢 | Confirmed structure (26th session): serial number, user-assigned robot name, `family` (e.g. `"Roomba Combo"`), `series`. For a typed result use `models.py::RobotSerialInfo.from_json()`. |
+| `robot.get_serial_number_data() -> RobotSerialInfo` | 🟢 | Confirmed structure (26th session): serial number, user-assigned robot name, `family` (e.g. `"Roomba Combo"`), `series`. Now returns a parsed `RobotSerialInfo` directly. |
 | `robot.poll_echo_value() -> dict` | 🟢 (method), 🔴 (body/response shape) | "Find my robot" — triggers the device's echo/chirp. Confirmed from the same config file (`"PollEchoValueCommand,Set"`); matches the `SetRoombaEchoAwsIotSerializer` found during native analysis. No body sent by default. |
 | `robot.get_time_estimates(body: dict) -> dict` | 🟢 (method/URL), 🔴 (body shape) | `POST` despite being read-only in the config (`"read": true`) — the body presumably specifies which mission/rooms to estimate. Caller supplies the body directly; shape not reverse-engineered. |
 | `robot.reset_robot() -> dict` | 🟢 (method/URL), ⚠️ | Confirmed from the config file, but the name and `"write": true` strongly suggest a real, consequential reset — treat as destructive until proven otherwise. |
-| `robot.get_notifications(app_version="1.0") -> dict` | 🟢 | Timeline/notification feed (`event_type=HKC`, meaning not decoded — taken verbatim from the config). |
+| `robot.get_notifications(app_version="2.2.4") -> dict` | 🟢 | Timeline/notification feed (`event_type=HKC`, meaning not decoded — taken verbatim from the config). `app_version` default CORRECTED (session 36) from the previous, evidence-free `"1.0"` placeholder to `"2.2.4"` (the app's own confirmed `BuildConfig.VERSION_NAME`) — the likely cause of an earlier live HTTP 400. |
 
 ---
 
@@ -245,20 +245,32 @@ mission remains available via `MissionHistoryEntry.raw`.
 ## Model index
 
 Everything above covers the models you're likely to construct or read
-directly. The rest of `models.py` (~85 classes total) breaks down as:
+directly. `models.py` was split into a `models/` package (session 55)
+for navigability — `from roombapy_prime.models import X` still works
+exactly the same either way, since `roombapy_prime/models/__init__.py`
+re-exports everything. The package (~150 classes total, across ten
+files organized by feature area — `geometry`, `mission_control`,
+`map_bundle`, `map_editing`, `favorites`, `schedules_dnd`,
+`mission_history`, `robot_info`, `livemap`, `enums_common`) breaks
+down as:
 
 | Category | Examples | Where to look |
 |---|---|---|
 | V1 map-edit commands | `RenameRoomV1`, `SplitRoomV1`, `SetVirtualWallsV1`, ... | "Maps" above |
 | V2 map-edit commands (dead code, kept for completeness) | `SetRoomMetadata`, `MergeRooms`, `SetFurniture`, ... | `edit_map_v2()`'s docstring |
-| Map read-models (what's *in* a downloaded map bundle) | `RoomInfo`, `BorderInfo`, `HazardInfo`, `FurnitureInfoRead`, `TrajectoryInfo`, `CoverageInfo`, ... | `parse_map_bundle()` in "Maps" above |
+| Map bundle read-models (what's *in* a downloaded map bundle) — REBUILT session 47, renamed | `RoomFeature`, `BorderFeature`, `HazardFeature`, `FurnitureFeature`, `TrajectoryFeature`, `CoverageFeature`, `PolicyZoneFeature`, `CleanZoneFeature`, `AdHocCleanZoneFeature`, `FloorPlanFeature`, `FloorTypeFeature`, `BundleManifest` | `parse_map_bundle()` in "Maps" above |
 | Geometry primitives | `Point`, `Polygon`, `MultiPolygon`, `LineString` | used throughout |
 | Live map streaming | `PositionUpdateMessage`, `MapUpdateMessage`, `LiveMapStreamInit` | "Maps" above |
 | Mission preference vocabulary | `CleaningMode`, `VacuumPowerLevel`, `LiquidAmountLevel`, `CleaningPasses`, `SoftwareScrub` | referenced by `CommandParams`/`CleaningProfile` |
+| Structured robot status (unresolved data source) | `RobotStatusV2`, `DockControl`, `RobotStatusButton`, `RobotStatusError` | `get_state()`'s docstring — NOT confirmed to appear there |
+| Default routines | `RoutinesDefaultsResponse`, `RoutineBuilderDefaults`, `RegionDefaults`, `OperatingModeProfile` | `get_default_routines()` above |
+| Login-response models | `RobotLoginEntry`, `RobotCapabilities`, `RobotDigitalCapabilities` | `auth.py`'s `LoginResult.robots` |
 
-If you need one of these, its docstring in `models.py` documents
-exactly where the field names came from (source line or bytecode
-inspection) and what, if anything, is still uncertain about it.
+If you need one of these, its docstring in `models/` (whichever
+submodule it lives in — an IDE "go to definition" gets you there
+regardless) documents exactly where the field names came from (source
+line or bytecode inspection) and what, if anything, is still uncertain
+about it.
 
 ---
 
@@ -266,7 +278,7 @@ inspection) and what, if anything, is still uncertain about it.
 
 `base_roomba_config.json` lists 47 `namedShadow: "rw-settings"` commands total. As of the 32nd
 session, a real `get_settings()` response (chairstacker) confirmed the actual field names for
-most of the settings below — `models.py::RobotSettings.from_json()` now covers them. Apply it to
+most of the settings below — `models/robot_info.py::RobotSettings.from_json()` now covers them. Apply it to
 `response.payload["state"]["reported"]` (same nesting as `get_state()`).
 
 | commandId (write-side, still unconfirmed) | Confirmed field on `RobotSettings` |

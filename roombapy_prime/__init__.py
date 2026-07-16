@@ -26,10 +26,13 @@ Module structure:
     auth.py           -- Gigya -> Custom Authorizer token
     mqtt_client.py     -- AWS IoT WebSocket connection, real cert verification
     rest_client.py     -- p2maps, favorites, schedules, DND, mission history, etc.
-    models.py          -- state/command payload types
+    models/            -- state/command payload types (package, split by feature area
+                          since session 55: geometry, mission_control, map_bundle,
+                          map_editing, favorites, schedules_dnd, mission_history,
+                          robot_info, livemap, enums_common)
     prime_robot.py     -- public class (analogous to roomba.py in roombapy)
     prime_factory.py   -- factory: username/password/blid instead of a local IP
     diagnostics.py     -- live validation script against a real account
 """
 
-__version__ = "0.1.9a0"
+__version__ = "0.1.10a0"
