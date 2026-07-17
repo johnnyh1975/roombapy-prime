@@ -8,6 +8,34 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a1] - 2026-07-17
+
+### Added
+
+- **`verify_mission_commands.py` gained an interactive mid-mission state capture**, inserted
+  between Start and Stop in the core test flow. The script's existing before/after snapshots
+  around each command are taken only ~3 seconds apart -- enough to prove a command was accepted,
+  not enough to represent a genuinely active mission. This new step waits for explicit user
+  confirmation ("robot is now visibly, actively cleaning") before calling `get_state()` again, no
+  fixed sleep involved. Directly targets the long-open `RobotStatusV2` placement question: two
+  independent real accounts (chairstacker, jadestar1864) have so far only ever produced
+  idle-to-idle captures with identical top-level keys, which is consistent with either "wrong
+  data source" or "these fields only populate during an active mission" -- neither has been
+  distinguished yet because no capture has ever been taken while a robot was confirmed to be
+  actually cleaning.
+- **New `_diff_reported_keys()` helper**, printed immediately (not just written to
+  `--dump-config`) so whoever runs the script sees the answer in the terminal: which top-level
+  `reported` keys are new, missing, or changed in value versus the pre-mission baseline.
+- 6 new tests (`test_diff_reported_keys_*`, `test_capture_mid_mission_state_*`), same
+  fully-mocked style as the rest of this test file. 345/345 tests green, ruff clean.
+
+### Changed
+
+- Module docstring corrected: the previous claim that the existing before/after already captured
+  "an active mission state" was inaccurate for the ~3-second Start window -- reworded to describe
+  what that window actually establishes (command accepted) versus what the new mid-mission
+  capture targets (a genuinely active state).
+
 ## [0.1.11a0] - 2026-07-16
 
 ### Fixed

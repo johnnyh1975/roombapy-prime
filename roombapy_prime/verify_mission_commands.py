@@ -16,7 +16,10 @@ SAFETY DESIGN (doubly secured, both levels are mandatory):
    aborts.
 
 FLOW (deliberately conservative, not a full cleaning cycle):
-  START -> brief pause, during which the robot should react -> STOP.
+  START -> brief pause, during which the robot should react -> an
+  INTERACTIVE mid-mission capture (waits for you to confirm the robot
+  is actually, visibly cleaning -- not a fixed sleep, see
+  _capture_mid_mission_state()) -> STOP.
   Optional, asked individually: PAUSE/RESUME, DOCK.
 
 UPDATED (session 39): sends via send_simple_command() (the
@@ -30,10 +33,15 @@ plain verb ("start"/"stop"/"pause"/"resume"/"dock") is sent instead of
 a full RoutineCommand.
 
 Before AND after every command sent, get_state() is additionally
-fetched and the raw reported state is displayed -- an active mission
-state has never been captured before this (every prior real response
-showed a robot with a loaded map, but not actively cleaning). That's
-itself new, previously unconfirmed information.
+fetched and the raw reported state is displayed. NOTE (session 57):
+the "after" snapshot around Start is only ~3 seconds post-command --
+enough to prove the command was accepted, NOT enough to represent a
+genuinely active mission (both real accounts on record, chairstacker
+and jadestar1864, show identical top-level keys between idle-before
+and seconds-after-Start). The separate, interactive mid-mission
+capture between Start and Stop is what actually targets an active-
+mission state and diffs it against the pre-mission baseline -- that
+comparison has never been made before this.
 
 The result is summarized as a markdown report just like diagnostics.py,
 including a pre-filled GitHub issue link (same redaction logic, same
@@ -103,6 +111,86 @@ async def _show_state(robot: Any, label: str) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001
         print(f"\n  [{label}] get_state() failed: {type(exc).__name__}: {exc}")
         return None
+
+
+def _diff_reported_keys(
+    baseline: dict[str, Any] | None, current: dict[str, Any] | None
+) -> None:
+    """Prints which top-level `reported` keys are new/missing/changed
+    between two _show_state() snapshots.
+
+    NEW (session 57, in response to the still-open RobotStatusV2
+    placement question -- see models/robot_info.py's RobotStatusV2 and the
+    fortieth/fifty-sixth gap-analysis addenda). Every real get_state()
+    capture so far, including this script's own existing before/after
+    around each command, was taken within ~3 seconds of sending Start --
+    both real accounts (chairstacker, jadestar1864) show IDENTICAL
+    top-level keys between idle-before and seconds-after-Start, which
+    is consistent with either "wrong data source entirely" or "these
+    fields only populate later, once a mission is genuinely under way".
+    A real diff against a snapshot taken while the robot is confirmed,
+    visibly cleaning is the one comparison this project has never had.
+    Printed, not just silently included in --dump-config, so whoever
+    runs this interactively sees the answer immediately."""
+    baseline_keys = set((baseline or {}).get("reported") or {})
+    current_keys = set((current or {}).get("reported") or {})
+    new_keys = current_keys - baseline_keys
+    missing_keys = baseline_keys - current_keys
+    common_keys = baseline_keys & current_keys
+    changed_keys = {
+        key
+        for key in common_keys
+        if (baseline or {})["reported"].get(key) != (current or {})["reported"].get(key)
+    }
+
+    print("\n  -- Diff vs. pre-mission baseline --")
+    if new_keys:
+        print(f"  NEW top-level keys (absent before Start): {sorted(new_keys)}")
+    else:
+        print("  No new top-level keys appeared -- same shape as pre-mission idle state.")
+    if missing_keys:
+        print(f"  Keys present before but missing now: {sorted(missing_keys)}")
+    if changed_keys:
+        print(f"  Existing keys whose VALUE changed: {sorted(changed_keys)}")
+    else:
+        print("  No existing key's value changed either.")
+
+
+async def _capture_mid_mission_state(
+    robot: Any,
+    report: Report,
+    raw_capture: dict[str, Any],
+    baseline: dict[str, Any] | None,
+) -> None:
+    """Waits for explicit user confirmation that the robot is ACTUALLY,
+    visibly cleaning -- not a fixed sleep -- then captures get_state()
+    and diffs it against the pre-mission baseline.
+
+    NEW (session 57). Replaces the assumption that _run_command()'s
+    existing 3-second before/after window around "start" was enough to
+    represent an active mission: it isn't, it only proves the command
+    was accepted. This is deliberately interactive rather than a longer
+    fixed sleep, since "how long until a robot is genuinely cleaning"
+    varies by model/room and isn't something to guess at either."""
+    print(f"\n{'=' * 60}")
+    print("MID-MISSION CAPTURE")
+    print("The robot should now be running. Wait until you can SEE it actually")
+    print("cleaning (moving, brush/vacuum sound, an on-robot or app cleaning")
+    print("indicator -- whatever your model shows) before confirming below.")
+    print("Take your time -- this step waits for you, there is no timeout.")
+    if not _confirm("Robot is now visibly, actively cleaning -- capture state now?"):
+        report.add("Mid-mission capture", "SKIPPED", "not confirmed by user")
+        return
+
+    await asyncio.sleep(2.0)  # small buffer so a just-updated shadow has settled
+    mid_mission = await _show_state(robot, "Mid-mission (actively cleaning)")
+    if raw_capture is not None:
+        raw_capture["Mid-mission (actively cleaning)"] = mid_mission
+    _diff_reported_keys(baseline, mid_mission)
+    report.add(
+        "Mid-mission capture", "OK",
+        "captured -- see the diff above and 'Mid-mission (actively cleaning)' in --dump-config",
+    )
 
 
 async def _run_command(
@@ -182,7 +270,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
                 "the report above for the actual discovery-response keys, which is what's "
                 "needed to fix this properly."
             )
-            for label in ("Start", "Stop", "Start (for pause test)", "Pause", "Resume", "Stop (after pause test)", "Dock"):
+            for label in ("Start", "Mid-mission capture", "Stop", "Start (for pause test)", "Pause", "Resume", "Stop (after pause test)", "Dock"):
                 report.add(label, "SKIPPED", "irbt_topic_prefix missing -- see report above")
             await robot.disconnect()
             return report, raw_capture
@@ -191,9 +279,13 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         started = await _run_command(robot, report, raw_capture, "start", "Start")
 
         if started:
+            await _capture_mid_mission_state(
+                robot, report, raw_capture, raw_capture.get("Start (before)")
+            )
             await _run_command(robot, report, raw_capture, "stop", "Stop")
         else:
             report.add("Stop", "SKIPPED", "Start was not confirmed, Stop doesn't make sense without a running mission")
+            report.add("Mid-mission capture", "SKIPPED", "Start was not confirmed")
 
         print("\n== Optional additional tests ==")
         if _confirm("Also test Pause/Resume? (needs a freshly started mission)"):
