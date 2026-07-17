@@ -892,7 +892,13 @@ def test_schedule_options_to_json_uses_confirmed_snake_case_keys() -> None:
     reverting to the wrong, previously-guessed camelCase keys.
     Confirmed directly from ScheduleOptions$$serializer's <clinit>:
     robot_id (not assetId), end_commands (not endCommands),
-    created_time (not createdTime), force_cloud (not forceCloud)."""
+    created_time (not createdTime), force_cloud (not forceCloud).
+
+    UPDATED (session 57): end_commands/commands entries are now
+    wrapped as {"command": {...}}, confirmed via a real live
+    get_schedules() response (chairstacker) -- the previous, unwrapped
+    shape would very likely have been rejected or misinterpreted by
+    the real create/update schedule endpoints."""
     from roombapy_prime.models import RoutineCommand, MissionCommandType, ScheduleOptions
 
     end_cmd = RoutineCommand(command_type=MissionCommandType.STOP, asset_id="a1")
@@ -907,7 +913,7 @@ def test_schedule_options_to_json_uses_confirmed_snake_case_keys() -> None:
     body = options.to_json()
 
     assert body["robot_id"] == "asset1"
-    assert body["end_commands"] == [end_cmd.to_json()]
+    assert body["end_commands"] == [{"command": end_cmd.to_json()}]
     assert body["created_time"] == "2026-07-15T00:00:00Z"
     assert body["force_cloud"] is True
     assert "assetId" not in body
@@ -936,28 +942,43 @@ def test_parse_default_routines() -> None:
 def test_routines_defaults_response_from_json_full_envelope() -> None:
     """NEW (session 49) -- the confirmed top-level envelope for
     get_default_routines(), including routine_builder_defaults, which
-    the older parse_default_routines() helper never captured at all."""
+    the older parse_default_routines() helper never captured at all.
+
+    CORRECTED (session 57): `regions` is a dict keyed by region ID
+    (confirmed via a real live response, chairstacker), not a list as
+    originally guessed -- the old guess would have crashed
+    (`AttributeError: 'str' object has no attribute 'get'`) against
+    any account with real routine_builder_defaults content.
+    `operating_mode` is an int, and `params` is CommandParams-shaped,
+    both also corrected in the same pass."""
     from roombapy_prime.models import RoutinesDefaultsResponse
 
     response = RoutinesDefaultsResponse.from_json({
         "routines": [{"name": "Whole Home"}],
         "routine_builder_defaults": {
-            "regions": [
-                {
-                    "type": "room",
-                    "operating_mode": "vacuum",
-                    "by_operating_mode": {"vacuum": {"params": {"suction": 3}, "profile_type": "standard"}},
+            "regions": {
+                "15": {
+                    "type": "rid",
+                    "operating_mode": 512,
+                    "by_operating_mode": {
+                        "512": {"params": {"suctionLevel": 4, "carpetBoost": True}, "profile_type": "deep", "updated_at": 1783107415},
+                    },
                 }
-            ]
+            }
         },
     })
 
     assert len(response.routines) == 1
     assert response.routines[0].name == "Whole Home"
     assert response.routine_builder_defaults is not None
-    region = response.routine_builder_defaults.regions[0]
-    assert region.region_type == "room"
-    assert region.by_operating_mode["vacuum"].profile_type == "standard"
+    region = response.routine_builder_defaults.regions["15"]
+    assert region.region_type == "rid"
+    assert region.operating_mode == 512
+    mode = region.by_operating_mode["512"]
+    assert mode.profile_type == "deep"
+    assert mode.updated_at == 1783107415
+    assert mode.params.suction_level == 4
+    assert mode.params.carpet_boost is True
 
 
 def test_routines_defaults_response_handles_missing_builder_defaults() -> None:
@@ -965,6 +986,42 @@ def test_routines_defaults_response_handles_missing_builder_defaults() -> None:
 
     response = RoutinesDefaultsResponse.from_json({"routines": []})
     assert response.routine_builder_defaults is None
+
+
+def test_routines_defaults_response_handles_dict_keyed_routines() -> None:
+    """Regression test (session 56) for a real crash in chairstacker's
+    live v0.1.10a0 run: `AttributeError: 'str' object has no attribute
+    'get'`. Leading hypothesis: the real "routines" value is a JSON
+    OBJECT keyed by routine ID/type (a pattern already seen elsewhere
+    in this project, e.g. RoomMetadataEntry.operating_mode_defaults),
+    not a JSON array -- iterating a dict in Python walks its string
+    keys, reproducing exactly this error when each key gets passed to
+    Routine.from_json()."""
+    from roombapy_prime.models import RoutinesDefaultsResponse
+
+    response = RoutinesDefaultsResponse.from_json({
+        "routines": {"whole_home": {"name": "Whole Home"}, "kitchen_only": {"name": "Kitchen"}}
+    })
+    assert len(response.routines) == 2
+    assert {r.name for r in response.routines} == {"Whole Home", "Kitchen"}
+
+
+def test_routines_defaults_response_skips_non_dict_entries_without_crashing() -> None:
+    """Regression test (session 56) -- reproduces the exact crash shape
+    directly (a list containing bare strings) and confirms it's now
+    skipped gracefully rather than raising."""
+    from roombapy_prime.models import RoutinesDefaultsResponse
+
+    response = RoutinesDefaultsResponse.from_json({"routines": ["whole_home", "kitchen_only"]})
+    assert response.routines == []
+
+
+def test_parse_default_routines_handles_dict_keyed_routines() -> None:
+    """Same fix, convenience-function entry point (session 56)."""
+    from roombapy_prime.models import parse_default_routines
+
+    result = parse_default_routines({"routines": {"a": {"name": "A"}, "b": {"name": "B"}}})
+    assert {r.name for r in result} == {"A", "B"}
 
 
 # =========================================================================
@@ -1219,6 +1276,145 @@ def test_mission_timeline_event_relocalizing_and_tentative_location_share_type()
     assert isinstance(e.tentative_location, TentativeLocationEvent)
     assert e.relocalizing.map_id == "m1"
     assert e.tentative_location.map_id == "m2"
+
+
+def test_mission_timeline_events_from_real_live_mission_history() -> None:
+    """NEW (session 58) -- regression tests using real event payloads
+    from chairstacker's --dump-config output (session 57), not just
+    synthetic examples. Verification done in an ad-hoc script during
+    that session was not preserved as a test at the time -- fixed
+    here, since unpreserved verification isn't defended against
+    future regressions. Covers 4 of the 20 sub-event types not
+    previously exercised against real data: room, pause, traversal,
+    charge (the other 6 real events from the same dump -- padWash,
+    evac, travel x2, zone, reloc, start -- were already covered by
+    existing tests before this session)."""
+    from roombapy_prime.models import MissionTimelineEvent, RoomEvent, TraversalEvent, TraversalType
+
+    room_event = MissionTimelineEvent.from_json({
+        "type": "room",
+        "room": {
+            "area": 0, "p2mapvId": "260715T212223.861", "rid": "11",
+            "passCount": 0, "p2mapId": "6F55705AE0BF169D69BDBFC9D858B5D2-1758329350",
+        },
+        "ts": 1784150543,
+    })
+    assert isinstance(room_event.room, RoomEvent)
+    assert room_event.room.region_id == "11"
+    assert room_event.room.pass_count == 0
+    assert room_event.room.map_version == "260715T212223.861"
+
+    pause_event = MissionTimelineEvent.from_json({"type": "pause", "ts": 1784150552})
+    assert pause_event.event_type == "pause"
+    assert pause_event.start_time == 1784150552
+
+    traversal_event = MissionTimelineEvent.from_json({
+        "type": "traversal",
+        "traversal": {
+            "p2mapvId": "260715T130113.944", "rid": "11", "type": "region",
+            "p2mapId": "6F55705AE0BF169D69BDBFC9D858B5D2-1758329350",
+        },
+        "ts": 1784120473, "ets": 1784120479,
+    })
+    assert isinstance(traversal_event.traversal, TraversalEvent)
+    assert traversal_event.traversal.traversal_type == TraversalType.REGION
+    assert traversal_event.traversal.region_id == "11"
+
+    charge_event = MissionTimelineEvent.from_json({"type": "charge", "ts": 1784120914})
+    assert charge_event.event_type == "charge"
+    assert charge_event.start_time == 1784120914
+
+
+def test_robot_serial_info_from_real_live_response() -> None:
+    """NEW (session 58) -- real live get_serial_number_data() response
+    (chairstacker, session 57's --dump-config), every field checked --
+    previously verified ad-hoc without being preserved as a test."""
+    from roombapy_prime.models import RobotSerialInfo
+
+    result = RobotSerialInfo.from_json({
+        "RobotID": "6F55705AE0BF169D69BDBFC9D858B5D2",
+        "SerialNumber": "G185020H250311N105749",
+        "built_as_sku": "g185020",
+        "family_variant": "g1",
+        "is_raas": False,
+        "is_refurbished": False,
+        "is_smartcare": False,
+        "min_utc_reg_date": 1758240000,
+        "name": "House_Bot",
+        "serial_history": [{"serial_number": "G185020H250311N105749", "effective_from": 1741727474}],
+        "sku": "g185020",
+        "series": "G1",
+        "family": "Roomba Combo",
+    })
+
+    assert result.robot_id == "6F55705AE0BF169D69BDBFC9D858B5D2"
+    assert result.serial_number == "G185020H250311N105749"
+    assert result.name == "House_Bot"
+    assert result.family == "Roomba Combo"
+    assert result.series == "G1"
+    assert len(result.serial_history) == 1
+
+
+def test_parse_user_households_from_real_live_response() -> None:
+    """NEW (session 58) -- real live get_user_households() response
+    (chairstacker, session 57's --dump-config) -- previously verified
+    ad-hoc without being preserved as a test."""
+    from roombapy_prime.models import parse_user_households
+
+    result = parse_user_households([
+        {
+            "household_id": "c4714a01-f6ad-4ace-b111-d326d83867a5",
+            "owner_cognito_id": "us-east-1:b06855a2-d0ed-45d8-a458-0ea4cecdacab",
+            "household_name": "#AUTO_GENERATED_HOUSEHOLD#",
+            "has_precise_location": False,
+            "household_robots": [
+                {
+                    "household_id": "c4714a01-f6ad-4ace-b111-d326d83867a5",
+                    "entity_id": "robot#6F55705AE0BF169D69BDBFC9D858B5D2",
+                    "robot_id": "6F55705AE0BF169D69BDBFC9D858B5D2",
+                    "creation_timestamp": 1758328461,
+                }
+            ],
+            "household_users": [
+                {
+                    "household_id": "c4714a01-f6ad-4ace-b111-d326d83867a5",
+                    "entity_id": "user#us-east-1:b06855a2-d0ed-45d8-a458-0ea4cecdacab",
+                    "cognito_id": "us-east-1:b06855a2-d0ed-45d8-a458-0ea4cecdacab",
+                    "creation_timestamp": 1604711200,
+                }
+            ],
+        }
+    ])
+
+    assert len(result) == 1
+    h = result[0]
+    assert h.household_id == "c4714a01-f6ad-4ace-b111-d326d83867a5"
+    assert h.household_name == "#AUTO_GENERATED_HOUSEHOLD#"
+    assert len(h.household_robots) == 1
+    assert h.household_robots[0].robot_id == "6F55705AE0BF169D69BDBFC9D858B5D2"
+    assert len(h.household_users) == 1
+    assert h.household_users[0].cognito_id == "us-east-1:b06855a2-d0ed-45d8-a458-0ea4cecdacab"
+
+
+def test_border_feature_is_bare_feature_with_empty_properties_in_real_data() -> None:
+    """NEW (session 58) -- confirms via real live bundle structure
+    (chairstacker, session 57) that BorderFeature really is a single,
+    bare Feature (no "features" wrapper list like room/cleanZone/
+    policyZone/dockPose/floorTypes all have), and its properties are
+    genuinely empty in practice -- both already modeled this way from
+    bytecode evidence, now independently confirmed structurally
+    against a real bundle rather than resting on bytecode alone."""
+    from roombapy_prime.models import BorderFeature
+
+    # Real bundle's borders file: {"type": "...", "geometry": {...}, "properties": {}}
+    # -- a bare Feature, not {"type": "...", "features": [...]}
+    result = BorderFeature.from_json({
+        "type": "Feature",
+        "id": "b1",
+        "geometry": {"type": "MultiPolygon", "coordinates": []},
+        "properties": {},
+    })
+    assert result.feature_id == "b1"
 
 
 def test_parse_mission_timeline_accepts_dict_with_events_key() -> None:

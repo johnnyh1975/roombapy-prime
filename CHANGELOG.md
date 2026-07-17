@@ -8,6 +8,43 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a0] - 2026-07-16
+
+### Fixed
+
+- **Critical bug fixed: `get_default_routines()` would crash for any account with real
+  `routine_builder_defaults` content.** `RoutineBuilderDefaults.regions` was modeled as a list
+  (an unconfirmed guess, since bytecode alone couldn't distinguish List from Dict), but a real
+  live response (chairstacker) confirms it's actually a dict keyed by region ID. Iterating a dict
+  in a list comprehension yields its string keys, not values — the old code would raise
+  `AttributeError: 'str' object has no attribute 'get'` the moment this field had real content.
+  Fixed, along with two related corrections found in the same response: `RegionDefaults
+  .operating_mode` is an int, not a str, and `OperatingModeProfile.params` is properly
+  `CommandParams`-shaped (previously untyped `Any`) with a previously-missing sibling field,
+  `updated_at`.
+- **A second, separate real live crash fixed in the same area**: `get_default_routines()` also
+  raised `AttributeError: 'str' object has no attribute 'get'` via `routines` itself (not just
+  `routine_builder_defaults.regions`) — the confirmed bytecode said `routines` is a
+  `List<Routine>`, but the real live value was very likely a JSON object keyed by routine
+  ID/type (the same dict-not-list pattern as above, e.g. `RoomMetadataEntry
+  .operating_mode_defaults`). `RoutinesDefaultsResponse.from_json()`/`parse_default_routines()`
+  now handle both possible shapes defensively, and silently skip any individual malformed entry
+  rather than letting one bad item crash the whole parse.
+- **`ScheduleOptions.to_json()` was missing a required wrapper.** A real live `get_schedules()`
+  response shows each `commands`/`end_commands` entry as `{"command": {...}}`, not a bare command
+  dict as previously assumed — the old output would very likely have been rejected or
+  misinterpreted by the real create/update schedule endpoints (never live-tested before now).
+  Fixed.
+- **`P2MapData` was missing several fields present in the real response**: `entity_type`,
+  `robot_id`, `sku`, and a full `rooms_metadata` list — a real `get_map_metadata()` capture shows
+  this endpoint's response is structurally almost identical to a single `P2MapVersion` entry
+  (`get_active_map_versions()`'s own model), reusing `RoomMetadataEntry` for the room list.
+  `BundleManifest.metadata` corrected from an assumed nested dict to `Any`, since a real bundle
+  shows it's actually a bare string. The map bundle's own confirmed content-type set corrected:
+  `dockPose` (singular), not `dockPoses` — and the manifest file's own filename within the
+  archive is now confirmed to literally be `"manifest"`, closing a question open since the fifth
+  session.
+
 ## [0.1.10a0] - 2026-07-16
 
 ### Security

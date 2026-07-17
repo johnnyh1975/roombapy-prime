@@ -28,7 +28,12 @@ class ScheduleTime:
     """Confirmed (androguard): day (List -- weekdays, the list content
     type not resolvable via the bytecode field signature, presumably
     int or string abbreviation like "MO"/"TU"), hour (Integer), min
-    (Integer)."""
+    (Integer).
+
+    CONFIRMED (session 57, real live response, chairstacker): "day" is
+    indeed a list of plain ints (e.g. [6], [1, 4]) -- weekday numbers,
+    not string abbreviations. The other hedged guess in this docstring
+    is now settled."""
 
     day: list[Any] = field(default_factory=list)
     hour: int | None = None
@@ -42,6 +47,10 @@ class ScheduleTime:
             body["min"] = self.min
         return body
 
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "ScheduleTime":
+        return cls(day=data.get("day") or [], hour=data.get("hour"), min=data.get("min"))
+
 
 @dataclass(frozen=True)
 class ScheduleDateEntry:
@@ -54,6 +63,16 @@ class ScheduleDateEntry:
     min: int | None = None
     month: int | None = None
     year: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "ScheduleDateEntry":
+        return cls(
+            day_of_month=data.get("dayOfMonth"),
+            hour=data.get("hour"),
+            min=data.get("min"),
+            month=data.get("month"),
+            year=data.get("year"),
+        )
 
     def to_json(self) -> dict[str, Any]:
         body: dict[str, Any] = {}
@@ -91,7 +110,17 @@ class ScheduleOptions:
     analogy to FavoriteV1.command_defs (the same pattern: a schedule
     triggers a RoutineCommand when it fires), but NOT directly
     confirmed via a generic signature. append/exclude similarly
-    uncertain (content unknown, left here as a raw list)."""
+    uncertain (content unknown, left here as a raw list).
+
+    CONFIRMED (session 57, real live get_schedules() response,
+    chairstacker): each commands/end_commands entry is wrapped as
+    {"command": {...RoutineCommand-shaped...}}, NOT a bare
+    RoutineCommand dict as previously assumed -- to_json() corrected
+    to add this wrapper (a genuine bug: the previous, unwrapped output
+    would very likely have been rejected or misinterpreted by the
+    real create/update schedule endpoints, never tested live before
+    now). Also confirms ScheduleTime.day is indeed a list of plain
+    ints (weekday numbers), settling that field's own hedged guess."""
 
     asset_id: str | None = None
     name: str | None = None
@@ -127,9 +156,9 @@ class ScheduleOptions:
         if self.until is not None:
             body["until"] = self.until.to_json()
         if self.commands:
-            body["commands"] = [c.to_json() for c in self.commands]
+            body["commands"] = [{"command": c.to_json()} for c in self.commands]
         if self.end_commands:
-            body["end_commands"] = [c.to_json() for c in self.end_commands]
+            body["end_commands"] = [{"command": c.to_json()} for c in self.end_commands]
         if self.append:
             body["append"] = self.append
         if self.exclude:

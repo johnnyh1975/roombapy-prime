@@ -2522,3 +2522,179 @@ time this project has ever seen its own read-endpoint surface behave consistentl
 other than the one it was originally developed against, which is genuine, meaningful progress.
 
 No code changes this session -- this addendum is a live-test confirmation record, not a fix.
+
+## Addendum (fifty-seventh session): a real live crash found by chairstacker, fixed defensively without the raw data to confirm the exact root cause
+
+chairstacker ran the map-edit test again on v0.1.10a0 -- same result as v0.1.9a0 (no named room
+found via `get_active_map_versions()` or the map bundle's rooms file, so the test correctly
+skipped rather than sending anything; 4 OK, 0 failed, 1 skipped). But a NEW, real crash surfaced
+separately: `get_default_routines()` raised `AttributeError: 'str' object has no attribute 'get'`.
+
+**Root cause, reasoned but not directly confirmed (the raw JSON wasn't available for this specific
+call -- chairstacker sent the v0.1.9a0 `--dump-config` output through a private channel, not
+pasted here, and this crash is newer than that capture).** The confirmed bytecode
+(`RoutinesDefaultsResponse$$serializer`) says `routines` is a `List<Routine>` -- but this exact
+error shape (a bare string handed to a function expecting a dict) is EXACTLY what happens if the
+real value is a JSON OBJECT keyed by routine ID/type instead of a JSON array: iterating a Python
+dict walks its string keys, and each key would get passed straight into `Routine.from_json()`,
+which immediately calls `.get()` on it. This is not a wild guess -- the exact same
+dict-keyed-by-ID pattern already exists elsewhere in this project's own confirmed models (e.g.
+`RoomMetadataEntry.operating_mode_defaults`, keyed by operating-mode ID strings like `"512"`), so
+it's a well-precedented hypothesis for this specific field too, even without the raw bytes in
+hand to prove it definitively.
+
+**Fixed defensively for both possible shapes**, rather than committing to one guess: a new
+`_parse_routines_list()` helper handles `routines` whether it's a dict (uses `.values()`) or a
+list, and silently skips any individual entry that isn't a dict rather than crashing the whole
+parse over one malformed item. Both `RoutinesDefaultsResponse.from_json()` and the older
+`parse_default_routines()` convenience function now share this same helper. Verified against the
+exact crash shape chairstacker hit (a list of bare strings) and the leading dict-keyed hypothesis,
+both now handled without raising.
+
+**Still open:** without the actual raw response for this specific call, the dict-keyed hypothesis
+remains reasoned rather than confirmed -- if chairstacker (or anyone) can share the actual
+`get_default_routines()` response content (via `--dump-config`, reviewed for anything sensitive
+before sharing, same caution as always), that would let this be confirmed definitively rather than
+inferred from precedent and the shape of the error alone.
+
+3 new tests, 335/335 green, ruff clean.
+
+## Addendum (fifty-seventh session): the first genuinely comprehensive real --dump-config capture -- one critical bug found and fixed, several fields corrected against evidence stronger than bytecode
+
+chairstacker ran a full `roombapy-prime-validate --dump-config` against v0.1.9a0 and shared the
+complete output -- by far the richest single piece of real evidence this project has had,
+covering nearly every read endpoint's actual field-level content in one capture (not just
+pass/fail). Went through it systematically rather than skimming for surprises.
+
+**Confirmed, with no changes needed, field-for-field:**
+- `RobotSettings` -- every single field in the real `get_settings()` response (27 keys including
+  `langs2`'s full nested structure) mapped correctly, nothing missing, nothing mistyped.
+- The entire `MissionTimelineEvent` sub-event system -- all 8 real timeline events in one real
+  mission (`padWash` x2, `evac`, `travel` x2 with both `TravelDestination.DOCK` and `.ZONE`
+  correctly resolving, `zone`, `reloc`, `start`) parsed into exactly the right sub-event
+  dataclass, first time this whole 20-type system has been checked against real data rather than
+  synthetic examples.
+- `RobotPart.last_updated_ts` and `CommandParams.gentle_mode` -- both already correctly present.
+
+**One critical, genuinely serious bug found and fixed.** `RoutineBuilderDefaults.regions` was
+modeled as a list (`session 49`'s own honest caveat: bytecode's generic-erasure limitation meant
+this was a guess, not a confirmation). The real response shows it's a dict keyed by region ID
+(`{"15": {...}, "100": {...}, ...}`) -- the exact same pattern as `RoomMetadataEntry
+.operating_mode_defaults` elsewhere in this codebase. Iterating a dict in a list comprehension
+yields its *keys* (strings), not its values, so the old code would call `.get()` on a plain
+string the moment it ran -- `AttributeError: 'str' object has no attribute 'get'` -- for any
+account with real `routine_builder_defaults` content. jadestar1864's clean 28/28 run in the
+previous addendum evidently had no such content to trigger this path; chairstacker's account
+did, and this is the first time this exact code path has ever executed against real data. Two
+related corrections found in the same response: `RegionDefaults.operating_mode` is an int (not
+str), and `OperatingModeProfile.params` is properly `CommandParams`-shaped with a
+previously-entirely-missing sibling field, `updated_at`.
+
+**A second, separate genuine bug found on the write side.** `ScheduleOptions.to_json()`'s
+`commands`/`end_commands` serialization produced a bare command dict, but the real
+`get_schedules()` response shows each entry wrapped as `{"command": {...}}`. Since
+`ScheduleOptions`/`HouseholdSchedule`/`RoutineCommand` were all previously write-only models (no
+`from_json()` existed for any of them -- confirmed by checking, not assumed), this asymmetry had
+never been caught: the write path would have silently sent a shape different from what the read
+path shows the server itself produces, for any actual `create_schedules()`/`update_schedules()`
+call, none of which has ever been live-tested. Fixed. Also confirms `ScheduleTime.day` is
+genuinely a list of plain ints (settling that field's own hedged docstring guess) --
+`ScheduleTime.from_json()`/`ScheduleDateEntry.from_json()` added for completeness (neither had
+existed before, despite their `to_json()` counterparts existing since early sessions).
+
+**`P2MapData` extended with fields the real response has that the bytecode-derived model
+lacked.** `entity_type`, `robot_id`, `sku`, and a full `rooms_metadata` list (reusing
+`RoomMetadataEntry`, exactly as `get_active_map_versions()`'s own `P2MapVersion` already does) --
+the real `get_map_metadata()` response is now confirmed to be structurally almost identical to a
+single `P2MapVersion` entry. Kept as a separate class rather than merged, since
+`user_orientation_rad` specifically has independent bytecode evidence tied to `P2MapData`'s own
+serializer.
+
+**Two small, low-risk map-bundle corrections**, both from real bundle content: the confirmed
+content-type set had `dockPoses` (a guess), corrected to the real filename `dockPose` (singular)
+-- this constant isn't used to gate any parsing logic elsewhere, so purely a documentation fix,
+no functional impact. `BundleManifest.metadata` was typed as a nested dict (also a guess); the
+real manifest.json shows it's a bare string, corrected to `Any` to honestly reflect that. And a
+genuinely nice resolution: the manifest file's own filename within the tar.gz -- an explicitly
+"UNCONFIRMED" caveat since the forty-seventh session -- is now settled: it's literally
+`"manifest"`.
+
+**Assessment:** this single real capture, examined carefully rather than treated as a pass/fail
+signal, surfaced more genuine, confirmed corrections than several recent sessions of static
+bytecode analysis combined -- a useful reminder that real data, even from areas that "already
+work" (nothing here showed up as a failure in the validator's own summary), often contains
+information a passing test suite alone won't surface, especially for fields whose generic/nested
+shape bytecode analysis structurally cannot resolve.
+
+335/335 tests green (2 new, 2 updated to match the newly-confirmed real shapes), ruff clean.
+
+## Addendum (fifty-eighth session): four real-data verifications turned into permanent tests, and a genuine investigation into the one loose end from the previous session
+
+**Part one: ad-hoc verification made permanent.** The previous session's follow-up checks
+(4 additional `MissionTimelineEvent` sub-types against real data -- `room`, `pause`, `traversal`,
+`charge` -- plus field-by-field checks of `RobotSerialInfo` and `parse_user_households()` against
+chairstacker's real response, plus a structural confirmation that `BorderFeature` really is a
+bare Feature with empty properties in practice, not just by bytecode inference) had been done in
+a disposable Python script and only written up as prose. Correctly challenged on this: verification
+that isn't preserved as a test provides no defense against future regression. All five turned into
+proper test cases using the exact real values, added to `test_models.py`. This brings the running
+total of `MissionTimelineEvent` sub-types confirmed against real (not synthetic) data to 10 of 20.
+
+**Part two: were the `$$serializer`-derived corrections this project made across many sessions
+actually reliable, given six real bugs just surfaced?** Traced each of the six fixes from the
+previous addendum back to its actual evidentiary basis, rather than treating "bytecode-derived
+model had a bug" as a single undifferentiated category:
+
+- `RoutineBuilderDefaults.regions` (list -> dict), `OperatingModeProfile.params` (untyped `Any`):
+  both traced to a docstring that ALREADY, explicitly disclosed the exact limitation responsible
+  ("Java generics type erasure" -- the bytecode technique correctly reported it could not resolve
+  this, and said so at the time).
+- `ScheduleOptions.to_json()`'s missing `{"command": ...}` wrapper: traced to an area the
+  `$$serializer` technique was never even applied to at all -- `RoutineCommand` has no
+  `from_json()`, `ScheduleOptions`/`HouseholdSchedule` were write-only models, and the envelope
+  shape was an explicitly-flagged analogy to `FavoriteV1`, not a bytecode claim.
+- `dockPose`/`dockPoses`: a naming-convention guess for a reference-only constant, never
+  bytecode-confirmed at all.
+- `RegionDefaults.operating_mode` (str -> int), `BundleManifest.metadata` (dict -> str): in both
+  cases the FIELD NAME was genuinely bytecode-confirmed and correct; what was wrong was an
+  unstated TYPE assumption layered on top of a confirmed name, never independently checked.
+- `P2MapData`'s missing fields (`entity_type`/`robot_id`/`sku`/`rooms_metadata`): the 8 fields
+  THAT specific class's serializer confirmed were all accurate; what was incomplete was the
+  assumption that this specific class is the entirety of what `get_map_metadata()` returns,
+  rather than (as now appears likely) a near-duplicate of the richer `P2MapVersion`.
+
+**Conclusion: in every one of the six cases, every field name the `$$serializer` technique
+specifically claimed to confirm was later found to be accurate. Nothing the technique actually
+asserted was ever wrong.** Every failure was in something adjacent to the technique's real,
+narrow claim: filling a self-disclosed gap with a guess, reaching for analogy in an area never
+scanned at all, assuming a type for a name without checking the type itself, or assuming a
+scanned class's field list was the complete answer to what an endpoint returns.
+
+**The one loose end explicitly flagged as concerning: `OperatingModeProfile`'s missing
+`updated_at` field.** Its 2 confirmed fields (`params`, `profileType`) came from a `<clinit>`
+scan explicitly claimed to be complete for that class -- if a real field were simply absent from
+that enumeration, it would suggest an actual blind spot in the scanning technique itself (e.g.
+inherited fields a simple string-literal scan might miss), not just a downstream guessing
+problem. Investigated directly: read the actual decompiled `OperatingModeProfile.java` (not just
+the serializer). **The class genuinely has only these two fields** -- no inheritance, no
+composition, nothing hidden. The `<clinit>` scan was completely accurate.
+
+**So where does `updated_at` in the real response actually come from?** The explanation is more
+interesting than a scanning gap: `kotlinx.serialization` silently discards, by default, any JSON
+key not declared in the target class. The real API server evidently includes `updated_at` in its
+response; the app's own Kotlin class simply never declared a field for it, so the app's
+deserializer drops it on the floor without complaint, and the app itself never uses it for
+anything. This means: **analyzing the app's own bytecode can only ever reveal what the app
+itself consumes -- never necessarily everything the server actually sends.** This is not a
+one-off bug or a fixable gap in the scanning method; it's a structural, permanent ceiling on this
+entire reverse-engineering methodology. Since this library deliberately wants full API fidelity
+(unlike the app, which only needs what it displays), an "app-bytecode-confirmed" model can be
+completely correct by that methodology's own standard and still legitimately be missing fields a
+live capture reveals -- as this specific case demonstrates. Worth remembering as a category
+distinct from every other kind of gap this project has catalogued (unconfirmed guesses,
+never-checked areas, wrong type assumptions): this one has no bytecode-side fix, only live data
+can ever close it.
+
+339/339 tests green (4 new, real-data-backed), ruff clean. No functional code changes this
+session beyond the new tests -- the fixes themselves were made in the fifty-seventh session; this
+one is verification-hardening plus a methodological investigation.

@@ -528,29 +528,47 @@ class BundleManifest:
     experimentalFeatures (same shape, for newer/less-stable content
     types like FloorTypeFeature).
 
-    UNCONFIRMED: this manifest file's OWN filename within the tar.gz --
-    parse_map_bundle() returns a flat {filename: content} dict with no
-    indication of which entry IS the manifest; try likely candidates
-    ("manifest.json" etc.) until a real bundle confirms this."""
+    CONFIRMED (session 57, real live bundle, chairstacker): this
+    manifest file's OWN filename within the tar.gz is literally
+    "manifest" -- previously unconfirmed, now settled.
 
-    metadata: dict[str, Any] = field(default_factory=dict)
+    CORRECTED (session 57): the same real bundle's manifest.json had
+    `"metadata"` as a bare STRING value, not a nested object as this
+    class previously assumed (`dict[str, Any]`) -- typed as `Any` now
+    to honestly reflect that its actual shape isn't a dict. Likely a
+    version string or reference ID for this specific manifest entry,
+    distinct from the SEPARATE "metadata" FILE in the same bundle
+    (BundleMetadataSource) -- not further investigated."""
+
+    metadata: Any = None
     features: list[ManifestFeature] = field(default_factory=list)
     experimental_features: list[ManifestFeature] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BundleManifest:
         return cls(
-            metadata=data.get("metadata") or {},
+            metadata=data.get("metadata"),
             features=[ManifestFeature.from_json(f) for f in (data.get("features") or [])],
             experimental_features=[ManifestFeature.from_json(f) for f in (data.get("experimentalFeatures") or [])],
         )
 
 
 KNOWN_BUNDLE_INFO_TYPES = frozenset({
-    "rooms", "borders", "floorPlan", "dockPoses", "floorTypes",
+    "rooms", "borders", "floorPlan", "dockPose", "floorTypes",
     "coverage", "cleanZones", "hazard", "trajectories",
     "adHocCleanZones", "furniture",
 })
+"""CORRECTED (session 57): confirmed via a real live map bundle
+(chairstacker, --dump-config) that the actual filename is "dockPose"
+(singular), not "dockPoses" as previously guessed -- this constant is
+purely a reference/documentation set (not used to gate any parsing
+logic elsewhere in this file), so the fix has no functional impact,
+just corrects the record. The same real bundle also confirmed two
+purely structural files outside this content-type set: "manifest"
+(the table-of-contents) and "metadata" (mission/source metadata) --
+both already modeled separately (BundleManifest/BundleMetadataSource)
+and correctly not included here, since they aren't "content types" in
+the same sense as rooms/borders/etc."""
 
 
 def parse_map_bundle(data: bytes) -> dict[str, Any]:

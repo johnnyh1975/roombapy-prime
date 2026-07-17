@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.9-alpha.** Runs, is tested (332+ unit tests), builds
+> **Status: v0.1.11-alpha.** Runs, is tested (339+ unit tests), builds
 > and installs cleanly. **Mission control is confirmed working** —
 > `send_simple_command()` (`start`/`stop`/`pause`/`resume`/`dock`) was
 > live-tested against a real robot and every single command was
@@ -145,7 +145,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-332+ tests, all passing — structural checks against decompiled source,
+339+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to

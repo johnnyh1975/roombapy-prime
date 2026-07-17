@@ -141,14 +141,45 @@ class Routine:
 @dataclass(frozen=True)
 class OperatingModeProfile:
     """NEW (session 49). CONFIRMED via
-    OperatingModeProfile$$serializer: params, profile_type."""
+    OperatingModeProfile$$serializer: params, profile_type.
 
-    params: Any | None = None
+    CORRECTED (session 57, real live get_default_routines() response,
+    chairstacker): `params` is confirmed CommandParams-shaped (fields
+    seen: twoPass, suctionLevel, swScrub, carpetBoost -- a subset,
+    same as everywhere else CommandParams is used defensively via
+    .get()) -- previously left as untyped `Any` since the bytecode's
+    generic signature couldn't reveal this. Also found: `updated_at`,
+    a sibling field of params/profile_type at the same level, present
+    on some but not all real entries -- missing entirely from the
+    prior version of this class.
+
+    INVESTIGATED (session 58): read the actual decompiled Kotlin
+    class (OperatingModeProfile.java) directly, not just its
+    serializer -- it genuinely has ONLY params/profileType, no
+    inheritance, no hidden composition, nothing a bytecode scan could
+    have missed. `updated_at` is real (present in live server
+    responses) but was never part of the APP's own data model at
+    all: kotlinx.serialization silently drops JSON keys a class
+    doesn't declare, and the app itself evidently never used this
+    value for anything. This isn't a scanning gap with a bytecode-side
+    fix -- analyzing the app's own code can only ever reveal what the
+    app itself consumes, never necessarily everything the server
+    actually sends. Kept here anyway since this library wants full
+    API fidelity, unlike the app -- populated defensively via
+    .get()."""
+
+    params: CommandParams | None = None
     profile_type: str | None = None
+    updated_at: int | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> OperatingModeProfile:
-        return cls(params=data.get("params"), profile_type=data.get("profile_type"))
+        params_raw = data.get("params")
+        return cls(
+            params=CommandParams.from_json(params_raw) if isinstance(params_raw, dict) else None,
+            profile_type=data.get("profile_type"),
+            updated_at=data.get("updated_at"),
+        )
 
 
 @dataclass(frozen=True)
@@ -156,10 +187,18 @@ class RegionDefaults:
     """NEW (session 49). CONFIRMED via RegionDefaults$$serializer:
     type, operating_mode, by_operating_mode (a dict, presumably keyed
     by operating mode name -> OperatingModeProfile, per the field name
-    -- exact key format not independently confirmed)."""
+    -- exact key format not independently confirmed).
+
+    CORRECTED (session 57, real live get_default_routines() response,
+    chairstacker): `operating_mode` is an int (e.g. 512), not a str as
+    previously typed -- matches the same field's confirmed int type
+    everywhere else in this codebase (e.g. RoomMetadataEntry
+    .last_operating_mode). `by_operating_mode`'s keys are confirmed to
+    be the operating-mode ID as a string (e.g. "512", "32") -- the
+    same pattern as RoomMetadataEntry.operating_mode_defaults."""
 
     region_type: str | None = None
-    operating_mode: str | None = None
+    operating_mode: int | None = None
     by_operating_mode: dict[str, OperatingModeProfile] = field(default_factory=dict)
 
     @classmethod
@@ -175,14 +214,28 @@ class RegionDefaults:
 @dataclass(frozen=True)
 class RoutineBuilderDefaults:
     """NEW (session 49). CONFIRMED via
-    RoutineBuilderDefaults$$serializer: regions (a list of
-    RegionDefaults)."""
+    RoutineBuilderDefaults$$serializer: regions.
 
-    regions: list[RegionDefaults] = field(default_factory=list)
+    CORRECTED (session 57, real live get_default_routines() response,
+    chairstacker): `regions` is a DICT keyed by region/room ID (e.g.
+    "15", "100", "16"), NOT a list as previously guessed -- the same
+    pattern as RoomMetadataEntry.operating_mode_defaults and several
+    other dict-keyed-by-ID fields in this codebase. The bytecode alone
+    couldn't distinguish List from Dict here (Java generics type
+    erasure at runtime); the "list of RegionDefaults" guess in the
+    original session-49 docstring turned out wrong and would have
+    crashed (`AttributeError: 'str' object has no attribute 'get'`)
+    the first time this method was called against an account with any
+    routine_builder_defaults content -- caught here via chairstacker's
+    real --dump-config output, not by any test written speculatively
+    before this evidence existed."""
+
+    regions: dict[str, RegionDefaults] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoutineBuilderDefaults:
-        return cls(regions=[RegionDefaults.from_json(r) for r in (data.get("regions") or [])])
+        raw_regions = data.get("regions") or {}
+        return cls(regions={k: RegionDefaults.from_json(v) for k, v in raw_regions.items()})
 
 
 @dataclass(frozen=True)
@@ -201,9 +254,38 @@ class RoutinesDefaultsResponse:
     def from_json(cls, data: dict[str, Any]) -> RoutinesDefaultsResponse:
         raw_defaults = data.get("routine_builder_defaults")
         return cls(
-            routines=[Routine.from_json(r) for r in (data.get("routines") or [])],
+            routines=_parse_routines_list(data.get("routines")),
             routine_builder_defaults=RoutineBuilderDefaults.from_json(raw_defaults) if raw_defaults else None,
         )
+
+
+def _parse_routines_list(raw: Any) -> list[Routine]:
+    """CORRECTED (session 56): a real live response
+    (chairstacker, v0.1.10a0) crashed here with `AttributeError:
+    'str' object has no attribute 'get'` -- the confirmed
+    `$$serializer` bytecode says `routines` is a `List<Routine>`, but
+    the ACTUAL live value was very likely a JSON OBJECT (dict keyed
+    by routine ID/type), not a JSON array -- iterating a dict in
+    Python walks its string KEYS, not its values, which reproduces
+    this exact error. This mirrors a pattern already seen elsewhere
+    in this project (e.g. RoomMetadataEntry.operating_mode_defaults
+    is genuinely dict-keyed-by-ID). Handled defensively here for
+    both possible shapes, since the real raw JSON wasn't available
+    to confirm which one definitively -- rather than crash, a
+    malformed/unexpected individual entry is silently skipped so one
+    bad entry doesn't take down the whole parse."""
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        raw = list(raw.values())
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            result.append(Routine.from_json(entry))
+        # else: skip -- not a dict, can't be a Routine, don't crash the whole parse over it
+    return result
 
 
 def parse_default_routines(data: dict[str, Any] | list[dict[str, Any]]) -> list[Routine]:
@@ -214,12 +296,15 @@ def parse_default_routines(data: dict[str, Any] | list[dict[str, Any]]) -> list[
     needed. This convenience function only returns the routines list;
     use RoutinesDefaultsResponse.from_json() directly if you also want
     routine_builder_defaults (region-type-based default operating-mode
-    settings, not previously modeled at all)."""
+    settings, not previously modeled at all).
+
+    CORRECTED (session 56): now uses the same defensive
+    _parse_routines_list() helper as RoutinesDefaultsResponse.from_json()
+    -- see that helper's docstring for why (a real live crash, dict-vs-list
+    ambiguity for the "routines" value)."""
     if isinstance(data, dict):
-        entries = data.get("routines") or []
-    else:
-        entries = data
-    return [Routine.from_json(e) for e in entries]
+        return _parse_routines_list(data.get("routines"))
+    return _parse_routines_list(data)
 
 
 @dataclass(frozen=True)
@@ -260,28 +345,51 @@ class P2MapData:
     last two match set_map_name()/set_map_orientation()'s own
     confirmed write-side field names exactly, confirming this is
     genuinely the same map-settings concept, read and write sides
-    agreeing."""
+    agreeing.
+
+    EXTENDED (session 57): a real live response (chairstacker,
+    --dump-config) showed this endpoint's actual response includes
+    MORE fields than the bytecode-confirmed 8 above -- entity_type,
+    robot_id, sku, and (most notably) a full rooms_metadata list,
+    identical in shape to get_active_map_versions()'s own
+    P2MapVersion.rooms_metadata (same RoomMetadataEntry reused here).
+    In fact this real response is now confirmed to be structurally
+    identical to a single P2MapVersion entry, plus user_orientation_rad
+    (which did NOT appear in this particular capture either --
+    consistent with it simply being omitted when unset, not evidence
+    against the bytecode-confirmed field existing). Kept as a
+    separate class from P2MapVersion rather than merged, since the
+    bytecode evidence for user_orientation_rad specifically belongs to
+    P2MapData's own serializer, not P2MapVersion's."""
 
     p2map_id: str | None = None
+    entity_type: str | None = None
     active_p2mapv_id: str | None = None
     create_time: Any | None = None
+    robot_id: str | None = None
+    sku: str | None = None
     last_p2mapv_ts: Any | None = None
     state: Any | None = None
     visible: bool | None = None
     name: str | None = None
     user_orientation_rad: float | None = None
+    rooms_metadata: list["RoomMetadataEntry"] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "P2MapData":
         return cls(
             p2map_id=data.get("p2map_id"),
+            entity_type=data.get("entity_type"),
             active_p2mapv_id=data.get("active_p2mapv_id"),
             create_time=data.get("create_time"),
+            robot_id=data.get("robot_id"),
+            sku=data.get("sku"),
             last_p2mapv_ts=data.get("last_p2mapv_ts"),
             state=data.get("state"),
             visible=data.get("visible"),
             name=data.get("name"),
             user_orientation_rad=data.get("user_orientation_rad"),
+            rooms_metadata=[RoomMetadataEntry.from_json(r) for r in (data.get("rooms_metadata") or [])],
         )
 
 
