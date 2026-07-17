@@ -2,19 +2,19 @@
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
-picture and docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .enums_common import _enum_or_none
 from .mission_control import CommandParams, Region
 
 
-class DoneCode(str, Enum):
+class DoneCode(StrEnum):
     """REVISED (session 27): real mission history (chairstacker) shows
     "ok" (lowercase) as the done_code value -- not "OK" as originally
     derived from androguard bytecode constant names. Exactly the same
@@ -49,7 +49,7 @@ class DoneCode(str, Enum):
     USER_SPOT = "user_spot"
 
 
-class PadCategory(str, Enum):
+class PadCategory(StrEnum):
     """Confirmed (androguard): 7 values."""
 
     DRY = "DRY"
@@ -61,7 +61,7 @@ class PadCategory(str, Enum):
     WET = "WET"
 
 
-class RankOverlap(str, Enum):
+class RankOverlap(StrEnum):
     """Confirmed (androguard): 3 values."""
 
     DEEP_CLEAN = "DEEP_CLEAN"
@@ -69,7 +69,7 @@ class RankOverlap(str, Enum):
     EXTENDED_CLEAN = "EXTENDED_CLEAN"
 
 
-class CoverageStrategy(str, Enum):
+class CoverageStrategy(StrEnum):
     """Confirmed (androguard): 3 values."""
 
     HYBRID_COVERAGE_PLANNER = "HYBRID_COVERAGE_PLANNER"
@@ -102,7 +102,7 @@ class MissionCommandRecord:
     map_version_id: str | None = None
     ordered: int | None = None
     params: CommandParams | None = None
-    regions: list["Region"] = field(default_factory=list)
+    regions: list[Region] = field(default_factory=list)
     robot_id: str | None = None
     time: int | None = None
 
@@ -155,7 +155,7 @@ class MissionHistoryEntry:
     coverage_strategy: CoverageStrategy | str | None = None
     rank_overlap: RankOverlap | str | None = None
     pad_category: PadCategory | str | None = None
-    timeline: list["MissionTimelineEvent"] = field(default_factory=list)
+    timeline: list[MissionTimelineEvent] = field(default_factory=list)
     """NEW (session 18) -- all 20 sub-event types now typed, see
     MissionTimelineEvent further below in this file."""
     raw: dict[str, Any] = field(default_factory=dict)
@@ -235,7 +235,7 @@ def parse_mission_history(data: dict[str, Any] | list[dict[str, Any]]) -> list[M
     return [MissionHistoryEntry.from_json(e) for e in entries]
 
 
-class PlanType(str, Enum):
+class PlanType(StrEnum):
     """Confirmed (androguard, PlanEvent.type): 3 values."""
 
     ALL = "ALL"
@@ -243,7 +243,7 @@ class PlanType(str, Enum):
     TRAIN = "TRAIN"
 
 
-class PlanUpcoming(str, Enum):
+class PlanUpcoming(StrEnum):
     """Confirmed (androguard, PlanEvent.upcoming list elements): 4 values."""
 
     POLY = "POLY"
@@ -252,7 +252,7 @@ class PlanUpcoming(str, Enum):
     ZID = "ZID"
 
 
-class TravelDestination(str, Enum):
+class TravelDestination(StrEnum):
     """Confirmed (androguard for constant names), values CHANGED to
     lowercase (session 31) -- real data shows "dest": "dock"/"zone"/
     "room" (lowercase), the same pattern as RegionType/DoneCode. Only
@@ -266,7 +266,7 @@ class TravelDestination(str, Enum):
     ZONE = "zone"
 
 
-class TraversalType(str, Enum):
+class TraversalType(StrEnum):
     """Confirmed (androguard for constant names), value changed to
     lowercase (session 31) -- real data shows "type": "region"
     (lowercase) within the traversal sub-object. Only REGION directly

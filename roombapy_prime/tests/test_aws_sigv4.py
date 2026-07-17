@@ -4,7 +4,7 @@ The frozen-clock test below pins the EXACT signature output that was
 manually verified (during development, not as an automated test
 dependency) to be byte-for-byte identical to ha_roomba_plus's original
 cloud_api.py::_AWSSignatureV4 for the same inputs -- see
-docs/FINDINGS_2026-07-11.md / README for how that comparison was done.
+docs/archive/FINDINGS_2026-07-11.md / README for how that comparison was done.
 This test doesn't re-run that comparison (would require importing a
 sibling project's source, not appropriate for this repo's test suite)
 -- it just locks in the known-good output so a future refactor can't

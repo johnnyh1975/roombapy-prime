@@ -281,7 +281,7 @@ class _FakeResp:
     async def text(self) -> str:
         return self._text_body
 
-    async def __aenter__(self) -> "_FakeResp":
+    async def __aenter__(self) -> _FakeResp:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:

@@ -3,7 +3,7 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 For the detailed, session-by-session reverse-engineering trail behind
 any of this (what was tried, what's still uncertain, why), see
-[`docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
+[`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
@@ -226,7 +226,7 @@ This file only tracks what changed from a user's point of view.
   live-tested against a real robot for the first time and confirmed working end to end — the
   robot actually reacted to every single command, watched and confirmed by a real user, not just
   "no error was raised." This resolves the single most important open question this library has
-  had since the project began. See `docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md` for the full
+  had since the project began. See `docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md` for the full
   evidence trail that led here.
 
 ### Fixed
@@ -302,7 +302,7 @@ This file only tracks what changed from a user's point of view.
   path working against a real device. `send_mission_command()` is kept for the region-based use
   case (still unconfirmed by any source), but is no longer the recommended path for basic
   commands. `verify_mission_commands.py` updated to use the new path. See
-  `docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md` for the full evidence trail.
+  `docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md` for the full evidence trail.
 
 ## [0.1.5a0] - 2026-07-14
 

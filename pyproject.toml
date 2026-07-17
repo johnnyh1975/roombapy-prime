@@ -37,6 +37,7 @@ roombapy-prime-verify-map-edit = "roombapy_prime.verify_map_edit:main"
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
 ]
 
 [build-system]
@@ -45,3 +46,24 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-data]
 roombapy_prime = ["py.typed"]
+
+[tool.ruff.lint]
+# F = pyflakes (undefined names, unused imports)
+# B = flake8-bugbear (real Python footguns: mutable default args,
+#     closures over loop variables, etc.) -- zero findings when first
+#     tried, kept anyway since a clean result costs nothing to keep
+#     enabled and guards against future regressions in this category
+# C4 = flake8-comprehensions (unnecessary list()/dict() wrapping, etc.)
+#      -- also zero findings, same reasoning as B
+# UP = pyupgrade (outdated syntax patterns for the supported Python
+#      range) -- 58 real findings when first tried (all verified safe
+#      and fixed): unnecessary quoted type annotations now that
+#      `from __future__ import annotations` is used everywhere,
+#      timezone.utc -> datetime.UTC, Callable import path, and
+#      (str, Enum) -> StrEnum for all 24 enum classes -- the StrEnum
+#      change was checked for actual behavioral difference (str()/
+#      f-string formatting differs between the two) before applying,
+#      not just accepted on ruff's recommendation alone: no code here
+#      relied on str()/f-string formatting of these enums, and
+#      json.dumps() output is identical either way.
+select = ["F", "B", "C4", "UP"]

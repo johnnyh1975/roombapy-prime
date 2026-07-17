@@ -2,19 +2,19 @@
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
-picture and docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .enums_common import _enum_or_none
 from .mission_control import CommandParams, PadWetnessParam, RegionType
 
 
-class CleaningProfileType(str, Enum):
+class CleaningProfileType(StrEnum):
     """Confirmed (androguard, CleaningProfile$ProfileType): 4 values."""
 
     DEEP = "DEEP"
@@ -373,10 +373,10 @@ class P2MapData:
     visible: bool | None = None
     name: str | None = None
     user_orientation_rad: float | None = None
-    rooms_metadata: list["RoomMetadataEntry"] = field(default_factory=list)
+    rooms_metadata: list[RoomMetadataEntry] = field(default_factory=list)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "P2MapData":
+    def from_json(cls, data: dict[str, Any]) -> P2MapData:
         return cls(
             p2map_id=data.get("p2map_id"),
             entity_type=data.get("entity_type"),
@@ -410,7 +410,7 @@ class P2MapEditPartialSuccess:
     p2map_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "P2MapEditPartialSuccess":
+    def from_json(cls, data: dict[str, Any]) -> P2MapEditPartialSuccess:
         return cls(
             status=data.get("status"),
             p2mapv_id=data.get("p2mapv_id"),
@@ -435,7 +435,7 @@ class P2MapEditSuccessFallback:
     p2map_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "P2MapEditSuccessFallback":
+    def from_json(cls, data: dict[str, Any]) -> P2MapEditSuccessFallback:
         return cls(
             status=data.get("status"),
             map_url=data.get("map_url"),
@@ -464,11 +464,11 @@ class ResponseError:
     message: str | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "ResponseError":
+    def from_json(cls, data: dict[str, Any]) -> ResponseError:
         return cls(code=data.get("code"), message=data.get("message"))
 
     @classmethod
-    def from_error_container(cls, data: dict[str, Any]) -> "ResponseError | None":
+    def from_error_container(cls, data: dict[str, Any]) -> ResponseError | None:
         """For the {"error": {...}} wrapper shape."""
         inner = data.get("error")
         return cls.from_json(inner) if isinstance(inner, dict) else None
@@ -779,7 +779,7 @@ class DockControl:
     status: Any | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "DockControl":
+    def from_json(cls, data: dict[str, Any]) -> DockControl:
         return cls(control=data.get("control"), status=data.get("status"))
 
 
@@ -794,7 +794,7 @@ class RobotStatusButton:
     action: Any | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "RobotStatusButton":
+    def from_json(cls, data: dict[str, Any]) -> RobotStatusButton:
         return cls(status=data.get("status"), action=data.get("action"))
 
 
@@ -815,7 +815,7 @@ class RobotStatusError:
     allowed_modes: Any | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "RobotStatusError":
+    def from_json(cls, data: dict[str, Any]) -> RobotStatusError:
         return cls(
             error_id=data.get("error_id"),
             bucket=data.get("bucket"),
@@ -849,7 +849,7 @@ class RobotStatusV2:
     localization_args: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "RobotStatusV2":
+    def from_json(cls, data: dict[str, Any]) -> RobotStatusV2:
         return cls(
             robot_state=data.get("robot_state"),
             battery_level=data.get("battery_level"),

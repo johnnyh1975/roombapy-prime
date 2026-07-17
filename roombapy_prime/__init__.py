@@ -5,7 +5,7 @@ through static analysis (Kotlin/Java decompilation + native bytecode
 inspection). Extensive feature coverage (auth, MQTT shadow, mission
 control, p2maps map editing, favorites, schedules, DND, cleaning
 profiles, mission history) -- but NEVER tested against a real server
-or a real V4 device. See docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for
+or a real V4 device. See docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for
 the complete, continuously updated audit status and README.md for the
 Contributing section (roombapy_prime.diagnostics -- the live
 validation script that could change this).
@@ -17,7 +17,7 @@ Why a separate library instead of extending `roombapy`:
 and expects (address, blid, password) as a local IP -- structurally
 incompatible with a cloud client. It's not an adaptation problem, but
 a fundamentally different trust and connection model. See
-docs/ROOMBAPY_COMPARISON.md for the full comparison.
+docs/internal/ROOMBAPY_COMPARISON.md for the full comparison.
 
 The name "Prime" is iRobot's own designation (com.irobot.home.prime
 app), not our informal "V4".

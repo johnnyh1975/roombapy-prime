@@ -2,19 +2,19 @@
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
-picture and docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .enums_common import _enum_or_none
 from .geometry import Position
 
 
-class MissionCommandType(str, Enum):
+class MissionCommandType(StrEnum):
     """Confirmed from com.irobot.data.missioncommand.datamodels.
     CommandType -- values are the actual @SerialName strings, NOT the
     Kotlin enum constant names (e.g. CLEAN_SPOT serializes as
@@ -88,9 +88,9 @@ class RoutineCommand:
     in listed order, 0 (presumably) = robot is allowed to optimize.
     Confirmed from ha_roomba_plus' production Classic code, not from
     Prime's own sources."""
-    id_multipolys: list["CommandPolygon"] | list[dict[str, Any]] | None = None
-    params: "CommandParams | dict[str, Any] | None" = None
-    regions: list["Region"] | list[dict[str, Any]] | None = None
+    id_multipolys: list[CommandPolygon] | list[dict[str, Any]] | None = None
+    params: CommandParams | dict[str, Any] | None = None
+    regions: list[Region] | list[dict[str, Any]] | None = None
     pmap_version_id: str | None = None
     clean_all: bool = False
     spot_geometry: dict[str, Any] | None = None
@@ -143,7 +143,7 @@ class RoutineCommand:
         return {"cmd": self.to_json()}
 
 
-class RegionType(str, Enum):
+class RegionType(StrEnum):
     """REVISED (session 25): the actual wire values are LOWERCASE
     ("rid"/"zid"), confirmed by real mission history data
     (chairstacker, cmd.regions[].type). The original androguard
@@ -196,7 +196,7 @@ class PadWetnessParam:
         )
 
 
-class CleaningMode(str, Enum):
+class CleaningMode(StrEnum):
     """Confirmed (androguard, MissionPreferenceValue$CleaningMode):
     5 values. Each also has a numeric "mode" field and a "uid" -- only
     the names as an enum here, the numeric codes weren't readable
@@ -210,7 +210,7 @@ class CleaningMode(str, Enum):
     VACUUM_AND_MOP = "VacuumAndMop"
 
 
-class CleaningPasses(str, Enum):
+class CleaningPasses(StrEnum):
     """Confirmed (androguard, MissionPreferenceValue$CleaningPasses):
     only 2 values."""
 
@@ -218,7 +218,7 @@ class CleaningPasses(str, Enum):
     SINGLE = "Single"
 
 
-class LiquidAmountLevel(str, Enum):
+class LiquidAmountLevel(StrEnum):
     """Confirmed (androguard, MissionPreferenceValue$LiquidAmount AND
     $ComboLiquidAmount -- both have identical 3 values High/Low/Normal,
     merged here since structurally identical)."""
@@ -228,14 +228,14 @@ class LiquidAmountLevel(str, Enum):
     NORMAL = "Normal"
 
 
-class SoftwareScrub(str, Enum):
+class SoftwareScrub(StrEnum):
     """Confirmed (androguard, MissionPreferenceValue$SoftwareScrub)."""
 
     OFF = "Off"
     ON = "On"
 
 
-class VacuumPowerLevel(str, Enum):
+class VacuumPowerLevel(StrEnum):
     """Confirmed (androguard, MissionPreferenceValue$VacuumPower): 4
     values (more than CleaningMode etc.)."""
 
@@ -245,7 +245,7 @@ class VacuumPowerLevel(str, Enum):
     QUIET = "Quiet"
 
 
-class MissionPreferenceSwitcherType(str, Enum):
+class MissionPreferenceSwitcherType(StrEnum):
     """Confirmed (androguard, MissionPreferenceType$Switcher): 4 values."""
 
     CAREFUL_DRIVE = "CarefulDrive"

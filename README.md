@@ -6,26 +6,31 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.11-alpha.** Runs, is tested (339+ unit tests), builds
-> and installs cleanly. **Mission control is confirmed working** —
-> `send_simple_command()` (`start`/`stop`/`pause`/`resume`/`dock`) was
-> live-tested against a real robot and every single command was
-> watched and confirmed by a real user, not just "no error was
-> raised." This resolves the biggest open question this library has
-> had since the project began. Also confirmed live: login, MQTT
-> connection, the large majority of REST reads, and a reversible write
-> (creating/deleting a favorite) -- now across two independent
-> accounts, not just one. Map editing (renaming rooms, etc.)
-> remains unverified against a live device, and only one robot model
-> (the same SKU on both accounts tested) has been confirmed so far. See
+> **Status: v0.1.11-alpha.** Mission control, login, MQTT, and most REST
+> reads are confirmed working against two independent real accounts.
+> Map editing is unverified against a live device. See
 > [Confidence & known gaps](#confidence--known-gaps) for the full,
 > honest breakdown before relying on any of it.
+
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Testing](#testing)
+- [Contributing / running diagnostics](#contributing--running-diagnostics)
+- [Confidence & known gaps](#confidence--known-gaps)
+- [Data privacy & security](#data-privacy--security)
+- [Why not just extend roombapy?](#why-not-just-extend-roombapy)
+- [Documentation](#documentation)
+- [Credits](#credits)
+- [License](#license)
 
 ## Features
 
 - **Login & session** — account login (Gigya + AWS Custom Authorizer), automatic MQTT token refresh
 - **Live state** — current robot status, one-shot (`get_state()`) or continuous (`watch_state()`); an optional, bytecode-confirmed `RobotStatusV2` parser for structured battery/charging/dock fields, though it's unconfirmed whether this structure actually appears in `get_state()`'s response yet (see the confidence table)
-- **Mission control** — start/stop/pause/resume/dock via `send_simple_command()`, the corrected transport (see the status note above); the richer, region-aware `send_mission_command()` remains available but is now believed incorrect for basic use
+- **Mission control** — start/stop/pause/resume/dock via `send_simple_command()`, confirmed working live against a real robot; the richer, region-aware `send_mission_command()` remains available but is now believed incorrect for basic use
 - **Favorites** — list, create, update, delete, reorder saved cleaning routines
 - **Maps** — read map metadata and active versions, edit rooms/zones/furniture/virtual walls, watch the live map while cleaning, download+unpack the full map bundle
 - **Schedules** — recurring cleaning schedules per household (list, create, update, delete)
@@ -95,49 +100,6 @@ Runnable versions of the above (plus mission control and a favorites/
 mission-history example) are in [`examples/`](examples/) — each reads
 credentials from environment variables, none hardcode a password.
 
-## Confidence & known gaps
-
-**TL;DR:** reading data (state, favorites, mission history, maps) rests
-on a solid, source-confirmed wire format. *Sending* something to the
-robot — mission commands, map edits, anything that changes state — has
-the right shape on paper but has never been sent to a real server.
-Treat those as "should work" rather than "does work" until someone
-confirms it.
-
-| Area | Confidence | Why |
-|---|---|---|
-| Login flow | High | Live-tested against real Classic-protocol accounts; Prime shares the same native auth core per binary analysis, and now live-tested against a real Prime account too |
-| MQTT/shadow connection | High | Live-tested against a real Prime account (and previously against Classic devices) |
-| Reading state/favorites/mission history | High (format), partially live-tested | Field names and types confirmed directly from decompiled source/bytecode; several read endpoints (state, favorites, mission history, active map versions, household listing) confirmed live against a real account |
-| AWS SigV4 signing | High (algorithm), unverified (applied to this API) | Byte-identical to a separate, production-tested implementation |
-| Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
-| Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is a new, reasoned-but-unconfirmed hypothesis (see its docstring) — favor a `favorite_id`-referencing command over hand-built regions if experimenting with it |
-| Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. HTTP methods separately confirmed. Never sent to a real server. |
-| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Whether this structure actually appears in `get_state()`'s response is unresolved — two independent real captures (two different accounts, same idle-robot state) both show unrelated top-level keys entirely, strengthening but not resolving the open question |
-| Map editing | **High (envelope + 8/9 commands' fields), unverified (practice)** | The request envelope (`{"edit_cmd": ..., "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (several were wrong camelCase guesses, now corrected). `SetRoomMetadata`/`VirtualWall`'s internal discriminator use hand-written custom serializers and remain unconfirmed. Never sent to a real server -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
-| Deeply nested response fields (map bundle internals) | **High (fields), unverified (envelope details)** | All 12 map-bundle content types (rooms, borders, hazards, trajectories, etc.) now have confirmed wire formats via bytecode (`RoomFeature` and 10 others) — each is a standard GeoJSON Feature with nested `properties`. Still open: the bundle's own manifest filename, and whether per-type files use a bare list or a `FeatureCollection` wrapper. Mission history's 20 timeline sub-event types are also fully typed (`MissionTimelineEvent`). |
-
-**Known unresolved gaps:**
-- The discriminator value inside a map-edit command's `"edit_cmd"` envelope (the envelope shape itself and 8/9 commands' own field names are now bytecode-confirmed — only which `"type"` string selects each command, and `SetRoomMetadata`/`VirtualWall`'s custom-serializer internals, remain unconfirmed)
-- Whether `RobotStatusV2` (see table above) actually appears in `get_state()`'s response at all, and if so, where
-- Multi-robot household / teaming concepts, beyond basic settings scoping
-- The map bundle manifest's own filename within the archive (every OTHER content type's filename is now confirmed via the manifest itself)
-
-Full details, including what was tried and why some things remain
-unconfirmed, are in
-[`docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
-
-## Why not just extend roombapy?
-
-Classic-protocol robots talk local MQTT with `ssl.CERT_NONE` and a
-blid/password pair — no account, no internet round-trip. Prime/V4 robots
-are cloud-only: AWS IoT Custom Authorizer sessions, request/response
-"shadow" state instead of a local firehose, and a REST API for map
-management that Classic doesn't have at all. Different trust model,
-different protocol shape, not just a missing feature — see
-[`docs/ROOMBAPY_COMPARISON.md`](docs/ROOMBAPY_COMPARISON.md) for the
-full comparison (including a size/structure breakdown of both libraries).
-
 ## Testing
 
 ```bash
@@ -151,7 +113,7 @@ multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
 build); it does **not** validate that a real server accepts them — only
 the diagnostics script below can do that. See
-[`docs/DEVELOPMENT_NOTES.md`](docs/DEVELOPMENT_NOTES.md) for the
+[`docs/internal/DEVELOPMENT_NOTES.md`](docs/internal/DEVELOPMENT_NOTES.md) for the
 detailed breakdown (German; all code, comments, and this README are in
 English per project convention).
 
@@ -159,7 +121,7 @@ English per project convention).
 
 If you have a Prime/V4 account, the single most useful thing you can do
 is run the built-in diagnostics script against it and share the
-results — this is the only way any of the "unverified" items above get
+results — this is the only way any of the "unverified" items below get
 resolved:
 
 ```bash
@@ -207,7 +169,7 @@ roombapy-prime-verify-commands --username you@example.com --country-code US \
 Both the `--i-understand-...` flag *and* an interactive yes/no prompt before every individual
 command are required — declining any prompt skips that step. Runs a conservative start→stop test
 by default, with pause/resume and dock offered as separate, individually-opt-in steps, via
-`send_simple_command()` (see the confidence table above for the transport correction this
+`send_simple_command()` (see the confidence table below for the transport correction this
 implies). Before and after every command, it also attempts to parse the `RobotStatusV2` model out
 of the reported state and shows the result — useful real-world data for settling whether/where
 that structure actually appears. Produces the same kind of shareable report as
@@ -232,16 +194,101 @@ changed, which matters more here given the lack of outside confirmation for this
 Deliberately does **not** attempt splitting/merging rooms, deleting permanent areas, virtual
 walls, or furniture — several of those aren't cleanly reversible even in principle.
 
+## Confidence & known gaps
+
+**TL;DR:** reading data (state, favorites, mission history, maps) rests
+on a solid, source-confirmed wire format. *Sending* something to the
+robot — mission commands, map edits, anything that changes state — has
+the right shape on paper but has never been sent to a real server.
+Treat those as "should work" rather than "does work" until someone
+confirms it. Mission control is the one confirmed exception — see
+below.
+
+| Area | Confidence | Why |
+|---|---|---|
+| Login flow | High | Live-tested against real Classic-protocol accounts; Prime shares the same native auth core per binary analysis, and now live-tested against a real Prime account too |
+| MQTT/shadow connection | High | Live-tested against a real Prime account (and previously against Classic devices) |
+| Reading state/favorites/mission history | High (format), partially live-tested | Field names and types confirmed directly from decompiled source/bytecode; several read endpoints (state, favorites, mission history, active map versions, household listing) confirmed live against a real account |
+| AWS SigV4 signing | High (algorithm), unverified (applied to this API) | Byte-identical to a separate, production-tested implementation |
+| Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
+| Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is a new, reasoned-but-unconfirmed hypothesis (see its docstring) — favor a `favorite_id`-referencing command over hand-built regions if experimenting with it |
+| Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. A real bug in the request envelope (`commands`/`end_commands` entries need a `{"command": ...}` wrapper) was found and fixed by reading a real `get_schedules()` response, though the write methods themselves have still never been called against a real server. HTTP methods separately confirmed. |
+| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Whether this structure actually appears in `get_state()`'s response is unresolved — two independent real captures (two different accounts, same idle-robot state) both show unrelated top-level keys entirely, strengthening but not resolving the open question |
+| Map editing | **High (envelope + 8/9 commands' fields), unverified (practice)** | The request envelope (`{"edit_cmd": ..., "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (several were wrong camelCase guesses, now corrected). `SetRoomMetadata`/`VirtualWall`'s internal discriminator use hand-written custom serializers and remain unconfirmed. Never sent to a real server -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
+| Deeply nested response fields (map bundle internals) | **High (fields), mostly resolved (envelope details)** | All 12 map-bundle content types (rooms, borders, hazards, trajectories, etc.) now have confirmed wire formats via bytecode (`RoomFeature` and 10 others) — each is a standard GeoJSON Feature with nested `properties`. The bundle's own manifest filename is now confirmed (it's literally `"manifest"`), and a real bundle confirms most content types use a `{type, features}` wrapper while at least one (`BorderFeature`) is a bare single Feature instead. Mission history's 20 timeline sub-event types are also fully typed (`MissionTimelineEvent`) — 10 of the 20 now confirmed against real data. |
+
+**Known unresolved gaps:**
+- The discriminator value inside a map-edit command's `"edit_cmd"` envelope (the envelope shape itself and 8/9 commands' own field names are now bytecode-confirmed — only which `"type"` string selects each command, and `SetRoomMetadata`/`VirtualWall`'s custom-serializer internals, remain unconfirmed)
+- Whether `RobotStatusV2` (see table above) actually appears in `get_state()`'s response at all, and if so, where
+- Multi-robot household / teaming concepts, beyond basic settings scoping
+
+Full details, including what was tried and why some things remain
+unconfirmed, are in
+[`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
+
+## Data privacy & security
+
+**In one sentence:** everything goes directly to iRobot's own cloud
+infrastructure, nothing is sent to any third party, and nothing is
+written to disk by this library unless you explicitly ask for it.
+
+- [`docs/DATA_PRIVACY.md`](docs/DATA_PRIVACY.md) — what data goes
+  where, and what this library does and doesn't store, verified
+  directly against the code
+- [`SECURITY.md`](SECURITY.md) — credential handling, TLS
+  verification, and what's still unverified from a security standpoint
+
+## Why not just extend roombapy?
+
+Classic-protocol robots talk local MQTT with `ssl.CERT_NONE` and a
+blid/password pair — no account, no internet round-trip. Prime/V4 robots
+are cloud-only: AWS IoT Custom Authorizer sessions, request/response
+"shadow" state instead of a local firehose, and a REST API for map
+management that Classic doesn't have at all. Different trust model,
+different protocol shape, not just a missing feature — see
+[`docs/internal/ROOMBAPY_COMPARISON.md`](docs/internal/ROOMBAPY_COMPARISON.md) for the
+full comparison (including a size/structure breakdown of both libraries).
+
 ## Documentation
 
-- [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) — every `PrimeRobot` method and the key models, organized by feature area, with per-item confidence markers
-- [`CHANGELOG.md`](CHANGELOG.md) — what's implemented, from a user's point of view
-- [`SECURITY.md`](SECURITY.md) — credential handling, TLS, and what's still unverified
-- [`docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md) — detailed, running audit of what's implemented vs. what's missing and why
-- [`docs/ROOMBAPY_COMPARISON.md`](docs/ROOMBAPY_COMPARISON.md) — why this isn't built on `roombapy`
-- [`docs/HA_ROOMBA_PLUS_CROSSREF.md`](docs/HA_ROOMBA_PLUS_CROSSREF.md) — cross-reference against a production Classic-protocol integration
-- [`docs/FINDINGS_2026-07-11.md`](docs/FINDINGS_2026-07-11.md) — raw findings from APK decompilation
-- [`docs/DEVELOPMENT_NOTES.md`](docs/DEVELOPMENT_NOTES.md) — detailed maintainer notes (German)
+**Start here:** [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) (every
+method and model) and [`CHANGELOG.md`](CHANGELOG.md) (what's changed,
+release by release).
+
+Everything else — the session-by-session reverse-engineering trail
+(`docs/internal/`) and a handful of superseded early drafts
+(`docs/archive/`) — is background material, not needed to use the
+library. See the comment at the top of each folder's files for what's
+there and why.
+
+## Credits
+
+- **[roombapy](https://github.com/pschmitt/roombapy)** (pschmitt and
+  contributors) — the Classic-protocol client this project doesn't
+  extend (see [above](#why-not-just-extend-roombapy)), but whose
+  design this project learned from throughout: `prime_robot.py`
+  mirrors its public-class pattern, `prime_factory.py` mirrors its
+  factory pattern, and the TLS-verification discussion in
+  [`SECURITY.md`](SECURITY.md) directly contrasts with its
+  local-network `ssl.CERT_NONE` approach (correct for its use case,
+  not for this one).
+- **[Ader](https://github.com/lvigilantecorreo-commits)** —
+  maintainer of
+  **[roomba-v4](https://github.com/lvigilantecorreo-commits/roomba-v4)**,
+  the first public reverse-engineering work on the V4/Prime command
+  path, and the project that triggered this library's development in
+  the first place. Since then, an ongoing two-way exchange of
+  cross-verification findings between the two independent projects —
+  including confirming that room/zone-targeting is real, found
+  directly in the app's own binary under the internal name `p2maps`,
+  now the central concept this entire library is organized around.
+- **chairstacker** — this project's primary field tester. Confirmed
+  mission control working live against a real robot (the single
+  biggest open question this library had for most of its life), and
+  a detailed `--dump-config` capture from a real account surfaced
+  three genuine crash bugs and a write-side bug that static analysis
+  alone had missed. Most of what this library can say "confirmed
+  live" about, it can say because of this testing.
 
 ## License
 

@@ -4,7 +4,7 @@ grew to 4213 lines / 154 classes across many sessions.
 
 This re-exports everything from every submodule, so existing code
 (`from roombapy_prime.models import X`) is completely unaffected by
-this split -- see docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+this split -- see docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 full story behind this refactor and every individual model's
 evidence trail.
 

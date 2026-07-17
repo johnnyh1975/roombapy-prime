@@ -85,7 +85,7 @@ import os
 import sys
 import webbrowser
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 from urllib.parse import quote
 
@@ -145,7 +145,7 @@ class Report:
         from . import __version__ as lib_version
 
         lines = [
-            f"# roombapy-prime Live Validation — {datetime.now(timezone.utc).isoformat()}",
+            f"# roombapy-prime Live Validation — {datetime.now(UTC).isoformat()}",
             "",
             f"roombapy-prime {lib_version}, Python {platform.python_version()}, {platform.system()}",
             "",

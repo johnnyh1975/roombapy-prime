@@ -89,7 +89,7 @@ class CloudCredentials:
     expiration: datetime | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "CloudCredentials":
+    def from_json(cls, data: dict[str, Any]) -> CloudCredentials:
         expiration_raw = data.get("Expiration")
         expiration = None
         if expiration_raw:
@@ -145,7 +145,7 @@ class ConnectionToken:
     devices: list[str]
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "ConnectionToken":
+    def from_json(cls, data: dict[str, Any]) -> ConnectionToken:
         return cls(
             client_id=data["client_id"],
             iot_token=data["iot_token"],
@@ -181,7 +181,7 @@ class RobotCapabilities:
     multi_pass: Any | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "RobotCapabilities":
+    def from_json(cls, data: dict[str, Any]) -> RobotCapabilities:
         return cls(
             bin_full_detect=data.get("binFullDetect"),
             add_on_hw=data.get("addOnHw"),
@@ -201,7 +201,7 @@ class RobotDigitalCapabilities:
     smart_clean: Any | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "RobotDigitalCapabilities":
+    def from_json(cls, data: dict[str, Any]) -> RobotDigitalCapabilities:
         return cls(smart_clean=data.get("smartClean"))
 
 
@@ -238,7 +238,7 @@ class RobotLoginEntry:
     user_cert: str | None = field(default=None, repr=False)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "RobotLoginEntry":
+    def from_json(cls, data: dict[str, Any]) -> RobotLoginEntry:
         cap_raw = data.get("cap")
         digi_cap_raw = data.get("digiCap")
         return cls(
@@ -360,7 +360,7 @@ class LoginResult:
     http_base: str
     http_base_auth: str
     credentials: CloudCredentials
-    robots: dict[str, "RobotLoginEntry"]
+    robots: dict[str, RobotLoginEntry]
     connection_tokens: list[ConnectionToken]
     raw: dict[str, Any]
     deployment: dict[str, Any] = field(default_factory=dict)

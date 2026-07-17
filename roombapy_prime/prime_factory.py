@@ -3,7 +3,7 @@
 STATUS: Draft. Naming convention deliberately mirrors
 roombapy.roomba_factory (RoombaFactory.create_roomba(...) ->
 PrimeFactory.create_prime_robot(...)) for recognizability -- see
-docs/ROOMBAPY_COMPARISON.md section 4. Unlike roombapy's factory,
+docs/internal/ROOMBAPY_COMPARISON.md section 4. Unlike roombapy's factory,
 this one is necessarily async, because establishing the connection
 needs a real login flow (roombapy doesn't need this since it works
 directly with a local IP + an already-known password).

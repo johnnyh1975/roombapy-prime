@@ -2,7 +2,7 @@
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
-picture and docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class SplitRoom:
         }
 
     @classmethod
-    def from_two_points(cls, room_id: str, from_pos: Position, to_pos: Position) -> "SplitRoom":
+    def from_two_points(cls, room_id: str, from_pos: Position, to_pos: Position) -> SplitRoom:
         return cls(room_id=room_id, split_line=LineString([from_pos, to_pos]))
 
 

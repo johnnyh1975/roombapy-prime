@@ -2,18 +2,18 @@
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
-picture and docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from .mission_control import RoutineCommand
 
 
-class ScheduleFrequency(str, Enum):
+class ScheduleFrequency(StrEnum):
     """Confirmed (jadx source, @SerialName per value, identical to the
     enum name): only 4 values, no DAILY."""
 
@@ -48,7 +48,7 @@ class ScheduleTime:
         return body
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "ScheduleTime":
+    def from_json(cls, data: dict[str, Any]) -> ScheduleTime:
         return cls(day=data.get("day") or [], hour=data.get("hour"), min=data.get("min"))
 
 
@@ -65,7 +65,7 @@ class ScheduleDateEntry:
     year: int | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "ScheduleDateEntry":
+    def from_json(cls, data: dict[str, Any]) -> ScheduleDateEntry:
         return cls(
             day_of_month=data.get("dayOfMonth"),
             hour=data.get("hour"),
@@ -220,7 +220,7 @@ class SchedulesList:
     schedules: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "SchedulesList":
+    def from_json(cls, data: dict[str, Any]) -> SchedulesList:
         return cls(
             household_schedule_id=data.get("household_schedule_id"),
             schedules=data.get("schedules") or [],
@@ -239,7 +239,7 @@ class SchedulesResponse:
     household_schedules: list[SchedulesList] = field(default_factory=list)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "SchedulesResponse":
+    def from_json(cls, data: dict[str, Any]) -> SchedulesResponse:
         raw = data.get("household_schedules") or []
         return cls(household_schedules=[SchedulesList.from_json(s) for s in raw])
 

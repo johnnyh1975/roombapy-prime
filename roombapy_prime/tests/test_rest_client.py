@@ -46,7 +46,7 @@ class _FakeResponse:
     async def read(self) -> bytes:
         return self._raw_bytes if self._raw_bytes is not None else self._body.encode()
 
-    async def __aenter__(self) -> "_FakeResponse":
+    async def __aenter__(self) -> _FakeResponse:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:

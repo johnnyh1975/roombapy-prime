@@ -2,14 +2,14 @@
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
-picture and docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
 import json
 import tarfile
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from io import BytesIO
 from typing import Any
 
@@ -26,7 +26,7 @@ from .geometry import (
 )
 
 
-class RoomTypeSource(str, Enum):
+class RoomTypeSource(StrEnum):
     """Confirmed from P2MapRoomInfo$RoomType$Source -- HOW a room type
     came about (detected vs. set by the user). Exact string values not
     confirmed 1:1 (enum names yes, wire string serialization not
@@ -37,7 +37,7 @@ class RoomTypeSource(str, Enum):
     USER_SET = "USER_SET"
 
 
-class HazardType(str, Enum):
+class HazardType(StrEnum):
     """Confirmed from P2MapHazardInfo$HazardType, complete list."""
 
     UNKNOWN = "UNKNOWN"

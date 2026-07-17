@@ -2,13 +2,13 @@
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
-picture and docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 from .geometry import Position
@@ -25,7 +25,7 @@ class LiveMapStreamInit:
     initial_map_url: str | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "LiveMapStreamInit":
+    def from_json(cls, data: dict[str, Any]) -> LiveMapStreamInit:
         return cls(mqtt_topic=data["mqtt_topic"], initial_map_url=data.get("livemap_url"))
 
 
@@ -46,7 +46,7 @@ class PositionUpdateMessage:
     last_update_timestamp: datetime
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "PositionUpdateMessage":
+    def from_json(cls, data: dict[str, Any]) -> PositionUpdateMessage:
         """data is the "pos_update" envelope including cur_path.
 
         cur_path length must be (2 + 4*n) for n position points --
@@ -105,7 +105,7 @@ class PositionUpdateMessage:
         return cls(
             sequence_number=sequence_number,
             updates=updates,
-            last_update_timestamp=datetime.fromtimestamp(epoch_ts, tz=timezone.utc),
+            last_update_timestamp=datetime.fromtimestamp(epoch_ts, tz=UTC),
         )
 
 
@@ -121,7 +121,7 @@ class MapUpdateMessage:
     livemap_url: str
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "MapUpdateMessage":
+    def from_json(cls, data: dict[str, Any]) -> MapUpdateMessage:
         return cls(livemap_url=data["map_update"]["livemap_url"])
 
 

@@ -1,7 +1,7 @@
 """Tests for roombapy_prime.models.
 
 Command-body and geometry shapes are SYNTHETIC checks against the
-Java-source-confirmed structure documented in FINDINGS_2026-07-11.md --
+Java-source-confirmed structure documented in docs/archive/FINDINGS_2026-07-11.md --
 no real p2maps command response was ever captured live. RoomType/
 FurnitureType enum values and the livemap cur_path parsing ARE checked
 against the literal values found in the Java source (not synthetic).

@@ -9,7 +9,7 @@ untested as a whole.
 Also part of this draft (see watch_state()/watch_live_map() below):
 continuous dispatch loops for shadow deltas and live-map/-position
 messages -- previously deliberately left out (see
-docs/ROOMBAPY_COMPARISON.md section 3). Bridges from paho's background
+docs/internal/ROOMBAPY_COMPARISON.md section 3). Bridges from paho's background
 thread (drives mqtt_client.py's subscribe() callbacks) into the
 asyncio world: one asyncio.Queue PER watch_*() call, filled via
 loop.call_soon_threadsafe(). No lock needed -- each watcher gets its
@@ -76,7 +76,7 @@ DEFAULT_WATCH_QUEUE_MAXSIZE = 100
 # not tie up unbounded memory if the consumer permanently falls behind.
 
 
-def _put_with_backpressure(queue: "asyncio.Queue[object]", item: object, topic: str) -> None:
+def _put_with_backpressure(queue: asyncio.Queue[object], item: object, topic: str) -> None:
     """Runs on the event loop thread (called via
     loop.call_soon_threadsafe from watch_state()/watch_live_map()). If
     the queue is full, the OLDEST entry is dropped to make room for the
@@ -407,7 +407,7 @@ class PrimeRobot:
 
     async def get_live_map_stream(self) -> LiveMapStreamInit:
         """CORRECTED UNDERSTANDING (July 11, see
-        docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1): this REST
+        docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1): this REST
         call is likely a KEEP-ALIVE ping, not a "give me the topic"
         call -- in the real app, the response
         (LiveMapStreamResponse.mqtt_topic) is never read anywhere, only
@@ -598,7 +598,7 @@ class PrimeRobot:
         keep_alive_interval: float = 10.0,
     ) -> AsyncIterator[PositionUpdateMessage | MapUpdateMessage]:
         """CORRECTED (July 11, see
-        docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1) -- an
+        docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1) -- an
         earlier version called get_live_map_stream() and subscribed to
         the topic returned in it. That was a misunderstanding: in the
         real app (P2MapAPIFetching.observeLiveMap()), a FIXED topic is

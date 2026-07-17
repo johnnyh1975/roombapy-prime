@@ -1,7 +1,7 @@
 """p2maps REST client: map metadata, edit commands, live stream init.
 
 STATUS: Draft. Endpoints/payload shapes confirmed from Java source code
-analysis (see docs/FINDINGS_2026-07-11.md), NOT live-tested against a
+analysis (see docs/archive/FINDINGS_2026-07-11.md), NOT live-tested against a
 real server -- neither Classic nor V4/Prime. Not a single one of
 these calls has actually been executed yet.
 

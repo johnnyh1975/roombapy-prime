@@ -39,7 +39,8 @@ import threading
 import time
 from dataclasses import dataclass
 from json.decoder import JSONDecodeError
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import paho.mqtt.client as mqtt
 
