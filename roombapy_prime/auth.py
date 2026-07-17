@@ -3,14 +3,20 @@ roombapy_prime.auth — Gigya login → iRobot cloud login → Custom Authorizer
 connection tokens.
 
 Extracted and cleaned up from validated, live-tested standalone scripts
-(stage1-4, smart_tier_shadow_check.py). Confirmed working against:
+(stage1-4, smart_tier_shadow_check.py). Originally confirmed only
+against Classic-protocol accounts:
   - one EPHEMERAL-tier robot (900-series, Classic app account)
   - two SMART-tier robots (i7-series, Classic app account)
-Native binary analysis of the Prime app (liblegacyCore.so) confirms the
+Native binary analysis of the Prime app (liblegacyCore.so) confirmed the
 same field names (connection_tokens, iot_token, iot_signature,
-iot_authorizer_name, client_id, robots) — but this has NOT been live
-verified against an actual Prime/V4 account yet. Treat V4 usage as
-plausible, not confirmed, until tested.
+iot_authorizer_name, client_id, robots) as a hypothesis at the time.
+
+UPDATE (v0.1.2a0, 2026-07-13): this full chain (Discovery -> Gigya ->
+iRobot auth) is now live-confirmed against a real Prime/V4 account
+(chairstacker, Roomba 405/SKU G185020), and again independently against
+a second, different account (jadestar1864, same SKU, different
+household) -- see CHANGELOG.md for both. The hypothesis above is
+resolved: this is not just plausible, it works.
 
 Token lifetime is short (~1 hour) — callers should re-run the full login
 flow rather than trying to refresh in place; there's no known refresh

@@ -8,6 +8,50 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a2] - 2026-07-17
+
+### Added
+
+- **`roombapy_prime/__init__.py` now exports a real public API**: `PrimeFactory`, `PrimeRobot`,
+  `login`, `LoginResult`, `RobotLoginEntry`, `AuthError`, `ShadowResponse`, plus a matching
+  `__all__`. Previously the package exported nothing at all -- every consumer had to reach into
+  internal submodules directly (e.g. `from roombapy_prime.auth import login`), coupling callers
+  to internal module layout rather than a stable contract. This is the intended integration
+  surface for external consumers (e.g. ha_roomba_plus's planned V4/Prime support).
+- 3 new tests confirming the top-level exports stay importable and `__all__` stays in sync.
+
+### Changed
+
+- **Two stale "never tested against a real account" status claims corrected.** Both
+  `roombapy_prime/__init__.py`'s and `auth.py`'s module docstrings still said login/MQTT/mission
+  control had never been live-verified against a real Prime/V4 account -- true when originally
+  written, but contradicted by this project's own CHANGELOG since v0.1.2a0 (chairstacker) and
+  reinforced by the fifty-sixth session's second account (jadestar1864). Both docstrings now
+  describe the actual, current confirmation status, with pointers to the CHANGELOG entries that
+  established it.
+
+### Fixed
+
+- **`roombapy-prime-verify-map-edit` could never find a named room to test on, even when one
+  existed.** `_pick_test_room()` used `getattr()` to read `p2map_id`/`rooms_metadata`/`name`/
+  `room_id`, but `robot.get_active_map_versions()` returns raw `list[dict]` (see `prime_robot.py`'s
+  own type hint) — `getattr()` on a plain dict silently returns the default for every field, at
+  every level, always. Confirmed via a real capture from jadestar1864: their
+  `get_active_map_versions()` response genuinely contained named rooms
+  (`rooms_metadata: [{"room_id": "10", "room_metadata": {"name": "Living Room", ...}}, ...]`) that
+  the script reported as absent. The already-correct `parse_active_map_versions()` /
+  `RoomMetadataEntry.from_json()` (session 26/51) already does the right flattening — `run()` now
+  calls it before handing data to `_pick_test_room()`, whose own logic was otherwise already
+  correct. The same bug also silently broke the map-bundle fallback path (same raw-dict-via-getattr
+  pattern), so it never got as far as actually attempting a bundle download either.
+- The existing unit tests for `_pick_test_room()` didn't catch this because their `SimpleNamespace`
+  helpers built an idealized, flat shape that never matched the real API response — same class of
+  problem as a `MagicMock` hiding a real attribute mismatch. 2 new regression tests added, one
+  running the exact real-shaped raw dict through the actual parsing pipeline end-to-end.
+
+350/350 tests green, ruff clean.
+
+
 ## [0.1.11a1] - 2026-07-17
 
 ### Added

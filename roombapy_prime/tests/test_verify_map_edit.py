@@ -139,3 +139,69 @@ def test_room_names_from_bundle_defensive_against_malformed_entries() -> None:
     result = _room_names_from_bundle(parsed_bundle)
 
     assert result == [{"room_id": "r1", "name": "Office"}]
+
+
+# =========================================================================
+# Regression: raw dict -> parse_active_map_versions() -> _pick_test_room()
+# (this session, real capture from jadestar1864)
+# =========================================================================
+
+
+def test_pick_test_room_finds_name_through_the_real_parsing_pipeline() -> None:
+    """BUG FIX regression test. _pick_test_room()'s own unit tests above
+    always passed -- they use SimpleNamespace helpers with an idealized,
+    flat `name` attribute that never matched what
+    robot.get_active_map_versions() actually returns: a raw dict with
+    the name nested under "room_metadata" (see prime_robot.py's own
+    `-> list[dict]` type hint). run() was previously passing that raw
+    list straight into _pick_test_room(), which used getattr() on it --
+    silently returning None for every field, on every dict, always.
+
+    This is the exact shape from jadestar1864's real
+    get_active_map_versions() capture (BLID/robot_id redacted, room
+    names are ones they explicitly set for testing, not their real
+    room names)."""
+    from roombapy_prime.models import parse_active_map_versions
+    from roombapy_prime.verify_map_edit import _pick_test_room
+
+    raw_response = [
+        {
+            "p2map_id": "2FB160A17D4ECE04A0FD062EDF4CB51D-1783319305",
+            "entity_type": "p2map",
+            "sku": "G185020",
+            "active_p2mapv_id": "260717T144012.314",
+            "state": "active",
+            "visible": True,
+            "name": "Main Room",
+            "rooms_metadata": [
+                {"room_id": "10", "room_metadata": {"name": "Living Room", "last_operating_mode": 32}},
+                {"room_id": "11", "room_metadata": {"name": "Kitchen"}},
+                {"room_id": "12", "room_metadata": {"name": "Entryway"}},
+            ],
+        }
+    ]
+
+    typed_versions = parse_active_map_versions(raw_response)
+    result = _pick_test_room(typed_versions)
+
+    assert result == ("2FB160A17D4ECE04A0FD062EDF4CB51D-1783319305", "10", "Living Room")
+
+
+def test_pick_test_room_returns_none_on_raw_unparsed_dicts() -> None:
+    """The failure mode this bug actually produced: feeding the RAW
+    list[dict] (no parse_active_map_versions() call) into
+    _pick_test_room() must not crash, but it also can never find a
+    name -- getattr() on a dict always returns the default. Documents
+    the exact wrong behavior run() used to have, so a future refactor
+    that accidentally drops the parse_active_map_versions() call gets
+    caught by more than just an unlucky live test run."""
+    from roombapy_prime.verify_map_edit import _pick_test_room
+
+    raw_response = [
+        {
+            "p2map_id": "map1",
+            "rooms_metadata": [{"room_id": "10", "room_metadata": {"name": "Living Room"}}],
+        }
+    ]
+
+    assert _pick_test_room(raw_response) is None

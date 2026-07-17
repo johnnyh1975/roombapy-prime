@@ -86,17 +86,39 @@ from typing import Any
 import aiohttp
 
 from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
-from .models import RenameRoomV1
+from .models import P2MapVersion, RenameRoomV1, parse_active_map_versions
 from .prime_factory import PrimeFactory
 from .verify_mission_commands import _confirm
 
 _TEST_SUFFIX = " [roombapy-prime-test]"
 
 
-def _pick_test_room(map_versions: list[Any]) -> tuple[str, str, str] | None:
+def _pick_test_room(map_versions: list[P2MapVersion]) -> tuple[str, str, str] | None:
     """Returns (p2map_id, room_id, current_name) for the first named
     room found across all active map versions, or None if no named
     room exists anywhere.
+
+    BUG FIX (this session, real capture from jadestar1864): this
+    function expects typed P2MapVersion/RoomMetadataEntry objects (real
+    attributes via getattr), but was previously being fed the RAW
+    list[dict] that robot.get_active_map_versions() actually returns
+    (see prime_robot.py's own type hint) -- getattr() on a plain dict
+    always silently returns the default, for every field, at every
+    level. This meant the function could never find a name even when
+    one genuinely existed: jadestar1864's real get_active_map_versions()
+    response had "rooms_metadata": [{"room_id": "10", "room_metadata":
+    {"name": "Living Room", ...}}, ...] -- a real name, one level
+    deeper than a flat .name, and reachable only via dict keys, not
+    attribute access. The existing, already-correct
+    parse_active_map_versions()/RoomMetadataEntry.from_json() (session
+    26/session 51) already does exactly this flattening -- run() now
+    calls it before passing data here, so this function's own logic
+    didn't need to change, only its input's type.
+
+    The existing test suite didn't catch this because its SimpleNamespace
+    helpers built an idealized, flat shape (name=... directly) that never
+    matched what the real API returns -- same class of problem as
+    MagicMock hiding a real attribute mismatch.
 
     Deliberately requires an EXISTING name, not just any room: this
     script's whole safety design rests on being able to revert to a
@@ -191,7 +213,15 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         report.add("Fetching active map versions", "OK", f"{len(map_versions)} map version(s) found")
         raw_capture["Active map versions"] = [getattr(v, "__dict__", str(v)) for v in map_versions]
 
-        picked = _pick_test_room(map_versions)
+        # BUG FIX (this session): map_versions here is the RAW list[dict]
+        # from get_active_map_versions() (see prime_robot.py's own type
+        # hint) -- _pick_test_room() needs real typed objects with a
+        # flattened .name, which parse_active_map_versions() already does
+        # correctly (session 26/51). Passing the raw dicts straight
+        # through silently broke room-finding entirely; see
+        # _pick_test_room()'s docstring for the real-capture evidence.
+        typed_versions = parse_active_map_versions(map_versions)
+        picked = _pick_test_room(typed_versions)
         if picked is None:
             print(
                 "\nNo room with a name was found via get_active_map_versions() -- checking the "
@@ -200,7 +230,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
                 "docstring). Geometry/polygon fields are deliberately never shown or captured."
             )
             bundle_rooms: list[dict[str, Any]] = []
-            for version in map_versions:
+            for version in typed_versions:
                 p2map_id = getattr(version, "p2map_id", None)
                 p2mapv_id = getattr(version, "active_p2mapv_id", None)
                 if not (p2map_id and p2mapv_id):

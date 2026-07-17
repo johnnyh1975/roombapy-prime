@@ -1,14 +1,15 @@
 """roombapy-prime — Cloud client for iRobot "Prime"/V4-generation robots.
 
-STATUS (July 11, 2026, twelfth session): Draft, entirely produced
-through static analysis (Kotlin/Java decompilation + native bytecode
-inspection). Extensive feature coverage (auth, MQTT shadow, mission
-control, p2maps map editing, favorites, schedules, DND, cleaning
-profiles, mission history) -- but NEVER tested against a real server
-or a real V4 device. See docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for
-the complete, continuously updated audit status and README.md for the
-Contributing section (roombapy_prime.diagnostics -- the live
-validation script that could change this).
+STATUS (updated session 57 -- see CHANGELOG.md for the full history):
+Alpha. Login, MQTT shadow connection, mission control
+(start/stop/pause/resume/dock via send_simple_command()), and most REST
+read endpoints are confirmed working live against two independent real
+Prime/V4 accounts (chairstacker, jadestar1864 -- both a Roomba 405
+Combo, SKU G185020). Map editing and region-based mission commands
+remain unverified against a live server. See
+docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the complete,
+continuously updated audit status and README.md's "Confidence & known
+gaps" section for the current, per-feature breakdown.
 
 Why a separate library instead of extending `roombapy`:
 
@@ -33,6 +34,31 @@ Module structure:
     prime_robot.py     -- public class (analogous to roomba.py in roombapy)
     prime_factory.py   -- factory: username/password/blid instead of a local IP
     diagnostics.py     -- live validation script against a real account
+
+Public API (NEW, session 57): previously this package exported nothing
+at all -- every consumer had to reach into internal submodules
+directly (e.g. `from roombapy_prime.auth import login`), which
+couples callers to internal module layout rather than to a stable
+contract. The names below are now re-exported at the top level and are
+the intended integration surface for external consumers (e.g.
+ha_roomba_plus's planned V4/Prime support); everything else remains
+reachable via its submodule but isn't part of the stability contract.
 """
 
-__version__ = "0.1.11a1"
+from .auth import AuthError, LoginResult, RobotLoginEntry, login
+from .mqtt_client import ShadowResponse
+from .prime_factory import PrimeFactory
+from .prime_robot import PrimeRobot
+
+__version__ = "0.1.11a2"
+
+__all__ = [
+    "AuthError",
+    "LoginResult",
+    "PrimeFactory",
+    "PrimeRobot",
+    "RobotLoginEntry",
+    "ShadowResponse",
+    "login",
+]
+
