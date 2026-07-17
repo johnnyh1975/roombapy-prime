@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run test suite (never release on red)
+        run: pytest roombapy_prime/tests/ -v
+
+      - name: Check README version badge + test count against actual state (never release on stale docs)
+        run: python scripts/check_version_badge.py
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check (never release on red)
+        run: ruff check roombapy_prime examples scripts --output-format=github
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Verify wheel installs cleanly in an isolated venv
+        run: |
+          python -m venv /tmp/install-check
+          /tmp/install-check/bin/pip install dist/*.whl
+          /tmp/install-check/bin/python -c "import roombapy_prime; print(roombapy_prime.__version__)"
+
+      - name: Check for a matching release-notes file
+        run: |
+          if [ ! -f "release-notes/${{ github.ref_name }}.md" ]; then
+            echo "::error::No release-notes/${{ github.ref_name }}.md found for this tag."
+            echo "::error::Add one (matching the tag name exactly) before tagging a release."
+            exit 1
+          fi
+
+      # Every tag on this project so far corresponds to an alpha version
+      # (0.x.ya0) -- always marked as a pre-release, never promoted to a
+      # full GitHub release automatically. Flip this manually (or adjust
+      # this workflow) once/if this project reaches an actual beta/stable
+      # milestone -- see docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
+      # concrete criteria discussed for that.
+      #
+      # body_path uses the tag name directly (release-notes/<tag>.md) --
+      # deliberately generic rather than hardcoding one specific version
+      # string format, so this works whether a given tag is written as
+      # e.g. "v0.1.11a" or "v0.1.11a0"; whatever the tag actually is, the
+      # matching file just needs the identical name (enforced by the
+      # step above, which fails the release rather than silently falling
+      # back to GitHub's auto-generated notes if the file is missing).
+      - name: Create GitHub Release (marked pre-release)
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          body_path: release-notes/${{ github.ref_name }}.md
+          files: |
+            dist/*.whl
+            dist/*.tar.gz

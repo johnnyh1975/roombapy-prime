@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package + test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Compile check (all modules)
+        run: python -m compileall roombapy_prime
+
+      - name: Run test suite with coverage
+        run: pytest roombapy_prime/tests/ -v --cov=roombapy_prime --cov-report=term-missing --cov-report=html
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-py${{ matrix.python-version }}
+          path: htmlcov/
+        # No threshold enforced (mirrors the reasoning in ha_roomba_plus's
+        # own CI pipeline): 91% is this project's own current baseline,
+        # arrived at organically, not a target chosen in advance -- a gate
+        # here would either be meaninglessly low or an arbitrary number
+        # with no real basis. Uploaded per Python version since coverage
+        # can differ slightly across versions.
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check roombapy_prime examples scripts --output-format=github
+        # KEIN continue-on-error mehr (zwoelfte Sitzung): ruff ist seit
+        # mehreren Sitzungen durchgehend sauber -- ein echtes Gate ist
+        # jetzt aussagekraeftig statt nur informativ.
+        # examples/scripts ergaenzt: manuell wurden diese die ganze Zeit
+        # mitgeprueft, CI selbst tat das bisher nicht -- Inkonsistenz
+        # zwischen tatsaechlicher Verifikationspraxis und dem Gate.
+
+  version-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + test dependencies
+        run: pip install -e ".[test]"
+
+      - name: Check README version badge + test count against actual state
+        run: python scripts/check_version_badge.py
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Verify wheel installs cleanly in an isolated venv
+        run: |
+          python -m venv /tmp/install-check
+          /tmp/install-check/bin/pip install dist/*.whl
+          /tmp/install-check/bin/python -c "import roombapy_prime; print(roombapy_prime.__version__)"

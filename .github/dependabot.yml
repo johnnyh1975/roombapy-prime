@@ -1,1 +1,16 @@
+version: 2
+updates:
+  # Python dependencies (aiohttp, paho-mqtt, certifi, pytest, ruff, etc.)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
 
+  # The GitHub Actions used by ci.yml/release.yml themselves
+  # (actions/checkout, actions/setup-python, softprops/action-gh-release, etc.)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
