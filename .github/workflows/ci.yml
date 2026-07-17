@@ -31,7 +31,7 @@ jobs:
         run: pytest roombapy_prime/tests/ -v --cov=roombapy_prime --cov-report=term-missing --cov-report=html
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-html-py${{ matrix.python-version }}
           path: htmlcov/
