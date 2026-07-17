@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >
+          Existing tag to release (e.g. v0.1.11a). The tag must already
+          exist (git tag ... && git push --tags) -- this does NOT create
+          a tag, it only lets you (re-)run the release process for one
+          that's already there, e.g. after fixing a release-notes typo
+          without wanting to cut a whole new version.
+        required: true
 
 jobs:
   release:
@@ -12,7 +22,22 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      # On a tag push, github.ref_name is already the tag (e.g. "v0.1.11a").
+      # On a manual run, github.ref_name would be the branch that was
+      # selected in the "Run workflow" dropdown (e.g. "main") -- not
+      # useful here, so the manually-provided tag input is used instead
+      # in that case. This one step resolves either case into a single
+      # "tag" output every later step can rely on.
+      - name: Resolve which tag this run is releasing
+        id: resolve
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing tag: $TAG"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,8 +73,9 @@ jobs:
 
       - name: Check for a matching release-notes file
         run: |
-          if [ ! -f "release-notes/${{ github.ref_name }}.md" ]; then
-            echo "::error::No release-notes/${{ github.ref_name }}.md found for this tag."
+          TAG="${{ steps.resolve.outputs.tag }}"
+          if [ ! -f "release-notes/$TAG.md" ]; then
+            echo "::error::No release-notes/$TAG.md found for this tag."
             echo "::error::Add one (matching the tag name exactly) before tagging a release."
             exit 1
           fi
@@ -61,18 +87,15 @@ jobs:
       # milestone -- see docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
       # concrete criteria discussed for that.
       #
-      # body_path uses the tag name directly (release-notes/<tag>.md) --
-      # deliberately generic rather than hardcoding one specific version
-      # string format, so this works whether a given tag is written as
-      # e.g. "v0.1.11a" or "v0.1.11a0"; whatever the tag actually is, the
-      # matching file just needs the identical name (enforced by the
-      # step above, which fails the release rather than silently falling
-      # back to GitHub's auto-generated notes if the file is missing).
+      # tag_name/body_path both use the resolved tag from above, not
+      # github.ref_name directly -- required so this also works correctly
+      # when manually triggered (see the resolve step's own comment).
       - name: Create GitHub Release (marked pre-release)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.resolve.outputs.tag }}
           prerelease: true
-          body_path: release-notes/${{ github.ref_name }}.md
+          body_path: release-notes/${{ steps.resolve.outputs.tag }}.md
           files: |
             dist/*.whl
             dist/*.tar.gz
