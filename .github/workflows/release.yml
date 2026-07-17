@@ -8,11 +8,12 @@ on:
     inputs:
       tag:
         description: >
-          Existing tag to release (e.g. v0.1.11a). The tag must already
-          exist (git tag ... && git push --tags) -- this does NOT create
-          a tag, it only lets you (re-)run the release process for one
-          that's already there, e.g. after fixing a release-notes typo
-          without wanting to cut a whole new version.
+          Tag to release, e.g. v0.1.11a. If this tag doesn't exist yet,
+          it's created at the current commit of whichever branch you
+          run this against (normally main) and pushed automatically --
+          you do NOT need to create it yourself first. If it already
+          exists, this just (re-)runs the release for it as-is (e.g.
+          to fix a release-notes typo without cutting a new version).
         required: true
 
 jobs:
@@ -22,12 +23,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      # On a tag push, github.ref_name is already the tag (e.g. "v0.1.11a").
-      # On a manual run, github.ref_name would be the branch that was
-      # selected in the "Run workflow" dropdown (e.g. "main") -- not
-      # useful here, so the manually-provided tag input is used instead
-      # in that case. This one step resolves either case into a single
-      # "tag" output every later step can rely on.
+      # No explicit `ref:` here on purpose: for a tag push, this
+      # already checks out that tag by default. For a manual
+      # workflow_dispatch run, this checks out whichever branch was
+      # selected in the "Run workflow" dropdown (normally main) -- and
+      # THAT commit is what gets tagged below, if the tag doesn't
+      # already exist.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Resolve which tag this run is releasing
         id: resolve
         run: |
@@ -35,9 +40,26 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Releasing tag: $TAG"
 
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.resolve.outputs.tag }}
+      # Only relevant for a manual run: a tag-push trigger means the
+      # tag obviously already exists (that's what triggered this run).
+      # For workflow_dispatch, create + push it now at the currently
+      # checked-out commit, unless it already exists -- in which case
+      # this is a re-run for an existing tag (see the input's own
+      # description above), and creating it again would fail/move it,
+      # so it's deliberately skipped rather than forced.
+      - name: Create and push the tag if it doesn't exist yet
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="${{ steps.resolve.outputs.tag }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "Tag '$TAG' already exists -- releasing it as-is, not moving it."
+          else
+            echo "Tag '$TAG' doesn't exist yet -- creating it at the current commit ($(git rev-parse HEAD))."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -76,7 +98,7 @@ jobs:
           TAG="${{ steps.resolve.outputs.tag }}"
           if [ ! -f "release-notes/$TAG.md" ]; then
             echo "::error::No release-notes/$TAG.md found for this tag."
-            echo "::error::Add one (matching the tag name exactly) before tagging a release."
+            echo "::error::Add one (matching the tag name exactly) before releasing."
             exit 1
           fi
 
@@ -86,10 +108,6 @@ jobs:
       # this workflow) once/if this project reaches an actual beta/stable
       # milestone -- see docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
       # concrete criteria discussed for that.
-      #
-      # tag_name/body_path both use the resolved tag from above, not
-      # github.ref_name directly -- required so this also works correctly
-      # when manually triggered (see the resolve step's own comment).
       - name: Create GitHub Release (marked pre-release)
         uses: softprops/action-gh-release@v2
         with:
