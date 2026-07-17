@@ -68,7 +68,7 @@ jobs:
       # step above, which fails the release rather than silently falling
       # back to GitHub's auto-generated notes if the file is missing).
       - name: Create GitHub Release (marked pre-release)
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           prerelease: true
           body_path: release-notes/${{ github.ref_name }}.md
