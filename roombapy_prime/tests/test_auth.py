@@ -19,9 +19,19 @@ import json
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import pytest
 
-from roombapy_prime.auth import AuthError, ConnectionToken, login
+from roombapy_prime.auth import (
+    AuthConnectionError,
+    AuthCredentialsError,
+    AuthError,
+    AuthRateLimitedError,
+    AuthSSLError,
+    AuthTimeoutError,
+    ConnectionToken,
+    login,
+)
 
 
 def _load(fixtures_dir: Path, name: str) -> dict:
@@ -379,7 +389,7 @@ async def test_login_gigya_error_code_raises() -> None:
         ]
     )
 
-    with pytest.raises(AuthError, match="Gigya login failed"):
+    with pytest.raises(AuthCredentialsError, match="Gigya login failed"):
         await login(session, "user@example.com", "hunter2", "US")
 
 
@@ -431,7 +441,24 @@ async def test_login_irobot_mqtt_slot_rate_limit_gets_friendlier_message() -> No
         ]
     )
 
-    with pytest.raises(AuthError, match="rate-limited"):
+    with pytest.raises(AuthRateLimitedError, match="rate-limited"):
+        await login(session, "user@example.com", "hunter2", "US")
+
+
+@pytest.mark.asyncio
+async def test_login_irobot_generic_error_code_is_credentials_error() -> None:
+    """NEW (this session) -- the non-rate-limit branch of the same
+    errorCode check must land in AuthCredentialsError, distinct from
+    the mqtt-slot case above."""
+    session = _FakeSequentialSession(
+        [
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps({"errorCode": 42, "errorMessage": "account locked"})),
+        ]
+    )
+
+    with pytest.raises(AuthCredentialsError, match="account locked"):
         await login(session, "user@example.com", "hunter2", "US")
 
 
@@ -498,3 +525,190 @@ async def test_login_extracts_confirmed_topic_prefixes() -> None:
     assert result.irbt_topic_prefix == "v011-irbthbu"
     assert result.iot_topic_prefix == "$aws"
     assert result.deployment["irbtTopics"] == "v011-irbthbu"
+
+
+# =========================================================================
+# SSL certificate error clarity (this session, moved here from
+# ha_roomba_plus's cloud_api.py -- see _raise_clear_ssl_error()'s
+# docstring for why this belongs in the shared library rather than only
+# in the integration: every consumer of this library hits the exact
+# same endpoints, including the standalone verify-* scripts chairstacker
+# and jadestar1864 run directly, not just through Roomba+).
+# =========================================================================
+
+
+class _NetworkFailingSession:
+    """Raises a given exception on the Nth HTTP call (0=discovery GET,
+    1=Gigya POST, 2=iRobot POST), returns the prepared responses
+    normally before that -- same call-order assumption as
+    _FakeSequentialSession above. Generalized (this session) from the
+    SSL-only _SSLFailingSession to also cover ClientConnectorError/
+    ServerTimeoutError with the same call-order machinery."""
+
+    def __init__(self, fail_at_call: int, exc: BaseException, prior_responses: list[_FakeResp]) -> None:
+        self._fail_at_call = fail_at_call
+        self._exc = exc
+        self._responses = list(prior_responses)
+        self._call_count = 0
+
+    def _next(self) -> _FakeResp:
+        call_index = self._call_count
+        self._call_count += 1
+        if call_index == self._fail_at_call:
+            raise self._exc
+        return self._responses.pop(0)
+
+    def get(self, url: str, **kwargs: object) -> _FakeResp:
+        return self._next()
+
+    def post(self, url: str, **kwargs: object) -> _FakeResp:
+        return self._next()
+
+
+def _ssl_error() -> aiohttp.ClientSSLError:
+    return aiohttp.ClientSSLError(None, OSError("certificate has expired"))
+
+
+def _connector_error() -> aiohttp.ClientConnectorError:
+    return aiohttp.ClientConnectorError(None, OSError("Name or service not known"))
+
+
+def _timeout_error() -> aiohttp.ServerTimeoutError:
+    return aiohttp.ServerTimeoutError("Connection timeout to host")
+
+
+@pytest.mark.asyncio
+async def test_login_discovery_ssl_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(fail_at_call=0, exc=_ssl_error(), prior_responses=[])
+
+    with pytest.raises(AuthSSLError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert "certificate" in str(excinfo.value).lower()
+    assert "temporary" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
+
+
+@pytest.mark.asyncio
+async def test_login_gigya_ssl_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(
+        fail_at_call=1,
+        exc=_ssl_error(),
+        prior_responses=[_FakeResp(200, json_body=_DISCOVERY_RESPONSE)],
+    )
+
+    with pytest.raises(AuthSSLError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert "certificate" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
+
+
+@pytest.mark.asyncio
+async def test_login_irobot_ssl_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(
+        fail_at_call=2,
+        exc=_ssl_error(),
+        prior_responses=[
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+        ],
+    )
+
+    with pytest.raises(AuthSSLError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert "certificate" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
+
+
+# =========================================================================
+# ClientConnectorError / ServerTimeoutError -> AuthConnectionError /
+# AuthTimeoutError (this session, following the user's request to also
+# cover these -- deliberately hedged messages, no confident fault
+# attribution, unlike the SSL case).
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_login_discovery_connector_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(fail_at_call=0, exc=_connector_error(), prior_responses=[])
+
+    with pytest.raises(AuthConnectionError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert "connect" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientConnectorError)
+
+
+@pytest.mark.asyncio
+async def test_login_gigya_connector_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(
+        fail_at_call=1,
+        exc=_connector_error(),
+        prior_responses=[_FakeResp(200, json_body=_DISCOVERY_RESPONSE)],
+    )
+
+    with pytest.raises(AuthConnectionError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientConnectorError)
+
+
+@pytest.mark.asyncio
+async def test_login_irobot_connector_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(
+        fail_at_call=2,
+        exc=_connector_error(),
+        prior_responses=[
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+        ],
+    )
+
+    with pytest.raises(AuthConnectionError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientConnectorError)
+
+
+@pytest.mark.asyncio
+async def test_login_discovery_timeout_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(fail_at_call=0, exc=_timeout_error(), prior_responses=[])
+
+    with pytest.raises(AuthTimeoutError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert "too long" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_login_gigya_timeout_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(
+        fail_at_call=1,
+        exc=_timeout_error(),
+        prior_responses=[_FakeResp(200, json_body=_DISCOVERY_RESPONSE)],
+    )
+
+    with pytest.raises(AuthTimeoutError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_login_irobot_timeout_error_gets_clear_message() -> None:
+    session = _NetworkFailingSession(
+        fail_at_call=2,
+        exc=_timeout_error(),
+        prior_responses=[
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+        ],
+    )
+
+    with pytest.raises(AuthTimeoutError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)

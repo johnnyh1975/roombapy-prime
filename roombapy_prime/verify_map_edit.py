@@ -14,17 +14,21 @@ WHY THIS IS MORE CAUTIOUS THAN verify_mission_commands.py, DELIBERATELY:
 Mission commands, before their own live test, had two independently
 converging pieces of evidence for the correct transport (this
 project's own native disassembly, and a third-party project reporting
-success). Map editing (`edit_map()`, the V1 command family) has NO
-such corroboration -- the exact JSON envelope around each command's
-`to_v1_command_body()` output (see models/map_editing.py's V1 section) is an
-ANALOGY assumption from the V2 pattern, never independently confirmed
-by anyone. A wrong guess for a mission command was safely observable
-as "nothing happened" (confirmed: zero response, not a crash). A wrong
-guess for a map edit command could, in principle, be accepted by the
-server in a way that changes map data unexpectedly -- lower
-probability than "cleanly rejected", but not zero, and unlike a
-mission command, a botched map edit could persist and be annoying to
-manually clean up in the real app afterward.
+success). Map editing (`edit_map()`, the V1 command family) had NO
+such corroboration until this session: the exact JSON envelope around
+each command's `to_v1_command_body()` output (see models/map_editing.py's
+V1 section) was originally an ANALOGY assumption from the V2 pattern,
+never independently confirmed -- and a first live test against that
+assumption (chairstacker) failed with HTTP 500, prompting a full live
+APK decompilation of EditMapV1Request.java this session, which
+confirmed the real envelope shape is structurally different
+("command"/"params"-nested, not "type"/flat) across all nine V1
+commands. That decompilation-level confirmation is a genuinely
+stronger form of evidence than the mission-command case ever had
+before ITS live test -- but this script's caution level is unchanged:
+decompiled bytecode still isn't the same as a real server accepting a
+real request, and this remains the first live test of the corrected
+structure.
 
 For that reason, THIS SCRIPT DELIBERATELY ONLY TESTS ONE OPERATION:
 renaming an existing, already-named room to a clearly-marked test name,
@@ -86,7 +90,7 @@ from typing import Any
 import aiohttp
 
 from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
-from .models import P2MapVersion, RenameRoomV1, parse_active_map_versions
+from .models import P2MapVersion, SetRoomMetadataV1, parse_active_map_versions
 from .prime_factory import PrimeFactory
 from .verify_mission_commands import _confirm
 
@@ -282,15 +286,22 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         print(f"\n{'=' * 60}")
         print(f"TEST ROOM: {original_name!r} (room_id={room_id})")
         print(f"About to temporarily rename it to: {test_name!r}")
-        print("This sends a real edit_map() call -- the exact envelope format is unconfirmed, ")
-        print("see the module docstring for why this is riskier than the mission-command test.")
+        print(
+            "Using SetRoomMetadataV1 (command='set_room_metadata') -- this session's "
+            "APK decompilation confirmed the full envelope AND found the app itself no "
+            "longer calls RenameRoom at all (Kotlin @Deprecated), using SetRoomMetadata "
+            "instead. A prior live attempt (chairstacker) with the OLD, incorrectly-"
+            "shaped RenameRoom envelope failed with HTTP 500 -- that specific failure is "
+            "now understood (wrong envelope shape entirely, fixed this session), but "
+            "this is still the first live test of the corrected structure."
+        )
         if not _confirm("Proceed with the rename?"):
             report.add("Rename room (test)", "SKIPPED", "not confirmed by user")
             await robot.disconnect()
             return report, raw_capture
 
         try:
-            result = await robot.edit_map(p2map_id, RenameRoomV1(room_id=room_id, name=test_name))
+            result = await robot.edit_map(p2map_id, SetRoomMetadataV1(room_id=room_id, name=test_name))
             raw_capture["edit_map response (rename to test name)"] = result
             print(f"  Server response: {result}")
         except Exception as exc:  # noqa: BLE001
@@ -327,7 +338,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             return report, raw_capture
 
         try:
-            result = await robot.edit_map(p2map_id, RenameRoomV1(room_id=room_id, name=original_name))
+            result = await robot.edit_map(p2map_id, SetRoomMetadataV1(room_id=room_id, name=original_name))
             raw_capture["edit_map response (revert to original name)"] = result
             print(f"  Server response: {result}")
         except Exception as exc:  # noqa: BLE001

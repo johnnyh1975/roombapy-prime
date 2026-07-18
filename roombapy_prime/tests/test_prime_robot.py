@@ -13,7 +13,7 @@ or real paho client -- consistent with the rest of this file.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
 
@@ -31,6 +31,17 @@ def _robot_with_mocks() -> tuple[PrimeRobot, MagicMock, MagicMock]:
         irbt_topic_prefix="irbt-fake-prefix",
     )
     return robot, mqtt, rest
+
+
+def _never_disconnects(mqtt: MagicMock) -> None:
+    """NEW (this session, reconnect hardening). watch_state() now races
+    queue.get() against self._mqtt.wait_for_disconnect() -- tests that
+    only care about normal delta delivery need the disconnect side to
+    simply never fire. A fresh, never-.set() asyncio.Event's wait()
+    blocks forever, which is exactly that -- distinct from returning a
+    plain MagicMock(), which isn't awaitable at all and would raise a
+    TypeError from asyncio.ensure_future()."""
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=asyncio.Event().wait)
 
 
 @pytest.mark.asyncio
@@ -209,6 +220,7 @@ async def _wait_until(predicate, timeout: float = 1.0) -> None:
 @pytest.mark.asyncio
 async def test_watch_state_yields_deltas_as_they_arrive() -> None:
     robot, mqtt, _rest = _robot_with_mocks()
+    _never_disconnects(mqtt)
     captured: dict = {}
 
     def fake_subscribe(topic, callback):
@@ -239,6 +251,7 @@ async def test_watch_state_yields_deltas_as_they_arrive() -> None:
 @pytest.mark.asyncio
 async def test_watch_state_named_uses_named_shadow_delta_topic() -> None:
     robot, mqtt, _rest = _robot_with_mocks()
+    _never_disconnects(mqtt)
     captured: dict = {}
     mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
 
@@ -257,6 +270,7 @@ async def test_watch_state_named_uses_named_shadow_delta_topic() -> None:
 @pytest.mark.asyncio
 async def test_watch_state_delivers_multiple_messages_in_order() -> None:
     robot, mqtt, _rest = _robot_with_mocks()
+    _never_disconnects(mqtt)
     captured: dict = {}
     mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
 
@@ -273,6 +287,122 @@ async def test_watch_state_delivers_multiple_messages_in_order() -> None:
     assert first.payload == {"n": 1}
     assert second.payload == {"n": 2}
 
+    await agen.aclose()
+
+
+# =========================================================================
+# Reconnect-after-disconnect (this session, reconnect hardening -- see
+# mqtt_client.py's wait_for_disconnect()/reconnect() docstrings). Previously
+# a dropped connection left this generator hung on an empty queue forever,
+# with no signal to the caller anything was wrong.
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_watch_state_reconnects_after_disconnect() -> None:
+    """A dropped connection must not end the generator or raise to the
+    caller -- it triggers mqtt.reconnect() and resumes delivering deltas
+    once reconnected, transparently to the `async for` consumer."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    disconnect_event = asyncio.Event()
+    call_count = 0
+
+    async def fake_wait_for_disconnect():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            await disconnect_event.wait()
+            return "connection lost"
+        await asyncio.Event().wait()  # subsequent calls: healthy again, never fires
+
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
+    mqtt.reconnect = MagicMock()  # succeeds immediately, no side_effect
+
+    agen = robot.watch_state()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    disconnect_event.set()
+    await _wait_until(lambda: mqtt.reconnect.called)
+    mqtt.reconnect.assert_called_once()
+
+    # watch_state() re-subscribes with the SAME callback closure after a
+    # successful reconnect (see reconnect()'s docstring on why it must be
+    # the same closure, not a fresh subscribe() call) -- firing it again
+    # simulates "reconnected, and a new delta has now arrived".
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"after": "reconnect"}))
+    result = await next_task
+
+    assert result.payload == {"after": "reconnect"}
+
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_watch_state_retries_reconnect_with_backoff_on_failure() -> None:
+    """If mqtt.reconnect() itself fails, watch_state() must retry rather
+    than give up -- verified here with a fake that fails twice before
+    succeeding. Real (short) backoff delays, not mocked -- patching
+    asyncio.sleep globally risks starving other coroutines this same
+    test relies on (the callback/subscribe simulation), for a saving of
+    only ~3 real seconds (1s + 2s backoff)."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    disconnect_event = asyncio.Event()
+    call_count = 0
+
+    async def fake_wait_for_disconnect():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            await disconnect_event.wait()
+            return "connection lost"
+        await asyncio.Event().wait()
+
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
+    mqtt.reconnect = MagicMock(side_effect=[RuntimeError("still down"), RuntimeError("still down"), None])
+
+    agen = robot.watch_state()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    disconnect_event.set()
+    await _wait_until(lambda: mqtt.reconnect.call_count == 3, timeout=5.0)
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"after": "retry"}))
+    result = await next_task
+    assert result.payload == {"after": "retry"}
+
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_watch_state_outer_cancellation_does_not_leak_tasks() -> None:
+    """Regression test for a real bug found while building the reconnect
+    logic above: if the generator itself is cancelled (agen.aclose()/
+    task.cancel()) while BOTH the queue-get and disconnect-wait race
+    tasks are still pending, both must be cleaned up -- not just
+    whichever one would have "lost" a normal race. Passing here mainly
+    means pytest-homeassistant-custom-component's lingering-task check
+    doesn't fail after this test.
+    """
+    robot, mqtt, _rest = _robot_with_mocks()
+    _never_disconnects(mqtt)
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    agen = robot.watch_state()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    next_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await next_task
     await agen.aclose()
 
 

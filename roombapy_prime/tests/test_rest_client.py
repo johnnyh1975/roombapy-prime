@@ -17,11 +17,18 @@ from __future__ import annotations
 
 import json
 
+import aiohttp
 import pytest
 
 from roombapy_prime.auth import CloudCredentials
 from roombapy_prime.models import HouseholdSchedule, MergeRooms, ScheduleFrequency, ScheduleOptions
-from roombapy_prime.rest_client import PrimeRestClient, RestError
+from roombapy_prime.rest_client import (
+    PrimeRestClient,
+    RestConnectionError,
+    RestError,
+    RestSSLError,
+    RestTimeoutError,
+)
 
 HTTP_BASE_AUTH = "https://fake-http-base-auth.example.invalid"
 
@@ -619,11 +626,12 @@ async def test_edit_map_v2_sends_command_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_edit_map_v1_sends_command_envelope() -> None:
-    """CORRECTED (session 48) -- both the envelope
-    ({"edit_cmd": ..., "response_type": ...}) and the field name
-    ("room_ids", not "ids") are now confirmed via
-    EditMapV1Request$Body$$serializer/
-    EditMapV1Request$Command$MergeRooms$$serializer."""
+    """UPDATE (this session): live APK decompilation of the FULL
+    EditMapV1Request.java confirms the inner "edit_cmd" shape is
+    {"command": "arrange_room", "params": {"room_ids": [...]}}, not the
+    flat {"type": "MergeRooms", "room_ids": [...]} previously assumed --
+    the outer envelope ({"edit_cmd": ..., "response_type": ...}) itself
+    is unchanged and was already correct."""
     from roombapy_prime.models import MergeRoomsV1
 
     session = _FakeSession()
@@ -636,7 +644,7 @@ async def test_edit_map_v1_sends_command_envelope() -> None:
     assert result == {"updated": True}
     assert call.url == f"{HTTP_BASE_AUTH}/v1/p2maps/map123/versions"
     assert call.body_json == {
-        "edit_cmd": {"type": "MergeRooms", "room_ids": ["a", "b"]},
+        "edit_cmd": {"command": "arrange_room", "params": {"room_ids": ["a", "b"]}},
         "response_type": "link",
     }
 
@@ -892,3 +900,114 @@ async def test_get_notifications_query() -> None:
         "app_version": "2.5.0",
         "limit": "50",
     }
+
+
+# =========================================================================
+# SSL certificate error clarity (this session, same fix as auth.py --
+# see _raise_clear_ssl_error()'s docstring for why this belongs here
+# too: _request() is the single chokepoint nearly every endpoint in
+# this file goes through).
+# =========================================================================
+
+
+class _NetworkFailingSession:
+    """Minimal stand-in that raises a given exception on any
+    get/post/put/delete call -- mirrors _FakeSession's method surface.
+    Generalized (this session) from the SSL-only _SSLFailingSession to
+    also cover ClientConnectorError/ServerTimeoutError."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def get(self, *args: object, **kwargs: object) -> None:
+        raise self._exc
+
+    def post(self, *args: object, **kwargs: object) -> None:
+        raise self._exc
+
+    def put(self, *args: object, **kwargs: object) -> None:
+        raise self._exc
+
+    def delete(self, *args: object, **kwargs: object) -> None:
+        raise self._exc
+
+
+def _ssl_error() -> aiohttp.ClientSSLError:
+    return aiohttp.ClientSSLError(None, OSError("certificate has expired"))
+
+
+def _connector_error() -> aiohttp.ClientConnectorError:
+    return aiohttp.ClientConnectorError(None, OSError("Name or service not known"))
+
+
+def _timeout_error() -> aiohttp.ServerTimeoutError:
+    return aiohttp.ServerTimeoutError("Connection timeout to host")
+
+
+@pytest.mark.asyncio
+async def test_request_chokepoint_ssl_error_gets_clear_message() -> None:
+    """Exercised via get_map_metadata() (any endpoint would do -- all
+    go through the same _request() chokepoint)."""
+    client = PrimeRestClient(_NetworkFailingSession(_ssl_error()), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestSSLError) as excinfo:
+        await client.get_map_metadata("map123")
+
+    assert "certificate" in str(excinfo.value).lower()
+    assert "temporary" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
+
+
+@pytest.mark.asyncio
+async def test_download_map_bundle_ssl_error_gets_clear_message() -> None:
+    """download_map_bundle() deliberately bypasses _request() (different,
+    unsigned host) -- needs its own SSL wrap, tested separately here."""
+    client = PrimeRestClient(_NetworkFailingSession(_ssl_error()), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestSSLError) as excinfo:
+        await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
+
+    assert "certificate" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
+
+
+@pytest.mark.asyncio
+async def test_request_chokepoint_connector_error_gets_clear_message() -> None:
+    client = PrimeRestClient(_NetworkFailingSession(_connector_error()), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestConnectionError) as excinfo:
+        await client.get_map_metadata("map123")
+
+    assert "connect" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientConnectorError)
+
+
+@pytest.mark.asyncio
+async def test_download_map_bundle_connector_error_gets_clear_message() -> None:
+    client = PrimeRestClient(_NetworkFailingSession(_connector_error()), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestConnectionError) as excinfo:
+        await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
+
+    assert isinstance(excinfo.value.__cause__, aiohttp.ClientConnectorError)
+
+
+@pytest.mark.asyncio
+async def test_request_chokepoint_timeout_error_gets_clear_message() -> None:
+    client = PrimeRestClient(_NetworkFailingSession(_timeout_error()), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestTimeoutError) as excinfo:
+        await client.get_map_metadata("map123")
+
+    assert "too long" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_download_map_bundle_timeout_error_gets_clear_message() -> None:
+    client = PrimeRestClient(_NetworkFailingSession(_timeout_error()), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestTimeoutError) as excinfo:
+        await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
+
+    assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)

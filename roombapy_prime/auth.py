@@ -49,11 +49,117 @@ _APP_ID = "roombapy-prime"
 
 class AuthError(Exception):
     """Raised for any failure in the discovery/Gigya/login chain, with
-    the offending stage's raw response attached where available."""
+    the offending stage's raw response attached where available.
+
+    Subclassed below (this session, ha_roomba_plus translation-key
+    prep) into more specific categories -- callers that only care
+    about "something failed" can keep catching AuthError itself
+    (every subclass IS-A AuthError), while callers that need to map
+    to different user-facing messages/translation keys (e.g.
+    ha_roomba_plus's config_flow.py: "invalid_cloud_credentials" vs
+    "cannot_connect") can catch the specific subclass instead of
+    string-matching the message text -- fragile, and exactly what
+    this change avoids."""
 
     def __init__(self, message: str, raw_response: Any = None) -> None:
         super().__init__(message)
         self.raw_response = raw_response
+
+
+class AuthCredentialsError(AuthError):
+    """The login attempt itself was rejected -- wrong username/password
+    (Gigya) or the login was otherwise refused by iRobot's backend
+    post-Gigya-success. NOT raised for the "mqtt slot" rate-limit case
+    (see AuthRateLimitedError) or for malformed/incomplete responses
+    (those stay a plain AuthError -- they indicate a response-shape
+    problem, not something a user did wrong)."""
+
+
+class AuthRateLimitedError(AuthError):
+    """iRobot's backend rejected the login due to too many active app
+    sessions/tokens (the real, confirmed "mqtt slot" failure mode --
+    see _login_irobot()). Distinct from AuthCredentialsError: telling
+    someone to re-check their password when the actual fix is "close
+    the iRobot app and try again" would be actively misleading."""
+
+
+class AuthSSLError(AuthError):
+    """TLS/certificate verification failure -- see
+    _raise_clear_ssl_error()."""
+
+
+class AuthConnectionError(AuthError):
+    """Could not establish a connection at all (DNS failure, connection
+    refused, network unreachable) -- see _raise_clear_connection_error().
+    Deliberately does NOT claim to know whether this is iRobot's fault
+    or the caller's own network, unlike AuthSSLError's confident
+    "definitely temporary, definitely not you" framing -- that
+    confidence isn't justified here."""
+
+
+class AuthTimeoutError(AuthError):
+    """Request was sent but no response came back in time -- see
+    _raise_clear_timeout_error()."""
+
+
+def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> None:
+    """Re-raise an aiohttp SSL/certificate failure as a clear
+    AuthSSLError instead of letting the raw aiohttp exception bubble
+    up as an opaque "unknown error occurred".
+
+    NEW (V4/Prime prep, ha_roomba_plus login consolidation). Carried
+    over from ha_roomba_plus's cloud_api.py::_raise_clear_ssl_error()
+    (v3.5.0 bug-hunt fix, real-world report from wecoyote5: iRobot's
+    own disc-prod.iot.irobotapi.com TLS certificate briefly expired on
+    their end -- not a bug in the calling code, and not something a
+    user can fix locally). Belongs here rather than only in
+    ha_roomba_plus: every consumer of this library hits the exact same
+    endpoints, including chairstacker/jadestar1864 running the
+    standalone verify-* scripts directly, not just through Roomba+.
+
+    Deliberately does NOT offer any way to skip/ignore certificate
+    verification -- that would remove protection against
+    man-in-the-middle attacks for every future connection this
+    library ever makes, to work around a problem that is both
+    temporary (resolves once iRobot renews their certificate) and
+    outside any caller's control either way."""
+    raise AuthSSLError(
+        "Could not verify iRobot's cloud server certificate. This is "
+        "almost always a temporary problem on iRobot's servers (an "
+        "expired or currently-renewing TLS certificate), not something "
+        "wrong with your setup -- it should resolve on its own within a "
+        "few hours."
+    ) from exc
+
+
+def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> None:
+    """Re-raise a connection failure (DNS, connection refused, network
+    unreachable) as a clear AuthConnectionError.
+
+    NEW (this session). Unlike _raise_clear_ssl_error(), deliberately
+    does NOT claim confident fault attribution -- a ClientConnectorError
+    genuinely could be either iRobot's servers being unreachable or the
+    caller's own network/DNS being down, and there's no way to tell
+    which from this exception alone."""
+    raise AuthConnectionError(
+        "Could not connect to iRobot's cloud servers. This could be a "
+        "temporary problem with iRobot's servers, or with your own "
+        "internet connection -- check that other internet-dependent "
+        "services are working, and try again in a few minutes."
+    ) from exc
+
+
+def _raise_clear_timeout_error(exc: BaseException) -> None:
+    """Re-raise a request timeout as a clear AuthTimeoutError.
+
+    NEW (this session). Accepts BaseException rather than a specific
+    timeout type since both aiohttp.ServerTimeoutError and plain
+    asyncio.TimeoutError are plausible here depending on exactly where
+    the timeout occurs -- the message is the same either way."""
+    raise AuthTimeoutError(
+        "iRobot's cloud servers took too long to respond. This is "
+        "usually temporary -- please try again in a few minutes."
+    ) from exc
 
 
 @dataclass(frozen=True)
@@ -423,10 +529,17 @@ async def login(
     Raises AuthError at whichever stage fails, with that stage's raw
     response attached for diagnostics.
     """
-    async with session.get(_discovery_url(country_code)) as resp:
-        if resp.status != 200:
-            raise AuthError(f"Endpoint discovery failed: HTTP {resp.status}")
-        disc = await resp.json()
+    try:
+        async with session.get(_discovery_url(country_code)) as resp:
+            if resp.status != 200:
+                raise AuthError(f"Endpoint discovery failed: HTTP {resp.status}")
+            disc = await resp.json()
+    except aiohttp.ClientSSLError as exc:
+        _raise_clear_ssl_error(exc)
+    except aiohttp.ServerTimeoutError as exc:
+        _raise_clear_timeout_error(exc)
+    except aiohttp.ClientConnectorError as exc:
+        _raise_clear_connection_error(exc)
 
     try:
         deployment = disc["deployments"][disc["current_deployment"]]
@@ -504,8 +617,15 @@ async def _login_gigya(
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": _USER_AGENT_APP,
     }
-    async with session.post(f"{base}login", headers=headers, data=urllib.parse.urlencode(payload)) as resp:
-        text = await resp.text()
+    try:
+        async with session.post(f"{base}login", headers=headers, data=urllib.parse.urlencode(payload)) as resp:
+            text = await resp.text()
+    except aiohttp.ClientSSLError as exc:
+        _raise_clear_ssl_error(exc)
+    except aiohttp.ServerTimeoutError as exc:
+        _raise_clear_timeout_error(exc)
+    except aiohttp.ClientConnectorError as exc:
+        _raise_clear_connection_error(exc)
 
     try:
         result = json.loads(text)
@@ -513,7 +633,7 @@ async def _login_gigya(
         raise AuthError(f"Invalid Gigya response (not JSON): {text[:300]}") from exc
 
     if result.get("errorCode", 0) != 0:
-        raise AuthError(f"Gigya login failed: {result.get('errorMessage', result)}", result)
+        raise AuthCredentialsError(f"Gigya login failed: {result.get('errorMessage', result)}", result)
 
     return {
         "uid": result["UID"],
@@ -554,12 +674,19 @@ async def _login_irobot(
         },
         "skip_ownership_check": "0",
     }
-    async with session.post(
-        f"{http_base}/v2/login",
-        headers={"Content-Type": "application/json"},
-        json=payload,
-    ) as resp:
-        text = await resp.text()
+    try:
+        async with session.post(
+            f"{http_base}/v2/login",
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        ) as resp:
+            text = await resp.text()
+    except aiohttp.ClientSSLError as exc:
+        _raise_clear_ssl_error(exc)
+    except aiohttp.ServerTimeoutError as exc:
+        _raise_clear_timeout_error(exc)
+    except aiohttp.ClientConnectorError as exc:
+        _raise_clear_connection_error(exc)
 
     try:
         result = json.loads(text)
@@ -569,9 +696,15 @@ async def _login_irobot(
     if result.get("errorCode"):
         msg = result.get("errorMessage") or str(result)
         # Known, real failure mode -- carried over 1:1 from cloud_api.py
-        # (confirmed there for the same /v2/login endpoint).
+        # (confirmed there for the same /v2/login endpoint). Its own
+        # category (AuthRateLimitedError), not AuthCredentialsError --
+        # telling someone to re-check their password when the actual
+        # fix is "close the iRobot app and try again" would be
+        # actively misleading.
         if "mqtt slot" in msg.lower():
-            msg = f"Cloud auth rate-limited. Close the iRobot app and try again. ({msg})"
-        raise AuthError(f"iRobot cloud login failed: {msg}", result)
+            raise AuthRateLimitedError(
+                f"Cloud auth rate-limited. Close the iRobot app and try again. ({msg})", result
+            )
+        raise AuthCredentialsError(f"iRobot cloud login failed: {msg}", result)
 
     return result

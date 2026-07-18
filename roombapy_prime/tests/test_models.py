@@ -405,102 +405,254 @@ def test_bundle_metadata_source_from_json() -> None:
 
 
 def test_rename_room_v1_confirmed_field_names() -> None:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$RenameRoom$$serializer -- room_id/
-    room_name, not the previously-guessed id/name."""
+    """UPDATE (this session): live APK decompilation of the full
+    EditMapV1Request.java confirmed the outer shape is
+    {"command": "rename_room", "params": {...}}, not the flat
+    {"type": "RenameRoom", ...} previously assumed -- room_id/room_name
+    themselves were already correct (session 48), only the envelope
+    around them was wrong."""
     from roombapy_prime.models import RenameRoomV1
 
     body = RenameRoomV1(room_id="r1", name="Kitchen").to_v1_command_body()
-    assert body == {"type": "RenameRoom", "room_id": "r1", "room_name": "Kitchen"}
+    assert body == {
+        "command": "rename_room",
+        "params": {"room_id": "r1", "room_name": "Kitchen"},
+    }
 
 
 def test_split_room_v1_confirmed_field_names() -> None:
+    """UPDATE (this session): split_points is a FLAT list of doubles
+    ([x1, y1, x2, y2]), not a list of [x, y] pairs as previously
+    assumed."""
     from roombapy_prime.models import SplitRoomV1
 
     body = SplitRoomV1(room_id="r1", split_points=[(0.0, 0.0), (1.0, 1.0)]).to_v1_command_body()
-    assert body == {"type": "SplitRoom", "room_id": "r1", "split_points": [[0.0, 0.0], [1.0, 1.0]]}
+    assert body == {
+        "command": "split_room",
+        "params": {"room_id": "r1", "split_points": [0.0, 0.0, 1.0, 1.0]},
+    }
 
 
 def test_merge_rooms_v1_confirmed_field_name() -> None:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$MergeRooms$$serializer -- room_ids, not
-    the previously-guessed ids."""
+    """UPDATE (this session): discriminator is "arrange_room", not
+    "merge_rooms"/"MergeRooms" -- room_ids field name was already
+    correct (session 48)."""
     from roombapy_prime.models import MergeRoomsV1
 
     body = MergeRoomsV1(ids=["r1", "r2"]).to_v1_command_body()
-    assert body == {"type": "MergeRooms", "room_ids": ["r1", "r2"]}
+    assert body == {"command": "arrange_room", "params": {"room_ids": ["r1", "r2"]}}
 
 
 def test_set_room_type_v1_confirmed_field_names() -> None:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$SetRoomType$$serializer -- room_id/
-    type_id, not the previously-guessed id/type."""
+    """UPDATE (this session): discriminator is "set_room_type", nested
+    under params -- room_id/type_id field names were already correct
+    (session 48)."""
     from roombapy_prime.models import RoomType, SetRoomTypeV1
 
     body = SetRoomTypeV1(room_id="r1", room_type=RoomType.KITCHEN).to_v1_command_body()
-    assert body == {"type": "SetRoomType", "room_id": "r1", "type_id": int(RoomType.KITCHEN)}
+    assert body == {
+        "command": "set_room_type",
+        "params": {"room_id": "r1", "type_id": int(RoomType.KITCHEN)},
+    }
+
+
+def test_permanent_area_v1_is_a_positional_array_not_an_object() -> None:
+    """UPDATE (this session): PermanentArea has its own custom
+    serializer emitting [id, name, [x1, y1, ...]] -- not a
+    {"id": ..., "name": ..., "geometry": {...GeoJSON...}} object as
+    previously assumed."""
+    from roombapy_prime.models import PermanentAreaV1
+
+    poly = Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]])
+    area = PermanentAreaV1(area_id="a1", name="Zone", geometry=poly)
+
+    assert area.to_json() == ["a1", "Zone", [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]]
 
 
 def test_set_permanent_areas_v1_confirmed_field_name() -> None:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$SetPermanentAreas$$serializer --
-    area_points (snake_case), not the previously-guessed areaPoints."""
+    """UPDATE (this session): discriminator is "set_permanent_area"
+    (singular) under params, not "SetPermanentAreas". area_points
+    field name itself was already correct (session 48)."""
     from roombapy_prime.models import PermanentAreaV1, SetPermanentAreasV1
 
     poly = Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0)]])
     area = PermanentAreaV1(area_id="a1", name="Zone", geometry=poly)
     body = SetPermanentAreasV1(areas=[area]).to_v1_command_body()
 
-    assert body["type"] == "SetPermanentAreas"
-    assert "area_points" in body
-    assert "areaPoints" not in body
-    assert body["area_points"][0]["id"] == "a1"
+    assert body["command"] == "set_permanent_area"
+    assert body["params"]["area_points"] == [["a1", "Zone", [0.0, 0.0, 1.0, 0.0]]]
 
 
 def test_delete_permanent_areas_v1_confirmed_field_name() -> None:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$DeletePermanentAreas$$serializer --
-    area_ids (snake_case), not the previously-guessed areaIDs."""
+    """UPDATE (this session): discriminator is "del_permanent_area"
+    (abbreviated, singular), not "DeletePermanentAreas". area_ids field
+    name itself was already correct (session 48)."""
     from roombapy_prime.models import DeletePermanentAreasV1
 
     body = DeletePermanentAreasV1(area_ids=["a1", "a2"]).to_v1_command_body()
-    assert body == {"type": "DeletePermanentAreas", "area_ids": ["a1", "a2"]}
+    assert body == {
+        "command": "del_permanent_area",
+        "params": {"area_ids": ["a1", "a2"]},
+    }
+
+
+def test_virtual_wall_rectangle_v1_is_a_positional_array() -> None:
+    """UPDATE (this session): [id, 1, x1, y1, ...] -- type_int=1 for
+    Rectangle. Previously assumed a {"type": "Rectangle", "id": ...,
+    "polygon": {...GeoJSON...}} object."""
+    from roombapy_prime.models import VirtualWallRectangleV1
+
+    poly = Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]])
+    wall = VirtualWallRectangleV1(wall_id="w1", polygon=poly)
+
+    assert wall.to_json() == ["w1", 1, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+
+
+def test_virtual_wall_no_mop_zone_v1_uses_discriminator_six() -> None:
+    """UPDATE (this session): same array shape as Rectangle, type_int=6
+    -- confirms no-mop zones share the Rectangle/Linear wire format,
+    only the discriminator int differs."""
+    from roombapy_prime.models import VirtualWallNoMopZoneV1
+
+    poly = Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]])
+    wall = VirtualWallNoMopZoneV1(wall_id="w1", polygon=poly)
+
+    assert wall.to_json() == ["w1", 6, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+
+
+def test_virtual_wall_linear_v1_degenerates_to_four_point_polygon() -> None:
+    """UPDATE (this session): a line segment has no natural 4-point
+    shape, so the confirmed wire format degenerates it by repeating
+    each endpoint: from, to, to, from. type_int=2 for Linear.
+    Previously assumed a {"type": "Linear", "id": ..., "from": [...],
+    "to": [...]} object with just the two raw endpoints."""
+    from roombapy_prime.models import VirtualWallLinearV1
+
+    wall = VirtualWallLinearV1(wall_id="w1", from_pos=(0.0, 0.0), to_pos=(1.0, 1.0))
+
+    assert wall.to_json() == ["w1", 2, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]
 
 
 def test_set_virtual_walls_v1_confirmed_field_name() -> None:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$SetVirtualWalls$$serializer -- the
-    unusual abbreviation `virwall`, not the previously-guessed
-    `walls`. The internal Linear/Rectangle/NoMopZone discriminator
-    remains unconfirmed (custom serializer, see the module docstring)."""
+    """UPDATE (this session): discriminator is "set_virtual_wall"
+    (singular) under params, not "SetVirtualWalls". virwall field name
+    itself was already correct (session 48). The previously-open
+    Linear/Rectangle/NoMopZone discriminator question is now answered
+    -- see VirtualWall*V1's own tests above -- it's a positional int,
+    not a "type" string at all."""
     from roombapy_prime.models import SetVirtualWallsV1, VirtualWallLinearV1
 
     wall = VirtualWallLinearV1(wall_id="w1", from_pos=(0.0, 0.0), to_pos=(1.0, 1.0))
     body = SetVirtualWallsV1(walls=[wall]).to_v1_command_body()
 
-    assert body["type"] == "SetVirtualWalls"
-    assert "virwall" in body
-    assert "walls" not in body
+    assert body["command"] == "set_virtual_wall"
+    assert "virwall" in body["params"]
+    assert body["params"]["virwall"] == [["w1", 2, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]]
+
+
+def test_furniture_item_v1_is_a_positional_array_with_int_bool() -> None:
+    """UPDATE (this session): [id, type_int, user_modified(0/1), x1,
+    y1, ...] -- user_modified is an int 0/1 on the wire, not a JSON
+    bool as previously assumed."""
+    from roombapy_prime.models import FurnitureItemV1
+
+    poly = Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0)]])
+    item = FurnitureItemV1(
+        furniture_id="f1", furniture_type=FurnitureType.SOFA, geometry=poly, user_modified=True
+    )
+
+    body = item.to_json()
+    assert body[0] == "f1"
+    assert body[1] == int(FurnitureType.SOFA)
+    assert body[2] == 1  # int, not True
+    assert body[3:] == [0.0, 0.0, 1.0, 0.0]
 
 
 def test_adjust_furniture_v1_confirmed_field_names() -> None:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$AdjustFurniture$$serializer --
-    furniture_list/package (snake_case, and "package" not
-    "packageInfo"), not the previously-guessed furnitureList/
-    packageInfo. timestamp was already correct."""
+    """UPDATE (this session): discriminator is "adjust_furniture" under
+    params. furniture_list/package/timestamp field names were already
+    correct (session 48) -- what's new: "package" defaults to the
+    confirmed fixed [1, 1], not an unconfirmed, arbitrarily-shaped
+    list."""
     from roombapy_prime.models import AdjustFurnitureV1, FurnitureItemV1
 
     poly = Polygon(coordinates=[[(0.0, 0.0)]])
     item = FurnitureItemV1(furniture_id="f1", furniture_type=FurnitureType.SOFA, geometry=poly)
     body = AdjustFurnitureV1(furniture_list=[item], timestamp=123).to_v1_command_body()
 
-    assert body["type"] == "AdjustFurniture"
-    assert body["timestamp"] == 123
-    assert "furniture_list" in body
-    assert "package" in body
-    assert "furnitureList" not in body
-    assert "packageInfo" not in body
+    assert body["command"] == "adjust_furniture"
+    assert body["params"]["timestamp"] == 123
+    assert body["params"]["package"] == [1, 1]
+    assert "furniture_list" in body["params"]
+
+
+def test_set_room_metadata_v1_confirmed_structure() -> None:
+    """CONFIRMED (this session, live decompilation down to the actual
+    P2MapRoomMetadata$Serializer.serialize() call): room_id sits
+    alongside room_metadata (not nested inside it), and room_metadata
+    itself contains only "name" when just the name is being changed."""
+    from roombapy_prime.models import SetRoomMetadataV1
+
+    body = SetRoomMetadataV1(room_id="r1", name="Kitchen").to_v1_command_body()
+    assert body == {
+        "command": "set_room_metadata",
+        "params": {"room_id": "r1", "room_metadata": {"name": "Kitchen"}},
+    }
+
+
+def test_set_room_metadata_v1_room_type_uses_room_category_snake_case() -> None:
+    """CONFIRMED (this session): room_type is serialized under the key
+    "type", using RoomCategory's snake_case string values -- NOT
+    RoomType (the unrelated int-coded enum used by the app-deprecated
+    SetRoomTypeV1), and NOT the underlying Kotlin enum's own `raw`
+    field (which is camelCase, e.g. "livingRoom" -- the serializer
+    calls .name().toLowerCase() instead, giving "living_room"). Both
+    name and type can be set together in one call."""
+    from roombapy_prime.models import RoomCategory, SetRoomMetadataV1
+
+    body = SetRoomMetadataV1(
+        room_id="r1", name="Kitchen", room_type=RoomCategory.KITCHEN
+    ).to_v1_command_body()
+    assert body["params"]["room_metadata"] == {"name": "Kitchen", "type": "kitchen"}
+
+
+def test_set_room_metadata_v1_room_category_snake_case_not_camel_case() -> None:
+    """Regression guard for the specific trap the live decompilation
+    found: DINING_ROOM/LIVING_ROOM must serialize with an underscore
+    ("dining_room"/"living_room"), not the more-plausible-looking
+    camelCase ("diningRoom"/"livingRoom") that the underlying Kotlin
+    enum's own (unused-by-the-serializer) `raw` field would suggest."""
+    from roombapy_prime.models import RoomCategory, SetRoomMetadataV1
+
+    dining = SetRoomMetadataV1(room_id="r1", room_type=RoomCategory.DINING_ROOM)
+    living = SetRoomMetadataV1(room_id="r1", room_type=RoomCategory.LIVING_ROOM)
+
+    assert dining.to_v1_command_body()["params"]["room_metadata"]["type"] == "dining_room"
+    assert living.to_v1_command_body()["params"]["room_metadata"]["type"] == "living_room"
+
+
+def test_set_room_metadata_v1_type_only_omits_name() -> None:
+    """A room_type-only change must not include "name" in room_metadata
+    at all -- confirms the partial-update behavior works independently
+    for each field, not just for name-only changes."""
+    from roombapy_prime.models import RoomCategory, SetRoomMetadataV1
+
+    body = SetRoomMetadataV1(room_id="r1", room_type=RoomCategory.BEDROOM).to_v1_command_body()
+    assert body["params"]["room_metadata"] == {"type": "bedroom"}
+
+
+def test_set_room_metadata_v1_requires_name_or_type() -> None:
+    """CONFIRMED constraint (this session, from the decompiled
+    constructor): at least one of name/room_type must be set -- the
+    underlying API has no way to express "change nothing". Enforced
+    here via __post_init__ so a caller gets an immediate, clear
+    ValueError rather than a request the server would have to reject."""
+    import pytest
+
+    from roombapy_prime.models import SetRoomMetadataV1
+
+    with pytest.raises(ValueError, match="at least one of name/room_type"):
+        SetRoomMetadataV1(room_id="r1")
 
 
 # --- mission commands (CLEAN/START/STOP/PAUSE/DOCK/etc.) -----------------

@@ -94,6 +94,67 @@ class RestError(Exception):
         self.raw_response = raw_response
 
 
+class RestSSLError(RestError):
+    """TLS/certificate verification failure -- see
+    _raise_clear_ssl_error()."""
+
+
+class RestConnectionError(RestError):
+    """Could not establish a connection at all (DNS failure, connection
+    refused, network unreachable) -- see _raise_clear_connection_error().
+    Deliberately does NOT claim to know whether this is iRobot's fault
+    or the caller's own network."""
+
+
+class RestTimeoutError(RestError):
+    """Request was sent but no response came back in time -- see
+    _raise_clear_timeout_error()."""
+
+
+def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> None:
+    """Re-raise an aiohttp SSL/certificate failure as a clear
+    RestSSLError instead of letting the raw aiohttp exception bubble
+    up as an opaque "unknown error occurred".
+
+    NEW (V4/Prime prep, following the same fix in auth.py). This
+    class's own _request() is the single chokepoint nearly every
+    endpoint method in this file goes through, so wrapping it there
+    covers p2maps, favorites, schedules, DND, mission history, and map
+    editing all at once; download_map_bundle() is the one call that
+    deliberately bypasses _request() (a different, unsigned host, see
+    its own docstring) and is wrapped separately below for the same
+    reason."""
+    raise RestSSLError(
+        "Could not verify iRobot's cloud server certificate. This is "
+        "almost always a temporary problem on iRobot's servers (an "
+        "expired or currently-renewing TLS certificate), not something "
+        "wrong with your setup -- it should resolve on its own within a "
+        "few hours."
+    ) from exc
+
+
+def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> None:
+    """Re-raise a connection failure (DNS, connection refused, network
+    unreachable) as a clear RestConnectionError. See auth.py's
+    equivalent for why this deliberately doesn't claim confident fault
+    attribution the way _raise_clear_ssl_error() does."""
+    raise RestConnectionError(
+        "Could not connect to iRobot's cloud servers. This could be a "
+        "temporary problem with iRobot's servers, or with your own "
+        "internet connection -- check that other internet-dependent "
+        "services are working, and try again in a few minutes."
+    ) from exc
+
+
+def _raise_clear_timeout_error(exc: BaseException) -> None:
+    """Re-raise a request timeout as a clear RestTimeoutError. Accepts
+    BaseException -- see auth.py's equivalent for why."""
+    raise RestTimeoutError(
+        "iRobot's cloud servers took too long to respond. This is "
+        "usually temporary -- please try again in a few minutes."
+    ) from exc
+
+
 class PrimeRestClient:
     """Thin wrapper around the p2maps REST surface. Takes an existing
     aiohttp.ClientSession (same one used for auth.login(), so cookies/
@@ -207,15 +268,22 @@ class PrimeRestClient:
         self._http_base_auth (typically an S3 bucket or similar CDN
         host) and therefore shouldn't go through this class's SigV4
         signing scheme."""
-        async with self._session.get(url) as resp:
-            if resp.status >= 400:
-                text = await resp.text()
-                raise RestError(
-                    f"HTTP {resp.status} downloading map bundle from {url}",
-                    status=resp.status,
-                    raw_response=text,
-                )
-            return await resp.read()
+        try:
+            async with self._session.get(url) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise RestError(
+                        f"HTTP {resp.status} downloading map bundle from {url}",
+                        status=resp.status,
+                        raw_response=text,
+                    )
+                return await resp.read()
+        except aiohttp.ClientSSLError as exc:
+            _raise_clear_ssl_error(exc)
+        except aiohttp.ServerTimeoutError as exc:
+            _raise_clear_timeout_error(exc)
+        except aiohttp.ClientConnectorError as exc:
+            _raise_clear_connection_error(exc)
 
     async def set_map_name(self, p2map_id: str, name: str) -> dict[str, Any]:
         """POST /v1/p2maps/{p2mapId}/settings, body {"name": ...}.
@@ -769,13 +837,20 @@ class PrimeRestClient:
             request_kwargs["data"] = body_str.encode()
 
         method_fn = getattr(self._session, method.lower())
-        async with method_fn(url, **request_kwargs) as resp:
-            if resp.status == 403 and _retry and self._relogin is not None:
-                _LOGGER.debug("roombapy-prime REST: 403 -- reauthenticating")
-                login_result = await self._relogin()
-                self._credentials = login_result.credentials
-                return await self._request(method, url, query, body, _retry=False)
-            return await self._parse_response(resp)
+        try:
+            async with method_fn(url, **request_kwargs) as resp:
+                if resp.status == 403 and _retry and self._relogin is not None:
+                    _LOGGER.debug("roombapy-prime REST: 403 -- reauthenticating")
+                    login_result = await self._relogin()
+                    self._credentials = login_result.credentials
+                    return await self._request(method, url, query, body, _retry=False)
+                return await self._parse_response(resp)
+        except aiohttp.ClientSSLError as exc:
+            _raise_clear_ssl_error(exc)
+        except aiohttp.ServerTimeoutError as exc:
+            _raise_clear_timeout_error(exc)
+        except aiohttp.ClientConnectorError as exc:
+            _raise_clear_connection_error(exc)
 
     async def _parse_response(self, resp: aiohttp.ClientResponse) -> Any:
         text = await resp.text()

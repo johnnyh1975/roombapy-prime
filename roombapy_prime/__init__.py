@@ -45,20 +45,43 @@ ha_roomba_plus's planned V4/Prime support); everything else remains
 reachable via its submodule but isn't part of the stability contract.
 """
 
-from .auth import AuthError, LoginResult, RobotLoginEntry, login
-from .mqtt_client import ShadowResponse
+from .auth import (
+    AuthCredentialsError,
+    AuthError,
+    AuthRateLimitedError,
+    AuthSSLError,
+    AuthConnectionError,
+    AuthTimeoutError,
+    LoginResult,
+    RobotLoginEntry,
+    login,
+)
+from .mqtt_client import ShadowConnectionError, ShadowError, ShadowResponse, ShadowSSLError
 from .prime_factory import PrimeFactory
 from .prime_robot import PrimeRobot
+from .rest_client import RestConnectionError, RestError, RestSSLError, RestTimeoutError
 
-__version__ = "0.1.11a2"
+__version__ = "0.1.11a3"
 
 __all__ = [
+    "AuthConnectionError",
+    "AuthCredentialsError",
     "AuthError",
+    "AuthRateLimitedError",
+    "AuthSSLError",
+    "AuthTimeoutError",
     "LoginResult",
     "PrimeFactory",
     "PrimeRobot",
+    "RestConnectionError",
+    "RestError",
+    "RestSSLError",
+    "RestTimeoutError",
     "RobotLoginEntry",
+    "ShadowConnectionError",
+    "ShadowError",
     "ShadowResponse",
+    "ShadowSSLError",
     "login",
 ]
 

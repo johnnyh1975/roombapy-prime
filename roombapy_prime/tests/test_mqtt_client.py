@@ -14,7 +14,9 @@ a real or heavily mocked socket layer and is integration-shaped.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import ssl
 import threading
 import time
 from pathlib import Path
@@ -23,7 +25,13 @@ from collections.abc import Callable
 import pytest
 
 from roombapy_prime.auth import ConnectionToken
-from roombapy_prime.mqtt_client import PrimeMqttClient, ShadowError, _shadow_base
+from roombapy_prime.mqtt_client import (
+    PrimeMqttClient,
+    ShadowConnectionError,
+    ShadowError,
+    ShadowSSLError,
+    _shadow_base,
+)
 
 
 def _load(fixtures_dir: Path, name: str) -> dict:
@@ -409,6 +417,98 @@ def test_replace_token_before_connect_raises() -> None:
         client.replace_token(new_token)
 
 
+# =========================================================================
+# reconnect() / on_disconnect / wait_for_disconnect() (this session,
+# reconnect hardening). Previously there was no on_disconnect handling
+# at all -- the client had zero visibility into a dropped connection.
+# =========================================================================
+
+
+def test_reconnect_reconnects_and_restores_subscriptions() -> None:
+    """Same-token counterpart to replace_token()'s equivalent test --
+    reconnect() must restore persistent subscriptions on the new paho
+    client the same way, without touching self._token."""
+    client, fake = _connected_client()
+    client.subscribe("topic/a", lambda resp: None)
+    client.subscribe("topic/b", lambda resp: None)
+
+    new_fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
+    reconnect_calls: list[float] = []
+
+    def fake_connect(timeout: float = 10.0) -> None:
+        reconnect_calls.append(timeout)
+        client._client = new_fake
+        client._connected = True
+
+    def fake_disconnect() -> None:
+        pass
+
+    client.connect = fake_connect  # type: ignore[method-assign]
+    client.disconnect = fake_disconnect  # type: ignore[method-assign]
+
+    original_token = client._token
+    client.reconnect(timeout=7.0)
+
+    assert client._token is original_token  # NOT swapped, unlike replace_token()
+    assert reconnect_calls == [7.0]
+    assert set(new_fake.subscribed) == {"topic/a", "topic/b"}
+
+
+def test_reconnect_before_connect_raises() -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
+    with pytest.raises(AssertionError):
+        client.reconnect()
+
+
+def test_on_disconnect_sets_connected_false_and_stores_reason() -> None:
+    client, _fake = _connected_client()
+    assert client._connected is True
+
+    client._on_disconnect(None, None, None, "network error")
+
+    assert client._connected is False
+    assert client._disconnect_reason == "network error"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_disconnect_resolves_when_on_disconnect_fires() -> None:
+    """The real bridge this session added: _on_disconnect() runs on
+    paho's own callback thread (simulated here by calling it directly,
+    same as the existing _on_subscribe-callback pattern elsewhere in
+    this file), wait_for_disconnect() is a coroutine on the asyncio
+    event loop -- call_soon_threadsafe is what connects the two."""
+    client, _fake = _connected_client()
+
+    wait_task = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)  # let wait_for_disconnect() reach its .wait()
+    assert not wait_task.done()
+
+    client._on_disconnect(None, None, None, "broker restarted")
+
+    reason = await wait_task
+    assert reason == "broker restarted"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_disconnect_can_be_awaited_again_after_reconnect() -> None:
+    """Each call creates a fresh asyncio.Event -- confirms a second
+    wait_for_disconnect() call after a reconnect doesn't just
+    immediately return because the FIRST event was already set."""
+    client, _fake = _connected_client()
+
+    first_wait = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)
+    client._on_disconnect(None, None, None, "first drop")
+    assert await first_wait == "first drop"
+
+    second_wait = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)
+    assert not second_wait.done()  # must NOT resolve immediately
+
+    client._on_disconnect(None, None, None, "second drop")
+    assert await second_wait == "second drop"
+
+
 # --- self._client_lock: real concurrency test --------------------------
 
 def test_client_lock_serializes_get_shadow_and_replace_token() -> None:
@@ -513,3 +613,56 @@ def test_persistent_subscribe_waits_for_confirmation() -> None:
     client, fake = _connected_client()
     client.subscribe("some/topic", lambda resp: None)
     assert "some/topic" in fake.subscribed
+
+
+# =========================================================================
+# SSL certificate error clarity (this session, following the same fix
+# in auth.py/rest_client.py -- but a genuinely different mechanism
+# here, see _raise_clear_ssl_error()'s docstring: paho-mqtt's
+# synchronous Client.connect() raises ssl.SSLError directly on a TLS
+# handshake failure, never aiohttp.ClientSSLError).
+# =========================================================================
+
+
+class _NetworkFailingRawClient:
+    """Stand-in for the real paho.mqtt.client.Client returned by
+    _build_client() -- only connect() matters for this test.
+    Generalized (this session) from the SSL-only
+    _SSLFailingRawClient to also cover plain OSError (DNS, connection
+    refused, connect-level timeout)."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def connect(self, endpoint: str, port: int = 443, keepalive: int = 300) -> None:
+        raise self._exc
+
+
+def test_connect_ssl_error_gets_clear_message(monkeypatch) -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
+    monkeypatch.setattr(
+        client, "_build_client", lambda: _NetworkFailingRawClient(ssl.SSLCertVerificationError("certificate has expired"))
+    )
+
+    with pytest.raises(ShadowSSLError) as excinfo:
+        client.connect()
+
+    assert "certificate" in str(excinfo.value).lower()
+    assert "temporary" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, ssl.SSLError)
+
+
+def test_connect_connection_error_gets_clear_message(monkeypatch) -> None:
+    """NEW (this session) -- DNS failure, connection refused, etc. all
+    surface as plain OSError subclasses from paho-mqtt's synchronous
+    connect(), distinct from the ssl.SSLError case above."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
+    monkeypatch.setattr(
+        client, "_build_client", lambda: _NetworkFailingRawClient(ConnectionRefusedError("Connection refused"))
+    )
+
+    with pytest.raises(ShadowConnectionError) as excinfo:
+        client.connect()
+
+    assert "connect" in str(excinfo.value).lower()
+    assert isinstance(excinfo.value.__cause__, OSError)

@@ -32,6 +32,7 @@ this is unverified live for V4.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import ssl
@@ -50,7 +51,74 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ShadowError(Exception):
-    """Raised when a shadow operation is rejected or times out."""
+    """Raised when a shadow operation is rejected or times out.
+
+    Subclassed below (this session, ha_roomba_plus translation-key
+    prep) -- see auth.py's AuthError docstring for the same reasoning:
+    callers that only care about "something failed" keep catching
+    ShadowError itself, callers that need to distinguish categories
+    for translation-key mapping catch the specific subclass."""
+
+
+class ShadowSSLError(ShadowError):
+    """TLS/certificate verification failure -- see
+    _raise_clear_ssl_error()."""
+
+
+class ShadowConnectionError(ShadowError):
+    """Could not establish the connection at all -- DNS failure,
+    connection refused, or a connect-level timeout (paho-mqtt's
+    synchronous connect() raises all of these as plain OSError
+    subclasses, indistinguishable from each other in a way that would
+    justify a more specific message -- unlike the aiohttp side, there's
+    no separate "timeout after connecting" case here, since a TLS
+    handshake or MQTT CONNACK timeout would also surface as one of
+    these OSError subclasses from the same blocking call, not
+    separately). Deliberately does NOT claim to know whether this is
+    iRobot's fault or the caller's own network, same as
+    AuthConnectionError/RestConnectionError."""
+
+
+def _raise_clear_ssl_error(exc: ssl.SSLError) -> None:
+    """Re-raise a TLS/certificate failure as a clear ShadowSSLError
+    instead of letting the raw ssl module exception bubble up as an
+    opaque error.
+
+    NEW (V4/Prime prep, following the same fix in auth.py/rest_client.py
+    -- but a genuinely different mechanism here, not just a copy-paste).
+    This module uses paho-mqtt directly (synchronous connect(), not
+    aiohttp), so a TLS handshake failure here would never surface as
+    aiohttp.ClientSSLError -- paho-mqtt's Client.connect() is a blocking
+    call that raises ssl.SSLError (or a subclass, e.g.
+    SSLCertVerificationError) directly, before on_connect's reason_code
+    path ever gets a chance to fire (that path is for MQTT-protocol-level
+    rejections, which only happen AFTER a successful TLS handshake).
+    UNLIKE the aiohttp fix, this one is NOT based on a real captured
+    failure in this project -- it's based on paho-mqtt's documented,
+    stable connect() behavior, not a reverse-engineered assumption.
+    Treat this path itself as reasoned-through, not live-confirmed,
+    until an actual iRobot cert incident is caught here."""
+    raise ShadowSSLError(
+        "Could not verify iRobot's cloud server certificate. This is "
+        "almost always a temporary problem on iRobot's servers (an "
+        "expired or currently-renewing TLS certificate), not something "
+        "wrong with your setup -- it should resolve on its own within a "
+        "few hours."
+    ) from exc
+
+
+def _raise_clear_connection_error(exc: OSError) -> None:
+    """Re-raise a connection-establishment failure (DNS, connection
+    refused, connect-level timeout) as a clear ShadowConnectionError.
+    Same reasoning as auth.py's/rest_client.py's equivalents -- see
+    ShadowConnectionError's docstring for why this covers what would be
+    three separate cases on the aiohttp side."""
+    raise ShadowConnectionError(
+        "Could not connect to iRobot's cloud servers. This could be a "
+        "temporary problem with iRobot's servers, or with your own "
+        "internet connection -- check that other internet-dependent "
+        "services are working, and try again in a few minutes."
+    ) from exc
 
 
 @dataclass
@@ -71,9 +139,15 @@ def _shadow_base(blid: str, named: str | None) -> str:
 
 class PrimeMqttClient:
     """One connection, one blid. Not designed for long-lived reuse across
-    many operations yet — construct, do what you need, disconnect. A
-    production version would add automatic token refresh (tokens expire
-    in ~1h) and reconnection with backoff; neither exists here yet."""
+    many operations yet — construct, do what you need, disconnect.
+
+    UPDATE (this session): disconnect detection now exists
+    (on_disconnect wired up, see wait_for_disconnect()) -- previously
+    there was none at all, silently leaving a long-running consumer
+    hung with no signal anything had dropped. The actual reconnect-
+    with-backoff LOOP lives one level up, in prime_robot.py's
+    watch_state() -- this class only detects and reports the drop,
+    it does not retry on its own."""
 
     def __init__(self, token: ConnectionToken, endpoint: str, blid: str) -> None:
         self._token = token
@@ -111,6 +185,19 @@ class PrimeMqttClient:
         # not as coroutines on the same event loop.
         self._client_lock = threading.Lock()
 
+        # NEW (this session, roombapy-prime reconnect hardening): no
+        # on_disconnect callback existed at all before this -- the client
+        # had zero visibility into a dropped connection. _disconnect_loop
+        # and _disconnect_reason let an async caller (see watch_state())
+        # await a disconnect event instead of polling self._connected.
+        # A plain threading.Event wouldn't work here: the callback fires
+        # on paho's own background thread, but the waiter is a coroutine
+        # on the asyncio event loop -- same call_soon_threadsafe pattern
+        # already used for _on_delta/queue in watch_state().
+        self._disconnect_loop: asyncio.AbstractEventLoop | None = None
+        self._disconnect_event: asyncio.Event | None = None
+        self._disconnect_reason: str | None = None
+
     def _build_client(self) -> mqtt.Client:
         client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -136,6 +223,7 @@ class PrimeMqttClient:
         # reconnect loop if the broker drops us for any reason.
         client._reconnect_on_failure = False
         client.on_connect = self._on_connect
+        client.on_disconnect = self._on_disconnect
         client.on_message = self._on_message
         client.on_subscribe = self._on_subscribe
         return client
@@ -169,7 +257,12 @@ class PrimeMqttClient:
 
     def connect(self, timeout: float = 10.0) -> None:
         self._client = self._build_client()
-        self._client.connect(self._endpoint, port=443, keepalive=300)
+        try:
+            self._client.connect(self._endpoint, port=443, keepalive=300)
+        except ssl.SSLError as exc:
+            _raise_clear_ssl_error(exc)
+        except OSError as exc:
+            _raise_clear_connection_error(exc)
         self._client.loop_start()
         waited = 0.0
         while waited < timeout and not self._connected and self._connect_error is None:
@@ -228,35 +321,73 @@ class PrimeMqttClient:
         the underlying issue of "a refresh falls into an in-flight
         get/update"."""
         with self._client_lock:
-            assert self._client is not None, "call connect() first"
-            _LOGGER.info(
-                "roombapy-prime MQTT: replacing token and reconnecting (%d persistent subscription(s) to restore)",
-                len(self._persistent),
-            )
             self._token = new_token
-            topics_to_restore = list(self._persistent.keys())
+            self.reconnect(timeout=timeout)
 
-            self.disconnect()
-            self._connected = False
-            self._connect_error = None
-            self.connect(timeout=timeout)
+    def reconnect(self, timeout: float = 10.0) -> None:
+        """NEW (this session, reconnect-after-drop hardening). Same-
+        token counterpart to replace_token() -- extracted from it,
+        since the "disconnect, connect, restore all persistent
+        subscriptions" sequence is identical either way, only whether
+        the token changes first differs. Used by prime_robot.py's
+        watch_state() to recover after wait_for_disconnect() fires.
 
-            # _persistent itself is state on self, not on the paho
-            # client object -- so it survives disconnect()/connect()
-            # automatically. The BROKER no longer knows the
-            # subscriptions after a fresh connect(), though --
-            # re-subscribe directly on the new paho client, NOT via
-            # subscribe() (that would append duplicate callback entries).
-            # NEW (session 33): wait for all SUBACKs before returning --
-            # for the same consistency reasons as subscribe()/
-            # get_shadow(), see their comments.
-            self._subscribe_and_wait(topics_to_restore)
+        Not itself under self._client_lock -- callers that need that
+        protection (replace_token()) take it themselves before calling
+        this; watch_state()'s reconnect loop deliberately does NOT hold
+        it for the length of a potentially-long backoff wait."""
+        assert self._client is not None, "call connect() first"
+        _LOGGER.info(
+            "roombapy-prime MQTT: reconnecting (%d persistent subscription(s) to restore)",
+            len(self._persistent),
+        )
+        topics_to_restore = list(self._persistent.keys())
+
+        self.disconnect()
+        self._connected = False
+        self._connect_error = None
+        self.connect(timeout=timeout)
+
+        # _persistent itself is state on self, not on the paho client
+        # object -- so it survives disconnect()/connect() automatically.
+        # The BROKER no longer knows the subscriptions after a fresh
+        # connect(), though -- re-subscribe directly on the new paho
+        # client, NOT via subscribe() (that would append duplicate
+        # callback entries, since _persistent already has them).
+        self._subscribe_and_wait(topics_to_restore)
 
     def _on_connect(self, client, userdata, connect_flags, reason_code, properties=None) -> None:
         if reason_code == 0:
             self._connected = True
         else:
             self._connect_error = str(reason_code)
+
+    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None) -> None:
+        """NEW (this session). Previously not wired up at all -- the
+        client had zero visibility into a dropped connection, silently
+        leaving any long-running watch_state() consumer hung on an
+        empty queue forever with no signal anything was wrong (see
+        this class's own docstring: "reconnection with backoff;
+        neither exists here yet" -- this is the first half of closing
+        that gap; watch_state() in prime_robot.py is the second)."""
+        self._connected = False
+        self._disconnect_reason = str(reason_code)
+        if self._disconnect_loop is not None and self._disconnect_event is not None:
+            self._disconnect_loop.call_soon_threadsafe(self._disconnect_event.set)
+
+    async def wait_for_disconnect(self) -> str:
+        """Resolves with the disconnect reason once this connection
+        drops -- lets an async caller (see prime_robot.py's
+        watch_state()) detect a drop via await, instead of polling
+        self._connected in a loop. Must be called again after each
+        reconnect (the event is created fresh here, not reused) --
+        this is deliberately a one-shot wait, not a persistent
+        subscription, to keep the ownership of "what happens on
+        disconnect" entirely with the caller."""
+        self._disconnect_loop = asyncio.get_running_loop()
+        self._disconnect_event = asyncio.Event()
+        await self._disconnect_event.wait()
+        return self._disconnect_reason or "unknown"
 
     def _on_message(self, client, userdata, msg) -> None:
         try:

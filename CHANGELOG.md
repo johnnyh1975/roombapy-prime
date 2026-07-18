@@ -8,7 +8,130 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
-## [0.1.11a2] - 2026-07-17
+## [0.1.11a3] - 2026-07-18
+
+### Added
+
+- **SSL/certificate error clarity, moved here from `ha_roomba_plus`'s `cloud_api.py`, and extended
+  to every network layer in this library.** Ported from `cloud_api.py`'s `_raise_clear_ssl_error()`
+  (a v3.5.0 bug-hunt fix from a real-world report) — belongs here rather than only in the
+  integration, since every consumer of this library hits the exact same endpoints, including the
+  standalone `verify-*` scripts chairstacker and jadestar1864 run directly, not just through
+  Roomba+. Found while preparing `ha_roomba_plus`'s login consolidation onto this library's
+  `login()` — that consolidation would otherwise have silently lost this already-shipped fix.
+  - `auth.py`: all three HTTP calls in the login chain (discovery GET, Gigya POST, iRobot POST)
+    now catch `aiohttp.ClientSSLError` and re-raise a clear `AuthError`.
+  - `rest_client.py`: `_request()` — the single chokepoint nearly every endpoint method in this
+    file goes through (p2maps, favorites, schedules, DND, mission history, map editing) — plus
+    `download_map_bundle()` (which deliberately bypasses `_request()`, different unsigned host)
+    both now catch `aiohttp.ClientSSLError` and re-raise a clear `RestError`.
+  - `mqtt_client.py`: a genuinely different mechanism, not a copy-paste — this module uses
+    paho-mqtt directly (synchronous `connect()`, not aiohttp), so a TLS handshake failure here
+    would never surface as `aiohttp.ClientSSLError`. `connect()` now catches `ssl.SSLError`
+    (paho-mqtt's own documented behavior for a TLS handshake failure) and re-raises a clear
+    `ShadowError`. Unlike the aiohttp-based fixes, this one is reasoned-through from paho-mqtt's
+    documented behavior, not from a real captured failure in this project — flagged as such in
+    its own docstring.
+- **Typed exception subclass hierarchy, extended coverage for `ClientConnectorError`/
+  `ServerTimeoutError`, and translation-key prep for `ha_roomba_plus`.** Previously every failure in
+  a given module raised the same single exception type (`AuthError`/`RestError`/`ShadowError`),
+  which meant a consumer could only distinguish failure categories (bad credentials vs. temporary
+  SSL/network issue) by string-matching the message — fragile, and exactly what HA's own
+  `errors["base"] = "translation_key"` convention avoids. Every subclass IS-A its base, so existing
+  `except AuthError`-style callers keep working unchanged.
+  - `auth.py`: `AuthError` (base) → `AuthCredentialsError` (Gigya/iRobot login rejected — wrong
+    username/password), `AuthRateLimitedError` (the real, confirmed "mqtt slot" case — distinct
+    from credentials, since the fix is "close the iRobot app", not "check your password"),
+    `AuthSSLError`, `AuthConnectionError` (`aiohttp.ClientConnectorError` — DNS failure, connection
+    refused, network unreachable), `AuthTimeoutError` (`aiohttp.ServerTimeoutError`).
+  - `rest_client.py`: `RestError` (base) → `RestSSLError`, `RestConnectionError`, `RestTimeoutError`
+    — same three network categories, no credentials/rate-limit equivalent needed here (post-login
+    REST calls, not the login itself).
+  - `mqtt_client.py`: `ShadowError` (base) → `ShadowSSLError`, `ShadowConnectionError` (covers
+    DNS/connection-refused/connect-timeout in one bucket, since paho-mqtt's synchronous `connect()`
+    raises all three as plain `OSError` subclasses with no way to distinguish them meaningfully,
+    unlike the separate `ClientConnectorError`/`ServerTimeoutError` types on the aiohttp side).
+  - **Important asymmetry, deliberate:** `AuthSSLError`'s message confidently states "not your
+    fault, temporary" — justified, since a cert failure is unambiguous. `AuthConnectionError`/
+    `RestConnectionError`/`ShadowConnectionError` do NOT make that claim — a connection failure
+    genuinely could be either iRobot's servers or the caller's own network, and overclaiming
+    certainty there would be misleading.
+  - All new exception classes exported from the top level (`roombapy_prime.AuthConnectionError`,
+    etc.) — the intended way for a consumer like `ha_roomba_plus` to map onto its own translation
+    keys without ever parsing message text.
+- **Reconnect-with-backoff hardening — the biggest reliability gap this library had.** Previously,
+  a dropped MQTT connection (network blip, broker restart, token expiry) left `watch_state()`'s
+  generator hung on an empty queue forever, with zero signal anything was wrong — `mqtt_client.py`
+  had no `on_disconnect` handling at all, and paho-mqtt's own auto-reconnect was deliberately
+  disabled to avoid a different failure mode (infinite reconnect loop on bad setup). Both gaps are
+  closed now:
+  - `mqtt_client.py`: `on_disconnect` wired up; new `wait_for_disconnect()` (async, awaitable) lets
+    a caller detect a drop instead of polling; new `reconnect()` (extracted from `replace_token()`,
+    same "disconnect, connect, restore all persistent subscriptions" sequence, minus the token
+    swap) reconnects with the *same* token.
+  - `prime_robot.py`: `watch_state()` now races `queue.get()` against `wait_for_disconnect()`. A
+    drop triggers automatic reconnection with exponential backoff (1s → 2s → 4s → ... capped at
+    60s, configurable via `max_reconnect_backoff`), unbounded retries — appropriate for a
+    long-running background consumer (e.g. a Home Assistant coordinator) that should keep trying
+    rather than give up permanently. The caller's `async for` loop never sees any of this happen;
+    it just resumes receiving deltas once reconnected.
+  - Found and fixed a real bug while building this: if the generator itself is cancelled while both
+    race tasks are still pending, the "loser" was left running as an orphaned task. Fixed with an
+    unconditional `try`/`finally` cleanup, not just conditional cleanup in the normal-completion
+    path.
+
+### Fixed
+
+- **Major structural correction to all nine V1 map-edit commands, prompted by a live HTTP 500 on a
+  room rename (chairstacker) and resolved via live APK decompilation of the full
+  `EditMapV1Request.java` source, down to the actual serializer calls.** Every V1 command's inner
+  body was assumed to be a flat `{"type": "<PascalCase>", ...fields...}` object; the confirmed real
+  shape is `{"command": "<snake_case>", "params": {...}}` for all nine, with several discriminator
+  strings turning out to differ from what the class names would suggest (`MergeRooms` →
+  `arrange_room`, `SetVirtualWalls`/`SetPermanentAreas` → singular `set_virtual_wall`/
+  `set_permanent_area`, `DeletePermanentAreas` → abbreviated `del_permanent_area`).
+  - `RenameRoomV1`, `SplitRoomV1`, `MergeRoomsV1`, `SetRoomTypeV1`, `SetPermanentAreasV1`,
+    `DeletePermanentAreasV1`, `SetVirtualWallsV1`, `AdjustFurnitureV1`: envelope corrected
+    (`command`/`params`), most inner field names were already correct from prior sessions.
+  - `SplitRoomV1.split_points`: corrected from a list of `[x,y]` pairs to a single flat list of
+    doubles.
+  - `PermanentAreaV1`, `VirtualWallLinearV1`/`VirtualWallRectangleV1`/`VirtualWallNoMopZoneV1`,
+    `FurnitureItemV1`: all three turned out to have their own custom serializers emitting
+    **positional arrays**, not JSON objects at all. `VirtualWall`'s Linear/Rectangle/NoMopZone
+    discriminator (previously an open question -- "custom serializer, unconfirmed") is a positional
+    int at array index 1 (1/2/6), not a `"type"` string; a Linear wall degenerates to a 4-point
+    polygon on the wire by repeating each endpoint (from, to, to, from).
+  - `AdjustFurnitureV1.package_info`: confirmed to be a fixed `[1, 1]` default (a Kotlin default
+    parameter value), not an arbitrarily-shaped, per-call-computed structure as previously assumed.
+  - **`SetRoomMetadataV1`: complete rewrite, fully resolved down to `room_metadata`'s own two
+    possible keys.** `room_metadata` contains exactly `"name"` and `"type"`, each written only when
+    not `None`; `room_id` sits alongside `room_metadata` at the `params` level, not nested inside
+    it. New `RoomCategory` enum (`models/enums_common.py`) for `"type"`'s value — a completely
+    separate enum from the existing `RoomType` (used by the app-deprecated `SetRoomTypeV1`), with
+    its own wire representation: snake_case strings (`"dining_room"`, `"living_room"`), confirmed
+    via the actual serializer call (`type.name().toLowerCase()`), NOT the underlying Kotlin enum's
+    own `raw` field (camelCase: `"diningRoom"`, `"livingRoom"`) that would have been the more
+    natural-looking assumption — two of nine values would have been wrong had that been assumed
+    instead. Confirmed constraint enforced: at least one of `name`/`room_type` must be set (the
+    underlying API has no way to express "change nothing") — `__post_init__` now raises a clear
+    `ValueError` instead of allowing a request the server would have to reject.
+  - **A real mistake caught and fixed before ever going out**: an intermediate draft of
+    `SetRoomMetadataV1.to_v1_command_body()` wrote a `RoomType` value into a key named
+    `region_type`, conflating it with `RoomMetadataEntry`'s own `region_type` field — which is
+    actually `RegionType` (`mission_control.py`), an unrelated enum for region-identifier-kind
+    (`rid`/`tid`/`zid`), not room category. Caught by checking the enum's actual definition before
+    shipping, not via a live failure.
+  - **`RenameRoomV1` is deprecated app-side** (Kotlin `@Deprecated("Use SetRoomMetadata(mapId,
+    metadata) instead")`) -- the current app build renames rooms via `SetRoomMetadataV1`
+    exclusively. Kept available (deprecation is a statement about the app, not confirmed evidence
+    the server has stopped accepting it), but documented as the non-primary path; prefer
+    `SetRoomMetadataV1`.
+  - `verify_map_edit.py` switched from `RenameRoomV1` to `SetRoomMetadataV1` for its live rename
+    test, matching the app's actual current behavior.
+
+387/387 tests green, ruff clean.
+
+
 
 ### Added
 

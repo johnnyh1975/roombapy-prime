@@ -3,13 +3,26 @@
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
 picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
-evidence trail behind any individual field."""
+evidence trail behind any individual field.
+
+UPDATE (this session, live APK decompilation of the FULL
+EditMapV1Request.java source, prompted by a live HTTP 500 on a room
+rename -- chairstacker): the V1 outer envelope is now fully confirmed,
+not just the two top-level keys. Every V1 command's inner body is
+{"command": "<snake_case_discriminator>", "params": {...}} -- NOT the
+previously-assumed flat {"type": "<PascalCase>", ...fields...} shape.
+The "type"-vs-"command" and flat-vs-"params"-nested corrections apply
+to ALL nine V1 command classes below, not just the one that triggered
+the investigation (RenameRoom). Three of the nine (VirtualWall,
+PermanentArea, Furniture) turned out to have their own custom
+serializers emitting positional ARRAYS, not JSON objects at all --
+see each class's own to_json() docstring for its confirmed array shape."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from .enums_common import FurnitureType, RoomType
+from .enums_common import FurnitureType, RoomCategory, RoomType
 from .geometry import LineString, Polygon, Position
 
 
@@ -242,192 +255,209 @@ MapEditCommand = (
 )
 
 
+def _flatten_ring(polygon: Polygon) -> list[float]:
+    """Flattens a Polygon's outer ring into [x1, y1, x2, y2, ...] -- the
+    confirmed V1 wire shape for Rectangle/NoMopZone/PermanentArea
+    (positional arrays, not GeoJSON objects). Only the FIRST ring is
+    used; V1's array-based geometry has no concept of holes the way
+    GeoJSON polygons do, so any additional rings are silently dropped
+    here rather than guessing how (or whether) they'd be represented."""
+    ring = polygon.coordinates[0] if polygon.coordinates else []
+    flat: list[float] = []
+    for x, y in ring:
+        flat.extend((x, y))
+    return flat
+
+
 @dataclass(frozen=True)
 class RenameRoomV1:
-    """CORRECTED (session 48): confirmed directly from
-    EditMapV1Request$Command$RenameRoom$$serializer's <clinit> (the
-    same technique that resolved RobotStatusV2/ScheduleOptions/the map
-    bundle models before it) -- real field names are `room_id` and
-    `room_name`, NOT `id`/`name` as the earlier androguard field-name
-    reading had assumed. See MapEditCommandV1's module docstring for
-    the also-newly-confirmed outer envelope
-    ({"edit_cmd": ..., "response_type": ...}) this now needs to be
-    wrapped in by the caller (rest_client.py's edit_map())."""
+    """CONFIRMED (live APK decompilation of EditMapV1Request.java, this
+    session): outer envelope is {"command": "rename_room", "params":
+    {"room_id": ..., "room_name": ...}} -- NOT the flat {"type":
+    "RenameRoom", "room_id": ..., "room_name": ...} previously assumed
+    (session 48 confirmed the field NAMES room_id/room_name correctly,
+    but the outer shape -- discriminator key "type" vs "command", flat
+    vs "params"-nested -- was wrong, since it predates finding the
+    actual EditMapV1Request$Body$$serializer envelope class).
+
+    DEPRECATED APP-SIDE, NOT NECESSARILY SERVER-SIDE: RenameRoom carries
+    a Kotlin `@Deprecated("Use SetRoomMetadata(mapId, metadata)
+    instead")` annotation -- the current app build no longer calls this
+    path at all, using SetRoomMetadataV1 instead. That is a statement
+    about what the APP does, not evidence the SERVER has stopped
+    accepting this command -- but there's equally no live confirmation
+    it still works, since a live rename test (chairstacker, this
+    session) went through this exact path and failed with HTTP 500 (a
+    failure now understood to be caused by the wrong envelope shape,
+    not necessarily settling whether RenameRoom itself is still live).
+    Prefer SetRoomMetadataV1 if unsure."""
 
     room_id: str
     name: str
 
     def to_v1_command_body(self) -> dict[str, Any]:
-        return {"type": "RenameRoom", "room_id": self.room_id, "room_name": self.name}
+        return {
+            "command": "rename_room",
+            "params": {"room_id": self.room_id, "room_name": self.name},
+        }
 
 
 @dataclass(frozen=True)
 class SplitRoomV1:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$SplitRoom$$serializer -- real field names
-    are `room_id`/`split_points` (the latter was already correctly
-    guessed; `id` -> `room_id` was not). The exact meaning of
-    "split_points" (two endpoints like V2? or more?) still not
-    independently confirmed."""
+    """CONFIRMED (live APK decompilation, this session): params are
+    {"room_id": ..., "split_points": [x1, y1, x2, y2, ...]} -- a FLAT
+    list of doubles (Kotlin `List<Double>`), not a list of [x,y] pairs
+    as the previous [[x1,y1],[x2,y2]] shape assumed. room_id's field
+    name was already correct (session 48); the split_points VALUE shape
+    was not previously re-examined once envelope work started."""
 
     room_id: str
     split_points: list[Position]
 
     def to_v1_command_body(self) -> dict[str, Any]:
+        flat: list[float] = []
+        for x, y in self.split_points:
+            flat.extend((x, y))
         return {
-            "type": "SplitRoom",
-            "room_id": self.room_id,
-            "split_points": [list(p) for p in self.split_points],
+            "command": "split_room",
+            "params": {"room_id": self.room_id, "split_points": flat},
         }
 
 
 @dataclass(frozen=True)
 class MergeRoomsV1:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$MergeRooms$$serializer -- real field name
-    is `room_ids`, not `ids` as previously guessed."""
+    """CONFIRMED (live APK decompilation, this session): params are
+    {"room_ids": [...]} under command "arrange_room" -- the field name
+    room_ids was already correct (session 48); the discriminator string
+    is the surprise here (not "merge_rooms" as the class name would
+    suggest)."""
 
     ids: list[str]
 
     def to_v1_command_body(self) -> dict[str, Any]:
-        return {"type": "MergeRooms", "room_ids": self.ids}
+        return {"command": "arrange_room", "params": {"room_ids": self.ids}}
 
 
 @dataclass(frozen=True)
 class SetRoomTypeV1:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$SetRoomType$$serializer -- real field
-    names are `room_id`/`type_id`, not `id`/`type` as previously
-    guessed. `type_id` presumably still carries the same numeric
-    RoomType codes (NOT_RECOGNIZED, BEDROOM, DINING_ROOM, BATHROOM,
-    HALLWAY, KITCHEN, LIVING_ROOM, BALCONY, OTHER) -- the existing
-    RoomType int enum is reused here, though this specific value-space
-    assumption for the V1 edit path is not independently confirmed
-    beyond the field NAME (a caution learned the hard way this same
-    session for RoomFeatureProperties.room_type -- see that class'
-    docstring)."""
+    """CONFIRMED (live APK decompilation, this session): params are
+    {"room_id": ..., "type_id": ...} under command "set_room_type".
+    Field names were already correct (session 48). type_id presumably
+    still carries the same numeric RoomType codes -- that specific
+    value-space assumption for the V1 edit path remains not
+    independently confirmed beyond the field name, same caveat as
+    before."""
 
     room_id: str
     room_type: RoomType
 
     def to_v1_command_body(self) -> dict[str, Any]:
-        return {"type": "SetRoomType", "room_id": self.room_id, "type_id": int(self.room_type)}
-
-
-@dataclass(frozen=True)
-class SetRoomMetadataV1:
-    """UPDATE (session 48): unlike 8 of the other 9 V1 command types,
-    SetRoomMetadata does NOT have an auto-generated
-    `$$serializer`/`<clinit>` -- it uses a hand-written CUSTOM
-    `EditMapV1Request$Command$SetRoomMetadata$Serializer` class
-    instead, whose actual field-mapping logic requires disassembling
-    its serialize()/deserialize() methods directly rather than reading
-    a simple `<clinit>` string list. Not pursued this session (the
-    same kind of limit as the outer envelope's own discriminator
-    mechanism, and DNDSchedule's sealed-class serializer before it) --
-    this class's field names remain at their PREVIOUS confidence level
-    (androguard property-name reading only, not the stronger
-    $$serializer confirmation the other 8 V1 commands now have)."""
-
-    room_id: str
-    name: str | None = None
-    room_type: RoomType | None = None
-
-    def to_v1_command_body(self) -> dict[str, Any]:
-        metadata: dict[str, Any] = {"id": self.room_id}
-        if self.name is not None:
-            metadata["name"] = self.name
-        if self.room_type is not None:
-            metadata["type"] = int(self.room_type)
-        return {"command": "SetRoomMetadata", "metadata": metadata}
+        return {
+            "command": "set_room_type",
+            "params": {"room_id": self.room_id, "type_id": int(self.room_type)},
+        }
 
 
 @dataclass(frozen=True)
 class PermanentAreaV1:
-    """Confirmed from EditMapV1Request$PermanentArea: geometry
-    (Polygon), id (String), name (String)."""
+    """CONFIRMED (live APK decompilation, this session): PermanentArea
+    is NOT a JSON object (the geometry/id/name shape previously assumed
+    from EditMapV1Request$PermanentArea's field names was read
+    correctly, but the CLASS has its own custom serializer that emits a
+    positional array, not an object -- the same kind of surprise
+    SetRoomMetadata's custom serializer turned out to hide). Confirmed
+    wire shape: [id, name, [x1, y1, x2, y2, ...]] -- a 3-element array
+    whose third element is itself the flattened outer-ring coordinate
+    list, not a GeoJSON Polygon."""
 
     area_id: str
     name: str
     geometry: Polygon
 
-    def to_json(self) -> dict[str, Any]:
-        return {"id": self.area_id, "name": self.name, "geometry": self.geometry.to_geojson()}
+    def to_json(self) -> list[Any]:
+        return [self.area_id, self.name, _flatten_ring(self.geometry)]
 
 
 @dataclass(frozen=True)
 class SetPermanentAreasV1:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$SetPermanentAreas$$serializer -- real
-    field name is `area_points` (snake_case), not `areaPoints`
-    (camelCase) as previously guessed. The field TYPE (List<
-    PermanentArea> vs. pure position lists) still isn't independently
-    resolved -- kept as a list of PermanentAreaV1 objects, the most
-    plausible reading given the separately existing PermanentArea
-    class."""
+    """CONFIRMED (live APK decompilation, this session): params are
+    {"area_points": [...]} under command "set_permanent_area" (singular
+    -- not "SetPermanentAreas"/plural as the class name suggests). The
+    area_points field name itself was already correct (session 48)."""
 
     areas: list[PermanentAreaV1]
 
     def to_v1_command_body(self) -> dict[str, Any]:
-        return {"type": "SetPermanentAreas", "area_points": [a.to_json() for a in self.areas]}
+        return {
+            "command": "set_permanent_area",
+            "params": {"area_points": [a.to_json() for a in self.areas]},
+        }
 
 
 @dataclass(frozen=True)
 class DeletePermanentAreasV1:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$DeletePermanentAreas$$serializer -- real
-    field name is `area_ids` (snake_case), not `areaIDs` (camelCase)
-    as previously guessed."""
+    """CONFIRMED (live APK decompilation, this session): params are
+    {"area_ids": [...]} under command "del_permanent_area" (not
+    "delete_permanent_areas" -- abbreviated "del", singular "area").
+    The area_ids field name itself was already correct (session 48)."""
 
     area_ids: list[str]
 
     def to_v1_command_body(self) -> dict[str, Any]:
-        return {"type": "DeletePermanentAreas", "area_ids": self.area_ids}
+        return {
+            "command": "del_permanent_area",
+            "params": {"area_ids": self.area_ids},
+        }
 
 
 @dataclass(frozen=True)
 class VirtualWallLinearV1:
-    """Confirmed from EditMapV1Request$VirtualWall$Linear: from/to
-    (Position), id (String) -- a line segment, not a polygon."""
+    """CONFIRMED (live APK decompilation, this session): VirtualWall is
+    NOT a JSON object -- like PermanentArea, it has its own custom
+    serializer emitting a positional array: [id, type_int, x1, y1, x2,
+    y2, x3, y3, x4, y4], type_int=2 for Linear. A line segment has no
+    natural 4-point shape, so the wire format degenerates it into a
+    4-point polygon by repeating each endpoint: from, to, to, from --
+    i.e. [id, 2, fromX, fromY, toX, toY, toX, toY, fromX, fromY]."""
 
     wall_id: str
     from_pos: Position
     to_pos: Position
 
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "type": "Linear",
-            "id": self.wall_id,
-            "from": list(self.from_pos),
-            "to": list(self.to_pos),
-        }
+    def to_json(self) -> list[Any]:
+        fx, fy = self.from_pos
+        tx, ty = self.to_pos
+        return [self.wall_id, 2, fx, fy, tx, ty, tx, ty, fx, fy]
 
 
 @dataclass(frozen=True)
 class VirtualWallRectangleV1:
-    """Confirmed from EditMapV1Request$VirtualWall$Rectangle: id
-    (String), polygon (Polygon) -- despite the name "Rectangle",
-    stored as a general polygon, no dedicated rectangle structure."""
+    """CONFIRMED (live APK decompilation, this session): positional
+    array [id, type_int, x1, y1, x2, y2, x3, y3, x4, y4], type_int=1 for
+    Rectangle -- despite the name, still just a general 4-point polygon
+    on the wire, no dedicated rectangle-specific encoding."""
 
     wall_id: str
     polygon: Polygon
 
-    def to_json(self) -> dict[str, Any]:
-        return {"type": "Rectangle", "id": self.wall_id, "polygon": self.polygon.to_geojson()}
+    def to_json(self) -> list[Any]:
+        return [self.wall_id, 1, *_flatten_ring(self.polygon)]
 
 
 @dataclass(frozen=True)
 class VirtualWallNoMopZoneV1:
-    """Confirmed from EditMapV1Request$VirtualWall$NoMopZone: id
-    (String), polygon (Polygon). IMPORTANT FINDING: no-mop zones go
+    """CONFIRMED (live APK decompilation, this session): positional
+    array [id, type_int, x1, y1, x2, y2, x3, y3, x4, y4], type_int=6 for
+    NoMopZone -- same array shape as Rectangle, only the discriminator
+    int differs. Confirms the earlier finding that no-mop zones go
     through the same command type as virtual walls in V1
-    (SetVirtualWalls), not through a dedicated command."""
+    (SetVirtualWalls / now "set_virtual_wall"), not a dedicated command."""
 
     wall_id: str
     polygon: Polygon
 
-    def to_json(self) -> dict[str, Any]:
-        return {"type": "NoMopZone", "id": self.wall_id, "polygon": self.polygon.to_geojson()}
+    def to_json(self) -> list[Any]:
+        return [self.wall_id, 6, *_flatten_ring(self.polygon)]
 
 
 VirtualWallV1 = VirtualWallLinearV1 | VirtualWallRectangleV1 | VirtualWallNoMopZoneV1
@@ -435,64 +465,131 @@ VirtualWallV1 = VirtualWallLinearV1 | VirtualWallRectangleV1 | VirtualWallNoMopZ
 
 @dataclass(frozen=True)
 class SetVirtualWallsV1:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$SetVirtualWalls$$serializer -- real field
-    name is `virwall` (an unusual abbreviation, not "walls" as
-    previously guessed). How the "type" discriminator of the three
-    VirtualWall subtypes (Linear/Rectangle/NoMopZone) actually gets
-    onto the wire remains NOT confirmed -- VirtualWall itself uses a
-    hand-written CUSTOM `VirtualWallSerializer` (like
-    SetRoomMetadata's own custom serializer), not the auto-generated
-    kind this session's technique could read directly. "type" key kept
-    here as the most plausible assumption, unchanged from before."""
+    """CONFIRMED (live APK decompilation, this session): params are
+    {"virwall": [...]} under command "set_virtual_wall" (singular --
+    not "SetVirtualWalls"/plural as the class name suggests). The
+    virwall field name itself was already correct (session 48). The
+    previously-open question -- how the Linear/Rectangle/NoMopZone
+    discriminator reaches the wire, since VirtualWall uses a custom
+    serializer -- is now answered: see VirtualWall*V1.to_json()'s own
+    docstrings. It isn't a "type" string at all; it's a positional int
+    at array index 1."""
 
     walls: list[VirtualWallV1]
 
     def to_v1_command_body(self) -> dict[str, Any]:
-        return {"type": "SetVirtualWalls", "virwall": [w.to_json() for w in self.walls]}
+        return {
+            "command": "set_virtual_wall",
+            "params": {"virwall": [w.to_json() for w in self.walls]},
+        }
 
 
 @dataclass(frozen=True)
 class FurnitureItemV1:
-    """Confirmed from EditMapV1Request$Furniture: geometry (Polygon), id
-    (String), type (Int -- NOT String/Enum like V2's Furniture!),
-    userModified (bool). Uses the existing FurnitureType int enum for
-    the int value."""
+    """CONFIRMED (live APK decompilation, this session): Furniture is
+    NOT a JSON object -- like PermanentArea/VirtualWall, a custom
+    serializer emits a positional array: [id, type_int,
+    user_modified(0/1), x1, y1, x2, y2, ...]. user_modified is an
+    int 0/1 on the wire, not a JSON bool. Uses the existing
+    FurnitureType int enum for the type value, same as before."""
 
     furniture_id: str
     furniture_type: FurnitureType
     geometry: Polygon
     user_modified: bool = True
 
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "id": self.furniture_id,
-            "type": int(self.furniture_type),
-            "geometry": self.geometry.to_geojson(),
-            "userModified": self.user_modified,
-        }
+    def to_json(self) -> list[Any]:
+        return [
+            self.furniture_id,
+            int(self.furniture_type),
+            1 if self.user_modified else 0,
+            *_flatten_ring(self.geometry),
+        ]
 
 
 @dataclass(frozen=True)
 class AdjustFurnitureV1:
-    """CORRECTED (session 48): confirmed via
-    EditMapV1Request$Command$AdjustFurniture$$serializer -- real field
-    names are `furniture_list`/`package` (snake_case, and "package"
-    not "packageInfo"), `timestamp` was already correctly guessed. A
-    BATCH operation (multiple furniture items at once), unlike V2's
-    SetFurniture (one item per call). Meaning of "package" still not
-    confirmed -- passed through here as a raw list."""
+    """CONFIRMED (live APK decompilation, this session): params are
+    {"furniture_list": [...], "package": [1, 1], "timestamp": ...}
+    under command "adjust_furniture". furniture_list/package/timestamp
+    field names were already correct (session 48) -- what's newly
+    confirmed is that "package" is simply a fixed 2-int default [1, 1]
+    (Kotlin default parameter value), not a complex, per-call-computed
+    structure as the earlier "meaning not confirmed, passed through as
+    a raw list" note assumed. package_info is kept as a caller-
+    overridable field (in case a real edit ever needs something other
+    than the default), defaulting to [1, 1] to match."""
 
     furniture_list: list[FurnitureItemV1]
-    package_info: list[dict[str, Any]] = field(default_factory=list)
+    package_info: list[int] = field(default_factory=lambda: [1, 1])
     timestamp: int = 0
 
     def to_v1_command_body(self) -> dict[str, Any]:
         return {
-            "type": "AdjustFurniture",
-            "furniture_list": [f.to_json() for f in self.furniture_list],
-            "package": self.package_info,
-            "timestamp": self.timestamp,
+            "command": "adjust_furniture",
+            "params": {
+                "furniture_list": [f.to_json() for f in self.furniture_list],
+                "package": self.package_info,
+                "timestamp": self.timestamp,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class SetRoomMetadataV1:
+    """CONFIRMED (live APK decompilation, this session, down to the
+    actual P2MapRoomMetadata$Serializer.serialize() call): params are
+    {"room_id": ..., "room_metadata": {...}} under command
+    "set_room_metadata" -- room_id sits alongside room_metadata, NOT
+    nested inside it (the serializer reads value.getMetadata().getId()
+    separately for the outer room_id). room_metadata itself has
+    EXACTLY two possible keys, both written only when not None:
+    "name" (str) and "type" (RoomCategory, see enums_common.py).
+    Nothing else -- no id, no other fields -- goes into room_metadata.
+
+    THE CURRENT APP'S ACTUAL ROOM-EDIT PATH: both room renaming AND
+    room-category changes go through SetRoomMetadata now, not
+    RenameRoomV1/SetRoomTypeV1 (see those classes' own docstrings for
+    the deprecation finding -- SetRoomMetadata replaces BOTH of them).
+
+    CONFIRMED CONSTRAINT: the underlying constructor requires at least
+    one of name/type to be set (both individually may be None, but not
+    both at once) -- enforced here too via __post_init__, so a caller
+    gets a clear, immediate ValueError instead of a request the server
+    would have to reject. A None field is OMITTED from room_metadata
+    entirely (not sent as JSON null) -- this is a genuine partial-
+    update: you can change just the name, just the category, or both,
+    but never explicitly clear one back to empty this way.
+
+    `type` uses RoomCategory (enums_common.py), NOT the RoomType used
+    by SetRoomTypeV1 -- these are two unrelated enums for the same
+    real-world concept, with different wire representations (int codes
+    vs. snake_case strings). See RoomCategory's own docstring for why
+    that distinction matters and the specific mistake it guards against
+    (an earlier draft of this class conflated RoomType with the
+    similarly-named-but-unrelated RegionType, caught before shipping --
+    see CHANGELOG)."""
+
+    room_id: str
+    name: str | None = None
+    room_type: RoomCategory | None = None
+
+    def __post_init__(self) -> None:
+        if self.name is None and self.room_type is None:
+            raise ValueError(
+                "SetRoomMetadataV1 requires at least one of name/room_type to be "
+                "set -- the underlying API has no way to express \"change nothing\"."
+            )
+
+    def to_v1_command_body(self) -> dict[str, Any]:
+        room_metadata: dict[str, Any] = {}
+        if self.name is not None:
+            room_metadata["name"] = self.name
+        if self.room_type is not None:
+            room_metadata["type"] = self.room_type.value
+        return {
+            "command": "set_room_metadata",
+            "params": {"room_id": self.room_id, "room_metadata": room_metadata},
         }
 
 
@@ -507,5 +604,6 @@ MapEditCommandV1 = (
     | SetVirtualWallsV1
     | AdjustFurnitureV1
 )
+
 
 

@@ -6,7 +6,7 @@ picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 
@@ -20,6 +20,38 @@ class RoomType(IntEnum):
     LIVING_ROOM = 2106
     BALCONY = 2107
     OTHER = 2120
+
+
+class RoomCategory(StrEnum):
+    """CONFIRMED (live APK decompilation, this session, via
+    P2MapRoomMetadata$Serializer.serialize()): the room-category value
+    written into SetRoomMetadataV1's room_metadata.type -- a
+    COMPLETELY SEPARATE enum from RoomType above, despite both being
+    "what kind of room is this". RoomType (2100-2120 int codes) belongs
+    to the app-deprecated SetRoomTypeV1/RenameRoomV1 command family.
+    This one belongs to SetRoomMetadataV1, the app's current path, and
+    has its own distinct wire representation.
+
+    THE ACTUAL TRAP THIS CLASS EXISTS TO DOCUMENT: the underlying
+    Kotlin enum (P2MapRoomInfo.RoomType.Value) has its own `raw` field
+    with camelCase values ("diningRoom", "livingRoom") -- the
+    NATURAL-LOOKING thing to assume the serializer uses. It does NOT.
+    The serializer calls `type.name().toLowerCase()` -- the Kotlin enum
+    CONSTANT NAME itself, lowercased -- which gives snake_case
+    ("dining_room", "living_room"), not the raw field's camelCase. Two
+    of nine values would have been wrong (missing their underscore) had
+    the more-plausible-looking `raw` field been assumed instead of
+    checking the actual serializer call."""
+
+    UNKNOWN = "unknown"
+    BEDROOM = "bedroom"
+    DINING_ROOM = "dining_room"
+    BATHROOM = "bathroom"
+    HALLWAY = "hallway"
+    KITCHEN = "kitchen"
+    LIVING_ROOM = "living_room"
+    BALCONY = "balcony"
+    OTHER = "other"
 
 
 class FurnitureType(IntEnum):

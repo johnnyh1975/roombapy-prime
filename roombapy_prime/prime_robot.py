@@ -71,6 +71,7 @@ _LOGGER = logging.getLogger(__name__)
 Relogin = Callable[[], Awaitable[LoginResult]]
 
 DEFAULT_WATCH_QUEUE_MAXSIZE = 100
+DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS = 60.0
 # Chosen arbitrarily (not an empirical value) -- large enough to
 # absorb brief processing delays on the caller's side, small enough to
 # not tie up unbounded memory if the consumer permanently falls behind.
@@ -551,7 +552,11 @@ class PrimeRobot:
     # --- Continuous dispatch loops --------------------------------------
 
     async def watch_state(
-        self, named: str | None = None, *, queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE
+        self,
+        named: str | None = None,
+        *,
+        queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
+        max_reconnect_backoff: float = DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS,
     ) -> AsyncIterator[ShadowResponse]:
         """Delivers every shadow delta as soon as it arrives -- until
         the caller breaks the iteration (break/return from an
@@ -576,6 +581,20 @@ class PrimeRobot:
         immediately upon subscribing if desired/reported differ, then
         on every subsequent change) -- this standard semantic is
         assumed here, not specifically verified for Classic/Prime.
+
+        RECONNECTS TRANSPARENTLY (this session, reconnect hardening):
+        previously a dropped connection left this generator hung
+        forever on an empty queue with no signal anything was wrong --
+        mqtt_client.py had no on_disconnect handling at all. Now, a
+        drop is detected via self._mqtt.wait_for_disconnect() and
+        triggers an automatic reconnect with exponential backoff
+        (1s, 2s, 4s, ... capped at max_reconnect_backoff), unbounded
+        retry count -- appropriate for a long-running background
+        consumer (e.g. a Home Assistant coordinator) that should keep
+        trying rather than give up permanently. The caller's `async
+        for` loop never sees this happen; it just resumes receiving
+        deltas once reconnected. Only a caller-initiated break/.aclose()
+        ends this generator now, not a connection drop.
         """
         topic = self._mqtt.shadow_topic("update/delta", named=named)
         loop = asyncio.get_running_loop()
@@ -585,9 +604,54 @@ class PrimeRobot:
             loop.call_soon_threadsafe(_put_with_backpressure, queue, response, topic)
 
         await asyncio.to_thread(self._mqtt.subscribe, topic, _on_delta)
+        backoff = 1.0
         try:
             while True:
-                yield await queue.get()
+                get_task = asyncio.ensure_future(queue.get())
+                disconnect_task = asyncio.ensure_future(self._mqtt.wait_for_disconnect())
+                tasks = {get_task, disconnect_task}
+                try:
+                    done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    # Unconditional cleanup, regardless of WHY we got here --
+                    # one task completing normally, or this whole generator
+                    # being cancelled from outside (agen.aclose()/task.cancel()
+                    # while both tasks are still pending). Without this, the
+                    # "loser" of the race (or both, on outer cancellation)
+                    # would be left running as an orphaned task.
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    for t in tasks:
+                        with contextlib.suppress(BaseException):
+                            await t
+
+                if get_task in done:
+                    backoff = 1.0  # a live delta means the connection is healthy
+                    yield get_task.result()
+                    continue
+
+                # Connection dropped -- reconnect with exponential backoff,
+                # unbounded retries.
+                reason = disconnect_task.result()
+                _LOGGER.warning(
+                    "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
+                    reason, topic,
+                )
+                while True:
+                    try:
+                        await asyncio.to_thread(self._mqtt.reconnect)
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.warning(
+                            "roombapy-prime: MQTT reconnect attempt failed (%s) -- retrying in %.0fs",
+                            exc, backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, max_reconnect_backoff)
+                    else:
+                        _LOGGER.info("roombapy-prime: MQTT reconnected, watch resumed for %s", topic)
+                        backoff = 1.0
+                        break
         finally:
             await asyncio.to_thread(self._mqtt.unsubscribe, topic, _on_delta)
 

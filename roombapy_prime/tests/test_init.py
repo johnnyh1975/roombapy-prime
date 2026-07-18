@@ -23,16 +23,46 @@ def test_public_api_is_importable_from_top_level() -> None:
     assert roombapy_prime.ShadowResponse is not None
 
 
+def test_error_subclass_hierarchy_is_importable() -> None:
+    """NEW (this session, ha_roomba_plus translation-key prep). Every
+    typed error subclass must be reachable at the top level, and each
+    must actually be a subclass of its untyped base -- callers that
+    only catch the base (AuthError/RestError/ShadowError) must keep
+    working unchanged."""
+    assert issubclass(roombapy_prime.AuthCredentialsError, roombapy_prime.AuthError)
+    assert issubclass(roombapy_prime.AuthRateLimitedError, roombapy_prime.AuthError)
+    assert issubclass(roombapy_prime.AuthSSLError, roombapy_prime.AuthError)
+    assert issubclass(roombapy_prime.AuthConnectionError, roombapy_prime.AuthError)
+    assert issubclass(roombapy_prime.AuthTimeoutError, roombapy_prime.AuthError)
+    assert issubclass(roombapy_prime.RestSSLError, roombapy_prime.RestError)
+    assert issubclass(roombapy_prime.RestConnectionError, roombapy_prime.RestError)
+    assert issubclass(roombapy_prime.RestTimeoutError, roombapy_prime.RestError)
+    assert issubclass(roombapy_prime.ShadowSSLError, roombapy_prime.ShadowError)
+    assert issubclass(roombapy_prime.ShadowConnectionError, roombapy_prime.ShadowError)
+
+
 def test_all_matches_actual_exports() -> None:
     """__all__ is the documented stability contract -- keep it in sync
     with what's actually importable, rather than letting it drift."""
     expected = {
+        "AuthConnectionError",
+        "AuthCredentialsError",
         "AuthError",
+        "AuthRateLimitedError",
+        "AuthSSLError",
+        "AuthTimeoutError",
         "LoginResult",
         "PrimeFactory",
         "PrimeRobot",
+        "RestConnectionError",
+        "RestError",
+        "RestSSLError",
+        "RestTimeoutError",
         "RobotLoginEntry",
+        "ShadowConnectionError",
+        "ShadowError",
         "ShadowResponse",
+        "ShadowSSLError",
         "login",
     }
     assert set(roombapy_prime.__all__) == expected
