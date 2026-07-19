@@ -354,6 +354,67 @@ class PrimeRobot:
             )
         await asyncio.to_thread(self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, command.to_json())
 
+    async def send_umi_get_request(self, args: list[str], request_id: int = 1) -> None:
+        """EXPERIMENTAL, UNCONFIRMED (this session) -- a well-reasoned
+        hypothesis found via native decompilation, NOT a confirmed
+        working path. Read this whole docstring before using it
+        against a real device.
+
+        THE HYPOTHESIS: a request payload for the legacy "UMI" protocol
+        family was found as a literal string in libcorebase.so:
+        {"do": "get", "args": ["pose"], "id": <n>} -- alongside a
+        general write-side pattern {"do": "set", "args": [%s]}. This is
+        a generic do/args/id request protocol, not tied to a specific
+        topic path -- which also explains why no dedicated
+        "/things/%s/position"-style topic literal could be found at
+        all (see mqtt_client.py's notes next to rejected_report_topic()
+        for the full investigation trail): the intent lives in the
+        payload (args=["pose"]), not in the topic.
+
+        WHAT THIS METHOD DOES: publishes {"do": "get", "args": args,
+        "id": request_id} to cmd_topic() -- the SAME topic
+        send_simple_command() already uses, confirmed working for its
+        own (differently-shaped) payload. Nothing more; this does not
+        wait for or know where a response would arrive.
+
+        WHY THE RESPONSE SIDE IS ESPECIALLY UNCERTAIN: a separate
+        finding, core::RoombaSchemaField::kRobotPositionResponseTopic,
+        suggests the response topic may be specified BY the requester
+        inside the request payload itself, rather than being a fixed,
+        predictable path -- meaning even a successful request might
+        not have anywhere obvious to listen for the answer. A wildcard
+        subscription (see watch_raw_topic(), or
+        verify_mission_timeline.py's --watch-wildcard) is the practical
+        way to have any chance of catching a response, since its
+        destination can't be predicted in advance.
+
+        WHY THIS HAS NOT BEEN LIVE-TESTED, AND THE CAVEAT THAT MATTERS
+        MOST: this exact do/args/id literal was found associated with
+        the UMI/legacy protocol family, which a related investigation
+        confirmed has AT LEAST ONE transport variant that is local-
+        HTTPS-only, not cloud-reachable at all (see
+        GetAssetMissionStatusCommand's notes in mqtt_client.py). UMI
+        does have other, MQTT-capable variants too (confirmed by a
+        "Could not parse mqtt umi pose response" error string), so
+        this is not automatically a dead end -- but whether THIS
+        specific request, sent to THIS specific topic (cmd_topic, the
+        AWS IoT command channel), is one of the MQTT-capable variants
+        or the local-only kind is genuinely unknown. Same elevated-
+        risk caveat as send_routine_command_via_cmd_topic(): a wrong
+        guess here means a real device receiving a plausible-looking
+        but not-actually-matching request, not the safe silence a
+        topic-discovery mismatch would produce.
+
+        Same requirements as the other cmd_topic()-based methods: needs
+        irbt_topic_prefix, fire-and-forget."""
+        if self._irbt_topic_prefix is None:
+            raise RuntimeError(
+                "send_umi_get_request() needs irbt_topic_prefix (from LoginResult) -- "
+                "missing here, so the correct topic can't be built."
+            )
+        payload = {"do": "get", "args": args, "id": request_id}
+        await asyncio.to_thread(self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, payload)
+
     # --- REST-based p2maps operations (already natively async) -------
 
     async def get_active_map_versions(self) -> list[dict]:
@@ -570,6 +631,16 @@ class PrimeRobot:
         timeout here, since "wait for the next change" is the whole
         point).
 
+        IMPORTANT (this session): a live idle-vs-mid-mission diff
+        (chairstacker) confirmed the classic shadow's reported state is
+        BYTE-IDENTICAL whether the robot is idle or actively cleaning --
+        live mission status does NOT flow through this shadow document
+        at all (see watch_mission_timeline() instead, found via native
+        decompilation the same session). Watching this topic during a
+        mission is not expected to ever show a status-related delta;
+        it's kept for whatever it DOES cover (map/settings-adjacent
+        changes), not for mission status.
+
         queue_maxsize: bounds the internal buffer (see
         DEFAULT_WATCH_QUEUE_MAXSIZE). When the buffer is full, the
         OLDEST entry is dropped (not the newest) -- a lagging consumer
@@ -582,28 +653,196 @@ class PrimeRobot:
         on every subsequent change) -- this standard semantic is
         assumed here, not specifically verified for Classic/Prime.
 
-        RECONNECTS TRANSPARENTLY (this session, reconnect hardening):
-        previously a dropped connection left this generator hung
-        forever on an empty queue with no signal anything was wrong --
-        mqtt_client.py had no on_disconnect handling at all. Now, a
-        drop is detected via self._mqtt.wait_for_disconnect() and
-        triggers an automatic reconnect with exponential backoff
-        (1s, 2s, 4s, ... capped at max_reconnect_backoff), unbounded
-        retry count -- appropriate for a long-running background
-        consumer (e.g. a Home Assistant coordinator) that should keep
-        trying rather than give up permanently. The caller's `async
-        for` loop never sees this happen; it just resumes receiving
-        deltas once reconnected. Only a caller-initiated break/.aclose()
-        ends this generator now, not a connection drop.
+        RECONNECTS TRANSPARENTLY, unbounded retries with exponential
+        backoff -- see _watch_topic()'s own docstring, which does the
+        actual work here; this method's only job is picking the topic.
         """
         topic = self._mqtt.shadow_topic("update/delta", named=named)
+        # contextlib.aclosing() (not a bare `async for`) is required here --
+        # a bare `async for inner_gen(): yield ...` does NOT guarantee
+        # inner_gen's .aclose() runs when THIS generator is closed (a real
+        # bug found this session: unsubscribe() in _watch_topic()'s finally
+        # block never fired on agen.aclose(), only on natural exhaustion).
+        async with contextlib.aclosing(
+            self._watch_topic(
+                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+            )
+        ) as inner:
+            async for response in inner:
+                yield response
+
+    async def watch_mission_timeline(
+        self,
+        *,
+        queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
+        max_reconnect_backoff: float = DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS,
+    ) -> AsyncIterator[ShadowResponse]:
+        """NEW (this session) -- EXPLORATORY, not yet confirmed live.
+
+        Subscribes to {irbt_prefix}/things/{blid}/mission/timeline/report,
+        found via native decompilation (libcorebase.so's
+        core::protocol::AssetIotTopicFactory::createMissionTimelineTopic(),
+        prompted by a live finding: the classic shadow's reported state
+        is byte-identical whether idle or actively cleaning -- meaning
+        live mission status does NOT flow through get_state()/
+        watch_state() at all, on this topic instead.
+
+        WHAT'S CONFIRMED vs. NOT, precisely:
+        - The topic NAME and its existence: confirmed, from native
+          symbols (createMissionTimelineTopic, IotTopicType::kReport).
+        - The irbt_topic_prefix applying here the same way it does for
+          the already-live-confirmed command topic
+          (createCommandPublishTopic, same factory, same constructor):
+          a strong, well-reasoned inference (same factory instance,
+          same ServiceDiscoveryData source), NOT independently
+          live-confirmed for THIS specific topic.
+        - The payload SHAPE: genuinely unknown. RobotMissionStatusEventImpl's
+          decompiled constructor signature (AssetId, RobotMissionType,
+          string, RobotMissionPhase, string, short, short, int,
+          RobotReadinessState, short, vector<RobotReadinessState>,
+          vector<short>, short, int, long, long, long, string,
+          optional<int>) suggests real mission fields exist somewhere
+          in whatever arrives here, but there is no confirmed JSON
+          mapping for any of it -- this method exists to capture a live
+          sample, not to parse one. ShadowResponse.payload is whatever
+          JSON (or raw string, if not JSON) arrives, completely
+          unparsed/untyped.
+
+        Needs irbt_topic_prefix (see __init__/auth.py's LoginResult) --
+        raises ValueError immediately if not available, same as
+        send_simple_command()/watch_live_map().
+
+        Same reconnect-with-backoff behavior as watch_state() -- see
+        _watch_topic()'s docstring.
+        """
+        if self._irbt_topic_prefix is None:
+            raise ValueError(
+                "watch_mission_timeline() needs irbt_topic_prefix (from LoginResult) -- "
+                "this was None."
+            )
+        topic = self._mqtt.mission_timeline_topic(self._irbt_topic_prefix, report=True)
+        # See watch_state()'s equivalent comment -- aclosing() is required,
+        # not a bare `async for`, for the inner generator's cleanup to run
+        # reliably when THIS generator is closed.
+        async with contextlib.aclosing(
+            self._watch_topic(
+                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+            )
+        ) as inner:
+            async for response in inner:
+                yield response
+
+    async def watch_rejected_commands(
+        self,
+        *,
+        queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
+        max_reconnect_backoff: float = DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS,
+    ) -> AsyncIterator[ShadowResponse]:
+        """NEW (this session) -- EXPLORATORY, not yet confirmed live.
+
+        Subscribes to {irbt_prefix}/things/{blid}/rejected/report,
+        found via the same native decompilation pass as
+        watch_mission_timeline() (AssetIotTopicFactory's third method,
+        createCommandRejectedTopic() -- a sibling of the
+        already-live-confirmed createCommandPublishTopic() behind
+        cmd_topic()/send_simple_command()).
+
+        DIRECTLY COMPLEMENTS send_simple_command(): if a command call
+        appears to succeed (no exception) but the robot doesn't react,
+        this topic is where a rejection reason -- if the device reports
+        one at all -- would be expected to arrive. Same confidence
+        level as watch_mission_timeline(): see
+        rejected_report_topic()'s own docstring.
+
+        Needs irbt_topic_prefix, same as watch_mission_timeline() --
+        raises ValueError immediately if not available.
+
+        Same reconnect-with-backoff behavior as the other watch_*()
+        methods -- see _watch_topic()'s docstring.
+        """
+        if self._irbt_topic_prefix is None:
+            raise ValueError(
+                "watch_rejected_commands() needs irbt_topic_prefix (from LoginResult) -- "
+                "this was None."
+            )
+        topic = self._mqtt.rejected_report_topic(self._irbt_topic_prefix)
+        async with contextlib.aclosing(
+            self._watch_topic(
+                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+            )
+        ) as inner:
+            async for response in inner:
+                yield response
+
+    async def watch_raw_topic(
+        self,
+        topic: str,
+        *,
+        queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
+        max_reconnect_backoff: float = DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS,
+    ) -> AsyncIterator[ShadowResponse]:
+        """NEW (this session) -- a thin, public wrapper around
+        _watch_topic() for ad-hoc diagnostic subscriptions to a topic
+        this library has no dedicated method for yet.
+
+        CONCRETE USE CASE (not just hypothetical): a wildcard
+        subscription like "{irbt_prefix}/things/{blid}/#" is currently
+        the only way to potentially catch robot position/pose data --
+        createRobotPositionTopic() (a sibling of
+        mission_timeline_topic()/rejected_report_topic() in the same
+        native factory) builds its topic dynamically at runtime rather
+        than from a static format string, so no literal path exists to
+        subscribe to directly. See mqtt_client.py's notes next to
+        rejected_report_topic() for the full investigation trail
+        (including a separate finding that pose data specifically can
+        arrive over MQTT, distinct from plain "position").
+
+        Same reconnect-with-backoff behavior as watch_state()/
+        watch_mission_timeline() -- see _watch_topic()'s own docstring.
+        Deliberately does not validate or construct the topic string at
+        all -- the caller is responsible for it, unlike the dedicated
+        watch_*() methods above which build a specific, evidenced
+        topic themselves."""
+        async with contextlib.aclosing(
+            self._watch_topic(
+                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+            )
+        ) as inner:
+            async for response in inner:
+                yield response
+
+    async def _watch_topic(
+        self,
+        topic: str,
+        *,
+        queue_maxsize: int,
+        max_reconnect_backoff: float,
+    ) -> AsyncIterator[ShadowResponse]:
+        """Shared core behind watch_state()/watch_mission_timeline() --
+        extracted (this session) when the second caller appeared, to
+        avoid duplicating the reconnect-hardening logic.
+
+        RECONNECTS TRANSPARENTLY (reconnect hardening): previously a
+        dropped connection left a caller of this hung forever on an
+        empty queue with no signal anything was wrong -- mqtt_client.py
+        had no on_disconnect handling at all. Now, a drop is detected
+        via self._mqtt.wait_for_disconnect() and triggers an automatic
+        reconnect with exponential backoff (1s, 2s, 4s, ... capped at
+        max_reconnect_backoff), unbounded retry count -- appropriate
+        for a long-running background consumer (e.g. a Home Assistant
+        coordinator) that should keep trying rather than give up
+        permanently. The caller's `async for` loop never sees this
+        happen; it just resumes receiving messages once reconnected.
+        Only a caller-initiated break/.aclose() ends this generator
+        now, not a connection drop.
+        """
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[ShadowResponse] = asyncio.Queue(maxsize=queue_maxsize)
 
-        def _on_delta(response: ShadowResponse) -> None:
+        def _on_message(response: ShadowResponse) -> None:
             loop.call_soon_threadsafe(_put_with_backpressure, queue, response, topic)
 
-        await asyncio.to_thread(self._mqtt.subscribe, topic, _on_delta)
+        await asyncio.to_thread(self._mqtt.subscribe, topic, _on_message)
         backoff = 1.0
         try:
             while True:
@@ -627,7 +866,7 @@ class PrimeRobot:
                             await t
 
                 if get_task in done:
-                    backoff = 1.0  # a live delta means the connection is healthy
+                    backoff = 1.0  # a live message means the connection is healthy
                     yield get_task.result()
                     continue
 
@@ -653,7 +892,7 @@ class PrimeRobot:
                         backoff = 1.0
                         break
         finally:
-            await asyncio.to_thread(self._mqtt.unsubscribe, topic, _on_delta)
+            await asyncio.to_thread(self._mqtt.unsubscribe, topic, _on_message)
 
     async def watch_live_map(
         self,

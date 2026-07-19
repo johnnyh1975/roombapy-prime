@@ -8,6 +8,65 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a4] - 2026-07-19
+
+### Added
+
+- **`watch_mission_timeline()` — a genuinely new channel, found via native decompilation, prompted
+  by a live finding that ruled out where live mission status does NOT live.** A live idle-vs-mid-
+  mission diff of `get_state()` (chairstacker) proved the classic shadow's reported state is
+  byte-identical whether the robot is idle or actively cleaning — live mission status does not flow
+  through `get_state()`/`watch_state()` at all. A separate investigation (native decompilation of
+  `libcorebase.so`) found the actual channel this project believes carries it instead:
+  - New `mqtt_client.py::mission_timeline_topic()`: builds
+    `{irbt_topic_prefix}/things/{blid}/mission/timeline/report` (or `.../request`), found from
+    `core::protocol::AssetIotTopicFactory::createMissionTimelineTopic()` — the same factory/
+    constructor as the already-live-confirmed command topic (`createCommandPublishTopic()`, behind
+    `cmd_topic()`), giving strong (not independently live-confirmed) reason to believe the same
+    `irbt_topic_prefix` applies here too.
+  - New `prime_robot.py::watch_mission_timeline()`: subscribes to the report topic, same
+    reconnect-with-backoff behavior as `watch_state()`. Genuinely exploratory — the payload SHAPE on
+    this topic is completely unknown; this method exists to capture a live sample, not to parse one.
+  - New `mqtt_client.py::rejected_report_topic()` / `prime_robot.py::watch_rejected_commands()`:
+    found in the same decompilation pass (`AssetIotTopicFactory`'s third method,
+    `createCommandRejectedTopic()`) — directly complements the already-live-confirmed
+    `send_simple_command()`: if a command call appears to succeed but the robot doesn't react, this
+    is where a rejection reason (if reported at all) would be expected to arrive.
+  - **Two related investigations, documented for future contributors rather than re-explored later**:
+    `AssetIotTopicFactory`'s fourth method, `createRobotPositionTopic()`, builds its topic
+    dynamically at runtime rather than from a static literal (unlike the other three) — pure string
+    analysis is exhausted here; a live wildcard capture (`--watch-wildcard`, see below) is the
+    practical way forward instead. Separately, `GetAssetMissionStatusCommand` — a read command
+    mentioned in an earlier investigation — is confirmed a dead end for this library: its
+    serializer routes through local HTTPS polling (the legacy "UMI" protocol family), not any cloud
+    channel.
+  - **New, genuinely testable hypothesis**: a follow-up decompilation pass found the exact request
+    payload literal for a position/pose query: `{"do": "get", "args": ["pose"], "id": <n>}` — a
+    generic `do`/`args`/`id` protocol (explaining why no dedicated topic literal exists at all: the
+    intent lives in the payload, not the topic). New `prime_robot.py::send_umi_get_request()`
+    (EXPERIMENTAL, UNCONFIRMED, elevated-risk caveat same as `send_routine_command_via_cmd_topic()`)
+    sends this on the already-confirmed `cmd` topic. New `verify_mission_timeline.py --try-pose-request`
+    flag to try this live, with its own explicit interactive confirmation regardless of the flag.
+  - New `prime_robot.py::watch_raw_topic()`: a thin public wrapper for ad-hoc diagnostic
+    subscriptions to any topic this library has no dedicated method for yet (e.g. a wildcard
+    subscription to see what else is active on an account).
+  - **Refactored**: `watch_state()`'s reconnect-hardened core is now shared, extracted into
+    `_watch_topic()`, used by all three `watch_*()` methods above instead of being duplicated.
+  - **A real bug found and fixed during the refactor**: a bare `async for x in inner_gen(): yield x`
+    does NOT guarantee `inner_gen`'s `.aclose()` runs when the outer generator is closed — the
+    `unsubscribe()` call in `_watch_topic()`'s own `finally` block silently never fired on
+    `agen.aclose()`, only on natural exhaustion. Fixed with `contextlib.aclosing()`; caught by the
+    existing `watch_state()` test suite immediately after the refactor, not shipped.
+- **New script: `roombapy-prime-verify-mission-timeline`** — a diagnostic tool that subscribes to
+  the new mission-timeline and rejected-command topics and logs whatever arrives during a real,
+  actively-running mission. Purely passive by default (never sends anything, no
+  `--i-understand-this-will-move-my-robot` flag needed) — optionally, `--start-mission` has it send
+  the actual start/stop itself (via the same already-live-confirmed `send_simple_command()` path),
+  so a tester can run one script in one terminal instead of coordinating two.
+- 16 new tests (11 in `test_prime_robot.py`/`test_mqtt_client.py` covering the new topic/watch/send
+  methods and the `aclosing()` regression, 4 in a new `test_verify_mission_timeline.py`, 1 for
+  `rejected_report_topic()`). 412/412 tests green, ruff clean.
+
 ## [0.1.11a3] - 2026-07-18
 
 ### Added

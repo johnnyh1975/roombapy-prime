@@ -167,6 +167,45 @@ async def test_send_routine_command_via_cmd_topic_without_topic_prefix_raises_im
 
 
 @pytest.mark.asyncio
+async def test_send_umi_get_request_publishes_do_args_id_payload() -> None:
+    """NEW (this session) -- EXPERIMENTAL, UNCONFIRMED path, see the
+    method's own docstring for the full hypothesis and risk caveat.
+    Verifies the exact payload shape found as a literal string in
+    libcorebase.so: {"do": "get", "args": [...], "id": ...}."""
+    robot, mqtt, _rest = _robot_with_mocks()
+
+    await robot.send_umi_get_request(["pose"], request_id=7)
+
+    mqtt.publish_cmd_payload.assert_called_once_with(
+        "irbt-fake-prefix", {"do": "get", "args": ["pose"], "id": 7}
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_umi_get_request_default_request_id() -> None:
+    robot, mqtt, _rest = _robot_with_mocks()
+
+    await robot.send_umi_get_request(["pose"])
+
+    mqtt.publish_cmd_payload.assert_called_once_with(
+        "irbt-fake-prefix", {"do": "get", "args": ["pose"], "id": 1}
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_umi_get_request_without_topic_prefix_raises_immediately() -> None:
+    """Same missing-prefix gate as the other cmd_topic()-based methods."""
+    mqtt = MagicMock()
+    rest = MagicMock()
+    robot = PrimeRobot(blid="BLID123", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None)
+
+    with pytest.raises(RuntimeError, match="irbt_topic_prefix"):
+        await robot.send_umi_get_request(["pose"])
+
+    mqtt.publish_cmd_payload.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_rest_backed_methods_delegate_directly() -> None:
     robot, _mqtt, rest = _robot_with_mocks()
 
@@ -905,3 +944,174 @@ async def test_echo_time_estimates_reset_notifications_delegate() -> None:
 
     assert await robot.get_notifications() == {"events": []}
     rest.get_notifications.assert_awaited_once_with("BLID123", "2.2.4")
+
+
+# =========================================================================
+# watch_mission_timeline() (this session) -- EXPLORATORY, see its own
+# docstring for exact confidence level. Mirrors watch_state()'s own test
+# structure, since both now share _watch_topic() as their common core.
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_watch_mission_timeline_subscribes_to_correct_topic() -> None:
+    robot, mqtt, _rest = _robot_with_mocks()
+    robot._irbt_topic_prefix = "irbt-prefix"
+    _never_disconnects(mqtt)
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    agen = robot.watch_mission_timeline()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    mqtt.mission_timeline_topic.assert_called_once_with("irbt-prefix", report=True)
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"phase": "run"}))
+    result = await next_task
+
+    assert result.payload == {"phase": "run"}
+
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_watch_mission_timeline_without_irbt_prefix_raises() -> None:
+    """Same guard as send_simple_command()/watch_live_map() -- this
+    topic is built from irbt_topic_prefix, which isn't always
+    available (see LoginResult's own docstring)."""
+    robot, _mqtt, _rest = _robot_with_mocks()
+    robot._irbt_topic_prefix = None
+
+    with pytest.raises(ValueError, match="irbt_topic_prefix"):
+        await robot.watch_mission_timeline().__anext__()
+
+
+@pytest.mark.asyncio
+async def test_watch_mission_timeline_reconnects_after_disconnect() -> None:
+    """Confirms the shared _watch_topic() reconnect-hardening (see
+    watch_state()'s own equivalent test) also applies to this newer
+    method, not just the original one it was extracted from."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    robot._irbt_topic_prefix = "irbt-prefix"
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    disconnect_event = asyncio.Event()
+    call_count = 0
+
+    async def fake_wait_for_disconnect():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            await disconnect_event.wait()
+            return "connection lost"
+        await asyncio.Event().wait()
+
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
+    mqtt.reconnect = MagicMock()
+
+    agen = robot.watch_mission_timeline()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    disconnect_event.set()
+    await _wait_until(lambda: mqtt.reconnect.called)
+    mqtt.reconnect.assert_called_once()
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"phase": "run"}))
+    result = await next_task
+
+    assert result.payload == {"phase": "run"}
+
+    await agen.aclose()
+
+
+# =========================================================================
+# watch_rejected_commands() (this session) -- same confidence level and
+# reasoning as watch_mission_timeline(), see its own docstring. Directly
+# complements the already-live-confirmed send_simple_command().
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_watch_rejected_commands_subscribes_to_correct_topic() -> None:
+    robot, mqtt, _rest = _robot_with_mocks()
+    robot._irbt_topic_prefix = "irbt-prefix"
+    _never_disconnects(mqtt)
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    agen = robot.watch_rejected_commands()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    mqtt.rejected_report_topic.assert_called_once_with("irbt-prefix")
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"reason": "busy"}))
+    result = await next_task
+
+    assert result.payload == {"reason": "busy"}
+
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_watch_rejected_commands_without_irbt_prefix_raises() -> None:
+    robot, _mqtt, _rest = _robot_with_mocks()
+    robot._irbt_topic_prefix = None
+
+    with pytest.raises(ValueError, match="irbt_topic_prefix"):
+        await robot.watch_rejected_commands().__anext__()
+
+
+@pytest.mark.asyncio
+async def test_watch_raw_topic_subscribes_to_exact_given_topic() -> None:
+    """NEW (this session) -- unlike watch_state()/watch_mission_timeline(),
+    this method builds no topic itself -- confirms it subscribes to
+    exactly what the caller passes, unmodified."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    _never_disconnects(mqtt)
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    agen = robot.watch_raw_topic("irbt-prefix/things/BLID123/#")
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    assert captured["topic"] == "irbt-prefix/things/BLID123/#"
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"anything": True}))
+    result = await next_task
+    assert result.payload == {"anything": True}
+
+    await agen.aclose()
+    mqtt.unsubscribe.assert_called_once_with(captured["topic"], captured["callback"])
+
+
+@pytest.mark.asyncio
+async def test_watch_state_aclose_propagates_to_inner_watch_topic_generator() -> None:
+    """Regression test for a real bug found this session, while
+    extracting _watch_topic() as shared code behind watch_state() AND
+    watch_mission_timeline(): a bare `async for x in inner_gen(): yield
+    x` does NOT guarantee inner_gen's .aclose() runs when the OUTER
+    generator (watch_state() here) is closed -- unsubscribe() in
+    _watch_topic()'s own `finally` block silently never fired on
+    agen.aclose(), only on natural exhaustion. Fixed via
+    contextlib.aclosing() wrapping the inner generator; this test
+    exists so a future refactor can't quietly reintroduce the same gap."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    _never_disconnects(mqtt)
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    agen = robot.watch_state()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"n": 1}))
+    await next_task
+
+    await agen.aclose()
+
+    mqtt.unsubscribe.assert_called_once_with(captured["topic"], captured["callback"])

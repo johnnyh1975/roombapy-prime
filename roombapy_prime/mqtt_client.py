@@ -483,6 +483,100 @@ class PrimeMqttClient:
         needs to settle."""
         return f"{irbt_topic_prefix}/things/{self._blid}/cmd"
 
+    def mission_timeline_topic(self, irbt_topic_prefix: str, *, report: bool = True) -> str:
+        """NEW (this session). Found via native decompilation
+        (libcorebase.so's core::protocol::AssetIotTopicFactory::
+        createMissionTimelineTopic(IotTopicType), a sibling method of
+        the SAME factory/constructor as createCommandPublishTopic() --
+        the already-live-confirmed source of cmd_topic() above.
+
+        PROMPTED BY: a live idle-vs-mid-mission diff (chairstacker) that
+        showed the classic shadow's reported state is byte-identical
+        whether the robot is idle or actively cleaning -- proving live
+        mission status does NOT flow through the shadow/cmd_topic
+        mechanism at all. This is believed to be the actual channel for
+        it, based on: (a) an "eventList" entry named "cleanMissionStatus"
+        in base_roomba_config.json (matching the Classic protocol's own
+        live-mission-status channel name), and (b) a decompiled native
+        class, core::RobotMissionStatusEventImpl, whose constructor
+        signature contains real per-mission fields (mission type,
+        phase, readiness state, multiple counters/timestamps) --
+        structurally nothing like the classic shadow's static
+        capability data.
+
+        report=True -> ".../mission/timeline/report" (the direction a
+        robot would push status TO the cloud/subscriber -- what a
+        caller watching for live status wants). report=False ->
+        ".../mission/timeline/request" (the other half of the
+        kRequest/kReport pair the native IotTopicType enum defines;
+        included for completeness, not expected to be useful to
+        subscribe to).
+
+        CONFIDENCE LEVEL, precisely: the topic NAME and its existence
+        are confirmed from native symbols. Whether irbt_topic_prefix
+        applies here the same way it does for cmd_topic() is a strong,
+        well-reasoned inference (same factory, same constructor
+        source), not independently live-confirmed for this specific
+        topic -- unlike cmd_topic(), which HAS a live-confirmed real-
+        world reaction behind it. The payload SHAPE on this topic is
+        completely unknown; see watch_mission_timeline()'s own
+        docstring in prime_robot.py."""
+        direction = "report" if report else "request"
+        return f"{irbt_topic_prefix}/things/{self._blid}/mission/timeline/{direction}"
+
+    def rejected_report_topic(self, irbt_topic_prefix: str) -> str:
+        """NEW (this session). Found via the same native decompilation
+        pass as mission_timeline_topic() -- AssetIotTopicFactory's
+        third method, createCommandRejectedTopic(), a sibling of
+        createCommandPublishTopic() (cmd_topic() above, already
+        live-confirmed) in the exact same factory/constructor. Directly
+        complements cmd_topic(): if a send_simple_command() call is
+        silently ignored or has no visible effect, this topic is where
+        the reason (if the device reports one at all) would be
+        expected to arrive.
+
+        Same confidence level as mission_timeline_topic(): topic name
+        confirmed from native symbols, irbt_topic_prefix application
+        here a strong inference (same factory) rather than
+        independently live-confirmed, payload shape unknown."""
+        return f"{irbt_topic_prefix}/things/{self._blid}/rejected/report"
+
+    # NOTE (this session, for future contributors -- saves re-investigating
+    # both of these): AssetIotTopicFactory has a FOURTH method beyond the
+    # three above, createRobotPositionTopic(IotTopicType) -- but unlike
+    # cmd_topic()/mission_timeline_topic()/rejected_report_topic(), no
+    # "/things/%s/..." format-string literal for it exists anywhere in the
+    # binaries (exhaustively searched: "position", "pose", "/pos", every
+    # "mission/" prefix). The reason: three separate serializers exist for
+    # this one command (GetRobotPositionAwsIotRobotSerializer confirms an
+    # AWS IoT path DOES exist, alongside a local-secure-socket variant and a
+    # RoombaPoseDeserializer) -- but the AWS IoT topic is built dynamically
+    # at runtime, not from a literal, and a separate finding
+    # (core::RoombaSchemaField::kRobotPositionResponseTopic) suggests the
+    # response topic may be read FROM the request payload itself rather
+    # than being static at all. Resolving this further would need Ghidra
+    # disassembly of createRobotPositionTopic() itself -- pure string
+    # analysis is exhausted here. A live wildcard capture (see
+    # verify_mission_timeline.py's --watch-wildcard) is the practical way
+    # to actually catch this, not more static analysis.
+    #
+    # Also: "Position" and "Pose" turned out to be two separate concepts
+    # with their own event/deserializer pairs (RobotPositionEventImpl vs.
+    # RobotPoseEventImpl/RoombaPoseDeserializer, the latter WITH
+    # orientation) -- and an error string ("Could not parse mqtt umi pose
+    # response") confirms pose data specifically CAN arrive over MQTT, not
+    # just locally. Another concrete thing a wildcard capture might catch.
+    #
+    # Separately: GetAssetMissionStatusCommand (mentioned in an earlier
+    # investigation, absent from base_roomba_config.json) is CONFIRMED a
+    # dead end for this library -- its serializer
+    # (GetAssetMissionStatusUmiSerializer) routes through
+    # PollingProtocolAdapterRoombaLocalHttps, i.e. local HTTPS polling via
+    # the legacy "UMI" protocol family, not any cloud channel. This also
+    # explains its absence from base_roomba_config.json: that config
+    # covers cloud/LSS-relevant commands only, not the UMI legacy path.
+    # Not pursued further -- no cloud transport exists for it.
+
     def publish_cmd(self, irbt_topic_prefix: str, command: str, initiator: str = "localApp") -> None:
         """NEW (session 39). Publishes a simple mission command via
         cmd_topic() -- see that method's docstring for the full

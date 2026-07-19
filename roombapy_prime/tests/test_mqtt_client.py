@@ -238,6 +238,37 @@ def test_cmd_topic_helper() -> None:
     assert client.cmd_topic("irbt-prefix") == "irbt-prefix/things/BLID1/cmd"
 
 
+def test_mission_timeline_topic_helper_report() -> None:
+    """NEW (this session) -- topic name/existence confirmed via native
+    decompilation (AssetIotTopicFactory::createMissionTimelineTopic),
+    prompted by a live idle-vs-mid-mission diff showing the classic
+    shadow never carries mission status at all. See
+    mission_timeline_topic()'s own docstring for the full confidence
+    breakdown (topic existence: confirmed; irbt_topic_prefix applying
+    here: strong inference, not independently live-confirmed)."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+    assert (
+        client.mission_timeline_topic("irbt-prefix")
+        == "irbt-prefix/things/BLID1/mission/timeline/report"
+    )
+
+
+def test_mission_timeline_topic_helper_request() -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+    assert (
+        client.mission_timeline_topic("irbt-prefix", report=False)
+        == "irbt-prefix/things/BLID1/mission/timeline/request"
+    )
+
+
+def test_rejected_report_topic_helper() -> None:
+    """NEW (this session) -- found via the same native decompilation
+    pass as mission_timeline_topic() (AssetIotTopicFactory's third
+    method, createCommandRejectedTopic())."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+    assert client.rejected_report_topic("irbt-prefix") == "irbt-prefix/things/BLID1/rejected/report"
+
+
 def test_publish_cmd_sends_expected_payload_shape() -> None:
     """NEW (session 39) -- payload shape {"command", "time", "initiator"}
     matches the third-party project's documented, reportedly-working

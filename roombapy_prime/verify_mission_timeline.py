@@ -1,0 +1,379 @@
+"""Manual, observed capture of whatever arrives on the mission-timeline
+topic(s) during a real, actively-running mission.
+
+WHY THIS SCRIPT EXISTS: a live idle-vs-mid-mission diff of get_state()
+(chairstacker, this session) proved the classic shadow's reported state
+is byte-identical whether the robot is idle or actively cleaning --
+live mission status does NOT flow through get_state()/watch_state() at
+all. A separate investigation (native decompilation of libcorebase.so)
+found a distinct topic pair believed to carry this instead:
+"{irbt_topic_prefix}/things/{blid}/mission/timeline/report" (and its
+"request" counterpart) -- see mqtt_client.py's mission_timeline_topic()
+and prime_robot.py's watch_mission_timeline() for the full evidence
+trail and exact confidence level (topic existence: confirmed from
+native symbols; irbt_topic_prefix applying here: a strong inference,
+not independently live-confirmed; payload shape: completely unknown).
+
+Also watches "{irbt_topic_prefix}/things/{blid}/rejected/report" at the
+same time -- a sibling topic found in the same decompilation pass,
+directly complementing send_simple_command(): if a command call
+appears to succeed but the robot doesn't react, this is where a
+rejection reason (if the device reports one at all) would be expected
+to arrive. See watch_rejected_commands()'s own docstring.
+
+PURELY PASSIVE BY DEFAULT -- unlike verify_mission_commands.py, this
+script does not need to send anything to the robot to do its job.
+Start a cleaning cycle any way you like (the robot's own CLEAN button,
+the iRobot app, or verify_mission_commands.py running in a separate
+terminal at the same time) -- this script doesn't care how the mission
+started, only that one is running while it's watching. No
+"--i-understand-this-will-move-my-robot" flag is needed for that
+reason.
+
+OPTIONAL, EASIER ONE-TERMINAL MODE: pass --start-mission to have this
+script send the actual 'start' (and 'stop' at the end) itself, via the
+same already-live-confirmed send_simple_command() path
+verify_mission_commands.py uses -- lets a tester run one script in one
+terminal instead of coordinating two. This DOES require
+--i-understand-this-will-move-my-robot, same safety gate as
+verify_mission_commands.py, since this mode genuinely moves the robot.
+
+WHAT SUCCESS LOOKS LIKE: at least one message arriving on
+mission/timeline/report while the robot is actively cleaning, ideally
+containing something that looks like real mission state (a phase, a
+percentage, a timestamp -- anything that changes between idle and
+active). WHAT A NULL RESULT MEANS: if nothing arrives even during an
+active mission, that's still valuable information -- it would mean
+either the irbt_topic_prefix guess is wrong for this specific topic
+family (despite the shared-factory reasoning), or the topic name
+itself needs correction, or this channel simply isn't used the way the
+native symbols suggest. Report it either way.
+
+USAGE (two-terminal, fully passive):
+  # Terminal 1:
+  roombapy-prime-verify-mission-timeline \\
+      --username you@example.com --country-code US --blid BLID123 \\
+      --duration 60
+  # Terminal 2, once terminal 1 says "Ready to start watching?" and
+  # you've confirmed:
+  roombapy-prime-verify-commands \\
+      --username you@example.com --country-code US --blid BLID123 \\
+      --i-understand-this-will-move-my-robot
+
+USAGE (one-terminal, this script starts/stops the mission itself):
+  roombapy-prime-verify-mission-timeline \\
+      --username you@example.com --country-code US --blid BLID123 \\
+      --duration 60 --start-mission --i-understand-this-will-move-my-robot
+
+  Add --watch-wildcard (recommended) to also subscribe to
+  "{irbt_topic_prefix}/things/{blid}/#" at the same time -- currently
+  the only way to potentially catch robot position/pose data, whose
+  topic is built dynamically rather than from a static path (see
+  mqtt_client.py's notes next to rejected_report_topic() for the full
+  investigation trail).
+
+  Add --try-pose-request to also send an EXPERIMENTAL, UNCONFIRMED
+  {"do": "get", "args": ["pose"], "id": 1} request on the cmd topic --
+  a request format found via native decompilation, not known to work
+  over this specific (AWS IoT) topic. Combine with --watch-wildcard,
+  since there's no predictable topic to watch for a response
+  otherwise. Asks for its own interactive confirmation regardless of
+  this flag. See send_umi_get_request()'s own docstring.
+
+Credentials same as diagnostics.py: ROOMBAPY_PRIME_PASSWORD env var or
+interactive prompt, never as a command-line argument.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import getpass
+import json
+import os
+import sys
+import webbrowser
+from collections.abc import Callable
+from typing import Any
+
+import aiohttp
+
+from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
+from .prime_factory import PrimeFactory
+
+
+def _confirm(prompt: str) -> bool:
+    """Interactive confirmation -- ONLY "j"/"ja"/"y"/"yes" (case
+    doesn't matter) counts as approval, anything else (including just
+    pressing Enter) aborts."""
+    answer = input(f"{prompt} [y/N] ").strip().lower()
+    return answer in ("j", "ja", "y", "yes")
+
+
+async def _watch_one(
+    agen_factory: Callable[[], Any],
+    label: str,
+    raw_capture: dict[str, Any],
+    report: Report,
+) -> None:
+    """Consumes an async generator (from watch_mission_timeline()/
+    watch_raw_topic()) for as long as the surrounding asyncio.wait_for()
+    lets it run, printing and collecting every message that arrives.
+    Cancellation (the normal way this ends, via the duration timeout)
+    is expected and swallowed here -- it's not a failure."""
+    captured: list[Any] = []
+    agen = agen_factory()
+    try:
+        async for response in agen:
+            print(f"\n  [{label}] {response.payload}")
+            captured.append(response.payload)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await agen.aclose()
+    raw_capture[f"watch: {label}"] = captured
+    if captured:
+        report.add(f"Watch {label}", "OK", f"{len(captured)} message(s) captured -- see raw capture")
+    else:
+        report.add(
+            f"Watch {label}", "OK",
+            "no messages arrived during the watch window -- itself a meaningful result, see the "
+            "module docstring's \"what a null result means\" section",
+        )
+
+
+async def run(
+    username: str, password: str, country_code: str, blid: str,
+    duration: float, watch_wildcard: bool, start_mission: bool, try_pose_request: bool,
+) -> tuple[Report, dict[str, Any]]:
+    report = Report()
+    raw_capture: dict[str, Any] = {}
+
+    async with aiohttp.ClientSession() as session:
+        print("\n== Login ==")
+        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+        report.add("Login", "OK", f"BLID={robot.blid}")
+        await robot.connect()
+        report.add("MQTT connection", "OK")
+
+        _report_topic_prefix_status(report, robot)
+        raw_capture["Discovery deployment object (for irbt_topic_prefix)"] = robot.deployment
+        if getattr(robot, "_irbt_topic_prefix", None) is None:
+            print(
+                "\nirbt_topic_prefix is missing for this account -- the mission-timeline topic "
+                "needs it, same as mission commands. Aborting; see the report above for the "
+                "actual discovery-response keys."
+            )
+            report.add("Watch mission timeline", "SKIPPED", "irbt_topic_prefix missing -- see report above")
+            await robot.disconnect()
+            return report, raw_capture
+
+        watch_specs: list[tuple[Callable[[], Any], str]] = [
+            (robot.watch_mission_timeline, "mission/timeline/report"),
+            (robot.watch_rejected_commands, "rejected/report"),
+        ]
+        if watch_wildcard:
+            wildcard_topic = f"{robot._irbt_topic_prefix}/things/{robot.blid}/#"
+            watch_specs.append((lambda: robot.watch_raw_topic(wildcard_topic), wildcard_topic))
+
+        print(f"\n== Watching for up to {duration:.0f}s ==")
+        for _factory, label in watch_specs:
+            print(f"  Subscribing to: {label}")
+
+        if start_mission:
+            print(
+                "\n--start-mission was given: this run WILL send a real 'start' command "
+                "(send_simple_command(), the same already-live-confirmed path "
+                "verify_mission_commands.py uses) once subscribed, and a 'stop' at the end."
+            )
+            if not _confirm("Send 'start' and begin watching now?"):
+                for _factory, label in watch_specs:
+                    report.add(f"Watch {label}", "SKIPPED", "not confirmed by user")
+                await robot.disconnect()
+                return report, raw_capture
+        else:
+            print(
+                "Start a cleaning cycle now, any way you like (the robot's own CLEAN button, the "
+                "iRobot app, or verify_mission_commands.py running in a separate terminal) -- this "
+                "run isn't sending anything itself (pass --start-mission to have it do that for "
+                "you instead, in one terminal)."
+            )
+            if not _confirm("Ready to start watching?"):
+                for _factory, label in watch_specs:
+                    report.add(f"Watch {label}", "SKIPPED", "not confirmed by user")
+                await robot.disconnect()
+                return report, raw_capture
+
+        tasks = [
+            asyncio.create_task(_watch_one(factory, label, raw_capture, report))
+            for factory, label in watch_specs
+        ]
+
+        # Subscriptions are established by the first await inside each task
+        # (watch_*()'s own subscribe() call) -- give them a brief moment to
+        # actually attach before sending "start", so the very first message
+        # isn't missed by a subscription that hasn't registered with the
+        # broker yet.
+        if start_mission:
+            await asyncio.sleep(1.0)
+            try:
+                await robot.send_simple_command("start")
+                report.add("Start mission", "OK", "sent via send_simple_command()")
+            except Exception as exc:  # noqa: BLE001
+                report.add("Start mission", "FAILED", f"{type(exc).__name__}: {exc}")
+
+        if try_pose_request:
+            if not watch_wildcard:
+                print(
+                    "\nWARNING: --try-pose-request without --watch-wildcard means there is "
+                    "nowhere this run is listening for a response -- the request's response "
+                    "topic is not predictable in advance (see send_umi_get_request()'s own "
+                    "docstring). Strongly consider re-running with both flags together."
+                )
+            print(
+                "\n--try-pose-request was given: this sends an EXPERIMENTAL, UNCONFIRMED "
+                'request ({"do": "get", "args": ["pose"], "id": 1}) to the same cmd topic '
+                "send_simple_command() already uses. This request format was found in the "
+                "legacy UMI protocol family, which has at least one HTTPS-only, non-cloud "
+                "transport variant -- whether THIS specific attempt (over the AWS IoT cmd "
+                "topic) is a cloud-reachable variant or not is genuinely unknown. See "
+                "send_umi_get_request()'s own docstring for the full reasoning."
+            )
+            if _confirm("Send this experimental pose request now?"):
+                try:
+                    await robot.send_umi_get_request(["pose"])
+                    report.add("Experimental pose request", "OK", 'sent {"do": "get", "args": ["pose"], "id": 1}')
+                except Exception as exc:  # noqa: BLE001
+                    report.add("Experimental pose request", "FAILED", f"{type(exc).__name__}: {exc}")
+            else:
+                report.add("Experimental pose request", "SKIPPED", "not confirmed by user")
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=duration)
+        except TimeoutError:
+            pass
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        if start_mission:
+            try:
+                await robot.send_simple_command("stop")
+                report.add("Stop mission", "OK", "sent via send_simple_command() -- cleaning up after this test run")
+            except Exception as exc:  # noqa: BLE001
+                report.add(
+                    "Stop mission", "FAILED",
+                    f"{type(exc).__name__}: {exc} -- you may need to stop the robot manually",
+                )
+
+        await robot.disconnect()
+
+    return report, raw_capture
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Manual, observed capture of whatever arrives on the mission-timeline topic(s) "
+            "during a real, actively-running mission. Read-only -- never sends anything to the "
+            "robot; see the module docstring for the full evidence trail behind why this topic "
+            "is being watched at all."
+        )
+    )
+    parser.add_argument("--username", default=os.environ.get("ROOMBAPY_PRIME_USERNAME"))
+    parser.add_argument("--country-code", default=os.environ.get("ROOMBAPY_PRIME_COUNTRY", "US"))
+    parser.add_argument("--blid", required=True, help="The exact target device -- no 'first device found'.")
+    parser.add_argument(
+        "--duration", type=float, default=90.0,
+        help="How many seconds to watch for (default: 90). Start your cleaning cycle as soon as "
+        "you confirm you're ready -- the clock starts immediately after that confirmation.",
+    )
+    parser.add_argument(
+        "--watch-wildcard", action="store_true",
+        help='Also subscribe to "{irbt_topic_prefix}/things/{blid}/#" at the same time -- '
+        "RECOMMENDED: this is currently the only way to potentially catch robot position/pose "
+        "data, since its topic is built dynamically (no static path exists to subscribe to "
+        "directly, unlike mission/timeline and rejected/report -- see mqtt_client.py's own notes "
+        "next to rejected_report_topic() for the full investigation).",
+    )
+    parser.add_argument(
+        "--start-mission", action="store_true",
+        help="Also send a real 'start' command once subscribed (and 'stop' at the end) -- lets "
+        "this run in a single terminal instead of needing verify_mission_commands.py (or the "
+        "app/robot button) running separately at the same time. Requires "
+        "--i-understand-this-will-move-my-robot, same as verify_mission_commands.py.",
+    )
+    parser.add_argument(
+        "--try-pose-request", action="store_true",
+        help='EXPERIMENTAL, UNCONFIRMED: also sends {"do": "get", "args": ["pose"], "id": 1} on '
+        "the cmd topic, a request format found via native decompilation for the legacy UMI "
+        "protocol -- not known to work over this (AWS IoT) topic specifically. Asks for an "
+        "explicit interactive confirmation before sending regardless of this flag. Combine with "
+        "--watch-wildcard, since the response (if any) has no predictable topic to watch for it "
+        "on otherwise. See send_umi_get_request()'s own docstring for the full reasoning.",
+    )
+    parser.add_argument(
+        "--i-understand-this-will-move-my-robot",
+        action="store_true",
+        dest="confirmed_move",
+        help="Required if --start-mission is given. Without this flag, --start-mission is refused "
+        "and the script aborts immediately, before any login.",
+    )
+    parser.add_argument("--output", default=None, metavar="PATH")
+    parser.add_argument("--dump-config", default=None, metavar="PATH")
+    parser.add_argument("--no-issue-link", action="store_true")
+    parser.add_argument("--open-browser", action="store_true")
+    args = parser.parse_args()
+
+    if args.start_mission and not args.confirmed_move:
+        print(
+            "Aborted: --start-mission was given without "
+            "--i-understand-this-will-move-my-robot. This would send a REAL 'start' command to a "
+            "REAL device -- see --help."
+        )
+        sys.exit(1)
+
+    username = args.username or input("Prime account email: ")
+    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Password: ")
+
+    print(f"\nTARGET DEVICE: {args.blid}")
+    if args.start_mission:
+        print("This run WILL send real start/stop commands to this device (--start-mission).")
+    else:
+        print("This run only listens -- it never sends commands to this device.")
+
+    report, raw_capture = asyncio.run(
+        run(
+            username, password, args.country_code, args.blid, args.duration,
+            args.watch_wildcard, args.start_mission, args.try_pose_request,
+        )
+    )
+    report.redact(username, password)
+
+    ok, failed, skipped = report.summary()
+    print(f"\n== Summary: {ok} OK, {failed} failed, {skipped} skipped ==")
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(report.to_markdown())
+        print(f"Report saved to {args.output}")
+
+    if args.dump_config:
+        redacted = _redact_raw_capture(raw_capture, [username, password])
+        with open(args.dump_config, "w", encoding="utf-8") as f:
+            json.dump(redacted, f, indent=2, default=str, ensure_ascii=False)
+        print(f"Redacted raw responses (incl. every captured mission-timeline message) saved to {args.dump_config}")
+
+    if not args.no_issue_link:
+        issue_url = build_issue_url(report)
+        print("\n== Feedback for the maintainers ==")
+        print("If you'd like to share this report:")
+        print(f"  {issue_url}")
+        if args.open_browser:
+            webbrowser.open(issue_url)
+
+
+if __name__ == "__main__":
+    main()
