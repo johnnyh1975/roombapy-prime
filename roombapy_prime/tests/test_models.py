@@ -1477,6 +1477,90 @@ def test_mission_timeline_events_from_real_live_mission_history() -> None:
     assert charge_event.start_time == 1784120914
 
 
+def test_mission_timeline_report_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session) -- real mission/timeline/report
+    messages from an actual, active mission (chairstacker, via
+    verify_mission_timeline.py --start-mission). The exact 4th (final,
+    most complete) message captured, verbatim except redacted IDs
+    replaced with the same placeholder used elsewhere in this test
+    file for readability.
+
+    The valuable finding this test locks in: RoomEvent/TravelEvent/
+    TentativeLocationEvent (previously confirmed only via static
+    androguard/jadx analysis for the HISTORICAL get_mission_history()
+    endpoint) needed ZERO corrections to parse this LIVE data -- both
+    channels share one event schema."""
+    from roombapy_prime.models import MissionTimelineReport, RoomEvent, TentativeLocationEvent, TravelEvent
+
+    raw = {
+        "cmd": {"command": "start", "initiator": "localApp", "time": 1784483030},
+        "event": [{
+            "room": {"area": 354, "p2mapId": "BLID-1758329350", "p2mapvId": "260719T174414.994",
+                     "passCount": 0, "rid": "11"},
+            "ts": 1784483054, "type": "room",
+        }],
+        "finEvents": [
+            {"ets": 1784483054, "travel": {"dest": "room", "p2mapId": "BLID-1758329350",
+                                            "p2mapvId": "260719T174413.734", "rid": "11", "status": 0},
+             "ts": 1784483053, "type": "travel"},
+            {"ets": 1784483053, "reloc": {"confp2mapId": "BLID-1758329350",
+                                           "confp2mapvId": "260719T174413.314",
+                                           "p2mapId": "BLID-1758329350", "p2mapvId": "260719T174353.832"},
+             "ts": 1784483033, "type": "reloc"},
+            {"ts": 1784483029, "type": "start"},
+        ],
+        "mission_id": "01KXXQM8XZEDJ24701JF121CCH",
+        "nMssn": 255,
+        "ver": "2.13",
+    }
+
+    report = MissionTimelineReport.from_json(raw)
+
+    assert report.command == "start"
+    assert report.initiator == "localApp"
+    assert report.command_time == 1784483030
+    assert report.mission_id == "01KXXQM8XZEDJ24701JF121CCH"
+    assert report.n_missions == 255
+    assert report.version == "2.13"
+
+    assert len(report.event) == 1
+    current = report.event[0]
+    assert current.event_type == "room"
+    assert current.start_time == 1784483054
+    assert isinstance(current.room, RoomEvent)
+    assert current.room.area == 354
+    assert current.room.pass_count == 0
+    assert current.room.region_id == "11"
+    assert current.room.map_version == "260719T174414.994"
+
+    assert len(report.fin_events) == 3
+    travel_event, reloc_event, start_event = report.fin_events
+
+    assert travel_event.event_type == "travel"
+    assert travel_event.end_time == 1784483054
+    assert isinstance(travel_event.travel, TravelEvent)
+    assert travel_event.travel.region_id == "11"
+    assert travel_event.travel.status == 0
+
+    assert reloc_event.event_type == "reloc"
+    assert isinstance(reloc_event.relocalizing, TentativeLocationEvent)
+    assert reloc_event.relocalizing.confirmed_map_version == "260719T174413.314"
+
+    assert start_event.event_type == "start"
+    assert start_event.start_time == 1784483029
+
+
+def test_mission_timeline_report_handles_missing_fields_gracefully() -> None:
+    from roombapy_prime.models import MissionTimelineReport
+
+    report = MissionTimelineReport.from_json({})
+
+    assert report.command is None
+    assert report.event == []
+    assert report.fin_events == []
+    assert report.mission_id is None
+
+
 def test_robot_serial_info_from_real_live_response() -> None:
     """NEW (session 58) -- real live get_serial_number_data() response
     (chairstacker, session 57's --dump-config), every field checked --

@@ -556,7 +556,7 @@ class BundleManifest:
 KNOWN_BUNDLE_INFO_TYPES = frozenset({
     "rooms", "borders", "floorPlan", "dockPose", "floorTypes",
     "coverage", "cleanZones", "hazard", "trajectories",
-    "adHocCleanZones", "furniture",
+    "adHocCleanZones", "furniture", "policyZones",
 })
 """CORRECTED (session 57): confirmed via a real live map bundle
 (chairstacker, --dump-config) that the actual filename is "dockPose"
@@ -568,7 +568,20 @@ purely structural files outside this content-type set: "manifest"
 (the table-of-contents) and "metadata" (mission/source metadata) --
 both already modeled separately (BundleManifest/BundleMetadataSource)
 and correctly not included here, since they aren't "content types" in
-the same sense as rooms/borders/etc."""
+the same sense as rooms/borders/etc.
+
+NEW (this session, a second real live bundle, chairstacker): "policyZones"
+confirmed as an actual content type present in a real bundle
+(policyZones.geojson) -- not previously in this set at all. This same
+capture's file listing was smaller than the session-57 one (5 files:
+borders/manifest/metadata/policyZones/rooms vs. the earlier capture's
+8) -- plausibly just reflecting that this particular map has fewer
+content types actually configured/present, not a contradiction; bundle
+contents are expected to vary per-map. Meaning of "policyZones" itself
+not further investigated -- conceptually plausible overlap with
+permanent-area/keep-out-zone concepts from the map-editing work
+(PermanentArea/VirtualWall), but that association is speculation, not
+confirmed."""
 
 
 def parse_map_bundle(data: bytes) -> dict[str, Any]:

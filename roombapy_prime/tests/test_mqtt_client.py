@@ -29,6 +29,7 @@ from roombapy_prime.mqtt_client import (
     PrimeMqttClient,
     ShadowConnectionError,
     ShadowError,
+    ShadowResponse,
     ShadowSSLError,
     _shadow_base,
 )
@@ -226,6 +227,60 @@ def test_livemap_topic_helper() -> None:
     topic, not a direct confirmation."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
     assert client.livemap_topic("irbt-prefix") == "irbt-prefix/things/BLID1/livemap/update"
+
+
+def test_persistent_wildcard_subscription_receives_matching_messages() -> None:
+    """BUG FOUND AND FIXED (this session): a live wildcard capture came
+    back with zero messages despite matching traffic demonstrably
+    existing (chairstacker) -- _on_message() dispatched persistent
+    subscribers via an exact dict-key lookup on msg.topic, but a
+    wildcard registration's key is the literal pattern string (e.g.
+    "prefix/things/BLID/#"), which msg.topic (always the CONCRETE
+    topic a message arrived on) can never equal. The wildcard
+    watcher's callback was therefore structurally unreachable,
+    regardless of how much matching traffic existed."""
+    client, _fake = _connected_client(blid="BLID1")
+    received: list[ShadowResponse] = []
+    client.subscribe("prefix/things/BLID1/#", received.append)
+
+    client._on_message(
+        client, None,
+        _FakeMsg("prefix/things/BLID1/mission/timeline/report", b'{"phase": "run"}'),
+    )
+
+    assert len(received) == 1
+    assert received[0].payload == {"phase": "run"}
+
+
+def test_persistent_exact_and_wildcard_subscriptions_both_fire_for_same_message() -> None:
+    """Confirms the fix handles the exact scenario that surfaced the
+    bug: an exact-topic watcher and an overlapping wildcard watcher
+    registered at the same time, both must receive a message that
+    matches both patterns."""
+    client, _fake = _connected_client(blid="BLID1")
+    exact_received: list[ShadowResponse] = []
+    wildcard_received: list[ShadowResponse] = []
+    topic = "prefix/things/BLID1/mission/timeline/report"
+    client.subscribe(topic, exact_received.append)
+    client.subscribe("prefix/things/BLID1/#", wildcard_received.append)
+
+    client._on_message(client, None, _FakeMsg(topic, b'{"phase": "run"}'))
+
+    assert len(exact_received) == 1
+    assert len(wildcard_received) == 1
+
+
+def test_persistent_wildcard_subscription_ignores_non_matching_topics() -> None:
+    client, _fake = _connected_client(blid="BLID1")
+    received: list[ShadowResponse] = []
+    client.subscribe("prefix/things/BLID1/mission/#", received.append)
+
+    client._on_message(
+        client, None,
+        _FakeMsg("prefix/things/BLID1/rejected/report", b'{"reason": "busy"}'),
+    )
+
+    assert received == []
 
 
 def test_cmd_topic_helper() -> None:

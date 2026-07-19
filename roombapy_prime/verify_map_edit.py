@@ -23,12 +23,19 @@ assumption (chairstacker) failed with HTTP 500, prompting a full live
 APK decompilation of EditMapV1Request.java this session, which
 confirmed the real envelope shape is structurally different
 ("command"/"params"-nested, not "type"/flat) across all nine V1
-commands. That decompilation-level confirmation is a genuinely
-stronger form of evidence than the mission-command case ever had
-before ITS live test -- but this script's caution level is unchanged:
-decompiled bytecode still isn't the same as a real server accepting a
-real request, and this remains the first live test of the corrected
-structure.
+commands.
+
+UPDATE: the corrected structure has now been LIVE-CONFIRMED, not just
+decompiled -- a second run (chairstacker, same session as the fix)
+renamed a real room ("Master Bathroom" -> "Master Bathroom
+[roombapy-prime-test]"), confirmed in the real app, then reverted it
+back, also confirmed in the app. See SetRoomMetadataV1's own docstring
+in models/map_editing.py. This script's caution level remains
+unchanged regardless -- this confirms the envelope shape and
+SetRoomMetadataV1 specifically, not the other eight V1 command types
+(SplitRoom, MergeRooms, SetPermanentAreas, DeletePermanentAreas,
+SetVirtualWalls, AdjustFurniture, RenameRoomV1, SetRoomTypeV1), none of
+which have been live-tested at all yet.
 
 For that reason, THIS SCRIPT DELIBERATELY ONLY TESTS ONE OPERATION:
 renaming an existing, already-named room to a clearly-marked test name,
@@ -38,9 +45,10 @@ DeletePermanentAreas, SetVirtualWalls, AdjustFurniture) is attempted
 here -- those either aren't cleanly reversible at all (a merge/split
 can't be undone by calling the inverse operation, since the original
 boundary information is gone) or carry meaningfully higher risk for a
-first live test. If this rename test succeeds cleanly, that's still
-useful evidence about the general V1 envelope shape, but does NOT by
-itself confirm any of the other command types.
+first live test. A successful rename test is useful evidence about the
+general V1 envelope shape and about SetRoomMetadataV1 specifically
+(now confirmed twice), but does NOT by itself confirm any of the other
+command types.
 
 SAFETY DESIGN (same doubly-secured pattern as verify_mission_commands.py):
 1. --i-understand-this-will-edit-my-map must be explicitly set at
@@ -287,13 +295,11 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         print(f"TEST ROOM: {original_name!r} (room_id={room_id})")
         print(f"About to temporarily rename it to: {test_name!r}")
         print(
-            "Using SetRoomMetadataV1 (command='set_room_metadata') -- this session's "
-            "APK decompilation confirmed the full envelope AND found the app itself no "
-            "longer calls RenameRoom at all (Kotlin @Deprecated), using SetRoomMetadata "
-            "instead. A prior live attempt (chairstacker) with the OLD, incorrectly-"
-            "shaped RenameRoom envelope failed with HTTP 500 -- that specific failure is "
-            "now understood (wrong envelope shape entirely, fixed this session), but "
-            "this is still the first live test of the corrected structure."
+            "Using SetRoomMetadataV1 (command='set_room_metadata') -- LIVE-CONFIRMED: a "
+            "previous run of this exact test (chairstacker) succeeded, confirmed in the real "
+            "app, both the rename and the revert back. A prior attempt before that, with the "
+            "OLD, incorrectly-shaped RenameRoom envelope, had failed with HTTP 500 -- fixed "
+            "via full APK decompilation of EditMapV1Request.java, then confirmed working live."
         )
         if not _confirm("Proceed with the rename?"):
             report.add("Rename room (test)", "SKIPPED", "not confirmed by user")

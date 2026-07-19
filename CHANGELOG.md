@@ -8,6 +8,49 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a5] - 2026-07-19
+
+### Fixed
+
+- **Real bug found and fixed: persistent wildcard subscriptions (`watch_raw_topic()` with a
+  pattern like `"{prefix}/things/{blid}/#"`) could never receive anything, in any test run, ever.**
+  Found via a live capture (chairstacker) that came back empty despite matching traffic
+  demonstrably existing. `_on_message()` dispatched persistent subscribers via an exact dict-key
+  lookup on `msg.topic` — but a wildcard registration's key is the literal pattern string, which
+  `msg.topic` (always the concrete topic a message actually arrived on) can never equal. Fixed by
+  matching every registered pattern against `msg.topic` via `paho.mqtt.client.topic_matches_sub()`
+  instead of an exact lookup. `_pending` (one-shot request/response waits) is unaffected — it's
+  never used with wildcards. 3 new regression tests.
+- **`verify_mission_timeline.py --start-mission` real user friction, found and fixed**: cleanup
+  only sent `"stop"`, leaving the robot stranded wherever it was when the watch window ended
+  (chairstacker: "I had to physically push the button on the device"). Now sends `"stop"` then
+  `"dock"`, matching the exact sequence `verify_mission_commands.py`'s own test already validated
+  together.
+- **A second, related bug found while designing a way to actually test for docking-related
+  events**: the watch tasks were cancelled BEFORE stop/dock were sent, meaning any events resulting
+  from docking could never be captured even if they exist. Restructured so watching continues
+  through the whole stop → dock → post-dock window; new `--post-dock-watch-seconds` (default 30)
+  controls how long that extra window lasts.
+- **`SetRoomMetadataV1` (room rename/re-categorize) is now LIVE-CONFIRMED, not just
+  decompilation-confirmed**: chairstacker successfully renamed a real room ("Master Bathroom" ->
+  "Master Bathroom [roombapy-prime-test]") via `verify_map_edit.py`, confirmed in the real app,
+  then reverted it back, also confirmed in the app.
+- New `"policyZones"` confirmed as a real map-bundle content type (`policyZones.geojson`, from a
+  second live bundle, chairstacker) — added to `KNOWN_BUNDLE_INFO_TYPES`, not previously known.
+
+### Added
+
+- **`models.MissionTimelineReport`** — the confirmed message shape for `mission/timeline/report`,
+  built from a real, live, active-mission capture (chairstacker, `verify_mission_timeline.py
+  --start-mission`). A valuable independent cross-confirmation: this wraps the SAME
+  `MissionTimelineEvent`/`RoomEvent`/`TravelEvent`/`TentativeLocationEvent` models already confirmed
+  (session 18/31, static analysis) for `get_mission_history()`'s HISTORICAL timeline — those models
+  needed ZERO corrections to parse this live data, meaning the live push channel and the historical
+  pull endpoint evidently share one underlying event schema. 2 new tests, using the actual captured
+  data verbatim (redacted IDs only).
+- 5 new tests total (3 for the wildcard-dispatch fix, 2 for `MissionTimelineReport`). 417/417 tests
+  green, ruff clean.
+
 ## [0.1.11a4] - 2026-07-19
 
 ### Added

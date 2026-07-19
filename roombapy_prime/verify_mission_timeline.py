@@ -31,12 +31,17 @@ started, only that one is running while it's watching. No
 reason.
 
 OPTIONAL, EASIER ONE-TERMINAL MODE: pass --start-mission to have this
-script send the actual 'start' (and 'stop' at the end) itself, via the
+script send the actual 'start' (and 'stop'+'dock' at the end) itself, via the
 same already-live-confirmed send_simple_command() path
 verify_mission_commands.py uses -- lets a tester run one script in one
 terminal instead of coordinating two. This DOES require
 --i-understand-this-will-move-my-robot, same safety gate as
 verify_mission_commands.py, since this mode genuinely moves the robot.
+Stays watching for --post-dock-watch-seconds (default 30) AFTER sending
+stop/dock, specifically to try catching any docking-related events --
+an earlier version of this script stopped watching before sending
+those commands, so any such events could never have been captured even
+if they exist.
 
 WHAT SUCCESS LOOKS LIKE: at least one message arriving on
 mission/timeline/report while the robot is actively cleaning, ideally
@@ -145,6 +150,7 @@ async def _watch_one(
 async def run(
     username: str, password: str, country_code: str, blid: str,
     duration: float, watch_wildcard: bool, start_mission: bool, try_pose_request: bool,
+    post_dock_watch: float,
 ) -> tuple[Report, dict[str, Any]]:
     report = Report()
     raw_capture: dict[str, Any] = {}
@@ -184,7 +190,8 @@ async def run(
             print(
                 "\n--start-mission was given: this run WILL send a real 'start' command "
                 "(send_simple_command(), the same already-live-confirmed path "
-                "verify_mission_commands.py uses) once subscribed, and a 'stop' at the end."
+                "verify_mission_commands.py uses) once subscribed, and 'stop'+'dock' at the end "
+                "(so the robot returns home, rather than being left wherever it stopped)."
             )
             if not _confirm("Send 'start' and begin watching now?"):
                 for _factory, label in watch_specs:
@@ -248,25 +255,57 @@ async def run(
             else:
                 report.add("Experimental pose request", "SKIPPED", "not confirmed by user")
 
-        try:
-            await asyncio.wait_for(asyncio.gather(*tasks), timeout=duration)
-        except TimeoutError:
-            pass
-        finally:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(duration)
 
         if start_mission:
+            # BUG FOUND (this session, real user friction -- chairstacker):
+            # sending only "stop" left the robot stranded wherever it was
+            # when the watch window ended -- "I had to physically push the
+            # button on the device" to get it back to the dock. Fixed by
+            # also sending "dock" afterward -- both commands independently
+            # confirmed live-working (see send_simple_command()'s own
+            # confidence table), and this exact stop-then-dock ordering
+            # matches how verify_mission_commands.py's own test sequence
+            # already validated them together ("Stop (after pause test)"
+            # followed by "Dock"), rather than trying an untested
+            # "dock directly from an actively-cleaning state" shortcut.
             try:
                 await robot.send_simple_command("stop")
-                report.add("Stop mission", "OK", "sent via send_simple_command() -- cleaning up after this test run")
+                report.add("Stop mission", "OK", "sent via send_simple_command()")
+            except Exception as exc:  # noqa: BLE001
+                report.add("Stop mission", "FAILED", f"{type(exc).__name__}: {exc}")
+
+            try:
+                await robot.send_simple_command("dock")
+                report.add(
+                    "Dock", "OK",
+                    "sent via send_simple_command() -- returning the robot to its dock after this test run",
+                )
             except Exception as exc:  # noqa: BLE001
                 report.add(
-                    "Stop mission", "FAILED",
-                    f"{type(exc).__name__}: {exc} -- you may need to stop the robot manually",
+                    "Dock", "FAILED",
+                    f"{type(exc).__name__}: {exc} -- you may need to send the robot home manually",
                 )
+
+            # BUG FOUND (this session, while designing a way to actually
+            # capture docking-related events): an earlier version of this
+            # function cancelled the watch tasks BEFORE sending stop/dock --
+            # meaning any events resulting from docking could never be
+            # captured even if they exist, since nothing was listening
+            # anymore by the time those commands were sent. The watch tasks
+            # (started above, still running) stay alive through this whole
+            # stop -> dock -> post-dock window for exactly that reason.
+            if post_dock_watch > 0:
+                print(
+                    f"\n== Still watching for {post_dock_watch:.0f}s after stop/dock, "
+                    "to catch any docking-related events =="
+                )
+                await asyncio.sleep(post_dock_watch)
+
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         await robot.disconnect()
 
@@ -300,7 +339,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--start-mission", action="store_true",
-        help="Also send a real 'start' command once subscribed (and 'stop' at the end) -- lets "
+        help="Also send a real 'start' command once subscribed (and 'stop'+'dock' at the end, so "
+        "the robot returns home afterward) -- lets "
         "this run in a single terminal instead of needing verify_mission_commands.py (or the "
         "app/robot button) running separately at the same time. Requires "
         "--i-understand-this-will-move-my-robot, same as verify_mission_commands.py.",
@@ -313,6 +353,13 @@ def main() -> None:
         "explicit interactive confirmation before sending regardless of this flag. Combine with "
         "--watch-wildcard, since the response (if any) has no predictable topic to watch for it "
         "on otherwise. See send_umi_get_request()'s own docstring for the full reasoning.",
+    )
+    parser.add_argument(
+        "--post-dock-watch-seconds", type=float, default=30.0,
+        help="Only used with --start-mission: how long to keep watching AFTER sending stop/dock "
+        "(default: 30). Set to 0 to disable. Exists specifically to try catching any "
+        "docking-related events -- an earlier version of this script stopped watching BEFORE "
+        "sending dock, meaning such events could never be captured even if they exist.",
     )
     parser.add_argument(
         "--i-understand-this-will-move-my-robot",
@@ -348,6 +395,7 @@ def main() -> None:
         run(
             username, password, args.country_code, args.blid, args.duration,
             args.watch_wildcard, args.start_mission, args.try_pose_request,
+            args.post_dock_watch_seconds,
         )
     )
     report.redact(username, password)

@@ -775,3 +775,80 @@ def parse_mission_timeline(data: dict[str, Any] | list[dict[str, Any]] | None) -
     return [MissionTimelineEvent.from_json(e) for e in entries]
 
 
+@dataclass(frozen=True)
+class MissionTimelineReport:
+    """CONFIRMED LIVE (this session, chairstacker -- a real, active
+    mission, via prime_robot.py's watch_mission_timeline()). The actual
+    message shape arriving on mission/timeline/report.
+
+    A valuable cross-confirmation neither investigation alone
+    established: this wraps the SAME MissionTimelineEvent model already
+    confirmed (session 18/31, via androguard/jadx static analysis) for
+    get_mission_history()'s HISTORICAL timeline data -- the live push
+    channel and the historical pull endpoint evidently share one
+    underlying event schema. RoomEvent/TravelEvent/TentativeLocationEvent
+    (room/travel/reloc) all matched the live capture's fields exactly,
+    with zero corrections needed.
+
+    event: in every live message captured so far, ALWAYS exactly one
+    entry -- the newest/current event. fin_events: a growing list of
+    PAST events, each gaining an end_time (MissionTimelineEvent's own
+    "ets" field) once superseded by the next one -- effectively a
+    running history of the mission-so-far, resent in full on every
+    single update rather than delta-only.
+
+    command/initiator/command_time: NOT new data -- this is the SAME
+    payload send_simple_command() itself publishes (see
+    mqtt_client.py's publish_cmd()), echoed back here as context for
+    which command's mission this report belongs to.
+
+    n_missions ("nMssn" on the wire): meaning NOT confirmed. A lifetime
+    mission counter is a plausible guess (255 was observed) but nothing
+    here confirms that specifically -- treat as an opaque int until
+    corroborated some other way. NOTE: 255 is exactly the max value of
+    an unsigned 8-bit integer -- worth keeping in mind as a plausible
+    alternative explanation (a saturating counter capped at 255, common
+    in embedded firmware with a small integer field, rather than a
+    genuine running total that happens to equal 255).
+
+    mission_id ("01KXXQM8XZEDJ24701JF121CCH" observed): 26 characters,
+    Crockford base32 alphabet -- matches the ULID format (Universally
+    Unique Lexicographically Sortable Identifier) exactly. Not
+    independently verified against a ULID parser, but the shape is a
+    strong match.
+
+    map_version fields observed on nested events (RoomEvent.map_version
+    etc., e.g. "260719T174414.994"): decodes cleanly as YYMMDD"T"HHMMSS.mmm
+    -- confirmed against two independent real captures (this session's
+    "260719T174353.832" = 2026-07-19 17:43:53.832, matching the actual
+    capture date; and an existing test fixture's "260715T130113.944" =
+    2026-07-15 13:01:13.944). Each event in a single live capture had a
+    DIFFERENT map_version despite sharing the same map_id -- suggesting
+    this is a per-localization-update timestamp, not a "map was edited"
+    version the way the name might suggest.
+    """
+
+    command: str | None = None
+    initiator: str | None = None
+    command_time: int | None = None
+    event: list[MissionTimelineEvent] = field(default_factory=list)
+    fin_events: list[MissionTimelineEvent] = field(default_factory=list)
+    mission_id: str | None = None
+    n_missions: int | None = None
+    version: str | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> MissionTimelineReport:
+        cmd = data.get("cmd") or {}
+        return cls(
+            command=cmd.get("command"),
+            initiator=cmd.get("initiator"),
+            command_time=cmd.get("time"),
+            event=[MissionTimelineEvent.from_json(e) for e in data.get("event") or []],
+            fin_events=[MissionTimelineEvent.from_json(e) for e in data.get("finEvents") or []],
+            mission_id=data.get("mission_id"),
+            n_missions=data.get("nMssn"),
+            version=data.get("ver"),
+        )
+
+

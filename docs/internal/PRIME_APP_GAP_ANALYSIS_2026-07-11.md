@@ -2659,3 +2659,75 @@ can ever close it.
 339/339 tests green (4 new, real-data-backed), ruff clean. No functional code changes this
 session beyond the new tests -- the fixes themselves were made in the fifty-seventh session; this
 one is verification-hardening plus a methodological investigation.
+
+## Addendum (fifty-ninth session): mission/timeline/report CONFIRMED LIVE -- room/mission progress resolved, RobotStatusV2 remains a separate open question, plus a real wildcard-dispatch bug found
+
+**The headline finding.** A live idle-vs-mid-mission diff of `get_state()` (chairstacker, an
+earlier part of this session) proved the classic shadow's reported state is byte-identical whether
+the robot is idle or actively cleaning -- ruling out the long-standing working hypothesis that
+`RobotStatusV2` simply hadn't been captured at the right moment. Native decompilation of
+`libcorebase.so` then found `AssetIotTopicFactory`, the same factory/constructor behind the
+already-live-confirmed command topic, with three more methods: `createMissionTimelineTopic()`
+(`mission/timeline/report`/`request`), `createCommandRejectedTopic()` (`rejected/report`), and a
+fourth, `createRobotPositionTopic()`, whose topic could not be resolved from a static literal (see
+below). `watch_mission_timeline()`/`watch_rejected_commands()`/`watch_raw_topic()` were added,
+released as v0.1.11a4.
+
+**Then chairstacker ran it live, during a real active mission (`verify_mission_timeline.py
+--start-mission`), and it worked.** Four real events came back: `start` -> `reloc` -> `travel` ->
+`room`, with map IDs, room IDs, area, pass counts, timestamps. The genuinely valuable part: parsing
+these needed the EXISTING `MissionTimelineEvent`/`RoomEvent`/`TravelEvent`/`TentativeLocationEvent`
+models (confirmed via static analysis in the eighteenth/thirty-first sessions, for
+`get_mission_history()`'s HISTORICAL timeline) -- zero corrections required. The live push channel
+and the historical pull endpoint evidently share one event schema, a cross-confirmation neither
+investigation alone could have established. New `MissionTimelineReport` model wraps the envelope
+(`cmd`/`event`/`finEvents`/`mission_id`/`nMssn`/`ver`); `nMssn`'s meaning remains unconfirmed (255
+observed, a lifetime counter is a plausible but unverified guess).
+
+**Important correction, made within this same session rather than left to stand: this does NOT
+resolve `RobotStatusV2`.** `RobotStatusV2` (`battery_level`, `is_charging`, `is_robot_on_dock`,
+`robot_state` -- all separately bytecode-confirmed, forty-sixth/forty-ninth sessions) is a
+genuinely different structure from what `mission/timeline/report` delivered. The four event types
+observed contain no battery/charging/dock fields at all. `MissionTimelineEvent` has 20 known
+sub-event types; this capture only reached 4 of them, because the mission was manually stopped
+(`send_simple_command("stop")`) rather than allowed to finish naturally or dock. A plausible next
+step: a longer capture that lets a mission actually reach a charge/evac/docking-adjacent event type,
+to see whether `RobotStatusV2`-shaped data appears on this same channel after all, rather than
+assuming it's resolved.
+
+**A real bug found by looking closely at data that looked slightly wrong, not by suspicion alone.**
+The same capture showed every event delivered twice, while a wildcard subscription
+(`--watch-wildcard`) running at the same time showed zero messages -- despite demonstrably-matching
+traffic existing. Root cause: `_on_message()` dispatched persistent subscribers via an exact
+dict-key lookup on `msg.topic`. A wildcard registration's key is the pattern string itself (e.g.
+`"prefix/things/blid/#"`), which `msg.topic` (always the concrete topic a message arrived on) can
+never equal -- meaning **a wildcard subscription could never receive anything, in any run, ever**,
+a bug that predates this session and was only surfaced by finally testing one live. Fixed via
+`paho.mqtt.client.topic_matches_sub()` instead of the exact lookup; `_pending` (one-shot
+request/response waits) was unaffected, since it's never used with wildcards. 3 regression tests
+added.
+
+**Two smaller, concrete fixes from the same round of feedback.** `verify_mission_timeline.py
+--start-mission`'s cleanup only sent `"stop"`, leaving the robot stranded wherever it stopped --
+chairstacker had to physically walk over and press the button. Now sends `"stop"` then `"dock"`,
+matching the exact sequence already validated together in `verify_mission_commands.py`'s own test.
+Separately, `SetRoomMetadataV1` (room rename, fixed the previous session after the HTTP 500) is now
+LIVE-CONFIRMED, not just decompilation-confirmed: chairstacker renamed a real room and reverted it,
+both confirmed in the real app. A second live map bundle also confirmed a new content type,
+`"policyZones"`, not previously in `KNOWN_BUNDLE_INFO_TYPES`.
+
+**On the still-open `createRobotPositionTopic()`/position-pose question**, raised earlier this
+session: exhaustive string search found no `/things/%s/position`-style literal anywhere, but three
+serializers exist for this command (`GetRobotPositionAwsIotRobotSerializer` confirms an AWS IoT path
+is real), and a separate finding, `core::RoombaSchemaField::kRobotPositionResponseTopic`, suggests
+the response topic may be specified BY the requester inside the request payload itself, rather than
+being static -- explaining why no literal exists to find. A follow-up pass then found the actual
+request payload as a literal: `{"do": "get", "args": ["pose"], "id": <n>}`, a generic `do`/`args`/
+`id` protocol tied to the legacy "UMI" family (confirmed, separately, to have at least one
+local-HTTPS-only transport variant, via `GetAssetMissionStatusCommand` -- a dead end for this
+library specifically, unrelated to the position question). New `send_umi_get_request()`
+(EXPERIMENTAL, UNCONFIRMED for this cloud transport specifically) sends this on the
+already-confirmed `cmd` topic; `--try-pose-request` lets a tester try it live. Not yet attempted
+against a real device as of this session.
+
+417/417 tests green, ruff clean. Released as v0.1.11a5.

@@ -398,10 +398,24 @@ class PrimeMqttClient:
         callbacks = self._pending.pop(msg.topic, [])
         for cb in callbacks:
             cb(response)
-        # Persistent subscribers are separate and NOT popped -- they stay
-        # registered for every future message on this topic.
-        for cb in self._persistent.get(msg.topic, []):
-            cb(response)
+        # BUG FOUND AND FIXED (this session, via a live wildcard capture
+        # that came back suspiciously empty despite matching traffic
+        # demonstrably existing -- chairstacker). Persistent subscribers
+        # are matched by PATTERN now, not an exact dict-key lookup on
+        # msg.topic. A persistent registration can be a wildcard filter
+        # (e.g. "{prefix}/things/{blid}/#", see watch_raw_topic()) --
+        # msg.topic is always the concrete topic a message actually
+        # arrived on, never the literal wildcard string itself, so a
+        # plain `self._persistent.get(msg.topic, [])` could NEVER find a
+        # wildcard registration: its own dedicated watcher would show
+        # "zero messages" forever, regardless of how much matching
+        # traffic actually existed. _pending (above) is unaffected --
+        # it's only ever used for one-shot exact-topic request/response
+        # waits (get_shadow()/update_shadow()), never wildcards.
+        for pattern, cbs in self._persistent.items():
+            if mqtt.topic_matches_sub(pattern, msg.topic):
+                for cb in cbs:
+                    cb(response)
 
     def shadow_topic(self, suffix: str, named: str | None = None) -> str:
         """Public accessor for building a full shadow topic, e.g.

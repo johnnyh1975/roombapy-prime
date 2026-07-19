@@ -537,7 +537,14 @@ class AdjustFurnitureV1:
 
 @dataclass(frozen=True)
 class SetRoomMetadataV1:
-    """CONFIRMED (live APK decompilation, this session, down to the
+    """LIVE-CONFIRMED (chairstacker, real device: renamed "Master
+    Bathroom" -> "Master Bathroom [roombapy-prime-test]" via
+    verify_map_edit.py, confirmed in the real app, then reverted back
+    -- also confirmed in the app). Not just decompilation-confirmed
+    anymore; this specific structure has now been observed to actually
+    work against a real robot, both directions (rename and revert).
+
+    CONFIRMED (live APK decompilation, this session, down to the
     actual P2MapRoomMetadata$Serializer.serialize() call): params are
     {"room_id": ..., "room_metadata": {...}} under command
     "set_room_metadata" -- room_id sits alongside room_metadata, NOT
