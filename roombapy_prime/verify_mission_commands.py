@@ -69,7 +69,7 @@ from typing import Any
 
 import aiohttp
 
-from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
+from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url, redact_aws_url_secrets
 from .models import parse_robot_status_v2
 from .prime_factory import PrimeFactory
 
@@ -101,7 +101,7 @@ async def _show_state(robot: Any, label: str) -> dict[str, Any] | None:
     try:
         state = await robot.get_state()
         reported = state.payload.get("state", {}).get("reported", {}) if isinstance(state.payload, dict) else {}
-        print(f"\n  [{label}] get_state().reported = {reported}")
+        print(f"\n  [{label}] get_state().reported = {redact_aws_url_secrets(str(reported))}")
         status_v2 = parse_robot_status_v2(reported)
         if status_v2 is not None:
             print(f"  [{label}] RobotStatusV2 parsed: {status_v2}")

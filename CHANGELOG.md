@@ -37,7 +37,24 @@ This file only tracks what changed from a user's point of view.
   dedicated script is the more deliberate way to check that specific moment, since a person can
   simply confirm the robot is already charging before running it.
 
-4 new tests, 427/427 total green, ruff clean. Not yet released as its own version — waiting on
+### Fixed
+
+- **A real secret leak, found directly (not hypothetically) from testers pasting raw terminal
+  output**: presigned S3 URLs (from live-map/file-transfer messages) contain
+  `X-Amz-Signature`/`X-Amz-Security-Token`/`X-Amz-Credential` query parameters — genuine, if
+  short-lived (~1h expiry), access credentials to the underlying S3 objects. Neither
+  `Report.redact()` nor `_redact_raw_capture()`'s existing key-name masking caught these (they're
+  ordinary string values under keys like `"livemap_url"`, not literal username/password, and
+  blanking the whole URL would also lose the base path that's useful for reverse engineering).
+  New `redact_aws_url_secrets()` strips just the secret-bearing query parameters, keeping the
+  rest of the URL intact. Applied as a third redaction stage inside `_redact_raw_capture()`
+  (`--dump-config` output) **and**, more importantly, directly at print time in every script that
+  prints a raw payload to the terminal (`verify_mission_timeline.py`'s `_watch_one()`,
+  `verify_named_shadows.py`, `verify_mission_commands.py`'s `_show_state()`) — the actual leak
+  happened via raw terminal output pasted directly, which never went through `--dump-config`'s
+  redaction path at all.
+
+4 new tests, 430/430 total green, ruff clean. Not yet released as its own version — waiting on
 a real device confirming what (if anything) the new candidate shadows actually contain, before
 this becomes a numbered release.
 

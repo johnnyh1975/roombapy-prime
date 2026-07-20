@@ -103,7 +103,7 @@ from typing import Any
 
 import aiohttp
 
-from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
+from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url, redact_aws_url_secrets
 from .prime_factory import PrimeFactory
 
 
@@ -153,7 +153,7 @@ async def _watch_one(
     agen = agen_factory()
     try:
         async for response in agen:
-            print(f"\n  [{response.topic}] {response.payload}")
+            print(f"\n  [{response.topic}] {redact_aws_url_secrets(str(response.payload))}")
             captured.append({"topic": response.topic, "payload": response.payload})
     except asyncio.CancelledError:
         pass

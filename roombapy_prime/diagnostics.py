@@ -82,6 +82,7 @@ import argparse
 import asyncio
 import getpass
 import os
+import re
 import sys
 import webbrowser
 from dataclasses import dataclass, field
@@ -713,6 +714,38 @@ def build_issue_url(report: Report, repo: str = ISSUE_TRACKER_REPO) -> str:
     return f"https://github.com/{repo}/issues/new?title={quote(title)}&body={quote(body)}"
 
 
+_AWS_PRESIGNED_URL_SECRETS_RE = re.compile(
+    r"([?&](?:X-Amz-Signature|X-Amz-Security-Token|X-Amz-Credential)=)[^&\s'\"]+",
+    re.IGNORECASE,
+)
+
+
+def redact_aws_url_secrets(text: str) -> str:
+    """NEW (this session, prompted directly by a real leak): more than
+    one tester has pasted raw terminal output containing full presigned
+    S3 URLs (from live-map/file-transfer messages) with their
+    X-Amz-Signature/X-Amz-Security-Token/X-Amz-Credential query
+    parameters completely intact -- these grant real, if short-lived
+    (~1h expiry), access to the underlying S3 objects. Neither
+    Report.redact() nor _redact_raw_capture()'s existing
+    sensitive-key-name masking catches this: these URLs are ordinary
+    string VALUES (e.g. under "livemap_url"/"url" keys, not literal
+    username/password, and "url" isn't a blanket-redacted key name --
+    blanking the whole URL would also lose the base path, which IS
+    useful for reverse engineering). This strips just the sensitive
+    query-string components, keeping the rest of the URL intact.
+
+    Applied both here (as an additional stage inside
+    _redact_raw_capture(), for --dump-config output) AND directly at
+    print time in every script that prints a raw payload
+    (verify_mission_timeline.py's _watch_one(), verify_named_shadows.py,
+    verify_mission_commands.py's _show_state()) -- the leak that
+    prompted this happened via someone copy-pasting raw terminal
+    output directly, which never went through --dump-config's
+    redaction path at all."""
+    return _AWS_PRESIGNED_URL_SECRETS_RE.sub(r"\1[REDACTED]", text)
+
+
 def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
     """NEW (session 24) -- redaction for --dump-config. Unlike
     _shallow_summary() (structure only, never values -- for the report
@@ -728,6 +761,10 @@ def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
        GPS coordinates, WiFi credentials) are masked entirely,
        regardless of content -- these fields aren't interesting for
        protocol reverse engineering, but they are for privacy.
+    3) NEW (this session): AWS presigned-URL secrets
+       (X-Amz-Signature/X-Amz-Security-Token/X-Amz-Credential) are
+       stripped from any string value, wherever they appear -- see
+       redact_aws_url_secrets()'s own docstring for why this was added.
     Still: this file is NEVER automatically part of the issue link --
     whoever shares it should review it themselves first."""
     sensitive_keys = {
@@ -778,7 +815,7 @@ def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
         for secret in secrets:
             if secret:
                 redacted = redacted.replace(secret, "[REDACTED]")
-        return redacted
+        return redact_aws_url_secrets(redacted)
     return data
 
 

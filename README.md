@@ -107,7 +107,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-427+ tests, all passing — structural checks against decompiled source,
+430+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to

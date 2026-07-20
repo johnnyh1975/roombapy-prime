@@ -63,7 +63,7 @@ from typing import Any
 
 import aiohttp
 
-from .diagnostics import Report, _redact_raw_capture, build_issue_url
+from .diagnostics import Report, _redact_raw_capture, build_issue_url, redact_aws_url_secrets
 from .prime_factory import PrimeFactory
 
 # The two shadows already confirmed queryable, included as a baseline/
@@ -92,10 +92,10 @@ async def _fetch_and_report(
     if keys:
         report.add(f"Shadow: {label}", "OK", f"reported keys: {keys}")
         print(f"\n  [{label}] reported keys: {keys}")
-        print(f"  [{label}] full reported payload: {reported}")
+        print(f"  [{label}] full reported payload: {redact_aws_url_secrets(str(reported))}")
     else:
         report.add(f"Shadow: {label}", "OK", "empty or unrecognized shape -- see raw capture")
-        print(f"\n  [{label}] empty or unrecognized shape: {response.payload!r}")
+        print(f"\n  [{label}] empty or unrecognized shape: {redact_aws_url_secrets(repr(response.payload))}")
 
 
 async def run(username: str, password: str, country_code: str, blid: str) -> tuple[Report, dict[str, Any]]:

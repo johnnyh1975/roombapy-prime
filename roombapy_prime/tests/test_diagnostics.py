@@ -465,6 +465,62 @@ def test_redact_raw_capture_handles_nested_lists_and_dicts() -> None:
     assert result["items"][0]["name"] == "Living Room"
 
 
+def test_redact_aws_url_secrets_strips_signature_and_token_but_keeps_path() -> None:
+    """NEW (this session) -- prompted directly by a real leak: more than
+    one tester pasted raw terminal output containing full presigned S3
+    URLs with these query parameters completely intact. The base
+    path/host must survive (useful for reverse engineering), only the
+    actual secret-bearing query parameters get stripped."""
+    from roombapy_prime.diagnostics import redact_aws_url_secrets
+
+    url = (
+        "https://s3.amazonaws.com/elpasodata018-pmaptransferbucket-1pckk9n2mafep/"
+        "p2maps/v011/dload_livemap/BLID/p2mapv_geojson.tgz"
+        "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        "&X-Amz-Credential=ASIAU3IUYSB7OJ4JSPFJ%2F20260720%2Fus-east-1%2Fs3%2Faws4_request"
+        "&X-Amz-Date=20260720T145204Z"
+        "&X-Amz-Expires=3600"
+        "&X-Amz-SignedHeaders=host"
+        "&X-Amz-Security-Token=IQoJb3JpZ2luX2VjEN3abcdefghijklmnopqrstuvwxyz"
+        "&X-Amz-Signature=72e03b4e53b0c02c8c1027cd3493cbc421abd850348789d18388938660353d0e"
+    )
+
+    redacted = redact_aws_url_secrets(url)
+
+    assert "ASIAU3IUYSB7OJ4JSPFJ" not in redacted
+    assert "IQoJb3JpZ2luX2VjEN3abcdefghijklmnopqrstuvwxyz" not in redacted
+    assert "72e03b4e53b0c02c8c1027cd3493cbc421abd850348789d18388938660353d0e" not in redacted
+    assert redacted.count("[REDACTED]") == 3
+    # The base path -- genuinely useful for reverse engineering -- survives.
+    assert "dload_livemap/BLID/p2mapv_geojson.tgz" in redacted
+    assert "X-Amz-Expires=3600" in redacted
+
+
+def test_redact_aws_url_secrets_leaves_ordinary_text_unchanged() -> None:
+    from roombapy_prime.diagnostics import redact_aws_url_secrets
+
+    text = "just an ordinary reported-state string, no URLs at all"
+    assert redact_aws_url_secrets(text) == text
+
+
+def test_redact_raw_capture_applies_aws_url_redaction_to_any_string_value() -> None:
+    """The AWS-secret redaction isn't limited to a specific key name
+    (unlike sensitive_keys) -- it applies to every string value,
+    wherever a presigned URL happens to appear."""
+    from roombapy_prime.diagnostics import _redact_raw_capture
+
+    data = {
+        "livemap_url": (
+            "https://s3.amazonaws.com/bucket/path?X-Amz-Signature=abcdef123456&X-Amz-Expires=3600"
+        )
+    }
+    result = _redact_raw_capture(data, [])
+
+    assert "abcdef123456" not in result["livemap_url"]
+    assert "[REDACTED]" in result["livemap_url"]
+    assert "X-Amz-Expires=3600" in result["livemap_url"]
+
+
 def test_redact_raw_capture_preserves_non_sensitive_structure() -> None:
     """The point of the dump file: real values for unknown fields not
     recognized as sensitive stay visible -- that's what deliberately
