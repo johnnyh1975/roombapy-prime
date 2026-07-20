@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import aiohttp
 
-from .auth import login
+from .auth import LoginResult, login
 from .mqtt_client import PrimeMqttClient
 from .prime_robot import PrimeRobot
 from .rest_client import PrimeRestClient
@@ -39,6 +39,7 @@ class PrimeFactory:
         blid: str | None = None,
         *,
         auto_refresh: bool = False,
+        login_result: LoginResult | None = None,
     ) -> PrimeRobot:
         """Logs in, selects the robot (first one found if blid isn't
         given), wires up the MQTT and REST clients, returns a
@@ -53,8 +54,25 @@ class PrimeFactory:
         PrimeRestClient on an HTTP 403 on a p2maps call (see
         rest_client.py). Default False -- previous behavior
         (credentials expire after ~1h), no surprise for existing
-        callers of this method."""
-        login_result = await login(session, username, password, country_code)
+        callers of this method.
+
+        login_result: NEW (this session, prompted by a real
+        "onboarding is slow" field report). If the caller already has a
+        recent, still-valid LoginResult (e.g. ha_roomba_plus's
+        config_flow already ran one to validate credentials and list
+        robots, moments before this is called again for the real
+        setup), passing it here skips the internal login() call
+        entirely -- removing one full Gigya+iRobot login round-trip
+        that would otherwise be fully redundant. Left as None by
+        default: every existing caller keeps doing its own fresh
+        login, unchanged. The caller is responsible for deciding
+        whether a cached result is still fresh enough to reuse (this
+        method does not check an expiry itself, since it has no way to
+        know how the caller obtained or aged the result) -- see
+        ha_roomba_plus's own short-lived, single-use cache for the
+        actual freshness/reuse policy this parameter was built for."""
+        if login_result is None:
+            login_result = await login(session, username, password, country_code)
         target_blid = blid or login_result.primary_blid()
         token = login_result.token_for_blid(target_blid)
 

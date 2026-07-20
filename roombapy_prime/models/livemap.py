@@ -143,33 +143,50 @@ class MapUpdateMessage:
     the query-string signing differs between messages, confirmed by
     direct comparison, not assumed.
 
-    "rawmap" FORMAT, PARTIALLY RESOLVED (this session, chairstacker,
-    from a file saved during an earlier run): `file` identifies it as
-    "zlib compressed data". Decompressed (13KB -> ~207KB, ~16x), `file`
-    on the RESULT reports plain "data" -- NOT a recognized image
-    container (no PNG/JPEG magic bytes). Rules out the simple case (a
-    ready-made image) for any future live-map rendering feature -- this
-    is some other, custom binary format, not directly servable as a
-    camera/image entity without understanding its structure first.
-    Leading hypothesis, untested as of this writing: a raw occupancy
-    grid (one byte per cell, a common robotics map representation) --
-    the decompressed byte count is a plausible width*height product for
-    a room-scale map, and few-unique-values would support an enum-like
-    free/occupied/unknown encoding rather than a continuous image. Not
-    confirmed -- the actual map content wasn't shared for privacy
-    reasons (understandably, it's someone's real home layout), so this
-    was investigated via byte-level statistics and locally-rendered
-    candidate images the tester checked themselves, never shared back.
+    "rawmap" FORMAT, FULLY DECODED (this session, chairstacker, from a
+    hexdump of a file saved during an earlier run -- the actual map
+    content was never shared, only structural bytes/strings). This is
+    a Protocol Buffers message, not a raw occupancy grid directly (the
+    earlier "raw grid, one byte per file" hypothesis was wrong about
+    the FILE as a whole, but right about what's embedded inside it).
+    Confirmed structure, hand-decoded against the real hexdump and
+    verified with a synthetic reconstruction matching it exactly:
+
+        field 2 -> nested message: two Unix timestamps (map created/
+                   updated), and a sub-message (field 7) containing
+                   the map_id as a 32-char hex string
+        field 3 -> nested message: a plain-int map_id-suffix
+                   timestamp, then width and height as plain varints
+                   (440 x 400 in the one real example), then five
+                   float32 fields -- almost certainly origin_x,
+                   origin_y, and other bounds/rotation values, with
+                   the smallest positive one (0.05) being the
+                   resolution in metres/cell -- a completely standard
+                   SLAM occupancy-grid value (5cm/cell)
+        field 4 -> wraps exactly one bytes field (field 1): the
+                   occupancy grid itself, width*height bytes, one byte
+                   per cell -- 176000 bytes in the real example,
+                   EXACTLY matching 440*400, confirmed directly rather
+                   than assumed
+
+    "Clean Kitchen" (a room name) and "Map1"/"Map2" also appeared as
+    plain strings elsewhere in the file (via `strings`) -- not yet
+    located precisely in the field layout above, presumably a sibling
+    field carrying room-name/multi-map metadata this session didn't
+    reach. `models/livemap.py` doesn't yet parse this structure into a
+    dataclass -- `decode_rawmap.py` (a standalone script, not part of
+    the library) exists to extract and render the grid for
+    confirmation first, before committing to field names here.
 
     NOT YET USED for anything beyond this model -- no entity in
     ha_roomba_plus consumes it yet. A concrete next step this makes
     possible: a live-updating map/camera entity, refreshed from
     whatever the most recent MapUpdateMessage delivered, using
     download_map_bundle()/parse_map_bundle() directly against
-    livemap_url -- no new download or parsing code needed. (A version
-    additionally overlaying livemap_url_raw's occupancy-grid data, if
-    the hypothesis above holds, remains a separate, not-yet-designed
-    enhancement.)"""
+    livemap_url -- no new download or parsing code needed. Now that
+    rawmap's structure is understood, an occupancy-grid-based overlay
+    (or even a full replacement of the GeoJSON-based approach) becomes
+    a real, evidenced option -- not yet designed or built."""
 
     livemap_url: str
     livemap_url_raw: str | None = None

@@ -46,6 +46,58 @@ _LOGGER = logging.getLogger(__name__)
 _USER_AGENT_APP = "iRobot/7.16.2.140449 CFNetwork/1568.100.1.2.1 Darwin/24.0.0"
 _APP_ID = "roombapy-prime"
 
+# NEW (this session, prompted by a real "onboarding is slow" field report):
+# the full login chain (discovery -> Gigya -> iRobot cloud login) is
+# genuinely sequential -- each step needs the previous one's output, so it
+# can't be parallelized. But the discovery step itself
+# (disc-prod.iot.irobotapi.com/v1/discover/endpoints?country_code=...)
+# depends ONLY on country_code -- no username, password, or any other
+# per-user data goes into the request, and the response describes static
+# service infrastructure (deployment endpoints, Gigya app config), not
+# anything user- or session-specific. Caching it is a fundamentally
+# different, much lower-risk kind of caching than caching credentials
+# would be: nothing sensitive is stored, and it helps EVERY login this
+# process makes (not just a one-time config-flow-to-setup handoff) --
+# including ha_roomba_plus's own known duplicate-login pattern during
+# initial onboarding (config flow validates, then async_setup_entry logs
+# in again immediately after), where this cache removes one of the two
+# now-redundant discovery round-trips essentially for free.
+# In-memory only, keyed by country_code, with a conservative TTL --
+# deliberately not indefinite, since this is inherently guessing that
+# iRobot's own infrastructure config doesn't change; a bounded TTL means
+# a real change is picked up within an hour rather than requiring a
+# process restart.
+_DISCOVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_DISCOVERY_CACHE_TTL_SECONDS = 3600.0
+
+
+async def _get_discovery(session: aiohttp.ClientSession, country_code: str) -> dict[str, Any]:
+    """Fetches (or returns a cached copy of) the discovery response for
+    this country_code. See _DISCOVERY_CACHE's own comment for why this
+    specific response is safe to cache (no per-user data in or out) and
+    why that makes it a fundamentally different, lower-risk decision
+    than caching login credentials would be."""
+    cached = _DISCOVERY_CACHE.get(country_code)
+    if cached is not None:
+        fetched_at, response = cached
+        if time.monotonic() - fetched_at < _DISCOVERY_CACHE_TTL_SECONDS:
+            return response
+
+    try:
+        async with session.get(_discovery_url(country_code)) as resp:
+            if resp.status != 200:
+                raise AuthError(f"Endpoint discovery failed: HTTP {resp.status}")
+            disc = await resp.json()
+    except aiohttp.ClientSSLError as exc:
+        _raise_clear_ssl_error(exc)
+    except aiohttp.ServerTimeoutError as exc:
+        _raise_clear_timeout_error(exc)
+    except aiohttp.ClientConnectorError as exc:
+        _raise_clear_connection_error(exc)
+
+    _DISCOVERY_CACHE[country_code] = (time.monotonic(), disc)
+    return disc
+
 
 class AuthError(Exception):
     """Raised for any failure in the discovery/Gigya/login chain, with
@@ -528,18 +580,13 @@ async def login(
 
     Raises AuthError at whichever stage fails, with that stage's raw
     response attached for diagnostics.
+
+    UPDATE (this session): the discovery step is now served from an
+    in-memory cache when a recent-enough one exists for this
+    country_code -- see _get_discovery()'s own docstring for why this
+    specific response (unlike credentials) is safe to cache at all.
     """
-    try:
-        async with session.get(_discovery_url(country_code)) as resp:
-            if resp.status != 200:
-                raise AuthError(f"Endpoint discovery failed: HTTP {resp.status}")
-            disc = await resp.json()
-    except aiohttp.ClientSSLError as exc:
-        _raise_clear_ssl_error(exc)
-    except aiohttp.ServerTimeoutError as exc:
-        _raise_clear_timeout_error(exc)
-    except aiohttp.ClientConnectorError as exc:
-        _raise_clear_connection_error(exc)
+    disc = await _get_discovery(session, country_code)
 
     try:
         deployment = disc["deployments"][disc["current_deployment"]]

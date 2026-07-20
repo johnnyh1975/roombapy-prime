@@ -8,6 +8,74 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a9] - 2026-07-20
+
+### Fixed — urgent, prompted by a real field incident, read this first
+
+- **`--watch-aws-tree`, added in v0.1.11a8, has been REMOVED entirely.** It wildcard-subscribed
+  to the entire reserved `$aws/things/{blid}/#` namespace on `roombapy-prime-verify-mission-timeline`.
+  AWS IoT's own "Reserved topics" documentation states topics starting with `$` are reserved and
+  "unsupported publish or subscribe operations to reserved topics can result in a terminated
+  connection"; the Device Shadow MQTT topics page explicitly recommends against wildcard
+  subscriptions to shadow topics, naming `$aws/things/thingName/shadow/#` as the exact pattern to
+  avoid. A field tester (chairstacker) hit exactly this: a `--start-mission --watch-wildcard
+  --watch-shadow-delta --watch-aws-tree` run hung after sending the mission-start command
+  (needed Ctrl+C to exit), and a separate, later process (`roombapy-prime-verify-named-shadows`,
+  previously reliable against the same account) then failed all four named-shadow GETs with
+  timeouts — consistent with AWS IoT terminating the connection or otherwise degrading service
+  in response to the unsupported wildcard subscription, not just a local client-side hang.
+  **If you installed v0.1.11a8 and used `--watch-aws-tree`, update to this version and avoid that
+  flag going forward** (it no longer exists as of this release — passing it now raises a clear
+  error instead of silently doing something risky).
+  `--watch-shadow-delta` is unaffected by this and remains safe to use: it subscribes to exactly
+  one specific, AWS-documented shadow topic (the same path used as the example in AWS's own IAM
+  policy documentation for this exact feature), never a wildcard on the reserved namespace.
+
+### Added
+
+- **`PrimeRobot.trigger_echo_via_shadow()`** — a new, experimental hypothesis for the "find my
+  robot" (audible chime) feature, prompted directly by a real bug report: a field tester
+  (chairstacker) found `ha_roomba_plus`'s existing locate action — `poll_echo_value()`, a REST
+  POST to `/v1/robots/{blid}/echo` — does not actually make the robot chime, even though the
+  same action works from the real app. Separately noted but not connected until now:
+  `ConnectionStatusShadow`'s `"echo"` field (in the named `"rw-constatus"` shadow) plausibly
+  corresponds to the app's own `"SetEchoCommand"` — the exact command name the "find my robot"
+  feature is built on, per the app's own command config. That command is a shadow WRITE, not a
+  REST POST — meaning the existing implementation may simply be hitting the wrong mechanism
+  entirely. Genuinely uncertain what value actually triggers the chime (one capture showed
+  `echo=0` in an idle state); `value` defaults to `True` as the simplest guess, not a confirmed
+  answer. **Still experimental, never confirmed against a real device** — a request has gone out
+  to chairstacker to try it.
+
+### Performance
+
+- **Discovery response caching, prompted by a real "onboarding is slow" field report**
+  (chairstacker): `ha_roomba_plus`'s Prime/V4 onboarding runs the full login chain
+  (discovery → Gigya → iRobot cloud login) TWICE in immediate succession — once in the config
+  flow to validate credentials and list robots, then again right after in `async_setup_entry` to
+  establish the real, persistent connection. Investigated caching the login credentials
+  themselves to avoid the second full chain, but concluded the risk/benefit wasn't there
+  (adds a real security surface for a benefit that only applies once, to the very first setup).
+  The discovery step specifically is a much better candidate: it depends ONLY on `country_code`
+  — no username, password, or other per-user data goes in, and the response is static service
+  infrastructure (deployment endpoints, Gigya app config), not anything session-specific. Now
+  cached in-memory, keyed by `country_code`, with a conservative 1-hour TTL (not indefinite — a
+  real infrastructure change should be picked up within an hour, not require a process restart).
+  This removes one of the two redundant discovery round-trips during onboarding automatically —
+  no changes needed in `ha_roomba_plus` itself, since both logins go through the same `login()`
+  function — and also benefits every subsequent login this process makes, not just the one-time
+  onboarding case. A real test-pollution bug was found and fixed while adding this: several
+  `test_auth.py` tests share `country_code="US"` and would have silently seen an earlier test's
+  cached discovery response instead of their own; a new `autouse` fixture clears the cache
+  before every test.
+- **`PrimeFactory.create_prime_robot()` gained an optional `login_result=` parameter**, letting a
+  caller supply an already-obtained `LoginResult` to skip the internal `login()` call entirely.
+  Built for `ha_roomba_plus`'s own onboarding handoff (config flow's validation login reused for
+  the immediate first setup, single-use and short-lived — see that project's `_prime_login_bridge`
+  module). Every existing caller is unaffected (parameter defaults to `None`, behavior unchanged).
+
+450/450 tests green, ruff clean.
+
 ## [0.1.11a8] - 2026-07-20
 
 ### Added
@@ -53,12 +121,26 @@ This file only tracks what changed from a user's point of view.
   push-on-change semantics could see intermediate changes a before/after snapshot comparison
   would never surface. Corrected in three places (`mqtt_client.py`, `prime_robot.py`'s
   `watch_state()`/`watch_mission_timeline()`, `verify_mission_timeline.py`'s module docstring).
-- **Two new flags on `roombapy-prime-verify-mission-timeline`** to actually test the above:
-  `--watch-shadow-delta` (runs `watch_state()` for the same duration as everything else) and
-  `--watch-aws-tree` (wildcard-subscribes to the entire `$aws/things/{blid}/#` namespace —
-  every prior wildcard capture only ever covered `{irbt_topic_prefix}/things/{blid}/#`; the
-  `$aws/` tree, where `get_state()`/`get_settings()` already build their own topics under
-  `$aws/things/{blid}/shadow`, has never been captured at all).
+- **One new flag on `roombapy-prime-verify-mission-timeline`** to actually test the above:
+  `--watch-shadow-delta` (runs `watch_state()` for the same duration as everything else). Safe
+  by design: subscribes to exactly one specific, AWS-documented shadow topic (the same path used
+  as the example in AWS's own IAM policy documentation for this feature).
+
+### Fixed (real field incident)
+
+- **`--watch-aws-tree`, briefly added this same session, has been REMOVED entirely** after a
+  field tester (chairstacker) hit exactly the failure mode AWS's own documentation warns
+  against. The flag wildcard-subscribed to the entire reserved `$aws/things/{blid}/#` namespace.
+  AWS IoT's "Reserved topics" documentation states topics starting with `$` are reserved and
+  "unsupported publish or subscribe operations to reserved topics can result in a terminated
+  connection"; the Device Shadow MQTT topics page explicitly recommends against wildcard
+  subscriptions to shadow topics, naming `$aws/things/thingName/shadow/#` as the exact pattern to
+  avoid. The real-world symptom matched: the run hung after sending the mission-start command
+  (needed Ctrl+C), and a separate, later process (`roombapy-prime-verify-named-shadows`,
+  previously reliable) then failed all four named-shadow GETs with timeouts — consistent with
+  AWS IoT terminating the connection or otherwise degrading service in response to the
+  unsupported wildcard, not just a local hang. `--watch-shadow-delta` (above) is unaffected —
+  it was never a wildcard, only ever one specific, documented topic.
 - **`RobotStatusV2`'s docstring expanded with a fuller field list** from `RobotStatusV2Constants.java`
   directly — meaningfully larger than the 11 fields currently modeled (adds `allowed_modes`,
   `dock_info`, `command_readiness`, `cycle`, `asset_connection_state`, `dock_state_*`). Not yet

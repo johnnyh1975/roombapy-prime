@@ -111,6 +111,34 @@ async def test_set_setting_writes_named_shadow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_trigger_echo_via_shadow_writes_rw_constatus() -> None:
+    """NEW (this session, prompted by a real bug report -- the existing
+    REST-based locate action doesn't actually chime the robot). Tests
+    only the mechanics (writes {"echo": value} to "rw-constatus") --
+    whether this actually triggers a chime on a real device is
+    genuinely unconfirmed, see the method's own docstring."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    mqtt.update_shadow.return_value = ShadowResponse(topic="t", payload={})
+
+    await robot.trigger_echo_via_shadow()
+
+    mqtt.update_shadow.assert_called_once_with({"echo": True}, "rw-constatus", 8.0)
+
+
+@pytest.mark.asyncio
+async def test_trigger_echo_via_shadow_accepts_a_custom_value() -> None:
+    """The trigger value is genuinely unconfirmed -- this lets someone
+    experiment with alternatives (1, a timestamp, etc.) without needing
+    a new method for each guess."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    mqtt.update_shadow.return_value = ShadowResponse(topic="t", payload={})
+
+    await robot.trigger_echo_via_shadow(value=1, timeout=15.0)
+
+    mqtt.update_shadow.assert_called_once_with({"echo": 1}, "rw-constatus", 15.0)
+
+
+@pytest.mark.asyncio
 async def test_send_mission_command_uses_classic_shadow() -> None:
     """Tests the mechanics of send_mission_command() (still routes
     through update_shadow() with the classic/unnamed shadow) --

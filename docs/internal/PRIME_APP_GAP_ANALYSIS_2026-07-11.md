@@ -2871,9 +2871,50 @@ than the 11 currently modeled -- `allowed_modes`, `dock_info`, `command_readines
 future capture that finds this structure is recognized against the fuller list.
 
 **Concrete next test, not yet run:** `roombapy-prime-verify-mission-timeline
---watch-shadow-delta --watch-aws-tree --start-mission` during an active mission. Purely
+--watch-shadow-delta --start-mission` during an active mission. Purely
 read-only, no new risk over the scripts already in regular use.
 
 443/443 tests green, ruff clean as of this addendum (5 new tests for `_build_watch_specs()`,
 factored out of `run()` for testability -- the two new script flags themselves, plus docstring
 corrections and no other new modeled behavior).
+
+## Addendum: a real field incident -- `--watch-aws-tree` removed entirely
+
+The `--watch-aws-tree` flag mentioned above (wildcard-subscribing to `$aws/things/{blid}/#`) was
+never actually run against a real device before a field tester (chairstacker) tried it, as part
+of `--start-mission --watch-wildcard --watch-shadow-delta --watch-aws-tree`. The run hung after
+sending the mission-start command -- needed Ctrl+C to exit. Separately, and more concerning: a
+LATER, INDEPENDENT process (`roombapy-prime-verify-named-shadows`, previously reliable against
+this exact account) then failed all four named-shadow GETs with `ShadowError: No response ...
+within 8.0s` -- including `rw-settings`, which had worked reliably in every prior session.
+
+AWS IoT's own documentation directly explains why. "Reserved topics" states topics starting with
+`$` are reserved for AWS IoT's use, and "unsupported publish or subscribe operations to reserved
+topics can result in a terminated connection." The Device Shadow MQTT topics page is even more
+specific: "we recommend that you avoid wild card subscriptions to shadow topics... avoid
+subscribing to topic filters like `$aws/things/thingName/shadow/#` because the number of topics
+that match this topic filter might increase as AWS IoT introduces new shadow topics." That's
+*exactly* the pattern `--watch-aws-tree` used, one level up (`$aws/things/{blid}/#` instead of
+`.../shadow/#`, but the same reserved-namespace wildcard problem).
+
+The most likely explanation, consistent with both symptoms: AWS IoT either terminated the
+connection outright or otherwise degraded/rate-limited it in response to the unsupported
+wildcard subscription -- not a purely local client-side hang, since the SECOND process (a fresh
+connection, a different run entirely) was also affected.
+
+**Fix: `--watch-aws-tree` has been removed entirely, not just discouraged.** Passing it now
+raises `TypeError` rather than silently doing something risky --
+`test_build_watch_specs_no_longer_accepts_watch_aws_tree` asserts this directly.
+`--watch-shadow-delta` is unaffected and remains recommended: it was never a wildcard, only ever
+one specific, AWS-documented topic (`$aws/things/{blid}/shadow/update/delta` -- the exact path
+used as the example in AWS's own IAM policy documentation for this feature).
+
+**Lesson, stated plainly:** a flag reasoned to be safe by analogy ("this is just like the other
+wildcard captures we've already done successfully") turned out not to be, because the reserved
+`$aws/` namespace has different rules than the device's own topic tree -- something that could
+have been checked against AWS's own documentation before ever suggesting a field tester run it
+against a real, in-use device. Recommending an untested wildcard subscription on someone's real
+robot without first checking whether the broker treats it specially was the actual mistake here,
+not just an unlucky edge case.
+
+450/450 tests green, ruff clean as of this addendum. Released as v0.1.11a9.

@@ -32,7 +32,7 @@ def _fake_robot() -> MagicMock:
 def test_build_watch_specs_defaults_to_the_two_base_topics() -> None:
     robot = _fake_robot()
 
-    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False, watch_aws_tree=False)
+    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False)
 
     labels = [label for _factory, label in specs]
     assert labels == ["mission/timeline/report", "rejected/report"]
@@ -41,7 +41,7 @@ def test_build_watch_specs_defaults_to_the_two_base_topics() -> None:
 def test_build_watch_specs_adds_irbt_wildcard_when_requested() -> None:
     robot = _fake_robot()
 
-    specs = _build_watch_specs(robot, watch_wildcard=True, watch_shadow_delta=False, watch_aws_tree=False)
+    specs = _build_watch_specs(robot, watch_wildcard=True, watch_shadow_delta=False)
 
     labels = [label for _factory, label in specs]
     assert "v011-irbthbu/things/BLID123/#" in labels
@@ -50,10 +50,14 @@ def test_build_watch_specs_adds_irbt_wildcard_when_requested() -> None:
 def test_build_watch_specs_adds_shadow_delta_when_requested() -> None:
     """NEW (this session, parallel reverse-engineering track) --
     watch_state() has existed for a while but was never run live during
-    an active mission; this flag exists to actually test that now."""
+    an active mission; this flag exists to actually test that now.
+    SAFE by design: subscribes to exactly one specific,
+    AWS-documented shadow topic, not a wildcard on the reserved "$aws/"
+    namespace -- see _build_watch_specs()'s own docstring for why that
+    distinction matters (a real field incident, not just theory)."""
     robot = _fake_robot()
 
-    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=True, watch_aws_tree=False)
+    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=True)
 
     factories = dict(specs)
     labels = list(factories.values())
@@ -64,24 +68,29 @@ def test_build_watch_specs_adds_shadow_delta_when_requested() -> None:
     assert matching == [robot.watch_state]
 
 
-def test_build_watch_specs_adds_aws_tree_wildcard_when_requested() -> None:
-    """NEW (this session, parallel reverse-engineering track) -- every
-    prior wildcard capture only ever covered
-    "{irbt_topic_prefix}/things/{blid}/#"; the "$aws/" tree (where
-    get_state()/get_settings() already build their own topics) had
-    never been captured at all."""
+def test_build_watch_specs_no_longer_accepts_watch_aws_tree() -> None:
+    """REMOVED (this session, real field incident): a --watch-aws-tree
+    flag briefly wildcard-subscribed to the entire reserved "$aws/"
+    namespace. AWS's own documentation explicitly warns against this
+    ("avoid wild card subscriptions to shadow topics... avoid
+    subscribing to topic filters like $aws/things/thingName/shadow/#",
+    and "unsupported publish or subscribe operations to reserved
+    topics can result in a terminated connection"). A field tester hit
+    exactly this: a hung run needing Ctrl+C, followed by a SEPARATE,
+    later process failing all four named-shadow GETs with timeouts --
+    consistent with a degraded/terminated connection, not just a local
+    hang. This test asserts the parameter is gone, not just unused --
+    a stray keyword argument should raise, not silently succeed."""
     robot = _fake_robot()
 
-    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False, watch_aws_tree=True)
-
-    labels = [label for _factory, label in specs]
-    assert "$aws/things/BLID123/#" in labels
+    with pytest.raises(TypeError):
+        _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False, watch_aws_tree=True)
 
 
-def test_build_watch_specs_all_flags_combine_without_interfering() -> None:
+def test_build_watch_specs_remaining_flags_combine_without_interfering() -> None:
     robot = _fake_robot()
 
-    specs = _build_watch_specs(robot, watch_wildcard=True, watch_shadow_delta=True, watch_aws_tree=True)
+    specs = _build_watch_specs(robot, watch_wildcard=True, watch_shadow_delta=True)
 
     labels = [label for _factory, label in specs]
     assert labels == [
@@ -89,7 +98,6 @@ def test_build_watch_specs_all_flags_combine_without_interfering() -> None:
         "rejected/report",
         "v011-irbthbu/things/BLID123/#",
         "$aws/things/{blid}/shadow/update/delta",
-        "$aws/things/BLID123/#",
     ]
 
 

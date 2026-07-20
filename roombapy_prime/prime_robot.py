@@ -271,6 +271,35 @@ class PrimeRobot:
         get_settings(), never tested."""
         return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
 
+    async def trigger_echo_via_shadow(self, value: object = True, timeout: float = 8.0) -> ShadowResponse:
+        """EXPERIMENTAL, UNCONFIRMED -- a new hypothesis for the "find
+        my robot" (audible chime) feature, prompted directly by a real
+        bug report: a field tester (chairstacker) found ha_roomba_plus's
+        existing locate action -- poll_echo_value(), a REST POST to
+        /v1/robots/{blid}/echo -- does NOT actually make the robot
+        chime, even though the same action works from the real app.
+
+        The REST endpoint's own docstring already admitted this was
+        unconfirmed against a live device. Separately, and until now
+        unconnected: ConnectionStatusShadow's "echo" field (in the
+        named "rw-constatus" shadow) was noted to plausibly correspond
+        to the app's own "SetEchoCommand" -- the exact same command
+        name the "find my robot" feature is built on, per the app's
+        command config. That command is a SHADOW WRITE (a "Set"
+        command, matching this library's own set_setting()-style
+        pattern), not a REST POST at all -- meaning poll_echo_value()
+        may simply be hitting the wrong mechanism entirely, not just
+        failing due to a missing body.
+
+        GENUINELY UNCERTAIN: what value actually triggers the chime.
+        One real capture (chairstacker) showed echo=0 in an idle
+        state -- consistent with "0 = no active echo request", but the
+        actual trigger could be True, 1, a timestamp, or something
+        else. `value` defaults to True as the simplest guess, not a
+        confirmed answer -- pass a different value to experiment.
+        Never tested against a real device as of this writing."""
+        return await asyncio.to_thread(self._mqtt.update_shadow, {"echo": value}, "rw-constatus", timeout)
+
     async def send_mission_command(self, command: RoutineCommand, timeout: float = 8.0) -> ShadowResponse:
         """STRONGLY SUSPECTED WRONG (session 39) -- kept for the
         region-based/richer use case (RoutineCommand.regions/params),

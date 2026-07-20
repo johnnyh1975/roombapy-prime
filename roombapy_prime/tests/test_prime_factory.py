@@ -80,6 +80,59 @@ async def test_create_prime_robot_respects_explicit_blid(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_create_prime_robot_accepts_pre_fetched_login_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NEW (this session, prompted by a real "onboarding is slow" field
+    report): passing an already-obtained LoginResult skips the internal
+    login() call entirely -- this is the mechanism ha_roomba_plus's own
+    short-lived cache uses to avoid a fully redundant second Gigya+
+    iRobot login chain during the very first setup right after config
+    flow. login() must NOT be called at all in this path."""
+    login_call_count = 0
+
+    async def fake_login(session, username, password, country_code, app_id="roombapy-prime"):
+        nonlocal login_call_count
+        login_call_count += 1
+        return _fake_login_result()
+
+    monkeypatch.setattr(prime_factory, "login", fake_login)
+
+    pre_fetched = _fake_login_result()
+    robot = await prime_factory.PrimeFactory.create_prime_robot(
+        session=object(),
+        username="user@example.invalid",
+        password="hunter2",
+        country_code="DE",
+        login_result=pre_fetched,
+    )
+
+    assert login_call_count == 0, "login() should never be called when login_result is provided"
+    assert robot.blid == "BLID123"
+    assert robot._mqtt._endpoint == "mqtt.example.invalid"
+
+
+@pytest.mark.asyncio
+async def test_create_prime_robot_still_logs_in_when_login_result_not_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every existing caller (login_result left as the None default)
+    must see no behaviour change -- a fresh login() call still
+    happens, exactly as before this parameter existed."""
+    login_call_count = 0
+
+    async def fake_login(session, username, password, country_code, app_id="roombapy-prime"):
+        nonlocal login_call_count
+        login_call_count += 1
+        return _fake_login_result()
+
+    monkeypatch.setattr(prime_factory, "login", fake_login)
+
+    robot = await prime_factory.PrimeFactory.create_prime_robot(
+        session=object(), username="u", password="p", country_code="DE",
+    )
+
+    assert login_call_count == 1
+    assert robot.blid == "BLID123"
+
+
+@pytest.mark.asyncio
 async def test_create_prime_robot_default_has_no_relogin(monkeypatch: pytest.MonkeyPatch) -> None:
     """auto_refresh defaults to False -- existing callers of this
     factory method see no behaviour change."""

@@ -345,6 +345,91 @@ async def test_login_full_success_chain() -> None:
 
 
 @pytest.mark.asyncio
+async def test_login_reuses_cached_discovery_on_second_call() -> None:
+    """NEW (this session, prompted by a real "onboarding is slow" field
+    report): the discovery step depends only on country_code, not on
+    any per-user data, so it's cached -- unlike credentials, which
+    never are. Two full login() calls for the same country_code should
+    only hit the discovery endpoint once between them (6 total HTTP
+    calls for two full chains, not 3+3=6... wait, 2+3=5: one shared
+    discovery GET, then two full Gigya+iRobot POST pairs)."""
+    session = _FakeSequentialSession(
+        [
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+            # No second discovery response queued -- if login() asks for
+            # one anyway, .pop(0) on an empty list raises IndexError,
+            # failing this test loudly rather than silently passing.
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+        ]
+    )
+
+    first = await login(session, "user@example.com", "hunter2", "US")
+    second = await login(session, "user2@example.com", "hunter3", "US")
+
+    assert first.mqtt_endpoint == second.mqtt_endpoint == "mqtt.example.invalid"
+    assert len(session.calls) == 5
+    get_calls = [c for c in session.calls if c.startswith("GET")]
+    assert len(get_calls) == 1, "second login() should have reused the cached discovery response"
+
+
+@pytest.mark.asyncio
+async def test_login_uses_separate_cache_entries_per_country_code() -> None:
+    """The cache is keyed by country_code -- a login for a different
+    country must NOT reuse another country's cached discovery response
+    (different countries can have genuinely different deployment
+    endpoints)."""
+    session = _FakeSequentialSession(
+        [
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),  # separate country -> fresh discovery expected
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+        ]
+    )
+
+    await login(session, "user@example.com", "hunter2", "US")
+    await login(session, "user@example.com", "hunter2", "DE")
+
+    get_calls = [c for c in session.calls if c.startswith("GET")]
+    assert len(get_calls) == 2, "a different country_code must not reuse another country's cached discovery"
+
+
+@pytest.mark.asyncio
+async def test_login_refetches_discovery_after_cache_expires(monkeypatch) -> None:
+    """The cache has a bounded TTL, not an indefinite one -- see
+    _DISCOVERY_CACHE's own comment for why (a real infrastructure
+    change should be picked up within an hour, not require a process
+    restart)."""
+    from roombapy_prime import auth
+
+    session = _FakeSequentialSession(
+        [
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+        ]
+    )
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(auth.time, "monotonic", lambda: fake_now[0])
+
+    await login(session, "user@example.com", "hunter2", "US")
+    fake_now[0] += auth._DISCOVERY_CACHE_TTL_SECONDS + 1
+    await login(session, "user@example.com", "hunter2", "US")
+
+    get_calls = [c for c in session.calls if c.startswith("GET")]
+    assert len(get_calls) == 2, "an expired cache entry should trigger a fresh discovery fetch"
+
+
+@pytest.mark.asyncio
 async def test_login_discovery_http_error_raises() -> None:
     session = _FakeSequentialSession([_FakeResp(403)])
 
