@@ -591,6 +591,75 @@ class PrimeMqttClient:
     # covers cloud/LSS-relevant commands only, not the UMI legacy path.
     # Not pursued further -- no cloud transport exists for it.
 
+    # RESOLVED (this session, live wildcard capture, chairstacker): the
+    # createRobotPositionTopic()/send_umi_get_request() investigation
+    # above asked "does position data flow over MQTT, and if so how do
+    # we ask for it" -- turns out the more useful answer is "it's
+    # already being pushed continuously, unprompted, during any active
+    # mission, no request needed at all." A live wildcard capture
+    # (verify_mission_timeline.py --watch-wildcard) showed repeated
+    # messages of this exact shape, roughly every 1-10 seconds while
+    # the robot was moving:
+    #
+    #   {"pos_update": {"cur_path": [13, -0.104733, -0.197565,
+    #    -0.489053, 5, -0.090486, -0.189392, 0.039259, 5, 1784491542]},
+    #    "timestamp": 1784491542, "update_expire_ts": 1784491601}
+    #
+    # cur_path's shape (HYPOTHESIS for the numbers' MEANING, but the
+    # STRUCTURE itself is now checked rigorously, not just eyeballed:
+    # a leading point index, then repeated groups of 4 numbers, ending
+    # in a Unix timestamp matching the outer "timestamp" field. Verified
+    # programmatically against all 29 pos_update messages in the
+    # capture -- every single group's 4th number was exactly 5, zero
+    # exceptions; every group count divided the body evenly by 4, zero
+    # exceptions. The first three numbers per group are plausibly x, y,
+    # theta -- not confirmed against any decompiled source, but the "5"
+    # being constant across every group in every message (not just most)
+    # is now solid evidence it's a real structural marker, not noise --
+    # its MEANING (point type? confidence level?) remains unconfirmed.
+    #
+    # ONE CAVEAT FOUND BY THIS SAME CHECK: point-index continuity holds
+    # WITHIN a streaming session (each message's start index picks up
+    # exactly where the previous one's last index left off), but NOT
+    # across a session boundary -- index jumped from an expected 44 to
+    # 62 at the exact point stop+dock were sent (see the expire_ts
+    # window boundary below). Don't assume the index sequence is
+    # globally continuous across gaps.
+    #
+    # CORRECTED (this session, second capture, chairstacker): an earlier
+    # note here said update_expire_ts is "~60s after timestamp" -- WRONG,
+    # verified directly against the numbers. update_expire_ts stays the
+    # SAME fixed value across MULTIPLE consecutive pos_update messages
+    # (each with its own, different, timestamp) -- not a per-message
+    # expiry at all. RE-VERIFIED against all 29 pos_update messages in
+    # the capture, not just a sample: exactly two distinct expire_ts
+    # values, 26 messages sharing the first (spanning 59s from its
+    # earliest message to that expiry) and 3 sharing the second
+    # (spanning 58s) -- both windows independently landing within a
+    # second of 60s, not a coincidence. Consistent with a renewable
+    # ~60s "live position streaming session" window, not a per-message
+    # TTL -- also matching the separately-observed {"operation": "start",
+    # "start": {"duration": 60}} messages seen interspersed on the same
+    # wildcard channel, plausibly the mechanism that opens/renews each
+    # window (right message, right relative position in the sequence,
+    # both times -- not a precisely timestamped confirmation, since
+    # these messages carry no timestamp field of their own to check
+    # exact alignment against). Not confirmed against any decompiled
+    # source, but this framing fits every number seen in both live
+    # captures so far.
+    #
+    # THE EXACT TOPIC THIS ARRIVES ON IS NOT YET KNOWN: the capture that
+    # found this predates a fix to verify_mission_timeline.py that
+    # printed only the static watch label for wildcard messages, not
+    # response.topic (the actual concrete topic each one arrived on) --
+    # so all 81 wildcard messages in that capture were logged
+    # indistinguishably. A re-run with the fixed tooling would settle
+    # the exact topic name directly; not done yet as of this session.
+    # See watch_raw_topic()'s own docstring (prime_robot.py) -- it
+    # remains the practical way to capture this live regardless of the
+    # exact topic, since a wildcard subscription doesn't need to know
+    # it in advance.
+
     def publish_cmd(self, irbt_topic_prefix: str, command: str, initiator: str = "localApp") -> None:
         """NEW (session 39). Publishes a simple mission command via
         cmd_topic() -- see that method's docstring for the full

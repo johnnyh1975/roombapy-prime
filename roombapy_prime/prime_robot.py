@@ -360,6 +360,26 @@ class PrimeRobot:
         working path. Read this whole docstring before using it
         against a real device.
 
+        UPDATE (this session, live wildcard capture, chairstacker): a
+        live mission was captured with THIS exact request sent, and
+        separately, "pos_update" messages containing what looks like
+        live position/path data were ALSO observed arriving on the
+        wildcard channel -- repeatedly, throughout the mission. CHECKED
+        DIRECTLY, not just assumed: the FIRST pos_update in that
+        capture (timestamp 1784491542) arrived 8 seconds BEFORE this
+        exact request was sent (its own echoed "time" field:
+        1784491550) -- pos_update was already flowing before the
+        request existed, which settles it: this is not a response to
+        this request, position data is simply pushed continuously
+        regardless (see mqtt_client.py's notes next to
+        rejected_report_topic() for the full pos_update finding). A
+        plain watch_raw_topic() wildcard capture, with no request
+        needed, is sufficient on its own for position data specifically.
+        Left in place since the request itself was still a reasonable
+        thing to have tried, and this doesn't rule out this request
+        mattering for some other purpose (args other than "pose"?) --
+        but "pose" specifically no longer looks like it needs this path.
+
         THE HYPOTHESIS: a request payload for the legacy "UMI" protocol
         family was found as a literal string in libcorebase.so:
         {"do": "get", "args": ["pose"], "id": <n>} -- alongside a

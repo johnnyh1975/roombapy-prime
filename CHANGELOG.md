@@ -8,6 +8,78 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a6] - 2026-07-19
+
+### Added
+
+- **New `"pos_update"` messages found live** — a second, longer live capture (chairstacker,
+  `verify_mission_timeline.py --start-mission --watch-wildcard --try-pose-request
+  --post-dock-watch-seconds 60`) showed live position/path data (`{"pos_update":
+  {"cur_path": [...]}, "timestamp": ..., "update_expire_ts": ...}`) arriving repeatedly and
+  unprompted throughout the mission — the open "does position data flow over MQTT" question
+  from the previous session is answered: yes, and no request is needed to get it. The exact
+  topic this arrives on isn't confirmed yet (see the "Fixed" section below for why); documented
+  in `mqtt_client.py`'s existing position-investigation notes, with `cur_path`'s shape treated
+  as a hypothesis, not confirmed against any decompiled source. `update_expire_ts` stays fixed
+  across multiple consecutive messages rather than being a per-message TTL, consistent with a
+  renewable ~60s streaming-session window (matching separately-observed
+  `{"operation": "start", "start": {"duration": 60}}` messages on the same channel).
+- **`MissionTimelineReport.timeline_request_id`** — a new optional field, confirmed present on
+  some (not all) live report messages, tied to an explicit client-side request for a fresh
+  update.
+- **`RoomEvent.area`/`total_area` and `.status`, refined understanding (hypothesis, not
+  confirmed)**: `area` looks like the room's total/target size (unchanged across visits),
+  `total_area` how much was actually covered THIS visit — observed as `0` on a room interrupted
+  immediately by `send_simple_command("stop")` before real coverage happened. `status=0` was seen
+  on a normally-superseded travel event, `status=5` on the same interrupted room event.
+- **New `models.LiveMapUpdate`, and a genuinely actionable connection**: push notifications
+  (`{"timestamp": ..., "map_update": {"livemap_url": ..., "livemap_url_raw": ...}}`) arrived
+  repeatedly throughout the same mission, roughly every 5-15s. `livemap_url` is a presigned URL
+  ending in `p2mapv_geojson.tgz` — the exact same format `download_map_bundle()`/
+  `parse_map_bundle()` already handle for REST-fetched bundles. No new download/parsing code is
+  needed to consume a live-updating map feed; only a way to obtain the URL live (topic still
+  unknown, see above). The robot's own matching upload side
+  (`uploadP2MapLive`/`uploadP2MapMission`, their `reqParams`/`status: success` responses, and a
+  one-time `NEW_P2MAP_AVAILABLE` notification after mission end) is documented but not modeled as
+  dataclasses — this project only ever observes it, never constructs it.
+- **`"fin"` and `"pause"` confirmed as real, LIVE `mission/timeline/report` event types**
+  (previously only confirmed via the historical `get_mission_history()` endpoint). `"fin"` marks
+  the mission as concluded; `"pause"` is what `send_simple_command("stop")` itself produces in
+  the timeline (there is still no confirmed `"pause"`-distinct-from-"stop"` event type at all).
+- **New `RoomFeatureProperties.visibility` field** — a real key confirmed from a live map bundle's
+  `rooms.geojson` structure (chairstacker, field names only, no values shared). Not in the
+  original bytecode-confirmed field list — genuinely new, not a correction. Left as a raw,
+  unconfirmed value (only the field name is confirmed, not its value space).
+- **Full structural cross-check of a second live map bundle**: `ManifestFeature`, `PolicyZoneFeature`,
+  and `BorderFeature` all matched their existing models exactly, zero corrections needed — a clean
+  independent confirmation of prior work.
+
+### Fixed
+
+- **Real diagnostic-tooling bug found and fixed**: `verify_mission_timeline.py`'s `_watch_one()`
+  printed/stored the static watch *label* for every message, not `response.topic` (the actual
+  concrete topic a message arrived on). Invisible for a specific-topic watch (label and topic
+  are identical there), but a wildcard watch (`--watch-wildcard`) silently discarded exactly the
+  information that would show which distinct topics were actually active — all 81 messages in
+  the capture above printed under one identical bracketed label, with no way to tell them apart
+  by topic after the fact. Now prints/stores `response.topic` instead.
+- **Tooling improvements prompted by reviewing that same 81-message capture by hand**:
+  `_watch_one()` now also prints a distinct-topic frequency summary once a watch ends, so a large
+  wildcard capture doesn't require scanning every message by eye just to see which topics were
+  active. `--post-dock-watch-seconds`'s help text now says explicitly that `"fin"` (mission
+  concluded) fires within the same second as the stop command, not after the robot physically
+  reaches its dock — the 30s default is unlikely to be long enough to catch battery/charging
+  status specifically, and a much longer value is now explicitly recommended for that
+  investigation. `--dump-config`'s saved JSON now also gets a topic-grouped sibling view for every
+  watch entry (new `_add_topic_grouped_views()`), matching the terminal summary — previously only
+  the terminal output was grouped, the saved file stayed a flat list.
+- 4 tests updated in `test_verify_mission_timeline.py` for the topic-tracking fix, 2 more added for
+  `timeline_request_id`, 2 more for `LiveMapUpdate`, 3 more for `_add_topic_grouped_views()`.
+  423/423 tests green, ruff clean. Also
+  corrected an earlier, now-disproven note of this project's own: `nMssn` going 255→256 between
+  two live captures rules out "a saturating counter capped at the max value of an unsigned 8-bit
+  integer" as an explanation.
+
 ## [0.1.11a5] - 2026-07-19
 
 ### Fixed

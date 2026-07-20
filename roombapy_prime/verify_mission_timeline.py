@@ -125,13 +125,36 @@ async def _watch_one(
     watch_raw_topic()) for as long as the surrounding asyncio.wait_for()
     lets it run, printing and collecting every message that arrives.
     Cancellation (the normal way this ends, via the duration timeout)
-    is expected and swallowed here -- it's not a failure."""
-    captured: list[Any] = []
+    is expected and swallowed here -- it's not a failure.
+
+    BUG FOUND AND FIXED (this session): previously printed the static
+    watch `label` for every message, not response.topic (the actual
+    concrete topic a message arrived on). For a specific-topic watch
+    (mission/timeline/report, rejected/report) these are identical, so
+    the bug was invisible there -- but for a wildcard watch
+    (--watch-wildcard), EVERY one of potentially dozens of messages
+    printed the SAME label (the wildcard pattern itself), silently
+    discarding exactly the information that would show which distinct
+    topics were actually active. A live capture with 81 wildcard
+    messages (chairstacker) surfaced this: all 81 printed under one
+    identical bracketed label, with no way to tell them apart by topic
+    after the fact. Now prints/stores response.topic instead.
+
+    ALSO NEW (this session, prompted by reviewing a real 81-message
+    wildcard capture by hand): a distinct-topic frequency summary is
+    now printed once the watch ends, for exactly the case that made the
+    original bug hard to work around even after fixing it -- a
+    wildcard capture with many messages is still tedious to scan by
+    eye one at a time. This doesn't replace reading the individual
+    messages (their PAYLOADS still need a human to interpret), but
+    immediately shows which distinct topics were actually active and
+    how often, before diving into any of them."""
+    captured: list[dict[str, Any]] = []
     agen = agen_factory()
     try:
         async for response in agen:
-            print(f"\n  [{label}] {response.payload}")
-            captured.append(response.payload)
+            print(f"\n  [{response.topic}] {response.payload}")
+            captured.append({"topic": response.topic, "payload": response.payload})
     except asyncio.CancelledError:
         pass
     finally:
@@ -139,6 +162,13 @@ async def _watch_one(
     raw_capture[f"watch: {label}"] = captured
     if captured:
         report.add(f"Watch {label}", "OK", f"{len(captured)} message(s) captured -- see raw capture")
+        topic_counts: dict[str, int] = {}
+        for item in captured:
+            topic_counts[item["topic"]] = topic_counts.get(item["topic"], 0) + 1
+        if len(topic_counts) > 1:
+            print(f"\n  -- {len(topic_counts)} distinct topic(s) under \"{label}\" --")
+            for topic, count in sorted(topic_counts.items(), key=lambda kv: -kv[1]):
+                print(f"    {count:>3}x  {topic}")
     else:
         report.add(
             f"Watch {label}", "OK",
@@ -312,6 +342,33 @@ async def run(
     return report, raw_capture
 
 
+def _add_topic_grouped_views(redacted: dict[str, Any]) -> None:
+    """NEW (this session): the terminal output already groups a watch's
+    messages by distinct topic (see _watch_one()'s frequency summary)
+    -- the saved --dump-config JSON didn't, staying a flat list even
+    after the response.topic fix, an inconsistency found while
+    answering a question about what else the tooling still needed.
+    Every "watch: ..." entry (a list of {"topic", "payload"} dicts)
+    gets a sibling "<key> (grouped by topic)" entry, without removing
+    the original flat list -- both views available, since the flat one
+    preserves arrival order and the grouped one doesn't. Mutates
+    `redacted` in place; silently skips any key that isn't shaped like
+    a watch entry (defensive, not expected to matter today, but this
+    function shouldn't be the thing that breaks if raw_capture's shape
+    ever changes elsewhere)."""
+    for key in list(redacted.keys()):
+        if not key.startswith("watch: "):
+            continue
+        entries = redacted[key]
+        if not (isinstance(entries, list) and entries and isinstance(entries[0], dict)
+                and "topic" in entries[0] and "payload" in entries[0]):
+            continue
+        grouped: dict[str, list[Any]] = {}
+        for item in entries:
+            grouped.setdefault(item["topic"], []).append(item["payload"])
+        redacted[f"{key} (grouped by topic)"] = grouped
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -359,7 +416,12 @@ def main() -> None:
         help="Only used with --start-mission: how long to keep watching AFTER sending stop/dock "
         "(default: 30). Set to 0 to disable. Exists specifically to try catching any "
         "docking-related events -- an earlier version of this script stopped watching BEFORE "
-        "sending dock, meaning such events could never be captured even if they exist.",
+        "sending dock, meaning such events could never be captured even if they exist. NOTE: "
+        "\"fin\" (mission-concluded) was confirmed to fire within the same second as the stop "
+        "command -- it does NOT mean the robot has physically reached its dock yet. If you're "
+        "specifically trying to find battery/charging status (still unconfirmed as of this "
+        "release), a much longer value here (a few minutes, covering actual travel time back to "
+        "base) is more likely to help than the default.",
     )
     parser.add_argument(
         "--i-understand-this-will-move-my-robot",
@@ -410,6 +472,7 @@ def main() -> None:
 
     if args.dump_config:
         redacted = _redact_raw_capture(raw_capture, [username, password])
+        _add_topic_grouped_views(redacted)
         with open(args.dump_config, "w", encoding="utf-8") as f:
             json.dump(redacted, f, indent=2, default=str, ensure_ascii=False)
         print(f"Redacted raw responses (incl. every captured mission-timeline message) saved to {args.dump_config}")

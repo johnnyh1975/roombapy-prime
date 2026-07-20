@@ -476,7 +476,24 @@ class RoomEvent:
     consistent with the pattern in Travel-/Traversal-/ZoneEvent.
     conPasses/passArea were never observed in the available real
     examples (neither confirmed nor disproven) -- field names for
-    these left unchanged."""
+    these left unchanged.
+
+    HYPOTHESIS, not confirmed (this session, chairstacker, an
+    interrupted mid-cleaning mission): area appears to be the room's
+    total/target size (354 in every capture of this same room,
+    unchanged whether the room was fully cleaned or barely started),
+    while total_area appears to be how much was ACTUALLY covered this
+    visit (0, observed on a room event finished immediately after
+    send_simple_command("stop") interrupted the mission before real
+    coverage happened). Only two data points support this reading, one
+    of them a zero -- treat as a plausible interpretation, not a
+    settled one.
+
+    Also a hypothesis, same caveat: status=0 was observed on a
+    normally-superseded travel event, status=5 on this same
+    interrupted room event -- consistent with 0 meaning something like
+    "completed normally" and a nonzero value flagging some kind of
+    interruption, but again only two data points, no enum confirmed."""
 
     area: int | None = None
     con_passes: int | None = None
@@ -802,20 +819,41 @@ class MissionTimelineReport:
     mqtt_client.py's publish_cmd()), echoed back here as context for
     which command's mission this report belongs to.
 
-    n_missions ("nMssn" on the wire): meaning NOT confirmed. A lifetime
-    mission counter is a plausible guess (255 was observed) but nothing
-    here confirms that specifically -- treat as an opaque int until
-    corroborated some other way. NOTE: 255 is exactly the max value of
-    an unsigned 8-bit integer -- worth keeping in mind as a plausible
-    alternative explanation (a saturating counter capped at 255, common
-    in embedded firmware with a small integer field, rather than a
-    genuine running total that happens to equal 255).
+    n_missions ("nMssn" on the wire): meaning still not directly
+    confirmed (a lifetime mission counter remains the most plausible
+    guess), but one earlier hypothesis is now DISPROVEN: a second live
+    capture (chairstacker, same session as this class's original
+    confirmation) showed 256 where the first had shown 255 -- ruling
+    out "a saturating counter capped at the max value of an unsigned
+    8-bit integer" as an explanation, since 256 exceeds that range. A
+    genuine incrementing counter (whether lifetime missions or
+    something else that increments once per mission) is now the better-
+    supported reading.
 
-    mission_id ("01KXXQM8XZEDJ24701JF121CCH" observed): 26 characters,
-    Crockford base32 alphabet -- matches the ULID format (Universally
-    Unique Lexicographically Sortable Identifier) exactly. Not
-    independently verified against a ULID parser, but the shape is a
-    strong match.
+    timelineRequestId (optional, observed on some but not all live
+    report messages, chairstacker): appears tied to an explicit
+    client-side request for a fresh timeline update -- also observed as
+    its own bare {"timelineRequestId": N} message on the wildcard
+    channel, separate from any mission/timeline/report envelope.
+    Mechanism not further investigated; stored as an opaque int when
+    present.
+
+    mission_id ("01KXXQM8XZEDJ24701JF121CCH" observed): CONFIRMED as a
+    real ULID (Universally Unique Lexicographically Sortable
+    Identifier), not just a plausible shape match -- rigorously
+    verified against BOTH mission_ids seen across two live captures:
+    26 characters, every character in the Crockford base32 alphabet
+    (which deliberately excludes I/L/O/U -- neither mission_id
+    contains any of those four), first character in the valid 0-7
+    range a ULID's 48-bit millisecond timestamp requires. Beyond the
+    shape: the timestamp actually ENCODED in the first 10 characters
+    was decoded directly (standard ULID timestamp decoding, Crockford
+    base32) and compared against this same report's own cmd.time (the
+    real Unix timestamp of the "start" command that began the
+    mission) -- 0.0s and 3.6s apart on the two captures respectively.
+    This is not a coincidental format match; the ULID's own embedded
+    timestamp genuinely corresponds to when the mission it identifies
+    actually began.
 
     map_version fields observed on nested events (RoomEvent.map_version
     etc., e.g. "260719T174414.994"): decodes cleanly as YYMMDD"T"HHMMSS.mmm
@@ -836,6 +874,7 @@ class MissionTimelineReport:
     mission_id: str | None = None
     n_missions: int | None = None
     version: str | None = None
+    timeline_request_id: int | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> MissionTimelineReport:
@@ -849,6 +888,7 @@ class MissionTimelineReport:
             mission_id=data.get("mission_id"),
             n_missions=data.get("nMssn"),
             version=data.get("ver"),
+            timeline_request_id=data.get("timelineRequestId"),
         )
 
 

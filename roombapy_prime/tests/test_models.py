@@ -326,6 +326,46 @@ def test_policy_zone_feature_replaces_three_previously_separate_guesses() -> Non
     assert zone.properties.threshold_type == "soft"
 
 
+def test_live_map_update_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- a real map_update
+    push message, verbatim except the presigned URL query strings
+    truncated for readability (they don't affect parsing, only S3 auth).
+    The key finding this locks in: livemap_url is directly usable with
+    the EXISTING download_map_bundle()/parse_map_bundle() pipeline --
+    no new download code needed, just a way to obtain this URL live."""
+    from roombapy_prime.models import LiveMapUpdate
+
+    raw = {
+        "timestamp": 1784491541,
+        "map_update": {
+            "livemap_url": (
+                "https://s3.amazonaws.com/elpasodata018-pmaptransferbucket-1pckk9n2mafep/"
+                "p2maps/v011/dload_livemap/BLID/p2mapv_geojson.tgz?X-Amz-Signature=abc"
+            ),
+            "livemap_url_raw": (
+                "https://s3.amazonaws.com/elpasodata018-pmaptransferbucket-1pckk9n2mafep/"
+                "p2maps/v011/dload_livemap/BLID/rawmap?X-Amz-Signature=def"
+            ),
+        },
+    }
+
+    update = LiveMapUpdate.from_json(raw)
+
+    assert update.timestamp == 1784491541
+    assert update.livemap_url.endswith("p2mapv_geojson.tgz?X-Amz-Signature=abc")
+    assert update.livemap_url_raw.endswith("rawmap?X-Amz-Signature=def")
+
+
+def test_live_map_update_handles_missing_fields_gracefully() -> None:
+    from roombapy_prime.models import LiveMapUpdate
+
+    update = LiveMapUpdate.from_json({})
+
+    assert update.timestamp is None
+    assert update.livemap_url is None
+    assert update.livemap_url_raw is None
+
+
 def test_clean_zone_feature_has_name_unlike_adhoc() -> None:
     from roombapy_prime.models import AdHocCleanZoneFeature, CleanZoneFeature
 
@@ -1544,6 +1584,7 @@ def test_mission_timeline_report_from_real_live_capture() -> None:
 
     assert reloc_event.event_type == "reloc"
     assert isinstance(reloc_event.relocalizing, TentativeLocationEvent)
+    assert reloc_event.relocalizing.confirmed_map_id == "BLID-1758329350"
     assert reloc_event.relocalizing.confirmed_map_version == "260719T174413.314"
 
     assert start_event.event_type == "start"
@@ -1559,6 +1600,21 @@ def test_mission_timeline_report_handles_missing_fields_gracefully() -> None:
     assert report.event == []
     assert report.fin_events == []
     assert report.mission_id is None
+    assert report.timeline_request_id is None
+
+
+def test_mission_timeline_report_optional_timeline_request_id() -> None:
+    """CONFIRMED LIVE (this session, chairstacker's second capture) --
+    timelineRequestId appears on some but not all report messages, tied
+    to an explicit client-side request for a fresh update. Absent by
+    default; only present when the underlying JSON actually has it."""
+    from roombapy_prime.models import MissionTimelineReport
+
+    without = MissionTimelineReport.from_json({"mission_id": "m1"})
+    assert without.timeline_request_id is None
+
+    with_id = MissionTimelineReport.from_json({"mission_id": "m1", "timelineRequestId": 2015115795})
+    assert with_id.timeline_request_id == 2015115795
 
 
 def test_robot_serial_info_from_real_live_response() -> None:
