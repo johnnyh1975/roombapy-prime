@@ -303,20 +303,30 @@ async def _check_candidate_shadows(report: Report, robot: Any, raw_capture: dict
     subscribes to a wildcard covering every NAMED shadow, and five are
     known to exist -- this script had only ever queried two of them
     (classic + "rw-settings", both already checked before this function is
-    called). The other three have never been queried before. "rw-constatus"
-    is the strongest candidate for battery/charging status specifically
-    (plausibly short for "connection status"), given RobotStatusV2's own
-    confirmed value is derived in the native app from FOUR combined
-    streams via rxcpp::combine_latest, not received as one ready-made
-    field. Purely a read, same risk profile as get_state()/get_settings()
-    -- see get_named_shadow()'s own docstring for the full reasoning,
-    including the specific earlier mistake ("rw-constatus" was wrongly
-    written off because the app's command config lists only a write-side
-    command for it -- that describes commands, not subscriptions) this
-    corrects. Factored out as its own function (rather than an inline loop
-    in run()) specifically so it's unit-testable on its own -- run() as a
-    whole has no dedicated test of its own, this way the new behavior
-    still does."""
+    called). The other three had never been queried before this session.
+
+    UPDATE (this session, chairstacker, all three checked live): the
+    "rw-constatus" battery/charging hypothesis is DISPROVEN. Its content
+    ({"connected", "connectedv2", "echo", "svcEndpoints"}) is MQTT/AWS-IoT
+    connection status, not battery -- see RobotStatusV2's own docstring
+    for the full correction, and ConnectionStatusShadow/ScheduleShadow/
+    SoftwareStatusShadow (models/robot_info.py) for the now-fully-
+    confirmed content of all three. None of the five named shadows this
+    wildcard-subscription pattern covers contain battery/charging/dock
+    data. Kept as an automatic check anyway (cheap, already implemented,
+    and confirms the shadows still respond the same way on other
+    devices/accounts) -- just no longer expected to solve the battery
+    question specifically.
+
+    Purely a read, same risk profile as get_state()/get_settings() --
+    see get_named_shadow()'s own docstring for the specific earlier
+    mistake ("rw-constatus" was wrongly written off originally because
+    the app's command config lists only a write-side command for it --
+    that describes commands, not subscriptions) that led to checking
+    it at all. Factored out as its own function (rather than an inline
+    loop in run()) specifically so it's unit-testable on its own --
+    run() as a whole has no dedicated test of its own, this way the new
+    behavior still does."""
     for candidate_shadow in ("rw-constatus", "rw-schedule", "rw-software"):
         await _try(
             report,

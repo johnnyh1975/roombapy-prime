@@ -8,6 +8,8 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a8] - 2026-07-20
+
 ### Added
 
 - **`PrimeRobot.get_named_shadow(name)`** — a general, public form of the capability
@@ -16,17 +18,57 @@ This file only tracks what changed from a user's point of view.
   native-binary symbol analysis, not this library's own investigation: the real app subscribes
   to a wildcard covering every named shadow, and five are known to exist, but this library had
   only ever queried two (classic + `rw-settings`). The other three — `rw-constatus`,
-  `rw-schedule`, `rw-software` — were never queried. `rw-constatus` is the strongest candidate
-  for where battery/charging status might live, given `RobotStatusV2`'s own confirmed value is
-  derived in the native app from four combined streams via `rxcpp::combine_latest`, not received
-  as one ready-made field. A specific earlier mistake this corrects: `rw-constatus` had been
-  written off because the app's command config only lists a write-side `SetEchoCommand`
-  (`read: false`) for it — but that config describes commands, not subscriptions.
+  `rw-schedule`, `rw-software` — had never been queried before this session. A specific earlier
+  mistake this corrects: `rw-constatus` had been written off because the app's command config
+  only lists a write-side `SetEchoCommand` (`read: false`) for it — but that config describes
+  commands, not subscriptions.
+- **Result (chairstacker, all three checked live): the `rw-constatus` battery/charging
+  hypothesis is DISPROVEN.** Its content is MQTT/AWS-IoT connection status (`{"connected",
+  "connectedv2", "echo", "svcEndpoints"}`), not battery — the name's surface resemblance to
+  "connection status" was accurate, but pointed at the wrong KIND of connection. The other two
+  also confirmed content, neither battery-related: `rw-schedule` is the cleaning schedule,
+  `rw-software` is OTA/firmware update status. New `ConnectionStatusShadow`/`ScheduleShadow`/
+  `SoftwareStatusShadow` models (`models/robot_info.py`) capture all three. All five named
+  shadows this wildcard-subscription pattern covers are now fully enumerated — none contain
+  battery/charging/dock data.
+- **A genuinely new, structurally-grounded lead found in the same capture: a whole new topic
+  family, `dock/{reportType}/report`.** One `reportType` observed so far (`"padDry"`, on
+  `dock/paddry/report`), fired essentially immediately after a mission's `"start"` command. New
+  `DockPadDryReport` model (`models/robot_info.py`) captures it — lifetime dock/pad-dry counters
+  (`numDocks`, `totalPadDry`, `totalPadDryTime`), not battery data itself, but the topic name's
+  shape strongly suggests sibling `reportType` values could exist (a `"charge"` or `"battery"`
+  one would be the obvious hope) — not confirmed, no other `reportType` has been seen yet in any
+  capture, but a more concrete lead than anywhere else has pointed so far.
+- **`mission/timeline/request` confirmed live, not just from native symbols.** A bare
+  `{"timelineRequestId": <int>}` message was captured on it directly — the standalone
+  confirmation of the same field `MissionTimelineReport.timeline_request_id` (added in
+  v0.1.11a6) already carries when embedded in a report. Confirms the two topics are a genuine,
+  now-observed request/response pair. `mission_timeline_topic()`'s docstring updated
+  accordingly.
+- **A real overreach in our own prior claims, corrected (parallel reverse-engineering track):**
+  "live mission status does NOT flow through get_state()/watch_state() at all" was based on a
+  snapshot DIFF of `get_state()` (two point-in-time GETs compared) — `watch_state()`'s own
+  persistent `update/delta` push subscription was never actually run live during an active
+  mission, only assumed by extension. That assumption may be wrong: AWS IoT's standard shadow
+  push-on-change semantics could see intermediate changes a before/after snapshot comparison
+  would never surface. Corrected in three places (`mqtt_client.py`, `prime_robot.py`'s
+  `watch_state()`/`watch_mission_timeline()`, `verify_mission_timeline.py`'s module docstring).
+- **Two new flags on `roombapy-prime-verify-mission-timeline`** to actually test the above:
+  `--watch-shadow-delta` (runs `watch_state()` for the same duration as everything else) and
+  `--watch-aws-tree` (wildcard-subscribes to the entire `$aws/things/{blid}/#` namespace —
+  every prior wildcard capture only ever covered `{irbt_topic_prefix}/things/{blid}/#`; the
+  `$aws/` tree, where `get_state()`/`get_settings()` already build their own topics under
+  `$aws/things/{blid}/shadow`, has never been captured at all).
+- **`RobotStatusV2`'s docstring expanded with a fuller field list** from `RobotStatusV2Constants.java`
+  directly — meaningfully larger than the 11 fields currently modeled (adds `allowed_modes`,
+  `dock_info`, `command_readiness`, `cycle`, `asset_connection_state`, `dock_state_*`). Not yet
+  added as dataclass fields; documented so a future capture that finds this structure is
+  recognized against the fuller list.
 - **New script: `roombapy-prime-verify-named-shadows`** — checks all five known named shadows
-  (the two already-confirmed ones as a baseline, plus the three new candidates) in one pass.
+  (the two already-confirmed ones as a baseline, plus the three candidates) in one pass.
   Purely read-only, no confirmation gate needed (unlike the mission-command scripts, this one
   never moves the robot). Reports the reported-keys of every shadow that responds.
-- **The three new candidate shadows are now also checked automatically by the main
+- **The three candidate shadows are now also checked automatically by the main
   `roombapy-prime-validate` script** (`diagnostics.py`) — the one every new tester runs first.
   Factored into its own `_check_candidate_shadows()` function specifically so it's unit-tested
   on its own (`run()` as a whole has no dedicated test of its own; this way the new behavior
@@ -54,9 +96,23 @@ This file only tracks what changed from a user's point of view.
   happened via raw terminal output pasted directly, which never went through `--dump-config`'s
   redaction path at all.
 
-4 new tests, 430/430 total green, ruff clean. Not yet released as its own version — waiting on
-a real device confirming what (if anything) the new candidate shadows actually contain, before
-this becomes a numbered release.
+- **`livemap_url_raw` ("rawmap") partially resolved (chairstacker, from a saved file):**
+  confirmed to be zlib-compressed data that decompresses (13KB → ~207KB) to something `file`
+  reports as plain "data" — NOT a recognized image container. Rules out the simple case (a
+  ready-made image) for any future live-map rendering feature. Leading hypothesis, not yet
+  confirmed: a raw occupancy grid (one byte per cell). Investigated via byte-level statistics
+  and locally-rendered candidate images the tester checked themselves, without ever sharing the
+  actual map content (their real home layout) — see `models/livemap.py`'s docstring for the
+  full reasoning.
+
+12 new tests (4 for the security fix, 6 for the three new shadow-content models, 2 for
+DockPadDryReport), plus 5 more for `_build_watch_specs()` (the two new script flags, factored out
+of `run()` for testability, matching `diagnostics.py`'s own `_check_candidate_shadows()`
+pattern), 443/443 total green, ruff clean. Every named-shadow lead is now exhausted, but two new
+ones opened in the same session: `dock/{reportType}/report` (from a live capture) and the
+never-actually-tested `watch_state()`/`$aws/` gap (from the parallel reverse-engineering track).
+The battery/charging question remains open — this release doesn't resolve it, but genuinely
+advances the investigation rather than closing it out.
 
 ## [0.1.11a7] - 2026-07-20
 

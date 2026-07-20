@@ -2763,7 +2763,7 @@ long enough" and "missed it in another topic's payload" as explanations.
 **Unreleased (unrelated to any live capture this time -- a person's own native-binary symbol
 analysis of the real app):** the app subscribes to a wildcard covering every *named* shadow, not
 just the two ever queried here (classic + `"rw-settings"`). Three more exist and were never
-checked: `"rw-constatus"`, `"rw-schedule"`, `"rw-software"`. `"rw-constatus"` is the strongest
+checked: `"rw-constatus"`, `"rw-schedule"`, `"rw-software"`. `"rw-constatus"` was the strongest
 lead for battery/charging specifically -- the same analysis traced
 `RobotStatusReducerUseCaseImpl::observeStatusReducerData()` and found the real app derives its
 battery/charging display from FOUR combined data streams (`MissionData`/`SettingsData`/
@@ -2774,9 +2774,106 @@ lists only a write-side `SetEchoCommand`, `read: false`, for it) -- the analysis
 identified this as the wrong test: that config describes commands, not subscriptions, and the
 wildcard subscribes to a named shadow regardless of whether any explicit read command exists for
 it. New `get_named_shadow(name)` (general form of what `get_state()`/`get_settings()` were always
-thin wrappers around) and a new script, `roombapy-prime-verify-named-shadows`, exist to check
-this against a real device -- not yet run as of this writing. Deliberately not tagged as its own
-release yet, sitting on top of a7 until a real device confirms what (if anything) these shadows
-contain.
+thin wrappers around) and a new script, `roombapy-prime-verify-named-shadows`, were built to
+check this against a real device.
 
-427/427 tests green, ruff clean as of this addendum.
+**Result (chairstacker, all three checked live in the same session): the `"rw-constatus"`
+battery/charging hypothesis is DISPROVEN.** Its content is `{"connected", "connectedv2", "echo",
+"svcEndpoints"}` -- MQTT/AWS-IoT connection status, not battery. The name's surface resemblance
+to "connection status" was accurate, but pointed at the wrong KIND of connection (network
+connectivity to the broker, not power/charging state). The other two candidates also confirmed
+content, neither battery-related: `"rw-schedule"` is `{"cleanSchedule2", "nsmip",
+"svcEndpoints"}` (the cleaning schedule -- `cleanSchedule2`'s own array elements embed a
+string-serialized `cmdStr` with `CommandParams`-like fields, a separate, already-partially-
+confirmed investigation tracked in `models/mission_control.py`, deliberately not duplicated
+here). `"rw-software"` is `{"deploymentId", "deploymentMpkg", "deploymentState", "imuRecal",
+"lastCommand", "lastSwUpdate", "nsmip", "softwareVer", "subModSwVer", "svcEndpoints"}` --
+OTA/firmware update status. New `ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow`
+models capture all three. All five named shadows this wildcard-subscription pattern covers are
+now fully enumerated -- none contain battery/charging/dock data. Whatever
+`AssetNetworkData`/`OTAStatusData` actually resolve to in the real app, they evidently aren't
+equivalent to `rw-constatus`/`rw-software` the way this hypothesis assumed, at least not for the
+battery-relevant portion of `RobotStatusV2` specifically. This genuinely exhausts every
+named-shadow lead this project has had. Still deliberately not tagged as its own release -- it
+sits on top of a7 as unreleased work rather than becoming a numbered release.
+
+**Not a dead end, though -- the same capture (chairstacker) found something new.** A wildcard
+watch around a mission "start" command caught a message on a topic never seen before,
+`"{prefix}/things/{blid}/dock/paddry/report"`, fired essentially immediately after the start
+command (well before any actual docking activity) -- plausibly a "here's the dock's current
+lifetime stats" report triggered by leaving the dock, not by pad-drying itself. Content: lifetime
+dock/pad-dry counters (`numDocks: 23`, `totalPadDry: 141` cycles, `totalPadDryTime: 1614726`s ~=
+18.7 cumulative days), plus a `pdState: 701` code (meaning unresolved) and a two-level structure
+with an inner `"bbk"` object whose values looked stale/placeholder compared to the top-level ones
+in this one example (only one seen so far, unconfirmed whether that's meaningful). New
+`DockPadDryReport` model captures it. Not battery data itself, but the topic NAME strongly
+suggests a family shaped like `"dock/{reportType}/report"`, with `"paddry"` being only the one
+`reportType` observed -- if others exist (a `"charge"` or `"battery"` one would be the obvious
+hope), they'd plausibly arrive on sibling topics of the same family. This is more concrete and
+structurally-grounded than anywhere else has pointed so far -- genuinely reopens the
+investigation rather than closing it. No dedicated watch method needed for this speculatively;
+the existing wildcard already covers the whole family without knowing `reportType` values in
+advance.
+
+Same capture separately confirmed `"{prefix}/things/{blid}/mission/timeline/request"` live, not
+just from native symbols -- a bare `{"timelineRequestId": <int>}` message, the standalone form of
+the same field `MissionTimelineReport.timeline_request_id` (added in a6) already carries when
+embedded in a report. Confirms the two topics are a genuine, now-observed request/response pair.
+`mission_timeline_topic()`'s docstring updated accordingly.
+
+438/438 tests green, ruff clean as of this addendum.
+
+## Addendum: a real overreach corrected, and the actual untested gap (parallel reverse-engineering track)
+
+Two earlier notes from that same parallel track were explicitly retracted, not carried forward
+here: a `batPct`/`NetworkType.CLOUD` finding that turned out to belong to the Classic-layer
+`RobotV1`/`RobotV2` classes (`RobotV2` is itself `@Deprecated`, `DEFAULT_SKU_NA = "R980020"` -- a
+Roomba 980, not Prime); and an unsupported "battery isn't available via the cloud at all" claim
+-- logically untenable, since the app itself displays battery remotely, so some cloud channel
+must carry it.
+
+**What IS well-supported:** the data lives in `core::MissionData`, a JNI proxy class
+(`getBatteryLevelPercentage`/`getIsCharging`/`getIsFullyCharged`/`getTankLevel`/`getDockState`/
+`getResolvedMissionStatus`/`getCommandReadinessMap`, plus dock descriptors) with a Kotlin
+counterpart (`com/irobot/core/MissionData.java`). Combined with `SettingsData`/
+`AssetNetworkData`/`OTAStatusData` via `rxcpp::combine_latest` into `StatusReducerData ->
+RobotStatusV2 -> UI`. Critically: a *proxy* doesn't invent values -- `MissionData` must be FED
+from outside the native core. "Aggregated natively" does not mean "unreachable via the cloud".
+Structurally notable: `RobotStatusV2` has no `$$serializer` despite `@SerialName`-annotated
+fields -- those annotations describe the native-to-Kotlin handoff format (via
+`ObservableUseCaseJsonCallback`), not necessarily the cloud wire format directly.
+
+**The actual, previously-unexamined gap:** every wildcard capture so far only covered
+`"{irbt_topic_prefix}/things/{blid}/#"`. The entire `"$aws/"` tree -- where AWS IoT's own shadow
+`get`/`update`/`delta` channels live, and where `get_state()`/`get_settings()` already build
+their OWN topics (`_shadow_base()`'s `"$aws/things/{blid}/shadow"`) -- has never been
+wildcard-captured at all. More specifically: `watch_state()` (this library's existing shadow
+`update/delta` push subscription) has never actually been run LIVE during an active mission. The
+"live mission status doesn't show up in the shadow" finding that `watch_mission_timeline()` was
+built on was a snapshot DIFF of `get_state()` -- two point-in-time GET requests, compared -- not
+a test of the push-based delta channel. AWS IoT's standard shadow semantics push a message on
+every change; a before/after snapshot comparison could simply never surface an intermediate
+change even if one genuinely happened. This was a real, unverified extrapolation baked into three
+separate docstrings (`mqtt_client.py`'s `mission_timeline_topic()`, `prime_robot.py`'s
+`watch_state()`/`watch_mission_timeline()`, `verify_mission_timeline.py`'s module docstring) --
+all three corrected this session.
+
+**Supporting evidence this matters:** one real device (chairstacker, via the parallel track) is
+reported to have shown a shadow `version` of 5324 -- over five thousand updates, hard to explain
+for purely static configuration.
+
+**Also newly documented:** `RobotStatusV2Constants.java` lists a meaningfully larger field set
+than the 11 currently modeled -- `allowed_modes`, `dock_info`, `command_readiness`, `cycle`,
+`asset_connection_state` (a composite: `robot_connected_to_iot`, `aws_network_state`,
+`app_to_robot_local`, `is_asset_missing_detected`, `status_error_code`), `dock_state_*`
+(`dock_id`, `evac_state`, `firmware_version`, `fluid_replenishment_state`, `capabilities`,
+`error`). Not yet added as dataclass fields; documented in `RobotStatusV2`'s own docstring so a
+future capture that finds this structure is recognized against the fuller list.
+
+**Concrete next test, not yet run:** `roombapy-prime-verify-mission-timeline
+--watch-shadow-delta --watch-aws-tree --start-mission` during an active mission. Purely
+read-only, no new risk over the scripts already in regular use.
+
+443/443 tests green, ruff clean as of this addendum (5 new tests for `_build_watch_specs()`,
+factored out of `run()` for testability -- the two new script flags themselves, plus docstring
+corrections and no other new modeled behavior).

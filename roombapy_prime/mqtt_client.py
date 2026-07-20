@@ -503,10 +503,18 @@ class PrimeMqttClient:
 
         PROMPTED BY: a live idle-vs-mid-mission diff (chairstacker) that
         showed the classic shadow's reported state is byte-identical
-        whether the robot is idle or actively cleaning -- proving live
-        mission status does NOT flow through the shadow/cmd_topic
-        mechanism at all. This is believed to be the actual channel for
-        it, based on: (a) an "eventList" entry named "cleanMissionStatus"
+        whether the robot is idle or actively cleaning -- proving that
+        specific comparison (two point-in-time get_state() snapshots)
+        doesn't move during a mission. CORRECTION (this session,
+        parallel reverse-engineering track): this was previously
+        over-stated as "live mission status does NOT flow through the
+        shadow mechanism at all" -- that's broader than the evidence.
+        The snapshot diff says nothing about whether the shadow's
+        update/delta PUSH channel (watch_state()) sees intermediate
+        changes; that specific test has never been run live during an
+        active mission. This mission-timeline topic is believed to be
+        the actual channel for it regardless, based on: (a) an
+        "eventList" entry named "cleanMissionStatus"
         in base_roomba_config.json (matching the Classic protocol's own
         live-mission-status channel name), and (b) a decompiled native
         class, core::RobotMissionStatusEventImpl, whose constructor
@@ -519,18 +527,36 @@ class PrimeMqttClient:
         robot would push status TO the cloud/subscriber -- what a
         caller watching for live status wants). report=False ->
         ".../mission/timeline/request" (the other half of the
-        kRequest/kReport pair the native IotTopicType enum defines;
-        included for completeness, not expected to be useful to
-        subscribe to).
+        kRequest/kReport pair the native IotTopicType enum defines).
+
+        UPDATE (this session, chairstacker): the request side is no
+        longer just "included for completeness, not expected to be
+        useful to subscribe to" -- a real message was captured on it
+        during a wildcard watch: {"timelineRequestId": <int>}, a bare
+        correlation ID (NOT a Unix timestamp -- checked directly,
+        decodes to 2009, nowhere near this session's actual date).
+        This is the standalone confirmation of the same field
+        MissionTimelineReport.timeline_request_id (added in v0.1.11a6)
+        already carries when embedded in a report -- meaning the two
+        topics are a genuine, now-observed request/response pair: this
+        topic carries the bare request correlation ID on its own,
+        and a matching report (same ID) arrives separately on the
+        report topic. Only the request SIDE'S payload shape is
+        confirmed by this; still unconfirmed whether publishing to
+        this topic ourselves (rather than just observing the robot's
+        own traffic on it) would actually trigger a fresh report --
+        not attempted.
 
         CONFIDENCE LEVEL, precisely: the topic NAME and its existence
-        are confirmed from native symbols. Whether irbt_topic_prefix
-        applies here the same way it does for cmd_topic() is a strong,
-        well-reasoned inference (same factory, same constructor
-        source), not independently live-confirmed for this specific
-        topic -- unlike cmd_topic(), which HAS a live-confirmed real-
-        world reaction behind it. The payload SHAPE on this topic is
-        completely unknown; see watch_mission_timeline()'s own
+        are confirmed from native symbols AND now from a live capture
+        (the request side specifically, this session). Whether
+        irbt_topic_prefix applies here the same way it does for
+        cmd_topic() is a strong, well-reasoned inference (same
+        factory, same constructor source), not independently
+        confirmed for this specific topic -- unlike cmd_topic(), which
+        HAS a live-confirmed real-world reaction behind it. The report
+        side's payload shape (beyond timeline_request_id, which IS
+        confirmed) is covered by watch_mission_timeline()'s own
         docstring in prime_robot.py."""
         direction = "report" if report else "request"
         return f"{irbt_topic_prefix}/things/{self._blid}/mission/timeline/{direction}"

@@ -693,15 +693,27 @@ class PrimeRobot:
         timeout here, since "wait for the next change" is the whole
         point).
 
-        IMPORTANT (this session): a live idle-vs-mid-mission diff
-        (chairstacker) confirmed the classic shadow's reported state is
-        BYTE-IDENTICAL whether the robot is idle or actively cleaning --
-        live mission status does NOT flow through this shadow document
-        at all (see watch_mission_timeline() instead, found via native
-        decompilation the same session). Watching this topic during a
-        mission is not expected to ever show a status-related delta;
-        it's kept for whatever it DOES cover (map/settings-adjacent
-        changes), not for mission status.
+        IMPORTANT (this session): a live idle-vs-mid-mission diff of
+        get_state() (chairstacker) confirmed the classic shadow's
+        reported state is BYTE-IDENTICAL whether the robot is idle or
+        actively cleaning -- but that's a snapshot comparison (two
+        separate GET requests), not a test of this method itself.
+
+        CORRECTION (this session, parallel reverse-engineering track):
+        this docstring previously claimed live mission status "does NOT
+        flow through get_state()/watch_state() at all" -- the
+        watch_state() part of that claim was an unverified extension of
+        the get_state() snapshot-diff finding, never actually tested.
+        This method's own delta subscription has never been run live
+        during an active mission. It remains a real, concrete,
+        not-yet-run test: AWS IoT's standard shadow/update/delta
+        semantics push a message on every change, which a before/after
+        snapshot comparison could simply never surface even if changes
+        genuinely happen in between. Kept for whatever it DOES cover
+        (map/settings-adjacent changes) -- but "kept for" no longer
+        means "confirmed to be useless for mission/battery status
+        specifically"; that's now an open question again, not a closed
+        one.
 
         queue_maxsize: bounds the internal buffer (see
         DEFAULT_WATCH_QUEUE_MAXSIZE). When the buffer is full, the
@@ -744,10 +756,23 @@ class PrimeRobot:
         Subscribes to {irbt_prefix}/things/{blid}/mission/timeline/report,
         found via native decompilation (libcorebase.so's
         core::protocol::AssetIotTopicFactory::createMissionTimelineTopic(),
-        prompted by a live finding: the classic shadow's reported state
-        is byte-identical whether idle or actively cleaning -- meaning
-        live mission status does NOT flow through get_state()/
-        watch_state() at all, on this topic instead.
+        prompted by a live finding: two separate get_state() snapshots
+        (idle vs. mid-mission) were byte-identical.
+
+        CORRECTION (this session, parallel reverse-engineering track):
+        the original framing here overreached. What was actually tested
+        is a snapshot DIFF of get_state() -- two point-in-time GET
+        requests, compared. watch_state()'s own delta subscription
+        (.../shadow/update/delta, AWS IoT's standard push-on-change
+        mechanism) has never actually been run live WHILE a mission was
+        active -- only assumed, by extension, to behave the same way.
+        That assumption was never tested and may be wrong: a delta
+        subscription could plausibly see intermediate changes a
+        before/after snapshot comparison would never surface. See
+        watch_state()'s own docstring for the correction there too.
+        This topic (mission/timeline/report) remains a solid, separately
+        justified finding either way -- it doesn't depend on the
+        watch_state() question.
 
         WHAT'S CONFIRMED vs. NOT, precisely:
         - The topic NAME and its existence: confirmed, from native

@@ -771,6 +771,168 @@ class RobotSettings:
 
 
 @dataclass(frozen=True)
+class ScheduleShadow:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete content
+    of the named "rw-schedule" shadow, the third of the three
+    never-before-queried candidates checked in the same pass as
+    ConnectionStatusShadow/SoftwareStatusShadow. Also not battery-
+    related -- this is the cleaning schedule.
+
+    Deliberately does NOT deep-parse clean_schedule2_raw's own array
+    elements here: each entry's "cmdStr" is a string-serialized,
+    Python-repr-like object (not direct JSON) embedding
+    CommandParams-like fields (adaptive_cleaning/carpet_boost/
+    operating_mode/etc. -- see models/mission_control.py's own notes
+    next to no_auto_passes/operating_mode for what's already confirmed
+    about that inner structure from a different investigation). That
+    parsing is a separate, already-ongoing effort tracked there;
+    duplicating it here would diverge rather than reuse it. Stored raw
+    so the data is still fully available to a caller who wants it."""
+
+    clean_schedule2_raw: list[Any] = field(default_factory=list)
+    nsmip: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> ScheduleShadow:
+        return cls(
+            clean_schedule2_raw=data.get("cleanSchedule2") or [],
+            nsmip=data.get("nsmip"),
+        )
+
+
+@dataclass(frozen=True)
+class ConnectionStatusShadow:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete content
+    of the named "rw-constatus" shadow, the leading candidate for
+    battery/charging status from a native-app symbol trace (this
+    library had never queried it before). That hypothesis is now
+    DISPROVEN: this is MQTT/AWS-IoT connection status (is the device
+    currently connected to the broker), not battery or charging state.
+    The name's surface resemblance to "connection status" was
+    accurate, but pointed at the wrong KIND of connection -- see
+    RobotStatusV2's own docstring for the full correction. "echo"
+    plausibly corresponds to the write-side SetEchoCommand this shadow
+    was originally (and, per this finding, correctly) associated with
+    in the app's command config -- a heartbeat/ping value, not
+    confirmed further. connected_v2's relationship to connected
+    (newer replacement? different granularity?) is not confirmed
+    either -- both are stored as opaque values rather than guessed at."""
+
+    connected: Any | None = None
+    connected_v2: Any | None = None
+    echo: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> ConnectionStatusShadow:
+        return cls(
+            connected=data.get("connected"),
+            connected_v2=data.get("connectedv2"),
+            echo=data.get("echo"),
+        )
+
+
+@dataclass(frozen=True)
+class SoftwareStatusShadow:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete content
+    of the named "rw-software" shadow, one of the two remaining
+    never-before-queried candidates alongside rw-constatus (see
+    ConnectionStatusShadow). Also NOT battery/charging-related --
+    this is OTA/firmware deployment and update status. "imuRecal" is
+    the one field with genuine unresolved meaning (IMU recalibration
+    status/trigger?, not confirmed); the rest are self-describing
+    deployment/version bookkeeping fields."""
+
+    deployment_id: Any | None = None
+    deployment_mpkg: Any | None = None
+    deployment_state: Any | None = None
+    imu_recal: Any | None = None
+    last_command: Any | None = None
+    last_sw_update: Any | None = None
+    software_version: str | None = None
+    submodule_sw_version: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> SoftwareStatusShadow:
+        return cls(
+            deployment_id=data.get("deploymentId"),
+            deployment_mpkg=data.get("deploymentMpkg"),
+            deployment_state=data.get("deploymentState"),
+            imu_recal=data.get("imuRecal"),
+            last_command=data.get("lastCommand"),
+            last_sw_update=data.get("lastSwUpdate"),
+            software_version=data.get("softwareVer"),
+            submodule_sw_version=data.get("subModSwVer"),
+        )
+
+
+@dataclass(frozen=True)
+class DockPadDryReport:
+    """NEW (this session, live capture, chairstacker) -- CONFIRMED LIVE,
+    not decompiled: a push message on a completely new topic family,
+    "{prefix}/things/{blid}/dock/paddry/report", fired essentially
+    immediately after a mission's "start" command (well before any
+    actual docking/pad-drying activity) -- plausibly a "here's the
+    dock's current lifetime stats" report triggered by leaving the
+    dock, not specifically by a pad-dry cycle itself.
+
+    GENUINELY NEW LEAD for the battery/RobotStatusV2 question: the
+    topic name itself ("dock/paddry/report") strongly suggests a
+    topic FAMILY shaped like "dock/{reportType}/report", with
+    "paddry" being only the one reportType observed so far. If other
+    reportType values exist (a "charge" or "battery" one would be the
+    obvious hope), they'd very plausibly arrive on sibling topics of
+    the same family -- not confirmed, no other reportType has been
+    seen yet in any capture, but this is a more concrete, structurally-
+    grounded lead than anywhere else has pointed so far. No dedicated
+    watch method added for this speculatively -- the existing
+    watch_raw_topic() wildcard already covers this whole family
+    without needing to know reportType values in advance.
+
+    Two-level structure, confirmed directly from the raw payload: an
+    inner "bbk" object (lifetime/aggregate counters, name unexplained --
+    plausibly "black box") with values that looked STALE compared to
+    the top-level ones in the one capture seen (bbk.dock_id="UNKNOWN"/
+    bbk.dock_ver="UNKNOWN" vs top-level dock_id="NA"/dock_ver="20") --
+    whether this staleness is a real, meaningful distinction or just
+    this particular robot's own dock never having been individually
+    identified is unconfirmed, only one example exists."""
+
+    report_type: str | None = None
+    robot_id: str | None = None
+    dock_id: str | None = None
+    dock_pn: str | None = None
+    dock_ver: str | None = None
+    error: int | None = None
+    hw_rev: int | None = None
+    pd_state: int | None = None
+    var_id: int | None = None
+    start_time: int | None = None
+    end_time: int | None = None
+    report_time: int | None = None
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    bbk: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> DockPadDryReport:
+        return cls(
+            report_type=data.get("reportType"),
+            robot_id=data.get("robotId"),
+            dock_id=data.get("dockId"),
+            dock_pn=data.get("dockPn"),
+            dock_ver=data.get("dockVer"),
+            error=data.get("error"),
+            hw_rev=data.get("hwRev"),
+            pd_state=data.get("pdState"),
+            var_id=data.get("varId"),
+            start_time=data.get("startTime"),
+            end_time=data.get("endTime"),
+            report_time=data.get("reportTime"),
+            capabilities=data.get("cap") or {},
+            bbk=data.get("bbk") or {},
+        )
+
+
+@dataclass(frozen=True)
 class DockControl:
     """NEW (session 49). CONFIRMED via DockControl$$serializer:
     control, status. Element type of RobotStatusV2.dock_controls."""
@@ -849,7 +1011,78 @@ class RobotStatusV2:
     long enough" and "it's mixed in with one of these other message
     types but we didn't notice" as explanations. The most likely
     remaining possibilities: it's shadow/get_state()-only (never pushed),
-    or it lives under a topic root this wildcard didn't reach."""
+    or it lives under a topic root this wildcard didn't reach.
+
+    NAMED-SHADOW HYPOTHESIS DISPROVEN (this session, chairstacker, all
+    five known named shadows checked in one pass via
+    get_named_shadow()): "rw-constatus" was the leading candidate,
+    reasoned from a native-app symbol trace showing RobotStatusV2's
+    value assembled from four combined data streams rather than one
+    ready-made field. Live content: {"connected", "connectedv2",
+    "echo", "svcEndpoints"} -- this is MQTT/AWS-IoT CONNECTION status
+    (is the device currently connected to the broker), not battery or
+    charging status. The name's surface resemblance to "connection
+    status" was accurate, but pointed at the wrong KIND of
+    "connection" -- network connectivity, not power/charging state.
+    The other two candidates also confirmed content, neither
+    battery-related either: "rw-schedule" is just {"cleanSchedule2",
+    "nsmip", "svcEndpoints"} (the cleaning schedule -- now modeled as
+    ScheduleShadow, alongside ConnectionStatusShadow/SoftwareStatusShadow
+    for the other two), "rw-software" is {"deploymentId",
+    "deploymentMpkg", "deploymentState", "imuRecal", "lastCommand",
+    "lastSwUpdate", "nsmip", "softwareVer", "subModSwVer",
+    "svcEndpoints"} (OTA/firmware update status). All five named
+    shadows this wildcard-subscription pattern covers are now fully
+    enumerated -- none contain battery/charging/dock data. Whatever
+    "AssetNetworkData"/"OTAStatusData" (from the same native trace)
+    actually resolve to in the real app, they evidently aren't
+    equivalent to "rw-constatus"/"rw-software" the way this hypothesis
+    assumed, at least not for the battery-relevant portion of
+    RobotStatusV2 specifically.
+
+    ARCHITECTURE, CORRECTED (this session, parallel reverse-engineering
+    track -- two earlier claims from that same track's own prior notes
+    were explicitly retracted, not carried forward here: a "batPct"/
+    "NetworkType.CLOUD" finding that turned out to belong to the
+    Classic-layer RobotV1/RobotV2 classes, unrelated to Prime; and an
+    unsupported "battery isn't available via the cloud at all" claim --
+    logically untenable, since the app itself displays battery remotely,
+    so SOME cloud channel must carry it). The actual, better-supported
+    finding: the data lives in core::MissionData, a JNI proxy class
+    (getBatteryLevelPercentage/getIsCharging/getIsFullyCharged/
+    getTankLevel/getDockState/getResolvedMissionStatus/
+    getCommandReadinessMap, plus dock descriptors) that itself must be
+    FED from outside the native core -- a proxy doesn't invent values.
+    Combined with SettingsData/AssetNetworkData/OTAStatusData via
+    rxcpp::combine_latest into StatusReducerData -> this class -> UI.
+    Structurally notable: this class has no $$serializer despite
+    @SerialName-annotated fields -- those annotations describe the
+    native-to-Kotlin handoff format (via ObservableUseCaseJsonCallback),
+    NOT necessarily the cloud wire format directly.
+
+    EXPANDED FIELD LIST (this session, from RobotStatusV2Constants.java
+    directly -- meaningfully larger than the 11 fields modeled below,
+    which predate this finding): battery_level, allowed_modes, buttons,
+    conditional_errors, dock_controls, dock_info, command_readiness,
+    cycle, asset_connection_state (a composite: robot_connected_to_iot,
+    aws_network_state, app_to_robot_local, is_asset_missing_detected,
+    status_error_code), dock_state_* (dock_id, evac_state,
+    firmware_version, fluid_replenishment_state, capabilities, error).
+    Not yet added as dataclass fields here -- documented so a future
+    capture that DOES find this structure somewhere is recognized
+    against the fuller list, not just the 11 already modeled.
+
+    THE ACTUAL UNTESTED GAP (this session): every wildcard capture so
+    far has only covered "{irbt_topic_prefix}/things/{blid}/#" -- the
+    entire "$aws/" tree (where get_state()/get_settings() already build
+    their OWN topics, under "$aws/things/{blid}/shadow", see
+    _shadow_base() above) has never been wildcard-captured, and
+    watch_state()'s update/delta push subscription has never been run
+    LIVE during an active mission (see its own docstring's correction).
+    One real device (chairstacker) showed a shadow version of 5324 --
+    over five thousand updates, hard to explain for purely static
+    configuration. verify_mission_timeline.py's --watch-shadow-delta
+    and --watch-aws-tree flags exist to actually test this now."""
 
     robot_state: int | None = None
     battery_level: int | None = None

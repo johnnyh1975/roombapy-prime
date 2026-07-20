@@ -4,8 +4,12 @@ topic(s) during a real, actively-running mission.
 WHY THIS SCRIPT EXISTS: a live idle-vs-mid-mission diff of get_state()
 (chairstacker, this session) proved the classic shadow's reported state
 is byte-identical whether the robot is idle or actively cleaning --
-live mission status does NOT flow through get_state()/watch_state() at
-all. A separate investigation (native decompilation of libcorebase.so)
+between two point-in-time GET snapshots, specifically. CORRECTION
+(parallel reverse-engineering track): this was previously over-stated
+as proof that live mission status doesn't flow through
+get_state()/watch_state() "at all" -- the watch_state() part was never
+actually tested live during a mission, only assumed by extension. A
+separate investigation (native decompilation of libcorebase.so)
 found a distinct topic pair believed to carry this instead:
 "{irbt_topic_prefix}/things/{blid}/mission/timeline/report" (and its
 "request" counterpart) -- see mqtt_client.py's mission_timeline_topic()
@@ -177,10 +181,40 @@ async def _watch_one(
         )
 
 
+def _build_watch_specs(
+    robot: Any, watch_wildcard: bool, watch_shadow_delta: bool, watch_aws_tree: bool
+) -> list[tuple[Callable[[], Any], str]]:
+    """Factored out of run() specifically so it's unit-testable on its
+    own -- run() as a whole has no dedicated test (needs a full
+    aiohttp session + PrimeFactory login mock), this way the watch-spec
+    selection logic still does.
+
+    watch_shadow_delta and watch_aws_tree are NEW (this session,
+    parallel reverse-engineering track) -- see their own --help text
+    and watch_state()'s docstring for the full reasoning: watch_state()
+    has existed for a while but was never run live during an active
+    mission (only a get_state() snapshot diff was ever tested), and no
+    wildcard capture has ever covered the "$aws/" tree at all (only
+    "{irbt_topic_prefix}/things/{blid}/#")."""
+    watch_specs: list[tuple[Callable[[], Any], str]] = [
+        (robot.watch_mission_timeline, "mission/timeline/report"),
+        (robot.watch_rejected_commands, "rejected/report"),
+    ]
+    if watch_wildcard:
+        wildcard_topic = f"{robot._irbt_topic_prefix}/things/{robot.blid}/#"
+        watch_specs.append((lambda: robot.watch_raw_topic(wildcard_topic), wildcard_topic))
+    if watch_shadow_delta:
+        watch_specs.append((robot.watch_state, "$aws/things/{blid}/shadow/update/delta"))
+    if watch_aws_tree:
+        aws_wildcard_topic = f"$aws/things/{robot.blid}/#"
+        watch_specs.append((lambda: robot.watch_raw_topic(aws_wildcard_topic), aws_wildcard_topic))
+    return watch_specs
+
+
 async def run(
     username: str, password: str, country_code: str, blid: str,
     duration: float, watch_wildcard: bool, start_mission: bool, try_pose_request: bool,
-    post_dock_watch: float,
+    post_dock_watch: float, watch_shadow_delta: bool = False, watch_aws_tree: bool = False,
 ) -> tuple[Report, dict[str, Any]]:
     report = Report()
     raw_capture: dict[str, Any] = {}
@@ -204,13 +238,7 @@ async def run(
             await robot.disconnect()
             return report, raw_capture
 
-        watch_specs: list[tuple[Callable[[], Any], str]] = [
-            (robot.watch_mission_timeline, "mission/timeline/report"),
-            (robot.watch_rejected_commands, "rejected/report"),
-        ]
-        if watch_wildcard:
-            wildcard_topic = f"{robot._irbt_topic_prefix}/things/{robot.blid}/#"
-            watch_specs.append((lambda: robot.watch_raw_topic(wildcard_topic), wildcard_topic))
+        watch_specs = _build_watch_specs(robot, watch_wildcard, watch_shadow_delta, watch_aws_tree)
 
         print(f"\n== Watching for up to {duration:.0f}s ==")
         for _factory, label in watch_specs:
@@ -395,6 +423,25 @@ def main() -> None:
         "next to rejected_report_topic() for the full investigation).",
     )
     parser.add_argument(
+        "--watch-shadow-delta", action="store_true",
+        help="NEW: also runs watch_state() (the shadow's update/delta push channel) for the same "
+        "duration as everything else. This method has existed for a while but has never "
+        "actually been run LIVE during an active mission -- every prior finding about mission "
+        "status not appearing in the shadow was a snapshot DIFF of get_state() (two point-in-time "
+        "GETs compared), not a test of this persistent push subscription. Genuinely untested "
+        "until now; see watch_state()'s own docstring for the full correction.",
+    )
+    parser.add_argument(
+        "--watch-aws-tree", action="store_true",
+        help='NEW: also subscribes to "$aws/things/{blid}/#" -- the entire AWS IoT namespace '
+        "(where get_state()/get_settings() already build their own topics under "
+        '"$aws/things/{blid}/shadow", see mqtt_client.py\'s _shadow_base()). Every wildcard '
+        'capture so far has only covered "{irbt_topic_prefix}/things/{blid}/#" -- this whole '
+        "tree has never been captured at all. --watch-shadow-delta above covers the specific "
+        "delta topic already known; this is broader, in case something else lives under $aws/ "
+        "too.",
+    )
+    parser.add_argument(
         "--start-mission", action="store_true",
         help="Also send a real 'start' command once subscribed (and 'stop'+'dock' at the end, so "
         "the robot returns home afterward) -- lets "
@@ -457,7 +504,7 @@ def main() -> None:
         run(
             username, password, args.country_code, args.blid, args.duration,
             args.watch_wildcard, args.start_mission, args.try_pose_request,
-            args.post_dock_watch_seconds,
+            args.post_dock_watch_seconds, args.watch_shadow_delta, args.watch_aws_tree,
         )
     )
     report.redact(username, password)

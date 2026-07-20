@@ -138,17 +138,38 @@ class MapUpdateMessage:
     download_map_bundle()/parse_map_bundle() already handle for
     REST-fetched bundles; no new download/parsing code is needed to
     consume this live feed. livemap_url_raw points to a sibling
-    "rawmap" path -- format not investigated. Both URLs' paths are
-    fixed/generic per robot (".../dload_livemap/{blid}/..."), not
-    versioned per-update -- only the query-string signing differs
-    between messages, confirmed by direct comparison, not assumed.
+    "rawmap" path. Both URLs' paths are fixed/generic per robot
+    (".../dload_livemap/{blid}/..."), not versioned per-update -- only
+    the query-string signing differs between messages, confirmed by
+    direct comparison, not assumed.
+
+    "rawmap" FORMAT, PARTIALLY RESOLVED (this session, chairstacker,
+    from a file saved during an earlier run): `file` identifies it as
+    "zlib compressed data". Decompressed (13KB -> ~207KB, ~16x), `file`
+    on the RESULT reports plain "data" -- NOT a recognized image
+    container (no PNG/JPEG magic bytes). Rules out the simple case (a
+    ready-made image) for any future live-map rendering feature -- this
+    is some other, custom binary format, not directly servable as a
+    camera/image entity without understanding its structure first.
+    Leading hypothesis, untested as of this writing: a raw occupancy
+    grid (one byte per cell, a common robotics map representation) --
+    the decompressed byte count is a plausible width*height product for
+    a room-scale map, and few-unique-values would support an enum-like
+    free/occupied/unknown encoding rather than a continuous image. Not
+    confirmed -- the actual map content wasn't shared for privacy
+    reasons (understandably, it's someone's real home layout), so this
+    was investigated via byte-level statistics and locally-rendered
+    candidate images the tester checked themselves, never shared back.
 
     NOT YET USED for anything beyond this model -- no entity in
     ha_roomba_plus consumes it yet. A concrete next step this makes
     possible: a live-updating map/camera entity, refreshed from
     whatever the most recent MapUpdateMessage delivered, using
     download_map_bundle()/parse_map_bundle() directly against
-    livemap_url -- no new download or parsing code needed."""
+    livemap_url -- no new download or parsing code needed. (A version
+    additionally overlaying livemap_url_raw's occupancy-grid data, if
+    the hypothesis above holds, remains a separate, not-yet-designed
+    enhancement.)"""
 
     livemap_url: str
     livemap_url_raw: str | None = None

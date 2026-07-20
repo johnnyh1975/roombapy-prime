@@ -9,40 +9,47 @@ subscribes to a wildcard covering every named shadow
 sibling). Five named shadows are known to exist from that pattern, but
 this library has only ever queried two of them: the classic/unnamed
 shadow (get_state()) and "rw-settings" (get_settings()). The other
-three -- "rw-constatus", "rw-schedule", "rw-software" -- have never
-been queried.
+three -- "rw-constatus", "rw-schedule", "rw-software" -- had never
+been queried before this session.
 
-"rw-constatus" is the strongest candidate for battery/charging status
-specifically (plausibly short for "connection status"), given
-RobotStatusV2's own confirmed value is derived in the native app from
-FOUR combined streams (MissionData/SettingsData/AssetNetworkData/
-OTAStatusData) via rxcpp::combine_latest -- not received as one
-ready-made field. That same analysis flagged and corrected an earlier
-mistake: "rw-constatus" was previously written off because the app's
-own command config only lists a write-side SetEchoCommand (read:
+RESULT (this session, chairstacker, all three checked live): the
+"rw-constatus" battery/charging hypothesis is DISPROVEN. Its content
+is MQTT/AWS-IoT connection status ({"connected", "connectedv2",
+"echo", "svcEndpoints"}), not battery -- the name's surface
+resemblance to "connection status" was accurate, but pointed at the
+wrong KIND of connection (network, not power/charging). The other two
+also confirmed content, neither battery-related: "rw-schedule" is the
+cleaning schedule, "rw-software" is OTA/firmware update status. See
+ConnectionStatusShadow/ScheduleShadow/SoftwareStatusShadow
+(models/robot_info.py) for the full field lists now modeled from this
+result, and RobotStatusV2's own docstring for the complete correction.
+All five named shadows this wildcard pattern covers are now fully
+enumerated -- none contain battery/charging/dock data. This script is
+kept (cheap, already built, useful to re-run against other
+devices/accounts to confirm the same content), but is no longer
+expected to resolve the battery question on its own.
+
+That same native-app analysis flagged and corrected an earlier
+mistake, still worth knowing even though the hypothesis itself didn't
+pan out: "rw-constatus" had previously been written off because the
+app's own command config only lists a write-side SetEchoCommand (read:
 false) for it -- but that config describes COMMANDS, not
 SUBSCRIPTIONS. The wildcard subscribes to a named shadow regardless of
-whether any explicit read command exists for it.
+whether any explicit read command exists for it -- a distinction
+worth remembering for any FUTURE named-shadow candidate too.
 
 PURELY PASSIVE: every shadow fetched here (get_state(), get_settings(),
-and the three new ones via get_named_shadow()) is a read. Nothing is
+and the three candidates via get_named_shadow()) is a read. Nothing is
 sent to the robot, no confirmation gate is needed, and the robot is
 never moved -- unlike verify_mission_commands.py/verify_mission_timeline.py's
---start-mission mode. Safe to run at any time, including while the
-robot is idle, active, or charging (running it DURING an active
-charging cycle is the single most useful moment, if you can arrange
-it, in case any of the new shadows only report a meaningful value
-while charging is actually happening).
+--start-mission mode. Safe to run at any time.
 
-WHAT SUCCESS LOOKS LIKE: any of the three new shadows returning a
-payload containing something recognizable as battery/charging data
-(a percentage, a boolean, a charging-state string). WHAT A NULL RESULT
-MEANS: if all three come back empty or timed out, that's still valuable
--- it would mean battery status isn't in ANY named shadow this
-wildcard pattern covers, narrowing things down for whatever
-investigation comes next. Report the result either way, including the
-exact keys seen in any non-empty payload (not just "worked" or
-"didn't").
+WHAT SUCCESS LOOKS LIKE: any shadow returning a payload containing
+something recognizable as battery/charging data (a percentage, a
+boolean, a charging-state string) -- not expected anymore given the
+result above, but this script still reports the exact keys seen in
+any payload, not just "worked" or "didn't", in case that changes on a
+different device/account.
 
 USAGE:
   roombapy-prime-verify-named-shadows \\

@@ -1,8 +1,11 @@
 """Tests for verify_mission_timeline.py -- the new diagnostic script for
 capturing whatever arrives on the mission-timeline topic(s) during a
 real, actively-running mission (see the module's own docstring for the
-full context: prompted by a live idle-vs-mid-mission diff proving
-mission status does NOT flow through get_state()/watch_state())."""
+full context: prompted by a live idle-vs-mid-mission DIFF of
+get_state() -- two point-in-time snapshots compared, not a test of
+watch_state()'s own persistent delta subscription, which has never
+actually been run live during a mission; see watch_state()'s own
+docstring for that correction)."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +14,83 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from roombapy_prime.diagnostics import Report
-from roombapy_prime.verify_mission_timeline import _add_topic_grouped_views, _confirm, _watch_one
+from roombapy_prime.verify_mission_timeline import (
+    _add_topic_grouped_views,
+    _build_watch_specs,
+    _confirm,
+    _watch_one,
+)
+
+
+def _fake_robot() -> MagicMock:
+    robot = MagicMock()
+    robot._irbt_topic_prefix = "v011-irbthbu"
+    robot.blid = "BLID123"
+    return robot
+
+
+def test_build_watch_specs_defaults_to_the_two_base_topics() -> None:
+    robot = _fake_robot()
+
+    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False, watch_aws_tree=False)
+
+    labels = [label for _factory, label in specs]
+    assert labels == ["mission/timeline/report", "rejected/report"]
+
+
+def test_build_watch_specs_adds_irbt_wildcard_when_requested() -> None:
+    robot = _fake_robot()
+
+    specs = _build_watch_specs(robot, watch_wildcard=True, watch_shadow_delta=False, watch_aws_tree=False)
+
+    labels = [label for _factory, label in specs]
+    assert "v011-irbthbu/things/BLID123/#" in labels
+
+
+def test_build_watch_specs_adds_shadow_delta_when_requested() -> None:
+    """NEW (this session, parallel reverse-engineering track) --
+    watch_state() has existed for a while but was never run live during
+    an active mission; this flag exists to actually test that now."""
+    robot = _fake_robot()
+
+    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=True, watch_aws_tree=False)
+
+    factories = dict(specs)
+    labels = list(factories.values())
+    assert "$aws/things/{blid}/shadow/update/delta" in labels
+    # The factory for this one is robot.watch_state itself (not a lambda
+    # wrapper, unlike the wildcard ones) -- assert that specifically.
+    matching = [f for f, label in specs if label == "$aws/things/{blid}/shadow/update/delta"]
+    assert matching == [robot.watch_state]
+
+
+def test_build_watch_specs_adds_aws_tree_wildcard_when_requested() -> None:
+    """NEW (this session, parallel reverse-engineering track) -- every
+    prior wildcard capture only ever covered
+    "{irbt_topic_prefix}/things/{blid}/#"; the "$aws/" tree (where
+    get_state()/get_settings() already build their own topics) had
+    never been captured at all."""
+    robot = _fake_robot()
+
+    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False, watch_aws_tree=True)
+
+    labels = [label for _factory, label in specs]
+    assert "$aws/things/BLID123/#" in labels
+
+
+def test_build_watch_specs_all_flags_combine_without_interfering() -> None:
+    robot = _fake_robot()
+
+    specs = _build_watch_specs(robot, watch_wildcard=True, watch_shadow_delta=True, watch_aws_tree=True)
+
+    labels = [label for _factory, label in specs]
+    assert labels == [
+        "mission/timeline/report",
+        "rejected/report",
+        "v011-irbthbu/things/BLID123/#",
+        "$aws/things/{blid}/shadow/update/delta",
+        "$aws/things/BLID123/#",
+    ]
 
 
 @pytest.mark.parametrize(

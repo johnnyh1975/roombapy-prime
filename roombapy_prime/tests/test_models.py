@@ -2258,8 +2258,158 @@ def test_robot_settings_handles_missing_optional_nested_objects() -> None:
     assert s.name == "X"
     assert s.audio_volume is None
     assert s.pad_wetness is None
-    assert s.svc_deployment_id is None
-    assert s.languages_raw is None
+
+
+def test_schedule_shadow_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- the complete
+    content of "rw-schedule", the third of the three never-before-
+    queried named shadows checked in the same pass. Deliberately
+    stores clean_schedule2_raw as-is rather than deep-parsing each
+    entry's cmdStr -- that's a separate, already-ongoing investigation
+    (see models/mission_control.py)."""
+    from roombapy_prime.models import ScheduleShadow
+
+    shadow = ScheduleShadow.from_json(
+        {"cleanSchedule2": [{"cmdStr": "some-repr-like-string"}], "nsmip": 2}
+    )
+
+    assert shadow.clean_schedule2_raw == [{"cmdStr": "some-repr-like-string"}]
+    assert shadow.nsmip == 2
+
+
+def test_schedule_shadow_handles_missing_fields() -> None:
+    from roombapy_prime.models import ScheduleShadow
+
+    shadow = ScheduleShadow.from_json({})
+
+    assert shadow.clean_schedule2_raw == []
+    assert shadow.nsmip is None
+
+
+def test_connection_status_shadow_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- the complete
+    content of "rw-constatus", the leading (and only) never-before-
+    queried named shadow hypothesized as a battery/charging status
+    candidate. DISPROVEN by this exact capture: this is MQTT/AWS-IoT
+    connection status, not battery -- see the model's own docstring
+    and RobotStatusV2's for the full correction."""
+    from roombapy_prime.models import ConnectionStatusShadow
+
+    status = ConnectionStatusShadow.from_json(
+        {"connected": True, "connectedv2": True, "echo": 0, "svcEndpoints": {"svcDeplId": "v007"}}
+    )
+
+    assert status.connected is True
+    assert status.connected_v2 is True
+    assert status.echo == 0
+
+
+def test_connection_status_shadow_handles_missing_fields() -> None:
+    from roombapy_prime.models import ConnectionStatusShadow
+
+    status = ConnectionStatusShadow.from_json({})
+
+    assert status.connected is None
+    assert status.connected_v2 is None
+    assert status.echo is None
+
+
+def test_software_status_shadow_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- the complete
+    content of "rw-software", the other never-before-queried named
+    shadow checked in the same pass. Also not battery-related -- OTA/
+    firmware deployment and update status."""
+    from roombapy_prime.models import SoftwareStatusShadow
+
+    status = SoftwareStatusShadow.from_json(
+        {
+            "deploymentId": "abc123",
+            "deploymentMpkg": "mpkg-1",
+            "deploymentState": "idle",
+            "imuRecal": False,
+            "lastCommand": "none",
+            "lastSwUpdate": 1784559000,
+            "softwareVer": "22.52.10",
+            "subModSwVer": {"navSw": "1.2.3"},
+            "svcEndpoints": {"svcDeplId": "v007"},
+        }
+    )
+
+    assert status.deployment_id == "abc123"
+    assert status.deployment_state == "idle"
+    assert status.software_version == "22.52.10"
+    assert status.last_sw_update == 1784559000
+
+
+def test_software_status_shadow_handles_missing_fields() -> None:
+    from roombapy_prime.models import SoftwareStatusShadow
+
+    status = SoftwareStatusShadow.from_json({})
+
+    assert status.deployment_id is None
+    assert status.software_version is None
+
+
+def test_dock_paddry_report_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- real payload from
+    the newly-discovered "dock/paddry/report" topic, fired essentially
+    immediately after a mission's "start" command. See the model's own
+    docstring for why this is a genuinely new, structurally-grounded
+    lead for the battery/RobotStatusV2 question (topic FAMILY shaped
+    like "dock/{reportType}/report", only "paddry" observed so far)."""
+    from roombapy_prime.models import DockPadDryReport
+
+    report = DockPadDryReport.from_json(
+        {
+            "bbk": {
+                "dockErrorCounts": {},
+                "dockId": "UNKNOWN",
+                "dockVer": "UNKNOWN",
+                "numDocks": 23,
+                "totalPadDry": 141,
+                "totalPadDryTime": 1614726,
+            },
+            "cap": {"evac": 1, "pd": 2, "pw": 1, "pwo": 1},
+            "dockId": "NA",
+            "dockPn": "NA",
+            "dockVer": "20",
+            "endTime": 1784569442,
+            "error": 0,
+            "hwRev": -1,
+            "pdState": 701,
+            "reportTime": 1784569442,
+            "reportType": "padDry",
+            "robotId": "6F55705AE0BF169D69BDBFC9D858B5D2",
+            "startTime": 1784556592,
+            "varId": -1,
+        }
+    )
+
+    assert report.report_type == "padDry"
+    assert report.dock_id == "NA"
+    assert report.dock_ver == "20"
+    assert report.error == 0
+    assert report.pd_state == 701
+    assert report.start_time == 1784556592
+    assert report.end_time == 1784569442
+    assert report.report_time == 1784569442
+    assert report.capabilities == {"evac": 1, "pd": 2, "pw": 1, "pwo": 1}
+    # bbk's own values look stale/placeholder compared to the top-level
+    # ones -- stored as-is, not merged or reconciled (only one example
+    # exists, see the model's own docstring on this point).
+    assert report.bbk["dockId"] == "UNKNOWN"
+    assert report.bbk["numDocks"] == 23
+    assert report.bbk["totalPadDryTime"] == 1614726
+
+
+def test_dock_paddry_report_handles_missing_fields() -> None:
+    from roombapy_prime.models import DockPadDryReport
+
+    report = DockPadDryReport.from_json({})
+
+    assert report.report_type is None
+    assert report.capabilities == {}
+    assert report.bbk == {}
 
 
 # =========================================================================

@@ -107,7 +107,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-430+ tests, all passing — structural checks against decompiled source,
+443+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -197,8 +197,9 @@ walls, or furniture — several of those aren't cleanly reversible even in princ
 ### Watching for live mission status
 
 `roombapy-prime-validate` and `get_state()` only ever show a static shadow — a live idle-vs-mid-mission
-diff proved it's byte-identical whether the robot is cleaning or not. This script watches the
-separate channel that actually carries live mission status instead:
+diff proved that specific comparison (two point-in-time GETs) is byte-identical whether the robot
+is cleaning or not. This script watches the separate channel that actually carries live mission
+status instead:
 
 ```bash
 roombapy-prime-verify-mission-timeline --username you@example.com --country-code US \
@@ -210,27 +211,42 @@ app, or `roombapy-prime-verify-commands` in a separate terminal) and this script
 Pass `--start-mission` to have it send start/stop/dock itself instead, in one terminal (same
 `--i-understand-this-will-move-my-robot` gate as the other robot-moving scripts). Pass
 `--watch-wildcard` to also capture everything else on the device's topic tree at the same time —
-this is how live position data and the live map-streaming mechanism were both found. Same
-`--dump-config`/shareable-report support as the other scripts.
+this is how live position data and the live map-streaming mechanism were both found.
+
+Two more flags, both genuinely untested until now: `--watch-shadow-delta` runs `watch_state()`
+(the shadow's `update/delta` push channel) for the same duration — this method has existed for a
+while but was never actually run live during an active mission, only assumed (wrongly stated, in
+fact) to behave like the snapshot-diff finding above. `--watch-aws-tree` wildcard-subscribes to
+the entire `$aws/things/{blid}/#` namespace — every prior wildcard capture only ever covered
+`{irbt_topic_prefix}/things/{blid}/#`; the `$aws/` tree (where `get_state()`/`get_settings()`
+already build their own topics) has never been captured at all. Same `--dump-config`/shareable-
+report support as the other scripts.
 
 ### Checking named shadows (battery/charging status investigation)
 
 Battery percentage and charging/docked state remain unconfirmed as of this writing — not in the
-classic shadow, not in `rw-settings`, not on any MQTT topic captured so far. This script checks
-three named shadows that have never been queried before (`rw-constatus`, `rw-schedule`,
-`rw-software` — alongside the two already-known ones as a baseline), specifically looking for
-where this data might actually live:
+classic shadow, not in `rw-settings`, not on any MQTT topic captured so far, and (result below)
+not in any of the other three named shadows either. This script checks all five known named
+shadows in one pass, specifically looking for where this data might actually live:
 
 ```bash
 roombapy-prime-verify-named-shadows --username you@example.com --country-code US \
     --blid YOUR_ROBOT_BLID
 ```
 
+**Result (chairstacker, all three previously-unqueried shadows checked live):** none contain
+battery/charging data. `rw-constatus` — the leading candidate from a native-app symbol trace —
+turned out to be MQTT/AWS-IoT *connection* status, not battery: its content is `{"connected",
+"connectedv2", "echo", "svcEndpoints"}`. The other two also confirmed content, neither
+battery-related: `rw-schedule` is the cleaning schedule, `rw-software` is OTA/firmware update
+status. See `ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in
+`models/robot_info.py` for the full field lists this result is now modeled from.
+
 Purely read-only — no confirmation gate needed, unlike the scripts above; this one never sends
-anything to the robot. If you can run it while the robot is actually mid-charge, that's likely
-the single most useful moment to try. These same three shadows are now also checked
-automatically by `roombapy-prime-validate` itself, so this standalone script is mainly useful if
-you want to re-check them on their own, or want a shorter run than the full validation.
+anything to the robot. These same shadows are now also checked automatically by
+`roombapy-prime-validate` itself, so this standalone script is mainly useful if you want to
+re-check them on their own (e.g. against a different device/account), or want a shorter run
+than the full validation.
 
 ## Confidence & known gaps
 
@@ -251,7 +267,7 @@ below.
 | Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
 | Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is a new, reasoned-but-unconfirmed hypothesis (see its docstring) — favor a `favorite_id`-referencing command over hand-built regions if experimenting with it |
 | Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. A real bug in the request envelope (`commands`/`end_commands` entries need a `{"command": ...}` wrapper) was found and fixed by reading a real `get_schedules()` response, though the write methods themselves have still never been called against a real server. HTTP methods separately confirmed. |
-| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 fields are bytecode-confirmed wire keys from the real `@Serializable` class. Confirmed NOT in `get_state()`'s response (multiple independent captures) and NOT on any of the 7 MQTT topics found so far, even after watching 300s post-dock. Current lead: a native-app symbol trace shows this value is derived from four combined data streams, not received as one field — three named shadows this library never queried before (`rw-constatus`/`rw-schedule`/`rw-software`) are the next thing being checked, see "Checking named shadows" above |
+| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 modeled fields are bytecode-confirmed wire keys (a fuller field list from `RobotStatusV2Constants.java` is now documented but not yet modeled). Confirmed NOT in `get_state()`'s response, NOT on any of the 7 originally-found MQTT topics (even after watching 300s post-dock), and NOT in any of the 5 named shadows (the `rw-constatus` hypothesis is disproven). Two active leads: a newly-discovered topic family, `dock/{reportType}/report` (one `reportType`, `"padDry"`, observed so far); and a genuine gap in our own prior testing — `watch_state()`'s shadow `update/delta` push channel has never been run live during an active mission (a prior "doesn't show up" finding was only ever a snapshot diff of `get_state()`), and the entire `$aws/` topic tree has never been wildcard-captured. `roombapy-prime-verify-mission-timeline --watch-shadow-delta --watch-aws-tree` exists to test both now. |
 | Map editing | **High (envelope + 8/9 commands' fields), unverified (practice)** | The request envelope (`{"edit_cmd": ..., "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (several were wrong camelCase guesses, now corrected). `SetRoomMetadata`/`VirtualWall`'s internal discriminator use hand-written custom serializers and remain unconfirmed. Never sent to a real server -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
 | Deeply nested response fields (map bundle internals) | **High (fields), mostly resolved (envelope details)** | All 12 map-bundle content types (rooms, borders, hazards, trajectories, etc.) now have confirmed wire formats via bytecode (`RoomFeature` and 10 others) — each is a standard GeoJSON Feature with nested `properties`. The bundle's own manifest filename is now confirmed (it's literally `"manifest"`), and a real bundle confirms most content types use a `{type, features}` wrapper while at least one (`BorderFeature`) is a bare single Feature instead. Mission history's 20 timeline sub-event types are also fully typed (`MissionTimelineEvent`) — 10 of the 20 now confirmed against real data. |
 
