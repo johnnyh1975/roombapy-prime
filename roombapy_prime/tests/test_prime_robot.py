@@ -77,6 +77,30 @@ async def test_get_settings_uses_named_shadow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_named_shadow_accepts_any_name() -> None:
+    """NEW (this session) -- the general form get_state()/get_settings()
+    are thin wrappers around. Exists to investigate the three named
+    shadows never queried before: rw-constatus/rw-schedule/rw-software."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    mqtt.get_shadow.return_value = ShadowResponse(topic="t", payload={"some": "data"})
+
+    result = await robot.get_named_shadow("rw-constatus")
+
+    mqtt.get_shadow.assert_called_once_with("rw-constatus", 8.0)
+    assert result.payload == {"some": "data"}
+
+
+@pytest.mark.asyncio
+async def test_get_named_shadow_respects_custom_timeout() -> None:
+    robot, mqtt, _rest = _robot_with_mocks()
+    mqtt.get_shadow.return_value = ShadowResponse(topic="t", payload={})
+
+    await robot.get_named_shadow("rw-schedule", timeout=15.0)
+
+    mqtt.get_shadow.assert_called_once_with("rw-schedule", 15.0)
+
+
+@pytest.mark.asyncio
 async def test_set_setting_writes_named_shadow() -> None:
     robot, mqtt, _rest = _robot_with_mocks()
     mqtt.update_shadow.return_value = ShadowResponse(topic="t", payload={})

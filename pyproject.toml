@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime"
-version = "0.1.11a6"
+version = "0.1.11a7"
 description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,7 @@ roombapy-prime-validate = "roombapy_prime.diagnostics:main"
 roombapy-prime-verify-commands = "roombapy_prime.verify_mission_commands:main"
 roombapy-prime-verify-map-edit = "roombapy_prime.verify_map_edit:main"
 roombapy-prime-verify-mission-timeline = "roombapy_prime.verify_mission_timeline:main"
+roombapy-prime-verify-named-shadows = "roombapy_prime.verify_named_shadows:main"
 
 [project.optional-dependencies]
 test = [

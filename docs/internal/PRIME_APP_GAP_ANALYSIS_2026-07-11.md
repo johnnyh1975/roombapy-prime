@@ -2731,3 +2731,52 @@ already-confirmed `cmd` topic; `--try-pose-request` lets a tester try it live. N
 against a real device as of this session.
 
 417/417 tests green, ruff clean. Released as v0.1.11a5.
+
+## Addendum (a6-a8-and-unreleased): the live-map channel fully mapped, and a new lead on battery status from native symbol analysis
+
+Three more releases (a6, a7) plus unreleased work followed the a5 addendum above -- summarized
+here rather than in the same session-by-session detail as earlier addenda; see `CHANGELOG.md`
+for the fully itemized list per release.
+
+**a6 (chairstacker, second live capture):** `"pos_update"` confirmed flowing automatically
+during a mission, no request needed -- the experimental `send_umi_get_request()` pose request
+from the a5 addendum turned out unnecessary for this specifically (its own timing showed
+`pos_update` arriving 8s *before* the request was even sent). `"fin"`/`"pause"` confirmed live as
+real `mission/timeline/report` event types (`"fin"` marks mission conclusion, `"pause"` is what
+`send_simple_command("stop")` itself produces in the timeline). A live map-streaming mechanism
+was found (`uploadP2MapLive`/`uploadP2MapMission`/`map_update`) -- `livemap_url` turned out to be
+the exact same `p2mapv_geojson.tgz` format `download_map_bundle()`/`parse_map_bundle()` already
+handle. `_watch_one()`'s own diagnostic printing was found to only ever log the static watch
+label, not `response.topic` -- meaning a wildcard capture could never show which of its several
+matching topics a message actually arrived on; fixed.
+
+**a7 (jayjay13011, third independent tester, first capture with the topic-tracking fix above):**
+the exact topic settled directly: `{prefix}/things/{blid}/livemap/update` carries BOTH
+`pos_update` and `map_update`, discriminated by which key is present -- exactly the pattern
+`livemap_topic()`/`watch_live_map()` already used (an untested analogy since session 39, now
+independently confirmed). `operating_modes` (the 4th value in each `cur_path` point group)
+confirmed to genuinely vary (0, then 5, mid-mission) rather than being a fixed marker.
+`RobotStatusV2`/battery: stronger negative evidence -- a full 300s post-dock watch with every one
+of 7 topics identified by name still found nothing battery-related, ruling out "wasn't watching
+long enough" and "missed it in another topic's payload" as explanations.
+
+**Unreleased (unrelated to any live capture this time -- a person's own native-binary symbol
+analysis of the real app):** the app subscribes to a wildcard covering every *named* shadow, not
+just the two ever queried here (classic + `"rw-settings"`). Three more exist and were never
+checked: `"rw-constatus"`, `"rw-schedule"`, `"rw-software"`. `"rw-constatus"` is the strongest
+lead for battery/charging specifically -- the same analysis traced
+`RobotStatusReducerUseCaseImpl::observeStatusReducerData()` and found the real app derives its
+battery/charging display from FOUR combined data streams (`MissionData`/`SettingsData`/
+`AssetNetworkData`/`OTAStatusData`) via `rxcpp::combine_latest`, not from one ready-made field --
+meaning it's plausibly assembled from more shadows than the two already queried.
+`"rw-constatus"` had actually been considered and dismissed earlier (the app's own command config
+lists only a write-side `SetEchoCommand`, `read: false`, for it) -- the analysis correctly
+identified this as the wrong test: that config describes commands, not subscriptions, and the
+wildcard subscribes to a named shadow regardless of whether any explicit read command exists for
+it. New `get_named_shadow(name)` (general form of what `get_state()`/`get_settings()` were always
+thin wrappers around) and a new script, `roombapy-prime-verify-named-shadows`, exist to check
+this against a real device -- not yet run as of this writing. Deliberately not tagged as its own
+release yet, sitting on top of a7 until a real device confirms what (if anything) these shadows
+contain.
+
+427/427 tests green, ruff clean as of this addendum.

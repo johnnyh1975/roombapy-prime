@@ -296,6 +296,35 @@ def _report_tier_inference(report: Report, settings_result: Any) -> None:
         )
 
 
+async def _check_candidate_shadows(report: Report, robot: Any, raw_capture: dict[str, Any]) -> None:
+    """NEW (this session, prompted by a person's own native-binary symbol
+    analysis, not this library's own investigation): the real app
+    subscribes to a wildcard covering every NAMED shadow, and five are
+    known to exist -- this script had only ever queried two of them
+    (classic + "rw-settings", both already checked before this function is
+    called). The other three have never been queried before. "rw-constatus"
+    is the strongest candidate for battery/charging status specifically
+    (plausibly short for "connection status"), given RobotStatusV2's own
+    confirmed value is derived in the native app from FOUR combined
+    streams via rxcpp::combine_latest, not received as one ready-made
+    field. Purely a read, same risk profile as get_state()/get_settings()
+    -- see get_named_shadow()'s own docstring for the full reasoning,
+    including the specific earlier mistake ("rw-constatus" was wrongly
+    written off because the app's command config lists only a write-side
+    command for it -- that describes commands, not subscriptions) this
+    corrects. Factored out as its own function (rather than an inline loop
+    in run()) specifically so it's unit-testable on its own -- run() as a
+    whole has no dedicated test of its own, this way the new behavior
+    still does."""
+    for candidate_shadow in ("rw-constatus", "rw-schedule", "rw-software"):
+        await _try(
+            report,
+            f'Fetching named shadow "{candidate_shadow}" (get_named_shadow)',
+            robot.get_named_shadow(candidate_shadow),
+            capture=raw_capture,
+        )
+
+
 async def run(
     username: str,
     password: str,
@@ -343,6 +372,8 @@ async def run(
             report, "Fetching shadow settings (get_settings)", robot.get_settings(), capture=raw_capture
         )
         _report_tier_inference(report, settings_result)
+
+        await _check_candidate_shadows(report, robot, raw_capture)
 
         await _try(
             report, "Requesting live map stream (get_live_map_stream)", robot.get_live_map_stream(), capture=raw_capture

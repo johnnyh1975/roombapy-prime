@@ -54,6 +54,23 @@ class PositionUpdateMessage:
         Orientation is shifted by +pi, same as in the original -- the
         reason for this convention wasn't further investigated.
 
+        CONFIRMED LIVE (this session, jayjay13011, roombapy-prime
+        v0.1.11a6 -- the first capture with topic tracking, so the
+        exact topic this arrives on is now also settled, see
+        livemap_topic()/watch_live_map()). This directly resolves the
+        TENSION noted below in favor of option (a): the flat cur_path
+        array genuinely IS the wire format, not a misreading -- a real
+        capture confirms it exactly, including operating_modes
+        actually varying (not a fixed constant): 0 for the first ~5
+        seconds of cleaning (still settling in after travel/reloc),
+        then switching to 5 for the rest of the observed cleaning
+        period. The switch happens a few seconds AFTER
+        mission/timeline/report's own "room" event fires, not
+        precisely at that boundary -- plausibly a finer-grained
+        sub-state (e.g. "orienting" vs "actively cleaning") than what
+        the mission-timeline channel exposes, but this is not
+        confirmed, just a reasonable reading of the timing.
+
         IMPORTANT TENSION, discovered but NOT resolved (session 48):
         a systematic `$$serializer` scan found
         `PositionUpdates$PositionUpdate$$serializer` -- an
@@ -74,15 +91,10 @@ class PositionUpdateMessage:
         structured PositionUpdate objects specifically into the flat
         "cur_path" wire array as an optimization, with PositionUpdate
         only ever existing as the in-memory Kotlin representation, not
-        a JSON shape of its own. Resolving this needs either a real
-        traffic capture of an actual livemap position message, or
-        disassembling PositionUpdatesSerializer's own
-        serialize()/deserialize() method bodies (not just reading a
-        `<clinit>`'s literal strings, the same harder kind of
-        investigation this session deliberately didn't pursue for
-        SetRoomMetadata/VirtualWall's own custom serializers either).
-        NOT changed this session -- flagging this honestly rather than
-        guessing which one is right.
+        a JSON shape of its own. The live capture above settles which
+        of these is right for the WIRE FORMAT (flat array, confirmed);
+        it doesn't settle whether PositionUpdate the class still
+        exists internally in the app for the same data.
         """
         cur_path = data["cur_path"]
         if (len(cur_path) - 2) % 4 != 0:
@@ -116,13 +128,40 @@ class MapUpdateMessage:
     LiveMapUpdateResponse$$serializer/
     LiveMapUpdateResponse$LiveMapUpdate$$serializer's <clinit>s:
     map_update.livemap_url -- exactly matching the nesting already
-    used here."""
+    used here.
+
+    CONFIRMED LIVE (this session, jayjay13011, roombapy-prime v0.1.11a6):
+    real messages also carry an outer "timestamp" and a sibling
+    "livemap_url_raw" alongside "livemap_url" -- both added here, not
+    previously modeled. livemap_url is a presigned S3 URL ending in
+    "p2mapv_geojson.tgz" -- the EXACT SAME format
+    download_map_bundle()/parse_map_bundle() already handle for
+    REST-fetched bundles; no new download/parsing code is needed to
+    consume this live feed. livemap_url_raw points to a sibling
+    "rawmap" path -- format not investigated. Both URLs' paths are
+    fixed/generic per robot (".../dload_livemap/{blid}/..."), not
+    versioned per-update -- only the query-string signing differs
+    between messages, confirmed by direct comparison, not assumed.
+
+    NOT YET USED for anything beyond this model -- no entity in
+    ha_roomba_plus consumes it yet. A concrete next step this makes
+    possible: a live-updating map/camera entity, refreshed from
+    whatever the most recent MapUpdateMessage delivered, using
+    download_map_bundle()/parse_map_bundle() directly against
+    livemap_url -- no new download or parsing code needed."""
 
     livemap_url: str
+    livemap_url_raw: str | None = None
+    timestamp: int | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> MapUpdateMessage:
-        return cls(livemap_url=data["map_update"]["livemap_url"])
+        update = data["map_update"]
+        return cls(
+            livemap_url=update["livemap_url"],
+            livemap_url_raw=update.get("livemap_url_raw"),
+            timestamp=data.get("timestamp"),
+        )
 
 
 def parse_livemap_message_data(data: dict[str, Any]) -> PositionUpdateMessage | MapUpdateMessage:

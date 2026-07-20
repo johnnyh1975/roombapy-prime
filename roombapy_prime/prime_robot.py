@@ -226,6 +226,45 @@ class PrimeRobot:
         listed as unmodeled in docs/API_REFERENCE.md."""
         return await asyncio.to_thread(self._mqtt.get_shadow, "rw-settings", timeout)
 
+    async def get_named_shadow(self, name: str, timeout: float = 8.0) -> ShadowResponse:
+        """NEW (this session, prompted by a person's own native-binary
+        symbol analysis, not this library's own investigation): fetches
+        an arbitrary named shadow. get_state() (unnamed/classic) and
+        get_settings() ("rw-settings") are thin, specifically-named
+        convenience wrappers around this exact same underlying
+        capability (mqtt_client.py's get_shadow(named=...), which
+        already accepted any string) -- this is that general form,
+        exposed publicly so a currently-unconfirmed named shadow can be
+        investigated without reaching into a private attribute.
+
+        WHY THIS MATTERS (context from that analysis): the real app
+        subscribes to a wildcard covering every named shadow
+        ("/things/{blid}/shadow/name/+/get/accepted" and the "update/
+        accepted" sibling), and five named shadows are known to exist
+        from that pattern -- but this library has only ever queried two
+        of them (classic + "rw-settings"). The other three --
+        "rw-constatus", "rw-schedule", "rw-software" -- have never been
+        queried. "rw-constatus" is a strong candidate for where
+        battery/charging status might live (plausibly short for
+        "connection status"), given RobotStatusV2's own confirmed value
+        is derived in the native app from FOUR combined streams
+        (MissionData/SettingsData/AssetNetworkData/OTAStatusData) via
+        rxcpp::combine_latest, not received as one ready-made field --
+        meaning it's very plausibly assembled from more shadows than
+        the two already queried. A specific EARLIER mistake, worth
+        remembering: "rw-constatus" was previously written off because
+        the app's own command config only lists a write-side
+        SetEchoCommand (read: false) for it -- but that config
+        describes COMMANDS, not SUBSCRIPTIONS; the wildcard subscribes
+        to a named shadow regardless of whether any explicit read
+        command exists for it. That distinction is exactly what this
+        method exists to let someone check.
+
+        Purely a read -- no different in risk from get_state()/
+        get_settings(), which already do the same underlying MQTT
+        request/response exchange against a different name."""
+        return await asyncio.to_thread(self._mqtt.get_shadow, name, timeout)
+
     async def set_setting(self, key: str, value: object, timeout: float = 8.0) -> ShadowResponse:
         """Writes to the "rw-settings" shadow. Only meaningful on
         SMART tier -- on EPHEMERAL, presumably the same timeout as
@@ -372,12 +411,15 @@ class PrimeRobot:
         request existed, which settles it: this is not a response to
         this request, position data is simply pushed continuously
         regardless (see mqtt_client.py's notes next to
-        rejected_report_topic() for the full pos_update finding). A
-        plain watch_raw_topic() wildcard capture, with no request
-        needed, is sufficient on its own for position data specifically.
-        Left in place since the request itself was still a reasonable
-        thing to have tried, and this doesn't rule out this request
-        mattering for some other purpose (args other than "pose"?) --
+        rejected_report_topic() for the full pos_update finding).
+        UPDATED again (jayjay13011, v0.1.11a6): the exact topic is now
+        confirmed too (livemap_topic()), and watch_live_map() is the
+        proper, already-built, now-also-confirmed way to consume this
+        -- no request needed, and no need to fall back to a generic
+        wildcard capture either. Left in place since the request itself
+        was still a reasonable thing to have tried, and this doesn't
+        rule out this request mattering for some other purpose (args
+        other than "pose"?) --
         but "pose" specifically no longer looks like it needs this path.
 
         THE HYPOTHESIS: a request payload for the legacy "UMI" protocol
@@ -920,7 +962,17 @@ class PrimeRobot:
         queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
         keep_alive_interval: float = 10.0,
     ) -> AsyncIterator[PositionUpdateMessage | MapUpdateMessage]:
-        """CORRECTED (July 11, see
+        """CONFIRMED LIVE (this session, jayjay13011, roombapy-prime
+        v0.1.11a6): both PositionUpdateMessage and MapUpdateMessage
+        deliveries via this exact method were verified against a real
+        capture with topic tracking -- previously this whole method had
+        never been live-tested successfully. See livemap_topic()'s own
+        docstring for the topic confirmation, and
+        models/livemap.py's PositionUpdateMessage/MapUpdateMessage for
+        the confirmed payload shapes (including operating_modes
+        genuinely varying, not a fixed constant -- see that module).
+
+        CORRECTED (July 11, see
         docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1) -- an
         earlier version called get_live_map_stream() and subscribed to
         the topic returned in it. That was a misunderstanding: in the

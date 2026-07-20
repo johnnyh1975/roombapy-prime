@@ -425,26 +425,23 @@ class PrimeMqttClient:
         return f"{_shadow_base(self._blid, named)}/{suffix}"
 
     def livemap_topic(self, irbt_topic_prefix: str) -> str:
-        """UPDATED (session 39). Builds the fixed live-map topic pattern
-        the way the real app uses it (core::MQTTTopicResolverAdapter.
-        resolve() -> "{prefix}/{identifier}", mqttClient.subscribe(irbt,
-        "livemap/update", assetId) in P2MapAPIFetching.observeLiveMap())
-        -- NOT a shadow topic, completely independent of get_shadow()/
-        update_shadow().
+        """CONFIRMED LIVE (this session, jayjay13011, roombapy-prime
+        v0.1.11a6 -- the first capture with response.topic tracking,
+        settling this exactly): this topic pattern
+        ("{prefix}/things/{blid}/livemap/update") is EXACTLY where both
+        PositionUpdateMessage and MapUpdateMessage payloads arrive,
+        confirmed directly against a real device's topic-frequency
+        summary (63 messages on this exact topic in one capture). No
+        longer just an analogy to cmd_topic()'s pattern -- this is now
+        independently, directly confirmed for livemap specifically.
 
-        Now includes a "things/" segment (previously
-        "{prefix}/{blid}/livemap/update", missing it) -- by analogy to
-        cmd_topic()'s now much more strongly evidenced pattern
-        (independently confirmed both by this library's own native
-        disassembly AND by a third-party, unaffiliated, MIT-licensed
-        implementation that reports actually working against a real
-        device, see cmd_topic()'s docstring). This is still an
-        ANALOGY, not a direct confirmation for livemap specifically --
-        that third-party project's own status table lists live-map/
-        room-cleaning as unconfirmed too. If this breaks something that
-        previously worked, the old, "things/"-less form may need to be
-        restored -- watch_live_map() was itself never live-tested
-        successfully before this change either way."""
+        UPDATED (session 39, superseded by the above): Builds the
+        fixed live-map topic pattern the way the real app uses it
+        (core::MQTTTopicResolverAdapter.resolve() -> "{prefix}/
+        {identifier}", mqttClient.subscribe(irbt, "livemap/update",
+        assetId) in P2MapAPIFetching.observeLiveMap()) -- NOT a shadow
+        topic, completely independent of get_shadow()/update_shadow().
+        """
         return f"{irbt_topic_prefix}/things/{self._blid}/livemap/update"
 
     def cmd_topic(self, irbt_topic_prefix: str) -> str:
@@ -648,17 +645,19 @@ class PrimeMqttClient:
     # source, but this framing fits every number seen in both live
     # captures so far.
     #
-    # THE EXACT TOPIC THIS ARRIVES ON IS NOT YET KNOWN: the capture that
-    # found this predates a fix to verify_mission_timeline.py that
-    # printed only the static watch label for wildcard messages, not
-    # response.topic (the actual concrete topic each one arrived on) --
-    # so all 81 wildcard messages in that capture were logged
-    # indistinguishably. A re-run with the fixed tooling would settle
-    # the exact topic name directly; not done yet as of this session.
-    # See watch_raw_topic()'s own docstring (prime_robot.py) -- it
-    # remains the practical way to capture this live regardless of the
-    # exact topic, since a wildcard subscription doesn't need to know
-    # it in advance.
+    # THE EXACT TOPIC IS NOW CONFIRMED (jayjay13011, roombapy-prime v0.1.11a6
+    # -- the first capture with response.topic tracking, from the fix
+    # described immediately below): livemap_topic() -- both pos_update and
+    # map_update arrive on the SAME topic ("{prefix}/things/{blid}/
+    # livemap/update"), discriminated by which key is present in the
+    # payload. watch_live_map() (prime_robot.py) already wraps this
+    # correctly, also now confirmed live for the first time. The gap that
+    # made this unknown for a while: an earlier capture (chairstacker)
+    # predated a fix to verify_mission_timeline.py that printed only the
+    # static watch label for wildcard messages, not response.topic (the
+    # actual concrete topic each one arrived on) -- so all 81 wildcard
+    # messages in that capture were logged indistinguishably. The
+    # jayjay13011 re-run, with the fixed tooling, settled it directly.
 
     def publish_cmd(self, irbt_topic_prefix: str, command: str, initiator: str = "localApp") -> None:
         """NEW (session 39). Publishes a simple mission command via

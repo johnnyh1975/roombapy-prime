@@ -834,7 +834,22 @@ class RobotStatusV2:
     UPDATE (session 49): the four list/dict-typed fields' own element
     types are now ALSO confirmed (DockControl/RobotStatusButton/
     RobotStatusError, see their own docstrings) -- previously left as
-    list[Any], now properly typed."""
+    list[Any], now properly typed.
+
+    STRONGER NEGATIVE EVIDENCE (this session, jayjay13011, roombapy-prime
+    v0.1.11a6): a live capture with fully topic-tracked wildcard coverage
+    (7 distinct topics identified: mission/timeline/report, livemap/update,
+    livemap/cmd, filexfer_req, filexfer_resp, cmd, service_event) watched
+    for 300 seconds after stop+dock were sent -- specifically to give the
+    robot time to physically reach its dock -- and NONE of these 7 topics
+    carried anything battery/charging-related. This doesn't prove
+    RobotStatusV2 is unreachable via MQTT (it could still live on a topic
+    this particular wildcard scope doesn't cover, e.g. outside
+    "things/{blid}/"), but it does rule out "we just weren't watching
+    long enough" and "it's mixed in with one of these other message
+    types but we didn't notice" as explanations. The most likely
+    remaining possibilities: it's shadow/get_state()-only (never pushed),
+    or it lives under a topic root this wildcard didn't reach."""
 
     robot_state: int | None = None
     battery_level: int | None = None

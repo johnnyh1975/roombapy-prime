@@ -8,6 +8,81 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+### Added
+
+- **`PrimeRobot.get_named_shadow(name)`** — a general, public form of the capability
+  `get_state()`/`get_settings()` were always thin wrappers around (`mqtt_client.py`'s
+  `get_shadow(named=...)`, which already accepted any string). Prompted by a person's own
+  native-binary symbol analysis, not this library's own investigation: the real app subscribes
+  to a wildcard covering every named shadow, and five are known to exist, but this library had
+  only ever queried two (classic + `rw-settings`). The other three — `rw-constatus`,
+  `rw-schedule`, `rw-software` — were never queried. `rw-constatus` is the strongest candidate
+  for where battery/charging status might live, given `RobotStatusV2`'s own confirmed value is
+  derived in the native app from four combined streams via `rxcpp::combine_latest`, not received
+  as one ready-made field. A specific earlier mistake this corrects: `rw-constatus` had been
+  written off because the app's command config only lists a write-side `SetEchoCommand`
+  (`read: false`) for it — but that config describes commands, not subscriptions.
+- **New script: `roombapy-prime-verify-named-shadows`** — checks all five known named shadows
+  (the two already-confirmed ones as a baseline, plus the three new candidates) in one pass.
+  Purely read-only, no confirmation gate needed (unlike the mission-command scripts, this one
+  never moves the robot). Reports the reported-keys of every shadow that responds.
+- **The three new candidate shadows are now also checked automatically by the main
+  `roombapy-prime-validate` script** (`diagnostics.py`) — the one every new tester runs first.
+  Factored into its own `_check_candidate_shadows()` function specifically so it's unit-tested
+  on its own (`run()` as a whole has no dedicated test of its own; this way the new behavior
+  still does). Considered also adding this to `verify_mission_commands.py`'s post-dock capture,
+  but that script fires "dock" without waiting for the robot to physically arrive and start
+  charging (same timing gap already known from `"fin"`'s own behavior) — an immediate
+  post-command shadow check there wouldn't reliably catch a charging state anyway. The new
+  dedicated script is the more deliberate way to check that specific moment, since a person can
+  simply confirm the robot is already charging before running it.
+
+4 new tests, 427/427 total green, ruff clean. Not yet released as its own version — waiting on
+a real device confirming what (if anything) the new candidate shadows actually contain, before
+this becomes a numbered release.
+
+## [0.1.11a7] - 2026-07-20
+
+### Added
+
+- **The exact MQTT topics for live position/map data are now confirmed** (jayjay13011,
+  the first capture with `verify_mission_timeline.py`'s topic-tracking fix from a6):
+  `{prefix}/things/{blid}/livemap/update` carries BOTH position updates (`pos_update`) and
+  map-ready notifications (`map_update`), discriminated by which key is present. This was
+  already the exact pattern `livemap_topic()`/`watch_live_map()` used — previously an
+  untested analogy to `cmd_topic()`'s pattern, now directly, independently confirmed. Both
+  methods' docstrings updated accordingly; no code change was needed, only confirmation.
+  7 distinct topics identified in total from the same capture's full topic-frequency
+  breakdown: `livemap/update`, `filexfer_req`, `filexfer_resp`, `livemap/cmd`,
+  `mission/timeline/report`, `cmd`, `service_event`.
+- **`operating_modes` confirmed to genuinely vary, not a fixed constant**: 0 for the first
+  ~5s of a cleaning mission, switching to 5 for the remainder of the observed period —
+  resolves (in favor of the flat-array reading) a tension flagged in `PositionUpdateMessage`'s
+  own docstring between two competing hypotheses about `cur_path`'s wire format.
+- **`MapUpdateMessage` gained two previously-unmodeled fields**, confirmed present on every
+  real message: `livemap_url_raw` and an outer `timestamp`.
+- **`xferId` precision caveat, checked more rigorously**: an earlier note claimed
+  `xferId = int(unix_timestamp)` matches its message's own `p2mapv_id` timestamp exactly, based
+  on a small sample. Checked against 17 examples this time (jayjay13011) instead of a handful:
+  16 matched exactly, one was off by exactly one second. "Almost always exact, occasionally off
+  by one second" is the more honest characterization — not an unconditional exact match.
+- **Stronger negative evidence for `RobotStatusV2`/battery status**: the same capture watched
+  300s after stop+dock, with fully topic-tracked wildcard coverage (all 7 topics identified
+  by name) — none carried anything battery/charging-related. Doesn't prove it's unreachable
+  via MQTT, but rules out "wasn't watching long enough" and "missed it mixed into another
+  topic" as explanations. Documented directly in `RobotStatusV2`'s own docstring.
+
+### Removed
+
+- **Redundant `models.LiveMapUpdate`** (added in a6, before this session realized
+  `models.livemap.MapUpdateMessage`/`PositionUpdateMessage`/`parse_livemap_message_data()`
+  already existed, fully built, just never live-confirmed). Removed in favor of enhancing the
+  pre-existing, better-evidenced models instead of maintaining two overlapping ones. Anyone
+  who adopted `LiveMapUpdate` in the brief window it existed should switch to
+  `MapUpdateMessage` — same data, now with the two additional fields above.
+
+423/423 tests green, ruff clean.
+
 ## [0.1.11a6] - 2026-07-19
 
 ### Added

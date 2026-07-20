@@ -187,6 +187,63 @@ def test_report_tier_inference_ephemeral_when_settings_failed() -> None:
     assert "EPHEMERAL" in report.results[0].detail
 
 
+@pytest.mark.asyncio
+async def test_check_candidate_shadows_queries_all_three_by_name() -> None:
+    """NEW (this session) -- factored out of run() specifically so this
+    is unit-testable, since run() as a whole has no dedicated test.
+    Verifies all three never-before-queried named shadows
+    (rw-constatus/rw-schedule/rw-software) are actually requested by
+    name, and that a successful result gets captured."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from roombapy_prime.diagnostics import Report, _check_candidate_shadows
+    from roombapy_prime.mqtt_client import ShadowResponse
+
+    robot = MagicMock()
+    robot.get_named_shadow = AsyncMock(
+        side_effect=lambda name: ShadowResponse(topic="t", payload={"name": name})
+    )
+    report = Report()
+    raw_capture: dict = {}
+
+    await _check_candidate_shadows(report, robot, raw_capture)
+
+    called_names = [call.args[0] for call in robot.get_named_shadow.await_args_list]
+    assert called_names == ["rw-constatus", "rw-schedule", "rw-software"]
+    assert all(entry.status == "OK" for entry in report.results)
+    assert raw_capture['Fetching named shadow "rw-constatus" (get_named_shadow)'].payload == {
+        "name": "rw-constatus"
+    }
+
+
+@pytest.mark.asyncio
+async def test_check_candidate_shadows_reports_failure_without_crashing() -> None:
+    """A candidate shadow timing out (plausible -- these have never been
+    queried before, might not even exist as a real name) must not abort
+    the other two checks."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from roombapy_prime.diagnostics import Report, _check_candidate_shadows
+
+    robot = MagicMock()
+
+    async def _flaky(name: str):
+        if name == "rw-schedule":
+            raise TimeoutError("no response")
+        return MagicMock(payload={"name": name})
+
+    robot.get_named_shadow = AsyncMock(side_effect=_flaky)
+    report = Report()
+    raw_capture: dict = {}
+
+    await _check_candidate_shadows(report, robot, raw_capture)
+
+    statuses = {entry.name: entry.status for entry in report.results}
+    assert statuses['Fetching named shadow "rw-constatus" (get_named_shadow)'] == "OK"
+    assert statuses['Fetching named shadow "rw-schedule" (get_named_shadow)'] == "FAILED"
+    assert statuses['Fetching named shadow "rw-software" (get_named_shadow)'] == "OK"
+
+
 class _FakeRobotForTopicPrefix:
     def __init__(self, irbt_topic_prefix: str | None, deployment: dict | None = None) -> None:
         self._irbt_topic_prefix = irbt_topic_prefix

@@ -597,70 +597,6 @@ permanent-area/keep-out-zone concepts from the map-editing work
 confirmed."""
 
 
-@dataclass(frozen=True)
-class LiveMapUpdate:
-    """NEW (this session, live wildcard capture, chairstacker) --
-    CONFIRMED LIVE, not decompiled: a push notification that a new live
-    map snapshot is ready to download, observed arriving repeatedly
-    (roughly every 5-15s) throughout an active mission on the wildcard
-    channel. Confirmed shape:
-
-        {"timestamp": <int>, "map_update": {"livemap_url": "<url>",
-         "livemap_url_raw": "<url>"}}
-
-    THE ACTIONABLE PART: livemap_url is a presigned S3 GET URL ending
-    in "p2mapv_geojson.tgz" -- the EXACT SAME file format
-    download_map_bundle()/parse_map_bundle() already know how to fetch
-    and parse (get_map_geojson_link()'s own REST-fetched bundles use
-    this identical format). No new download/parsing code is needed:
-    `await client.download_map_bundle(update.livemap_url)` followed by
-    `parse_map_bundle(...)` works against a LiveMapUpdate's URL exactly
-    as it already does against a REST-fetched one. livemap_url_raw
-    points to a sibling "rawmap" file at a neighboring path -- format
-    not investigated, presumably a lower-level/unprocessed
-    representation of the same live map data.
-
-    Confirmed via a live capture ~5 minutes into an active mission that
-    this repeats, roughly every 5-15s -- multiple LiveMapUpdate
-    messages arrived over that window, each with its own timestamp and
-    its own freshly-presigned URL (different AWS signature/expiry each
-    time). CORRECTION, caught before shipping: an earlier draft of this
-    docstring claimed the URL path itself encodes a distinct
-    p2mapv_id per update -- checked directly against the raw URLs and
-    that's wrong. The path is a fixed, generic "current live map for
-    this robot" endpoint (".../dload_livemap/{blid}/p2mapv_geojson.tgz"),
-    identical across every observed update; only the query-string
-    signing parameters differ. Repeated delivery over time is confirmed;
-    that each fetch would actually return different file CONTENT is a
-    reasonable but unverified assumption -- the file itself was never
-    downloaded and diffed in this session.
-
-    NOT YET USED for anything -- this is the confirmation that the
-    plumbing exists and is trivially reachable with code this project
-    already has, not a built feature. A concrete next step this makes
-    possible: a live-updating map/camera entity in ha_roomba_plus,
-    refreshed from whatever the most recent LiveMapUpdate delivered,
-    without needing to poll or call any new REST endpoint at all.
-
-    THE EXACT TOPIC THIS ARRIVES ON IS NOT YET KNOWN -- same limitation
-    as pos_update (see mqtt_client.py's notes next to
-    rejected_report_topic()): the capture that found this predates
-    verify_mission_timeline.py's response.topic tracking fix."""
-
-    timestamp: int | None = None
-    livemap_url: str | None = None
-    livemap_url_raw: str | None = None
-
-    @classmethod
-    def from_json(cls, data: dict[str, Any]) -> LiveMapUpdate:
-        update = data.get("map_update") or {}
-        return cls(
-            timestamp=data.get("timestamp"),
-            livemap_url=update.get("livemap_url"),
-            livemap_url_raw=update.get("livemap_url_raw"),
-        )
-
-
 # NOTE (this session, for future contributors -- documents the rest of the
 # live-map exchange found in the same capture as LiveMapUpdate above, not
 # modeled as dataclasses since none of it needs to be CONSTRUCTED by this
@@ -677,13 +613,27 @@ class LiveMapUpdate:
 # after the mission concluded ("fin") -- consistent with "Live" meaning
 # in-progress snapshots and "Mission" meaning the final, complete map.
 #
-# xferId's own meaning, confirmed across four separate examples in the
-# same capture (checked directly, not assumed): it's simply
-# int(unix_timestamp) at the moment the transfer was initiated -- e.g.
-# xferId=1784491542 decodes to 2026-07-19 20:05:42 UTC, matching the
-# SAME message's own p2mapv_id of "260719T200542.799" to the second
-# (p2mapv_id carries millisecond precision, xferId only whole seconds).
-# Not an opaque/random correlation ID as the name might suggest.
+# xferId's own meaning: it's int(unix_timestamp) at the moment the
+# transfer was initiated -- e.g. xferId=1784491542 decodes to
+# 2026-07-19 20:05:42 UTC, matching the SAME message's own p2mapv_id of
+# "260719T200542.799" to the second (p2mapv_id carries millisecond
+# precision, xferId only whole seconds). Not an opaque/random
+# correlation ID as the name might suggest.
+#
+# PRECISION CAVEAT (this session, jayjay13011, a third independent
+# capture): checked across 17 examples this time, not just a handful --
+# 16 matched exactly, but one (xferId=1784559187) was off by exactly
+# ONE second from its own p2mapv_id's timestamp component
+# (...T145306.144 rounds to :06, xferId decodes to :07). Earlier
+# phrasing here implied an unconditional exact match across every
+# example checked (true for the smaller samples checked before this
+# capture) -- with a larger sample, "almost always exact, occasionally
+# off by one second" is the more honest characterization. Plausibly
+# explained by the two values being independently generated a few
+# milliseconds apart for the same logical event, straddling a
+# whole-second boundary -- not confirmed against any decompiled source,
+# just the simplest explanation consistent with a single-second,
+# non-repeating discrepancy.
 #
 # Each upload request gets an answer of this shape, keyed by the same
 # xferId:

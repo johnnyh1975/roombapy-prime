@@ -61,6 +61,7 @@ await robot.connect()
 |---|---|---|
 | `robot.get_state(timeout=8.0) -> ShadowResponse` | 🟢 | The classic/unnamed shadow — identity, capabilities, current mission status. `models.parse_robot_status_v2(state.payload...)` can attempt to extract a structured `RobotStatusV2` (battery/charging/dock status, bytecode-confirmed fields) from the reported state, but whether this structure actually appears there at all is unresolved — see that function's docstring. |
 | `robot.get_settings(timeout=8.0) -> ShadowResponse` | 🟢 | The named `"rw-settings"` shadow — only responds on SMART-tier devices, per binary analysis. |
+| `robot.get_named_shadow(name, timeout=8.0) -> ShadowResponse` | 🟢 (method) / 🔴 (content of new candidates) | General form of the above two — either is a thin, specifically-named wrapper around this. The method itself works (same underlying MQTT exchange, just parameterized); genuinely unconfirmed is what (if anything) the three candidate names `"rw-constatus"`/`"rw-schedule"`/`"rw-software"` actually contain — never queried before a native-app symbol trace found they exist. `"rw-constatus"` is the current lead for where battery/charging status might live. See `roombapy-prime-verify-named-shadows` in the README. |
 | `robot.set_setting(key, value, timeout=8.0) -> ShadowResponse` | 🟡 | Writes into the `rw-settings` shadow. |
 | `robot.watch_state(named=None, *, queue_maxsize=100) -> AsyncIterator[ShadowResponse]` | 🟢 | Yields every shadow delta as it arrives, until the generator is closed/cancelled. Bounded queue, drops oldest on overflow (logged). Pass `named="rw-settings"` to watch that shadow instead of the default. |
 
@@ -267,7 +268,7 @@ down as:
 | Geometry primitives | `Point`, `Polygon`, `MultiPolygon`, `LineString` | used throughout |
 | Live map streaming | `PositionUpdateMessage`, `MapUpdateMessage`, `LiveMapStreamInit` | "Maps" above |
 | Mission preference vocabulary | `CleaningMode`, `VacuumPowerLevel`, `LiquidAmountLevel`, `CleaningPasses`, `SoftwareScrub` | referenced by `CommandParams`/`CleaningProfile` |
-| Structured robot status (unresolved data source) | `RobotStatusV2`, `DockControl`, `RobotStatusButton`, `RobotStatusError` | `get_state()`'s docstring — NOT confirmed to appear there |
+| Structured robot status (unresolved data source) | `RobotStatusV2`, `DockControl`, `RobotStatusButton`, `RobotStatusError` | `get_state()`'s docstring — confirmed NOT to appear there or on any known MQTT topic; current lead is `get_named_shadow("rw-constatus")`, see "Live state" above |
 | Default routines | `RoutinesDefaultsResponse`, `RoutineBuilderDefaults`, `RegionDefaults`, `OperatingModeProfile` | `get_default_routines()` above |
 | Login-response models | `RobotLoginEntry`, `RobotCapabilities`, `RobotDigitalCapabilities` | `auth.py`'s `LoginResult.robots` |
 

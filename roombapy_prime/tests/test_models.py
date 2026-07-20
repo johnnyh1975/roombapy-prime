@@ -166,6 +166,57 @@ def test_parse_livemap_map_update() -> None:
     assert result.livemap_url == "https://example.invalid/map.png"
 
 
+def test_parse_livemap_map_update_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, jayjay13011, roombapy-prime
+    v0.1.11a6 -- the first capture with topic tracking, confirming this
+    arrives on livemap_topic() exactly). Verbatim shape except the
+    presigned URL query strings truncated for readability -- they don't
+    affect parsing, only S3 auth. Locks in the two fields the earlier,
+    hypothetical-only test above didn't cover: livemap_url_raw and the
+    outer timestamp."""
+    payload = json.dumps({
+        "timestamp": 1784559121,
+        "map_update": {
+            "livemap_url": (
+                "https://s3.amazonaws.com/elpasodata018-pmaptransferbucket-1pckk9n2mafep/"
+                "p2maps/v011/dload_livemap/BLID/p2mapv_geojson.tgz?X-Amz-Signature=abc"
+            ),
+            "livemap_url_raw": (
+                "https://s3.amazonaws.com/elpasodata018-pmaptransferbucket-1pckk9n2mafep/"
+                "p2maps/v011/dload_livemap/BLID/rawmap?X-Amz-Signature=def"
+            ),
+        },
+    }).encode()
+
+    result = parse_livemap_message(payload)
+
+    assert isinstance(result, MapUpdateMessage)
+    assert result.timestamp == 1784559121
+    assert result.livemap_url.endswith("p2mapv_geojson.tgz?X-Amz-Signature=abc")
+    assert result.livemap_url_raw.endswith("rawmap?X-Amz-Signature=def")
+
+
+def test_parse_livemap_position_update_operating_modes_transition_from_real_capture() -> None:
+    """CONFIRMED LIVE (this session, jayjay13011): operating_modes is
+    NOT a fixed constant -- it was 0 for the first ~5 seconds of a
+    cleaning mission (still settling in after travel/reloc), then
+    switched to 5 for the remainder of the observed period. Both real
+    values from the same capture, checked directly against the raw
+    messages (not synthesized)."""
+    early = json.dumps({
+        "pos_update": {"cur_path": [1, 0.000434, -0.025816, -0.084961, 0, 1784559143]},
+    }).encode()
+    later = json.dumps({
+        "pos_update": {"cur_path": [8, -0.163172, -0.013106, -2.571099, 5, 1784559150]},
+    }).encode()
+
+    early_result = parse_livemap_message(early)
+    later_result = parse_livemap_message(later)
+
+    assert early_result.updates[0].operating_modes == 0
+    assert later_result.updates[0].operating_modes == 5
+
+
 def test_parse_livemap_unrecognized_shape_raises() -> None:
     import pytest
 
@@ -324,46 +375,6 @@ def test_policy_zone_feature_replaces_three_previously_separate_guesses() -> Non
     })
     assert zone.properties.zone_type == "no_mop"
     assert zone.properties.threshold_type == "soft"
-
-
-def test_live_map_update_from_real_live_capture() -> None:
-    """CONFIRMED LIVE (this session, chairstacker) -- a real map_update
-    push message, verbatim except the presigned URL query strings
-    truncated for readability (they don't affect parsing, only S3 auth).
-    The key finding this locks in: livemap_url is directly usable with
-    the EXISTING download_map_bundle()/parse_map_bundle() pipeline --
-    no new download code needed, just a way to obtain this URL live."""
-    from roombapy_prime.models import LiveMapUpdate
-
-    raw = {
-        "timestamp": 1784491541,
-        "map_update": {
-            "livemap_url": (
-                "https://s3.amazonaws.com/elpasodata018-pmaptransferbucket-1pckk9n2mafep/"
-                "p2maps/v011/dload_livemap/BLID/p2mapv_geojson.tgz?X-Amz-Signature=abc"
-            ),
-            "livemap_url_raw": (
-                "https://s3.amazonaws.com/elpasodata018-pmaptransferbucket-1pckk9n2mafep/"
-                "p2maps/v011/dload_livemap/BLID/rawmap?X-Amz-Signature=def"
-            ),
-        },
-    }
-
-    update = LiveMapUpdate.from_json(raw)
-
-    assert update.timestamp == 1784491541
-    assert update.livemap_url.endswith("p2mapv_geojson.tgz?X-Amz-Signature=abc")
-    assert update.livemap_url_raw.endswith("rawmap?X-Amz-Signature=def")
-
-
-def test_live_map_update_handles_missing_fields_gracefully() -> None:
-    from roombapy_prime.models import LiveMapUpdate
-
-    update = LiveMapUpdate.from_json({})
-
-    assert update.timestamp is None
-    assert update.livemap_url is None
-    assert update.livemap_url_raw is None
 
 
 def test_clean_zone_feature_has_name_unlike_adhoc() -> None:
