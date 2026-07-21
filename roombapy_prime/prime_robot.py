@@ -272,32 +272,45 @@ class PrimeRobot:
         return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
 
     async def trigger_echo_via_shadow(self, value: object = True, timeout: float = 8.0) -> ShadowResponse:
-        """EXPERIMENTAL, UNCONFIRMED -- a new hypothesis for the "find
-        my robot" (audible chime) feature, prompted directly by a real
-        bug report: a field tester (chairstacker) found ha_roomba_plus's
-        existing locate action -- poll_echo_value(), a REST POST to
-        /v1/robots/{blid}/echo -- does NOT actually make the robot
-        chime, even though the same action works from the real app.
+        """DISPROVEN (this session, chairstacker, real device test) --
+        writing to "rw-constatus"'s "echo" field does NOT trigger the
+        "find my robot" chime. Kept for what it does confirm (see
+        below), not as a working locate mechanism.
 
-        The REST endpoint's own docstring already admitted this was
-        unconfirmed against a live device. Separately, and until now
-        unconnected: ConnectionStatusShadow's "echo" field (in the
-        named "rw-constatus" shadow) was noted to plausibly correspond
-        to the app's own "SetEchoCommand" -- the exact same command
-        name the "find my robot" feature is built on, per the app's
-        command config. That command is a SHADOW WRITE (a "Set"
-        command, matching this library's own set_setting()-style
-        pattern), not a REST POST at all -- meaning poll_echo_value()
-        may simply be hitting the wrong mechanism entirely, not just
-        failing due to a missing body.
+        Originally a hypothesis prompted by a real bug report: a field
+        tester found ha_roomba_plus's existing locate action --
+        poll_echo_value(), a REST POST to /v1/robots/{blid}/echo --
+        does NOT actually make the robot chime, even though the same
+        action works from the real app. ConnectionStatusShadow's
+        "echo" field was noted to plausibly correspond to the app's
+        own "SetEchoCommand" -- the exact command name the "find my
+        robot" feature is built on, per the app's command config --
+        making a shadow write, rather than a REST call, seem like a
+        promising alternative mechanism.
 
-        GENUINELY UNCERTAIN: what value actually triggers the chime.
-        One real capture (chairstacker) showed echo=0 in an idle
-        state -- consistent with "0 = no active echo request", but the
-        actual trigger could be True, 1, a timestamp, or something
-        else. `value` defaults to True as the simplest guess, not a
-        confirmed answer -- pass a different value to experiment.
-        Never tested against a real device as of this writing."""
+        ACTUAL TEST RESULT: calling this with value=True produced a
+        genuine, accepted shadow write -- confirmed by a real
+        update/delta response (ShadowResponse with a real version
+        number, "state": {"echo": True}). The write mechanism itself
+        works correctly. But the robot did NOT chime, and "locate"
+        from the real app worked fine on the same device immediately
+        after -- confirming the ROBOT's own locate feature is not
+        broken, only this particular guess at how to trigger it
+        remotely. A delta response specifically (not just
+        update/accepted) means a listening device would normally see
+        this as "something changed that I should act on" -- yet
+        nothing observable happened, suggesting either the robot
+        doesn't actually watch this specific field for this purpose,
+        or "SetEchoCommand" refers to something else entirely (e.g. a
+        connectivity heartbeat/ping, consistent with rw-constatus
+        otherwise being about network connection status, not
+        chime-related at all).
+
+        STILL UNRESOLVED: the actual "find my robot" trigger mechanism
+        for Prime/V4 robots. Kept as a library method since the
+        underlying write mechanism (arbitrary rw-constatus field
+        writes) may still be useful for other, unrelated
+        investigation, not because this specific use case works."""
         return await asyncio.to_thread(self._mqtt.update_shadow, {"echo": value}, "rw-constatus", timeout)
 
     async def send_mission_command(self, command: RoutineCommand, timeout: float = 8.0) -> ShadowResponse:
@@ -351,11 +364,37 @@ class PrimeRobot:
         working against a real device).
 
         `command` is a plain string, not MissionCommandType -- the
-        confirmed verb set from that third-party project is narrower
-        than this library's own 30-value enum (start, pause, stop,
-        resume, dock, find, evac, reset, StartOnDemandOta) -- pass
-        MissionCommandType.START.value etc. if you want enum safety, or
-        a plain string for anything not yet in the enum.
+        confirmed-LIVE verb set (start, pause, stop, resume, dock) is
+        narrower than this library's own 30-value enum (find, evac,
+        reset, StartOnDemandOta, and more) -- pass MissionCommandType
+        values for enum safety, or a plain string for anything not yet
+        in the enum.
+
+        NEW LEAD (this session, prompted by the "find my robot" bug
+        investigation -- see trigger_echo_via_shadow()'s own docstring
+        for the two mechanisms already tried and disproven): a
+        separate native-analysis track traced the real app's locate
+        button through MissionUIServiceCommand.FindLocateRobotRunAction
+        to a CommandType enum value named FIND (Kotlin constant name,
+        uppercase, from liblegacyCore.so's own string table) --
+        MissionCommandType.FIND above IS this exact same enum
+        (com.irobot.data.missioncommand.datamodels.CommandType), and
+        its confirmed @SerialName wire value is the lowercase "find"
+        already listed. Genuinely different from the two disproven
+        attempts: this is a THIRD, distinct transport (send_simple_command's
+        own cmd-topic channel), not another shadow write. Untested
+        against a real device as of this writing -- MissionCommandType.FIND
+        itself has been in this enum for a while, but "find" specifically
+        was never part of the confirmed-live verb subset above.
+
+        A second candidate from that same analysis, "FBEEP" (also
+        found in liblegacyCore.so, right next to FIND) is NOT part of
+        this project's own confirmed CommandType enum at all --
+        "liblegacyCore" in its own filename raises a real, unresolved
+        question about whether it even applies to Prime robots'
+        command channel the way FIND plausibly does, rather than being
+        Classic-specific. Worth trying only as a fallback if FIND alone
+        doesn't produce an audible result, not with equal confidence.
 
         Needs irbt_topic_prefix (see __init__/auth.py's LoginResult),
         same requirement as watch_live_map() -- raises RuntimeError

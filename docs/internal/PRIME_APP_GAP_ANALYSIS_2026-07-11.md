@@ -2918,3 +2918,142 @@ robot without first checking whether the broker treats it specially was the actu
 not just an unlucky edge case.
 
 450/450 tests green, ruff clean as of this addendum. Released as v0.1.11a9.
+
+## Addendum: `--watch-shadow-delta` result is inconclusive, not negative -- window too short
+
+chairstacker ran `--start-mission --watch-shadow-delta` (the safe flag, post-`--watch-aws-tree`
+removal) against a real device: a short (~90s) mission, then stop+dock. `watch_state()` --
+the shadow's `update/delta` push channel, never before run live during an active mission --
+received ZERO messages during the entire watch window.
+
+**This is NOT a clean negative result, though.** chairstacker's own note: the script's watch
+window ended BEFORE the robot physically finished docking -- the real app's status display goes
+"Heading Home" -> "Charging" -> "Ready to clean" (the last transition happening quickly here
+specifically because the mission was so short the battery barely drained). The default
+`--post-dock-watch-seconds` is only 30 -- the CLI's own `--help` text already warned "a much
+longer value here (a few minutes...) is more likely to help than the default" when specifically
+investigating battery/charging, but this wasn't repeated prominently enough in the actual request
+sent -- a real gap in how the ask was framed, not just bad luck. If a shadow delta about
+charging state exists at all, this specific run's window most likely ended before the moment it
+would plausibly fire (the actual charging transition itself), not after.
+
+**Status: genuinely unresolved, not "checked and empty."** A retry with a substantially longer
+`--post-dock-watch-seconds` (e.g. 300, matching the value used for the earlier RobotStatusV2
+MQTT-topic investigation) is the natural next step, explicitly requested this time rather than
+left to the tester to discover via `--help`.
+
+## Addendum: `trigger_echo_via_shadow()` DISPROVEN -- both "find my robot" guesses now failed
+
+chairstacker ran the actual test: `trigger_echo_via_shadow()` (writing `True` to
+`rw-constatus`'s `"echo"` field). The terminal output:
+
+```
+ShadowResponse(topic='.../shadow/name/rw-constatus/update/delta',
+  payload={'version': 2849, 'timestamp': ..., 'state': {'echo': True},
+           'metadata': {'echo': {'timestamp': ...}}})
+```
+
+This confirms the write mechanism itself worked correctly -- a real, accepted shadow update,
+with a genuine `update/delta` response (not just `update/accepted`) coming back. AWS IoT's delta
+mechanism specifically means "here's a difference the device itself should reconcile" -- exactly
+the channel a real, shadow-connected device would normally watch to learn it should act on
+something. **The robot did not chime.** "Locate" from the real app worked fine on the same
+device immediately afterward, confirming the robot's own locate feature isn't broken -- only
+this specific guess at triggering it remotely.
+
+This means BOTH of this project's best-reasoned guesses for "find my robot" -- the original REST
+endpoint (`poll_echo_value()`) and this shadow-write alternative -- are now confirmed NOT
+working, each against a real device. `trigger_echo_via_shadow()`'s docstring, and
+`ConnectionStatusShadow`'s, updated accordingly; the method is kept (the write mechanism itself
+is confirmed working and may be useful elsewhere) but no longer presented as a working locate
+trigger. `ha_roomba_plus`'s own `async_locate()` docstring updated in parallel to note both
+guesses have now failed.
+
+**What "echo" actually is remains unresolved.** Possibly a connectivity heartbeat/ping
+(consistent with the rest of `rw-constatus` being about connection status specifically, not
+chime-related), possibly something else entirely. Not investigated further as of this addendum --
+the real "find my robot" mechanism needs either deeper native-app analysis or a different
+investigative approach, not another same-style guess.
+
+450/450 tests green, ruff clean as of this addendum (docstring corrections only, no new modeled
+behavior or test changes -- the existing mechanics tests for `trigger_echo_via_shadow()` remain
+valid regardless of whether the real device responds to it).
+
+## Addendum: a third "find my robot" candidate -- genuinely different transport this time
+
+A separate native-analysis track traced the real app's own locate button through the actual UI
+event chain: `LocateRobotButtonPressed` -> `MissionUIServiceCommand.FindLocateRobotRunAction`
+(enum value 7) -> `CloudCapableMissionUIService::sendServiceCommand()` (explicitly named
+cloud-capable) -> a `CommandType` enum value. Two candidates were found sitting together in a
+recognizable command-value table in `liblegacyCore.so`: `FIND` and `FBEEP`, both in uppercase,
+immediately preceding the string `"Command '%s' has not been processed."`.
+
+**`FIND` is not a new discovery for this project -- it's already in `MissionCommandType`**
+(`com.irobot.data.missioncommand.datamodels.CommandType`, confirmed in an earlier session), with
+a confirmed `@SerialName` wire value of lowercase `"find"`. This directly resolves a casing
+question the analysis itself raised (uppercase `FIND`/`FBEEP` found in the binary vs. the
+lowercase verbs -- `start`, `stop`, `dock` -- actually observed on the wire): the uppercase
+strings are Kotlin/Java enum CONSTANT names, not wire values; this project's own docstring on
+`MissionCommandType` already states this explicitly ("values are the actual @SerialName strings,
+NOT the Kotlin enum constant names"). `"find"` itself, however, was never part of the
+confirmed-live verb subset (only `start`/`stop`/`pause`/`resume`/`dock` have been observed
+working against a real device) -- genuinely untested, not previously overlooked.
+
+**`FBEEP` is a different, lower-confidence case.** It does not appear anywhere in this project's
+own confirmed `CommandType` enum. It was found specifically in `liblegacyCore.so` -- the name
+itself raises a real, unresolved question about whether this even applies to Prime robots' MQTT
+command channel the way `FIND` plausibly does (already confirmed relevant via the SAME enum
+`send_simple_command()` already uses), or whether it's Classic-specific code that happens to sit
+near `FIND` in the same string table without being reachable the same way for Prime.
+
+**Why this is worth testing despite two prior failures on the same underlying goal:** the two
+previous attempts (`poll_echo_value()`'s REST endpoint, `trigger_echo_via_shadow()`'s shadow
+write) were both disproven against a real device. This is a genuinely different transport --
+`send_simple_command()`'s own cmd-topic channel, the same one confirmed working for
+start/stop/pause/resume/dock -- not a third variation on either of the two mechanisms already
+ruled out. `send_simple_command("find")` requires no new code at all; the method already accepts
+any plain string.
+
+**Not yet tested against a real device.** This addendum is documentation only --
+`send_simple_command()`'s own docstring updated with the full reasoning above;
+`MissionCommandType.FIND` itself needed no change (already present, already correct).
+
+450/450 tests green, ruff clean as of this addendum.
+
+## Addendum: four unknown named shadows found -- the strongest battery lead yet
+
+A separate native-analysis track, prompted by this project's own summary of the update/delta
+dead ends so far, looked at a class never examined before: `MQTTTopics.java`
+(`com/irobot/irobotdata/foundation/deprecated/`). It builds topics for NINE shadows total, not
+five -- the five already known (classic, `rw-settings`, `rw-constatus`, `rw-schedule`,
+`rw-software`) plus four completely new ones: `ro-currentstate`, `ro-services`,
+`ro-configinfo`, `ro-stats`. Same topic pattern as the known ones
+(`$aws/things/{blid}/shadow/name/{name}/{path}`).
+
+**Why these were never found before:** every named shadow this project had ever queried was
+discovered via the app's own command config, which lists write-side commands. Nothing writes to
+a read-only ("ro-") shadow, so none of them could ever appear there -- a systematic, identifiable
+gap in how shadows were enumerated, not bad luck. The package name itself is `deprecated`, but
+that refers to the class, not to whether these shadows still exist and respond -- confirmed
+still structurally reachable, same as the other nine, per the same analysis.
+
+**Why `ro-currentstate` specifically is the strongest lead this investigation has had:** the name
+describes exactly the kind of data being searched for -- live, device-reported, read-only state
+-- and its existence cleanly explains every negative result so far without requiring any of them
+to have been a mistake: wrong shadows were being checked (only the "rw-" ones), not "battery
+status isn't exposed via shadows at all."
+
+**Added to existing tooling, no new mechanics needed:** `get_shadow()`/`get_named_shadow()`
+already accept any string name. `roombapy-prime-verify-named-shadows` and
+`roombapy-prime-validate`'s `_check_candidate_shadows()` both updated to check all four
+automatically, in place of the now-fully-confirmed three from before (moved into the
+already-known baseline). `ro-currentstate` listed first given the reasoning above.
+
+**Not yet tested against a real device.** A request has gone out to chairstacker. If this
+resolves the battery/charging question, `watch_state(named="ro-currentstate")` during an active
+mission would be the natural follow-up -- to check whether live updates push via delta too, not
+just a static snapshot via GET.
+
+450/450 tests green, ruff clean as of this addendum (2 existing tests updated to the new
+candidate names, no new test scenarios needed beyond that since the underlying mechanics --
+querying an arbitrary named shadow -- were already fully covered).

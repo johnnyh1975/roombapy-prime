@@ -188,12 +188,12 @@ def test_report_tier_inference_ephemeral_when_settings_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_candidate_shadows_queries_all_three_by_name() -> None:
+async def test_check_candidate_shadows_queries_all_four_by_name() -> None:
     """NEW (this session) -- factored out of run() specifically so this
     is unit-testable, since run() as a whole has no dedicated test.
-    Verifies all three never-before-queried named shadows
-    (rw-constatus/rw-schedule/rw-software) are actually requested by
-    name, and that a successful result gets captured."""
+    Verifies all four never-before-queried named shadows
+    (ro-currentstate/ro-stats/ro-services/ro-configinfo) are actually
+    requested by name, and that a successful result gets captured."""
     from unittest.mock import AsyncMock, MagicMock
 
     from roombapy_prime.diagnostics import Report, _check_candidate_shadows
@@ -209,10 +209,10 @@ async def test_check_candidate_shadows_queries_all_three_by_name() -> None:
     await _check_candidate_shadows(report, robot, raw_capture)
 
     called_names = [call.args[0] for call in robot.get_named_shadow.await_args_list]
-    assert called_names == ["rw-constatus", "rw-schedule", "rw-software"]
+    assert called_names == ["ro-currentstate", "ro-stats", "ro-services", "ro-configinfo"]
     assert all(entry.status == "OK" for entry in report.results)
-    assert raw_capture['Fetching named shadow "rw-constatus" (get_named_shadow)'].payload == {
-        "name": "rw-constatus"
+    assert raw_capture['Fetching named shadow "ro-currentstate" (get_named_shadow)'].payload == {
+        "name": "ro-currentstate"
     }
 
 
@@ -220,7 +220,7 @@ async def test_check_candidate_shadows_queries_all_three_by_name() -> None:
 async def test_check_candidate_shadows_reports_failure_without_crashing() -> None:
     """A candidate shadow timing out (plausible -- these have never been
     queried before, might not even exist as a real name) must not abort
-    the other two checks."""
+    the other checks."""
     from unittest.mock import AsyncMock, MagicMock
 
     from roombapy_prime.diagnostics import Report, _check_candidate_shadows
@@ -228,7 +228,7 @@ async def test_check_candidate_shadows_reports_failure_without_crashing() -> Non
     robot = MagicMock()
 
     async def _flaky(name: str):
-        if name == "rw-schedule":
+        if name == "ro-stats":
             raise TimeoutError("no response")
         return MagicMock(payload={"name": name})
 
@@ -239,9 +239,10 @@ async def test_check_candidate_shadows_reports_failure_without_crashing() -> Non
     await _check_candidate_shadows(report, robot, raw_capture)
 
     statuses = {entry.name: entry.status for entry in report.results}
-    assert statuses['Fetching named shadow "rw-constatus" (get_named_shadow)'] == "OK"
-    assert statuses['Fetching named shadow "rw-schedule" (get_named_shadow)'] == "FAILED"
-    assert statuses['Fetching named shadow "rw-software" (get_named_shadow)'] == "OK"
+    assert statuses['Fetching named shadow "ro-currentstate" (get_named_shadow)'] == "OK"
+    assert statuses['Fetching named shadow "ro-stats" (get_named_shadow)'] == "FAILED"
+    assert statuses['Fetching named shadow "ro-services" (get_named_shadow)'] == "OK"
+    assert statuses['Fetching named shadow "ro-configinfo" (get_named_shadow)'] == "OK"
 
 
 class _FakeRobotForTopicPrefix:

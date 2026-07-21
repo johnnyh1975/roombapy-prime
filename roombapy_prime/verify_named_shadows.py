@@ -1,55 +1,51 @@
-"""Manual, observed check of named shadows this library has never
-queried before -- specifically aimed at finding where battery/charging
-status actually lives.
+"""Manual, observed check of named shadows -- specifically aimed at
+finding where battery/charging status actually lives.
 
-WHY THIS SCRIPT EXISTS: a person's own native-binary symbol analysis
-(not this library's own investigation) found that the real app
-subscribes to a wildcard covering every named shadow
-("/things/{blid}/shadow/name/+/get/accepted" and the "update/accepted"
-sibling). Five named shadows are known to exist from that pattern, but
-this library has only ever queried two of them: the classic/unnamed
-shadow (get_state()) and "rw-settings" (get_settings()). The other
-three -- "rw-constatus", "rw-schedule", "rw-software" -- had never
-been queried before this session.
-
-RESULT (this session, chairstacker, all three checked live): the
-"rw-constatus" battery/charging hypothesis is DISPROVEN. Its content
-is MQTT/AWS-IoT connection status ({"connected", "connectedv2",
-"echo", "svcEndpoints"}), not battery -- the name's surface
-resemblance to "connection status" was accurate, but pointed at the
-wrong KIND of connection (network, not power/charging). The other two
-also confirmed content, neither battery-related: "rw-schedule" is the
-cleaning schedule, "rw-software" is OTA/firmware update status. See
+BACKGROUND: a person's own native-binary symbol analysis found the
+real app subscribes to a wildcard covering every named shadow. Five
+were found this way -- classic/unnamed, "rw-settings", "rw-constatus",
+"rw-schedule", "rw-software" -- all now confirmed live (chairstacker).
+None contain battery/charging data: "rw-constatus" (the leading
+candidate, from its plausible link to the app's "SetEchoCommand") is
+MQTT/AWS-IoT connection status, not battery -- see
 ConnectionStatusShadow/ScheduleShadow/SoftwareStatusShadow
-(models/robot_info.py) for the full field lists now modeled from this
-result, and RobotStatusV2's own docstring for the complete correction.
-All five named shadows this wildcard pattern covers are now fully
-enumerated -- none contain battery/charging/dock data. This script is
-kept (cheap, already built, useful to re-run against other
-devices/accounts to confirm the same content), but is no longer
-expected to resolve the battery question on its own.
+(models/robot_info.py) for the full field lists, and RobotStatusV2's
+own docstring for the complete correction.
 
-That same native-app analysis flagged and corrected an earlier
-mistake, still worth knowing even though the hypothesis itself didn't
-pan out: "rw-constatus" had previously been written off because the
-app's own command config only lists a write-side SetEchoCommand (read:
-false) for it -- but that config describes COMMANDS, not
-SUBSCRIPTIONS. The wildcard subscribes to a named shadow regardless of
-whether any explicit read command exists for it -- a distinction
-worth remembering for any FUTURE named-shadow candidate too.
+NEW LEAD (this session, a separate native-analysis track, prompted by
+this exact five-shadow dead end): a class this project had never
+looked at, MQTTTopics.java, builds topics for FOUR MORE shadows this
+project never knew existed -- "ro-currentstate", "ro-services",
+"ro-configinfo", "ro-stats" (the "ro-" prefix meaning read-only, as
+opposed to the "rw-" ones already checked). These never appeared in
+the app's own command config specifically because that config only
+lists commands, and nothing writes to a read-only shadow -- a real,
+identifiable reason the earlier wildcard-based enumeration missed
+half of what actually exists, not just bad luck.
+
+"ro-currentstate" specifically is now the strongest lead this
+investigation has had: the name itself describes exactly the kind of
+data being searched for (live, device-reported, read-only state), and
+its very existence cleanly explains every prior negative result --
+wrong shadows, wrong topics, and wrong REST endpoints were all being
+checked, not a "doesn't exist" case.
+
+NOT YET TESTED against a real device as of this writing -- this is a
+hypothesis, however well-reasoned, until someone actually runs this
+script and sees what (if anything) comes back.
 
 PURELY PASSIVE: every shadow fetched here (get_state(), get_settings(),
-and the three candidates via get_named_shadow()) is a read. Nothing is
+and every candidate via get_named_shadow()) is a read. Nothing is
 sent to the robot, no confirmation gate is needed, and the robot is
 never moved -- unlike verify_mission_commands.py/verify_mission_timeline.py's
 --start-mission mode. Safe to run at any time.
 
 WHAT SUCCESS LOOKS LIKE: any shadow returning a payload containing
 something recognizable as battery/charging data (a percentage, a
-boolean, a charging-state string) -- not expected anymore given the
-result above, but this script still reports the exact keys seen in
-any payload, not just "worked" or "didn't", in case that changes on a
-different device/account.
+boolean, a charging-state string). This script reports the exact keys
+seen in any payload, not just "worked" or "didn't" -- important here
+specifically, since a right-shadow-wrong-field-name result would
+otherwise look identical to a clean miss.
 
 USAGE:
   roombapy-prime-verify-named-shadows \\
@@ -73,13 +69,17 @@ import aiohttp
 from .diagnostics import Report, _redact_raw_capture, build_issue_url, redact_aws_url_secrets
 from .prime_factory import PrimeFactory
 
-# The two shadows already confirmed queryable, included as a baseline/
-# sanity-check so a tester can immediately see these still work exactly
-# as before -- and the three never-before-queried candidates from the
-# wildcard-subscription finding, "rw-constatus" listed first since it's
-# the strongest lead.
-KNOWN_SHADOWS: list[str | None] = [None, "rw-settings"]
-CANDIDATE_SHADOWS: list[str] = ["rw-constatus", "rw-schedule", "rw-software"]
+# The five shadows already confirmed queryable (content known, none
+# battery-related), included as a baseline/sanity-check so a tester can
+# immediately see these still work exactly as before -- and the four
+# never-before-queried "ro-" (read-only) candidates from MQTTTopics.java,
+# never listed in the app's own command config for the obvious reason
+# that nothing writes to a read-only shadow. "ro-currentstate" listed
+# first: the name itself matches exactly what's being searched for
+# (live, device-reported, read-only state), making it the strongest
+# lead this investigation has had.
+KNOWN_SHADOWS: list[str | None] = [None, "rw-settings", "rw-constatus", "rw-schedule", "rw-software"]
+CANDIDATE_SHADOWS: list[str] = ["ro-currentstate", "ro-stats", "ro-services", "ro-configinfo"]
 
 
 async def _fetch_and_report(

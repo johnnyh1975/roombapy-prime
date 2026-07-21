@@ -178,15 +178,36 @@ class MapUpdateMessage:
     the library) exists to extract and render the grid for
     confirmation first, before committing to field names here.
 
+    VISUALLY CONFIRMED (this session, chairstacker): the rendered PNG
+    (width x height orientation, not the swapped one) IS a recognizable
+    floor plan matching their real home -- the strongest possible
+    confirmation of the whole structure above. One correction found in
+    the process: the raw byte order renders vertically flipped
+    relative to the app's own map view (row 0 at the top in image
+    convention vs. row 0 at the bottom in the occupancy grid's own
+    convention, a common mismatch) -- decode_rawmap.py now flips the
+    image before saving so its output matches the app's orientation
+    directly. Also reported: rougher edges and a few unexplained white
+    streaks in areas with no carpets/furniture, compared to the app's
+    own cleaner rendering -- plausibly SLAM sensor noise (reflective
+    surfaces, specular floor reflections) or an unknown/low-confidence
+    occupancy value rendering as a distinct shade rather than a
+    rendering bug, consistent with the byte histogram showing far more
+    than just two values (a simple free/occupied grid would show only
+    two, not a whole distribution) -- not confirmed further, no reason
+    yet to think the decode itself is wrong given the floor plan itself
+    is unmistakably recognizable.
+
     NOT YET USED for anything beyond this model -- no entity in
     ha_roomba_plus consumes it yet. A concrete next step this makes
     possible: a live-updating map/camera entity, refreshed from
     whatever the most recent MapUpdateMessage delivered, using
     download_map_bundle()/parse_map_bundle() directly against
     livemap_url -- no new download or parsing code needed. Now that
-    rawmap's structure is understood, an occupancy-grid-based overlay
-    (or even a full replacement of the GeoJSON-based approach) becomes
-    a real, evidenced option -- not yet designed or built."""
+    rawmap's structure is understood AND visually confirmed, an
+    occupancy-grid-based rendering (or a room-outline overlay combining
+    both this and the GeoJSON bundle) becomes a real, evidenced option
+    -- not yet designed or built."""
 
     livemap_url: str
     livemap_url_raw: str | None = None

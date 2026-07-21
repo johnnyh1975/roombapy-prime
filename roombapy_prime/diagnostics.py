@@ -300,34 +300,42 @@ def _report_tier_inference(report: Report, settings_result: Any) -> None:
 async def _check_candidate_shadows(report: Report, robot: Any, raw_capture: dict[str, Any]) -> None:
     """NEW (this session, prompted by a person's own native-binary symbol
     analysis, not this library's own investigation): the real app
-    subscribes to a wildcard covering every NAMED shadow, and five are
-    known to exist -- this script had only ever queried two of them
-    (classic + "rw-settings", both already checked before this function is
-    called). The other three had never been queried before this session.
+    subscribes to a wildcard covering every NAMED shadow. Five were
+    found this way -- classic + "rw-settings" (already checked before
+    this function is called), plus "rw-constatus"/"rw-schedule"/
+    "rw-software" -- all now confirmed live (chairstacker). None
+    contain battery/charging data: "rw-constatus" ({"connected",
+    "connectedv2", "echo", "svcEndpoints"}) is MQTT/AWS-IoT connection
+    status, not battery -- see RobotStatusV2's own docstring for the
+    full correction, and ConnectionStatusShadow/ScheduleShadow/
+    SoftwareStatusShadow (models/robot_info.py) for the confirmed
+    content of all three.
 
-    UPDATE (this session, chairstacker, all three checked live): the
-    "rw-constatus" battery/charging hypothesis is DISPROVEN. Its content
-    ({"connected", "connectedv2", "echo", "svcEndpoints"}) is MQTT/AWS-IoT
-    connection status, not battery -- see RobotStatusV2's own docstring
-    for the full correction, and ConnectionStatusShadow/ScheduleShadow/
-    SoftwareStatusShadow (models/robot_info.py) for the now-fully-
-    confirmed content of all three. None of the five named shadows this
-    wildcard-subscription pattern covers contain battery/charging/dock
-    data. Kept as an automatic check anyway (cheap, already implemented,
-    and confirms the shadows still respond the same way on other
-    devices/accounts) -- just no longer expected to solve the battery
-    question specifically.
+    NEW CANDIDATES (this session, a separate native-analysis track):
+    MQTTTopics.java builds topics for FOUR MORE shadows this project
+    never knew existed -- "ro-currentstate", "ro-stats", "ro-services",
+    "ro-configinfo" (read-only, unlike the "rw-" ones above). These
+    never appeared in the app's own command config for an identifiable
+    reason: that config only lists commands, and nothing writes to a
+    read-only shadow -- the wildcard-based enumeration that found the
+    five "rw-"/classic shadows structurally could never have found
+    these. "ro-currentstate" is now the strongest lead this
+    investigation has had: the name itself describes exactly the kind
+    of data being searched for. NOT YET TESTED against a real device
+    as of this writing.
 
     Purely a read, same risk profile as get_state()/get_settings() --
     see get_named_shadow()'s own docstring for the specific earlier
     mistake ("rw-constatus" was wrongly written off originally because
     the app's command config lists only a write-side command for it --
     that describes commands, not subscriptions) that led to checking
-    it at all. Factored out as its own function (rather than an inline
-    loop in run()) specifically so it's unit-testable on its own --
-    run() as a whole has no dedicated test of its own, this way the new
-    behavior still does."""
-    for candidate_shadow in ("rw-constatus", "rw-schedule", "rw-software"):
+    it at all; the same distinction (config lists commands, not
+    subscriptions) is exactly why the four new "ro-" candidates were
+    missed for as long as they were. Factored out as its own function
+    (rather than an inline loop in run()) specifically so it's
+    unit-testable on its own -- run() as a whole has no dedicated test
+    of its own, this way the new behavior still does."""
+    for candidate_shadow in ("ro-currentstate", "ro-stats", "ro-services", "ro-configinfo"):
         await _try(
             report,
             f'Fetching named shadow "{candidate_shadow}" (get_named_shadow)',

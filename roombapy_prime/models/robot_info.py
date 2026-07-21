@@ -813,16 +813,21 @@ class ConnectionStatusShadow:
     RobotStatusV2's own docstring for the full correction. "echo"
     plausibly corresponds to the write-side SetEchoCommand this shadow
     was originally (and, per this finding, correctly) associated with
-    in the app's command config. UPDATED (this session, prompted by a
-    real bug report): this is very plausibly the actual "find my
-    robot" (audible chime) trigger, not just a generic heartbeat/ping
-    -- see PrimeRobot.trigger_echo_via_shadow()'s own docstring for
-    the full reasoning and the existing REST-based implementation this
-    would replace if confirmed. One real capture showed echo=0 in an
-    idle state; the actual trigger value is not yet confirmed.
-    connected_v2's relationship to connected (newer replacement?
-    different granularity?) is not confirmed either -- both are stored
-    as opaque values rather than guessed at."""
+    in the app's command config.
+
+    "echo" AS A CHIME TRIGGER -- ALSO DISPROVEN (this session,
+    chairstacker, real device test): writing True to this field
+    produced a genuine, accepted shadow write (a real update/delta
+    response came back), but the robot did NOT chime -- and "locate"
+    from the real app worked fine on the same device immediately
+    after. See PrimeRobot.trigger_echo_via_shadow()'s own docstring
+    for the full result. What "echo" actually represents remains
+    unresolved -- possibly a connectivity heartbeat/ping (consistent
+    with the rest of this shadow being about connection status), not
+    necessarily anything chime-related at all. connected_v2's
+    relationship to connected (newer replacement? different
+    granularity?) is not confirmed either -- both are stored as opaque
+    values rather than guessed at."""
 
     connected: Any | None = None
     connected_v2: Any | None = None

@@ -8,6 +8,49 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a10] - 2026-07-21
+
+### Changed
+
+- **Four new named-shadow candidates added to the battery investigation** (`roombapy-prime-verify-named-shadows`,
+  `roombapy-prime-validate`), prompted by a separate native-analysis track: `MQTTTopics.java`
+  builds topics for shadows this project never knew existed — `ro-currentstate`, `ro-stats`,
+  `ro-services`, `ro-configinfo` (`ro-` = read-only, unlike the five `rw-`/classic shadows
+  already confirmed and checked). These never appeared in the app's own command config for an
+  identifiable reason: that config only lists commands, and nothing writes to a read-only shadow
+  — the same reasoning gap that originally caused `rw-constatus` to be wrongly written off, now
+  recognized as a systematic blind spot in how shadows were enumerated, not a one-off mistake.
+  `ro-currentstate` is the strongest lead this investigation has had: the name itself describes
+  exactly the kind of data being searched for (live, device-reported, read-only state). Not yet
+  tested against a real device.
+
+- **`send_simple_command()`'s docstring updated with a new, genuinely different "find my robot"
+  candidate**, prompted by a separate native-analysis track: `MissionCommandType.FIND` (already
+  in this library's own confirmed `CommandType` enum, wire value `"find"`) traces back to the
+  real app's own locate button via `MissionUIServiceCommand.FindLocateRobotRunAction`. Distinct
+  from the two already-disproven attempts (a REST endpoint, a shadow write) — this is a third,
+  different transport (`send_simple_command()`'s own cmd-topic channel). `"find"` itself was
+  never part of the confirmed-live verb subset (only start/pause/stop/resume/dock are) — untested
+  against a real device as of this writing. A second candidate from the same analysis, `"FBEEP"`,
+  is flagged with lower confidence — it isn't part of this project's own confirmed `CommandType`
+  enum, and was found specifically in `liblegacyCore.so`, raising an open question about whether
+  it even applies to Prime's command channel rather than being Classic-specific.
+
+- **`PrimeRobot.trigger_echo_via_shadow()`, DISPROVEN against a real device** (chairstacker):
+  writing `True` to `rw-constatus`'s `"echo"` field produced a genuine, accepted shadow write (a
+  real `update/delta` response came back), but the robot did not chime, and "locate" from the
+  real app worked fine on the same device immediately afterward. This was this project's second
+  best-reasoned guess for the "find my robot" mechanism (the first, a REST endpoint, was also
+  confirmed not working). Both docstrings (`trigger_echo_via_shadow()`,
+  `ConnectionStatusShadow`) updated to reflect this — the method is kept (the underlying
+  shadow-write mechanism itself works correctly and may be useful for other purposes), but not as
+  a working locate trigger. The actual mechanism remains unresolved.
+
+2 existing tests updated to the new named-shadow candidates (mechanics only — the underlying
+capability, querying an arbitrary named shadow, was already fully covered), 450/450 total green,
+ruff clean. Both the `ro-` shadows and the `"find"` command are genuinely promising leads, not
+yet confirmed against a real device.
+
 ## [0.1.11a9] - 2026-07-20
 
 ### Fixed — urgent, prompted by a real field incident, read this first

@@ -234,22 +234,30 @@ Same `--dump-config`/shareable-report support as the other scripts.
 ### Checking named shadows (battery/charging status investigation)
 
 Battery percentage and charging/docked state remain unconfirmed as of this writing — not in the
-classic shadow, not in `rw-settings`, not on any MQTT topic captured so far, and (result below)
-not in any of the other three named shadows either. This script checks all five known named
-shadows in one pass, specifically looking for where this data might actually live:
+classic shadow, not in `rw-settings`/`rw-constatus`/`rw-schedule`/`rw-software` (all confirmed
+live, none battery-related), not on any MQTT topic captured so far. This script checks all known
+named shadows in one pass, specifically looking for where this data might actually live:
 
 ```bash
 roombapy-prime-verify-named-shadows --username you@example.com --country-code US \
     --blid YOUR_ROBOT_BLID
 ```
 
-**Result (chairstacker, all three previously-unqueried shadows checked live):** none contain
-battery/charging data. `rw-constatus` — the leading candidate from a native-app symbol trace —
-turned out to be MQTT/AWS-IoT *connection* status, not battery: its content is `{"connected",
-"connectedv2", "echo", "svcEndpoints"}`. The other two also confirmed content, neither
-battery-related: `rw-schedule` is the cleaning schedule, `rw-software` is OTA/firmware update
-status. See `ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in
-`models/robot_info.py` for the full field lists this result is now modeled from.
+**Result so far (chairstacker, five shadows checked live):** none contain battery/charging data.
+`rw-constatus` — the leading candidate from a native-app symbol trace — turned out to be
+MQTT/AWS-IoT *connection* status, not battery: its content is `{"connected", "connectedv2",
+"echo", "svcEndpoints"}`. The other two also confirmed content, neither battery-related:
+`rw-schedule` is the cleaning schedule, `rw-software` is OTA/firmware update status. See
+`ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in `models/robot_info.py` for
+the full field lists this result is now modeled from.
+
+**New, not-yet-tested candidates (a separate native-analysis track):** `MQTTTopics.java` builds
+topics for four more shadows this project never knew existed — `ro-currentstate`, `ro-stats`,
+`ro-services`, `ro-configinfo` (`ro-` = read-only, unlike the `rw-` ones above). These never
+appeared in the app's own command config for an identifiable reason: that config only lists
+commands, and nothing writes to a read-only shadow. `ro-currentstate` is now the strongest lead
+this investigation has had — the name itself describes exactly the kind of data being searched
+for (live, device-reported, read-only state). This script now checks all four automatically.
 
 Purely read-only — no confirmation gate needed, unlike the scripts above; this one never sends
 anything to the robot. These same shadows are now also checked automatically by
@@ -276,7 +284,7 @@ below.
 | Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
 | Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is a new, reasoned-but-unconfirmed hypothesis (see its docstring) — favor a `favorite_id`-referencing command over hand-built regions if experimenting with it |
 | Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. A real bug in the request envelope (`commands`/`end_commands` entries need a `{"command": ...}` wrapper) was found and fixed by reading a real `get_schedules()` response, though the write methods themselves have still never been called against a real server. HTTP methods separately confirmed. |
-| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 modeled fields are bytecode-confirmed wire keys (a fuller field list from `RobotStatusV2Constants.java` is now documented but not yet modeled). Confirmed NOT in `get_state()`'s response, NOT on any of the 7 originally-found MQTT topics (even after watching 300s post-dock), and NOT in any of the 5 named shadows (the `rw-constatus` hypothesis is disproven). Two active leads: a newly-discovered topic family, `dock/{reportType}/report` (one `reportType`, `"padDry"`, observed so far); and a genuine gap in our own prior testing — `watch_state()`'s shadow `update/delta` push channel has never been run live during an active mission (a prior "doesn't show up" finding was only ever a snapshot diff of `get_state()`). `roombapy-prime-verify-mission-timeline --watch-shadow-delta` exists to test this now — safely, a single documented topic, not a wildcard (see that flag's own section above for why this distinction matters). |
+| `RobotStatusV2` (structured battery/charging/dock status) | Medium (fields), unresolved (placement) | The 11 modeled fields are bytecode-confirmed wire keys (a fuller field list from `RobotStatusV2Constants.java` is now documented but not yet modeled). Confirmed NOT in `get_state()`'s response, NOT on any of the 7 originally-found MQTT topics (even after watching 300s post-dock), and NOT in any of the 5 originally-found named shadows (the `rw-constatus` hypothesis is disproven). **Strongest lead yet, not tested against a real device**: four more named shadows, `ro-currentstate`/`ro-stats`/`ro-services`/`ro-configinfo` (read-only, from `MQTTTopics.java` — never listed in the app's command config since nothing writes to a read-only shadow, the reason they were missed this long). `roombapy-prime-verify-named-shadows`/`roombapy-prime-validate` now check all four automatically. Also unresolved: `watch_state()`'s shadow `update/delta` push channel has never been run live on any NAMED shadow during an active mission (only the classic shadow has been tried, and only inconclusively — see that flag's own section above). |
 | Map editing | **High (envelope + 8/9 commands' fields), unverified (practice)** | The request envelope (`{"edit_cmd": ..., "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (several were wrong camelCase guesses, now corrected). `SetRoomMetadata`/`VirtualWall`'s internal discriminator use hand-written custom serializers and remain unconfirmed. Never sent to a real server -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
 | Deeply nested response fields (map bundle internals) | **High (fields), mostly resolved (envelope details)** | All 12 map-bundle content types (rooms, borders, hazards, trajectories, etc.) now have confirmed wire formats via bytecode (`RoomFeature` and 10 others) — each is a standard GeoJSON Feature with nested `properties`. The bundle's own manifest filename is now confirmed (it's literally `"manifest"`), and a real bundle confirms most content types use a `{type, features}` wrapper while at least one (`BorderFeature`) is a bare single Feature instead. Mission history's 20 timeline sub-event types are also fully typed (`MissionTimelineEvent`) — 10 of the 20 now confirmed against real data. |
 
