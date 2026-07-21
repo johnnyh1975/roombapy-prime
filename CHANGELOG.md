@@ -8,6 +8,26 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a14] - 2026-07-21
+
+### Fixed
+
+- **`get_shadow()`/`update_shadow()` now reconnect first if the connection is known to be
+  down**, prompted by a real field report of shadow GETs failing in a specific pattern (some
+  succeed, every one after that fails, the exact number varying between runs) and a matching,
+  documented AWS IoT MQTT SDK behavior (see
+  [aws/aws-iot-device-sdk-js-v2#117](https://github.com/aws/aws-iot-device-sdk-js-v2/issues/117)
+  — a field report there, on an unrelated project, describes this exact symptom for shadow
+  topics after a connection drop). Callers doing a plain sequential series of shadow queries with
+  no reconnect logic of their own (e.g. `verify_named_shadows.py`, unlike `watch_state()`'s own
+  hardened reconnect loop) previously had no way to recover from a single silent mid-run
+  disconnect — every subsequent call would keep trying to subscribe/publish on a dead
+  connection and time out. Cheap when already connected — only pays the reconnect cost when
+  actually needed.
+- **`verify_named_shadows.py` gained a `--delay-seconds` option**, prompted by the same field
+  report — genuinely unresolved which factor(s) contribute how much, so this is offered as a
+  cheap, no-downside option to try, not a confirmed fix on its own.
+
 ## [0.1.11a13] - 2026-07-21
 
 ### Added

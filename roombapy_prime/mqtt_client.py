@@ -778,8 +778,35 @@ class PrimeMqttClient:
         replace_token() is currently active, this call waits until it's
         done, instead of accessing a half-disconnected client -- in the
         worst case this can extend the response time by the duration of
-        a token swap, never by more than `timeout` itself."""
+        a token swap, never by more than `timeout` itself.
+
+        NEW (this session, prompted by a real field report): reconnects
+        first if the connection is currently known to be down.
+        Previously, any caller doing a plain sequential series of
+        get_shadow() calls with no reconnect logic of its own (e.g.
+        verify_named_shadows.py's simple loop, unlike watch_state()/
+        watch_mission_timeline()'s own hardened _watch_topic()) would,
+        after a single silent mid-run disconnect, have EVERY subsequent
+        get_shadow() call in that run keep trying to subscribe/publish
+        on a dead connection and time out -- matching a real report of
+        "first N shadows succeed, every one after that fails" with N
+        varying between runs (consistent with a disconnect landing at
+        an unpredictable point in the sequence, not a fixed request-
+        count limit). This matches a known, documented AWS IoT MQTT SDK
+        behavior: after a session is lost (a broker-side session
+        timeout, or the connection dropping for long enough), the
+        broker forgets prior subscriptions, and a client that doesn't
+        proactively reconnect/resubscribe before its next operation
+        will simply never receive a response, silently -- see e.g.
+        aws/aws-iot-device-sdk-js-v2#117, where a field report
+        (unrelated project, same underlying AWS IoT behavior) describes
+        this exact symptom for shadow topics specifically. Cheap when
+        already connected (self._connected is checked first, no-op in
+        the common case) -- only pays the reconnect cost when actually
+        needed."""
         with self._client_lock:
+            if not self._connected:
+                self.reconnect(timeout=timeout)
             base = _shadow_base(self._blid, named)
             result: list[ShadowResponse] = []
 
@@ -818,8 +845,12 @@ class PrimeMqttClient:
         different, restorable value if you need to verify delivery.
 
         NEW: now runs under self._client_lock, see get_shadow()'s
-        docstring for the tradeoff."""
+        docstring for the tradeoff. NEW (this session): also reconnects
+        first if the connection is currently known to be down -- same
+        reasoning as get_shadow()'s own docstring."""
         with self._client_lock:
+            if not self._connected:
+                self.reconnect(timeout=timeout)
             base = _shadow_base(self._blid, named)
             result: list[ShadowResponse] = []
 

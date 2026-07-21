@@ -105,7 +105,35 @@ async def _fetch_and_report(
         print(f"\n  [{label}] empty or unrecognized shape: {redact_aws_url_secrets(repr(response.payload))}")
 
 
-async def run(username: str, password: str, country_code: str, blid: str) -> tuple[Report, dict[str, Any]]:
+async def run(
+    username: str, password: str, country_code: str, blid: str, delay_seconds: float = 0.0
+) -> tuple[Report, dict[str, Any]]:
+    """delay_seconds: NEW (this session, prompted by a real field
+    report -- chairstacker's own account has shown a genuine,
+    unresolved connectivity issue across several runs: an original
+    session with only 5 shadows queried had ALL 5 succeed; after 4
+    more candidates were added (9 total), later runs showed 1 of 9,
+    then 0 of 9, then 3 of 9 succeeding, in that order over time.
+
+    CORRECTED (this session, self-review after a direct challenge):
+    an earlier version of this docstring described this as "a strong
+    signature of AWS IoT-side throttling" based on looking at only the
+    MOST RECENT run's ordinal pattern (first 3 succeed, rest fail) in
+    isolation. Checked against the FULL history above, that framing
+    doesn't hold up -- a fixed-count throttle would show the same
+    cutoff every time, not 1, then 0, then 3. The actual pattern looks
+    more like a gradually-changing (recovering, or still partially
+    degraded) connection between the robot/account and AWS IoT
+    itself, consistent with the original "MQTT connection dropped"
+    report this whole investigation started from -- not a per-
+    connection request-count limit.
+
+    This delay is kept as a LOW-COST, still-worth-trying option
+    regardless of the exact mechanism (it can't make things worse,
+    and there's a real chance any timing-sensitivity in a still-
+    recovering connection benefits from more spacing between
+    requests) -- but it should NOT be read as confirming a specific
+    "throttling" theory. Genuinely unresolved as of this addendum."""
     report = Report()
     raw_capture: dict[str, Any] = {}
 
@@ -119,10 +147,14 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         print("\n== Checking known shadows (baseline) ==")
         for name in KNOWN_SHADOWS:
             await _fetch_and_report(robot, name, report, raw_capture)
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
 
         print("\n== Checking candidate shadows (never queried before) ==")
         for name in CANDIDATE_SHADOWS:
             await _fetch_and_report(robot, name, report, raw_capture)
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
 
         await robot.disconnect()
 
@@ -145,6 +177,16 @@ def main() -> None:
     parser.add_argument("--dump-config", default=None, metavar="PATH")
     parser.add_argument("--no-issue-link", action="store_true")
     parser.add_argument("--open-browser", action="store_true")
+    parser.add_argument(
+        "--delay-seconds", type=float, default=0.0,
+        help="Wait this long between each shadow query (default: 0, no delay). NEW: "
+        "prompted by a real, still-unresolved field report of a gradually-changing "
+        "connectivity issue between a robot/account and AWS IoT -- NOT a confirmed "
+        "throttling limit (checked against the full run history, a fixed-count "
+        "throttle doesn't fit the data). Low-cost to try regardless of the exact "
+        "cause -- worth trying a few seconds if some but not all shadows are timing "
+        "out for you.",
+    )
     args = parser.parse_args()
 
     username = args.username or input("Prime account email: ")
@@ -153,7 +195,7 @@ def main() -> None:
     print(f"\nTARGET DEVICE: {args.blid}")
     print("This run only reads shadows -- it never sends commands to this device.")
 
-    report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid))
+    report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid, args.delay_seconds))
     report.redact(username, password)
 
     ok, failed, skipped = report.summary()

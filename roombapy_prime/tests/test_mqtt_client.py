@@ -128,6 +128,30 @@ def test_get_shadow_classic_ephemeral(fixtures_dir: Path) -> None:
     assert response.payload["version"] == 90131
 
 
+def test_get_shadow_reconnects_first_when_connection_known_down(fixtures_dir: Path) -> None:
+    """NEW (this session, prompted by a real field report + a known AWS
+    IoT MQTT SDK behavior -- see aws/aws-iot-device-sdk-js-v2#117): a
+    caller doing a plain sequential series of get_shadow() calls with
+    no reconnect logic of its own (e.g. verify_named_shadows.py) would,
+    after a single silent mid-run disconnect, have every subsequent
+    call time out forever with no way to recover. get_shadow() must
+    reconnect proactively when it already knows the connection is
+    down, not just try to subscribe/publish on a dead client."""
+    client, fake = _connected_client(blid="0000000000000000")
+    client._connected = False  # simulates a disconnect that happened earlier
+
+    def fake_reconnect(timeout=10.0):
+        client._connected = True  # simulates a successful reconnect
+
+    client.reconnect = fake_reconnect
+    payload = _load(fixtures_dir, "shadow_get_classic_ephemeral.json")
+    fake.on_publish_react = _react_with(client, "get", "accepted", payload)
+
+    response = client.get_shadow(timeout=1.0)
+
+    assert response.payload["state"]["reported"]["sku"] == "R980040"
+
+
 def test_get_shadow_classic_smart_tier(fixtures_dir: Path) -> None:
     client, fake = _connected_client(blid="1111111111111111")
     payload = _load(fixtures_dir, "shadow_get_classic_smart_tier.json")
