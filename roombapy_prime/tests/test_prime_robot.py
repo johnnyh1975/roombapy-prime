@@ -13,7 +13,7 @@ or real paho client -- consistent with the rest of this file.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, create_autospec
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -390,6 +390,80 @@ async def test_watch_state_delivers_multiple_messages_in_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_watch_topic_reconnect_uses_relogin_when_available() -> None:
+    """CORRECTED (this session, prompted by a real field report: an
+    integration stuck permanently reconnecting-but-never-succeeding).
+    reconnect() alone is same-token by design -- if a disconnect lands
+    after the token has already expired (or the proactive refresh
+    task died for any reason), blindly reusing it would retry forever
+    without ever being able to succeed. When relogin is configured,
+    a reconnect must fetch a fresh token via relogin() +
+    replace_token(), NOT call the same-token reconnect() at all."""
+    from roombapy_prime.auth import CloudCredentials, ConnectionToken, LoginResult
+    from roombapy_prime.prime_robot import PrimeRobot
+
+    mqtt = MagicMock()
+    rest = MagicMock()
+
+    fresh_token = ConnectionToken(
+        client_id="c2", iot_token="fresh-token", iot_signature="s2",
+        iot_authorizer_name="a", expires=999999, devices=["BLID123"],
+    )
+    fresh_login_result = LoginResult(
+        mqtt_endpoint="mqtt.example.invalid", http_base="https://h.invalid",
+        http_base_auth="https://ha.invalid",
+        credentials=CloudCredentials(access_key_id="ak", secret_key="sk", session_token="st", cognito_id="c"),
+        robots={"BLID123": {}}, connection_tokens=[fresh_token], raw={},
+        irbt_topic_prefix="irbt-fake-prefix",
+    )
+    relogin = AsyncMock(return_value=fresh_login_result)
+
+    robot = PrimeRobot(
+        blid="BLID123", mqtt_client=mqtt, rest_client=rest,
+        irbt_topic_prefix="irbt-fake-prefix", relogin=relogin,
+    )
+
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    disconnect_event = asyncio.Event()
+    call_count = 0
+
+    async def fake_wait_for_disconnect():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            await disconnect_event.wait()
+            return "connection lost"
+        await asyncio.Event().wait()
+
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
+    mqtt.replace_token = MagicMock()
+    mqtt.reconnect = MagicMock()
+
+    agen = robot.watch_state()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    disconnect_event.set()
+    await _wait_until(lambda: mqtt.replace_token.called)
+
+    relogin.assert_awaited_once()
+    mqtt.replace_token.assert_called_once()
+    passed_token = mqtt.replace_token.call_args.args[0]
+    assert passed_token.iot_token == "fresh-token"
+    # The plain, same-token path must NOT have been used when relogin
+    # was available -- that's the entire point of this fix.
+    mqtt.reconnect.assert_not_called()
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"after": "relogin_reconnect"}))
+    result = await next_task
+    assert result.payload == {"after": "relogin_reconnect"}
+
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_watch_state_reconnects_after_disconnect() -> None:
     """A dropped connection must not end the generator or raise to the
     caller -- it triggers mqtt.reconnect() and resumes delivering deltas
@@ -699,6 +773,53 @@ async def test_refresh_loop_never_refreshes_when_expiry_unknown() -> None:
     await robot._refresh_loop()  # must return immediately, not hang or call relogin
 
     mqtt.replace_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_refresh_loop_retries_after_a_failed_refresh_instead_of_dying() -> None:
+    """HARDENED (this session, prompted by a real field report: an
+    integration stuck permanently reconnecting, surviving even
+    multiple full application restarts). Previously, ANY exception
+    from relogin()/replace_token() here would propagate out of this
+    fire-and-forget background task and kill it silently -- no further
+    proactive refresh would EVER happen again for this PrimeRobot's
+    lifetime, no log, nothing. This test asserts a failed attempt is
+    retried, not fatal to the loop."""
+    import roombapy_prime.prime_robot as prime_robot_module
+
+    robot, mqtt, _rest = _robot_with_mocks()
+    # First check: refresh due immediately. Second check (after the
+    # retry sleep): also due immediately, so the retried attempt fires
+    # right away too. Third check: no longer schedulable -- loop must
+    # stop after exactly one failure + one successful retry.
+    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, 0.0, None]
+
+    relogin_call_count = 0
+
+    async def fake_relogin():
+        nonlocal relogin_call_count
+        relogin_call_count += 1
+        if relogin_call_count == 1:
+            raise ConnectionError("transient network blip")
+        login_result = MagicMock()
+        login_result.token_for_blid.return_value = "new-token-sentinel"
+        return login_result
+
+    robot._relogin = fake_relogin
+    robot._REFRESH_RETRY_SECONDS = 0.0  # don't actually slow the test down
+
+    sleep_calls: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        await real_sleep(0)  # yield control without really waiting
+
+    with patch.object(prime_robot_module.asyncio, "sleep", fake_sleep):
+        await robot._refresh_loop()
+
+    assert relogin_call_count == 2, "the loop must retry after the first failure, not give up"
+    mqtt.replace_token.assert_called_once_with("new-token-sentinel")
 
 
 # --- backpressure ---------------------------------------------------------

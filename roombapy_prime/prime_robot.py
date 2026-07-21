@@ -153,6 +153,15 @@ class PrimeRobot:
         self.deployment = deployment or {}
         self._refresh_task: asyncio.Task[None] | None = None
 
+    _REFRESH_RETRY_SECONDS = 60.0
+    """NEW (this session, _refresh_loop() hardening). How long to wait
+    before retrying a FAILED proactive token refresh -- deliberately
+    short and fixed (not exponential backoff, unlike _watch_topic()'s
+    reconnect loop) since this task runs for the whole lifetime of the
+    connection and a transient failure shouldn't meaningfully delay
+    the next legitimate attempt to get ahead of the ~1h token
+    lifetime."""
+
     async def connect(self, timeout: float = 10.0) -> None:
         """Blocking paho connection setup in a worker thread, so the
         rest of the app can stay async (see mqtt_client.py -- the
@@ -179,16 +188,46 @@ class PrimeRobot:
         survive the ~1h token lifetime. Returns for good (no further
         refresh) once no expiry time is known anymore -- see
         seconds_until_token_refresh_due()'s docstring for why that's a
-        known limitation, not a silent bug."""
+        known limitation, not a silent bug.
+
+        HARDENED (this session, prompted by a real field report: an
+        integration stuck permanently reconnecting-but-never-
+        succeeding, surviving even multiple full application restarts).
+        Previously, a single failed relogin()/replace_token() call
+        here (a transient network blip at exactly the wrong moment,
+        for instance) would propagate out of this method entirely --
+        and since this runs as a fire-and-forget background task
+        (asyncio.ensure_future() in connect(), never awaited except on
+        disconnect()), an unhandled exception here means the task
+        simply dies silently. No further proactive refresh EVER
+        happens again for this PrimeRobot's lifetime, with no log line
+        anywhere pointing at it -- the token then runs out at its
+        normal ~1h lifetime with nothing left to renew it, and any
+        later reconnect (see _watch_topic()'s own hardening) would
+        depend entirely on ITS OWN relogin fallback instead, having
+        lost this proactive path for good, silently, possibly hours
+        earlier. Now: a failed refresh attempt is logged and retried
+        with a short, fixed backoff, rather than ending the loop --
+        this task is designed to run for as long as the connection
+        does, so a transient failure should delay the next attempt,
+        not terminate proactive refreshing permanently."""
         while True:
             wait_seconds = self._mqtt.seconds_until_token_refresh_due()
             if wait_seconds is None:
                 return
             await asyncio.sleep(wait_seconds)
             assert self._relogin is not None  # invariant: only started if set
-            login_result = await self._relogin()
-            new_token = login_result.token_for_blid(self.blid)
-            await asyncio.to_thread(self._mqtt.replace_token, new_token)
+            try:
+                login_result = await self._relogin()
+                new_token = login_result.token_for_blid(self.blid)
+                await asyncio.to_thread(self._mqtt.replace_token, new_token)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception(
+                    "roombapy-prime: proactive token refresh failed for %s -- "
+                    "will retry in %.0fs rather than giving up on future refreshes",
+                    self.blid, self._REFRESH_RETRY_SECONDS,
+                )
+                await asyncio.sleep(self._REFRESH_RETRY_SECONDS)
 
     # --- Shadow-based operations (via mqtt_client.py) -----------------
 
@@ -1076,7 +1115,44 @@ class PrimeRobot:
                 )
                 while True:
                     try:
-                        await asyncio.to_thread(self._mqtt.reconnect)
+                        # CORRECTED (this session, prompted by a real field
+                        # report: an integration stuck permanently
+                        # reconnecting-but-never-succeeding, surviving even
+                        # multiple full restarts of the calling application).
+                        # reconnect() on its own is "same-token" by design
+                        # (see its own docstring) -- it does NOT check
+                        # whether that token is still valid. The proactive
+                        # _refresh_loop() background task normally keeps the
+                        # token fresh well before expiry, but if a disconnect
+                        # happens to land after the token has already expired
+                        # (or that task died for any reason -- an exception,
+                        # a race with disconnect()/reconnect() happening
+                        # concurrently), every subsequent reconnect() attempt
+                        # here would keep reusing the same now-permanently-
+                        # invalid token, retrying forever at an
+                        # ever-increasing backoff but never actually able to
+                        # succeed -- exactly matching a "stuck, restart
+                        # doesn't help" symptom IF the restart itself
+                        # somehow reused stale state (this specific failure
+                        # mode is defended against below regardless of
+                        # whether that's the exact mechanism in any given
+                        # report). When relogin is available, get a fresh
+                        # token as part of every reconnect attempt --
+                        # replace_token() already does the same disconnect/
+                        # connect/resubscribe sequence reconnect() does, so
+                        # this trades a slightly more expensive reconnect
+                        # (one extra login round-trip) for eliminating an
+                        # entire class of "stuck forever on a stale
+                        # credential" failures. Falls back to plain,
+                        # same-token reconnect() when no relogin callback
+                        # was configured (auto_refresh=False), unchanged
+                        # from before.
+                        if self._relogin is not None:
+                            login_result = await self._relogin()
+                            new_token = login_result.token_for_blid(self.blid)
+                            await asyncio.to_thread(self._mqtt.replace_token, new_token)
+                        else:
+                            await asyncio.to_thread(self._mqtt.reconnect)
                     except Exception as exc:  # noqa: BLE001
                         _LOGGER.warning(
                             "roombapy-prime: MQTT reconnect attempt failed (%s) -- retrying in %.0fs",

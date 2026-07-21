@@ -8,6 +8,37 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a12] - 2026-07-21
+
+### Fixed — prompted by a real field report of a permanently stuck connection
+
+- **A real reconnect weakness that could leave a long-running connection stuck permanently**,
+  found while investigating a field report (chairstacker) of an integration that lost
+  connectivity and stayed lost across multiple full application restarts. Two related issues in
+  `_watch_topic()`'s (the shared engine behind `watch_state()`/`watch_mission_timeline()`/
+  `watch_raw_topic()`) reconnect-after-drop handling:
+  1. `reconnect()` is same-token by design (see its own docstring) — it never checks whether that
+     token is still valid. If a disconnect happens to land after the token has already expired
+     (or the proactive refresh task died for any reason — see next point), every subsequent
+     reconnect attempt would keep reusing the same now-permanently-invalid token, retrying
+     forever at an ever-increasing backoff but never able to succeed. Fixed: when a `relogin`
+     callback is configured, every reconnect attempt now fetches a fresh token first
+     (`relogin()` + `replace_token()`) instead of blindly reusing the existing one. Falls back to
+     the previous same-token `reconnect()` unchanged when no `relogin` was configured.
+  2. `_refresh_loop()` (the proactive background task that normally keeps the token fresh well
+     before expiry) had no error handling at all — a single failed `relogin()`/`replace_token()`
+     call (a transient network blip at exactly the wrong moment, for instance) would propagate
+     out of this fire-and-forget background task and kill it silently. No further proactive
+     refresh would ever happen again for that `PrimeRobot`'s lifetime, with no log line anywhere
+     pointing at it. Fixed: a failed refresh attempt is now logged and retried after a short,
+     fixed delay, rather than ending the loop permanently.
+  Together, these two fixes close the specific failure mode of "stuck forever on a stale
+  credential, no error visible anywhere" — whether or not this turns out to be the exact
+  mechanism behind any specific report, both are real, independently-justified hardening.
+
+2 new tests (one per fix, each directly exercising the new relogin/retry behavior), 468/468
+total green, ruff clean.
+
 ## [0.1.11a11] - 2026-07-21
 
 ### Added

@@ -3396,3 +3396,53 @@ and in what shape (a plain enum name string? a nested object? something else?).
 
 466/466 tests green, ruff clean as of this addendum (1 new test for `ResolvedMissionStatus`'s
 confirmed values).
+
+## Addendum: a real field report of a permanently stuck connection -- two reconnect weaknesses found and fixed
+
+chairstacker reported the `ha_roomba_plus` integration losing MQTT connectivity, staying lost
+across multiple full HA restarts, with a log entry: `"MQTT connection dropped (Unspecified
+error) while watching v005-irbthbu/things/.../mission/timeline/report -- reconnecting"`. Two
+things stood out immediately: the `irbt_topic_prefix` was `v005`, not the `v011` seen in every
+single capture throughout this entire investigation from other testers/sessions -- plausibly a
+genuine server-side deployment change on iRobot's own infrastructure, not confirmed either way
+yet. Separately, a `send_simple_command("find")` retest also produced no chime, neither docked
+nor mid-mission -- given the connectivity issue was active at the same time, this result should
+be treated as inconclusive, not a clean disproof, until retried on a healthy connection.
+
+Investigating the "stuck even after restart" symptom specifically surfaced two real,
+independently-justified weaknesses in `_watch_topic()` (the shared reconnect engine behind
+`watch_state()`/`watch_mission_timeline()`/`watch_raw_topic()`):
+
+**1. `reconnect()` is same-token by design.** Its own docstring already said so ("Same-token
+counterpart to replace_token()") -- it was never checking whether the token it's reusing is
+still valid. If a disconnect happens after the token's ~1h lifetime has run out, every
+subsequent reconnect attempt keeps reusing the same now-permanently-invalid token, retrying
+forever at increasing backoff but never able to succeed. Fixed: when `relogin` is configured,
+every reconnect attempt now does a fresh login + `replace_token()` first, not a same-token
+`reconnect()`.
+
+**2. `_refresh_loop()` (the proactive background task meant to keep the token fresh well before
+expiry) had zero error handling.** A single failed `relogin()`/`replace_token()` call -- a
+transient network blip landing at exactly the wrong moment -- would propagate out of this
+fire-and-forget background task (`asyncio.ensure_future()`, never awaited except on
+`disconnect()`) and kill it silently. No further proactive refresh would ever happen again for
+that `PrimeRobot`'s lifetime, with absolutely no log line anywhere pointing at it -- exactly the
+kind of silent, hours-earlier root cause that would make a LATER symptom ("stuck, restart
+doesn't help") genuinely confusing to diagnose from the symptom alone. Fixed: a failed refresh
+attempt is now logged and retried after a short, fixed delay instead of ending the task
+permanently.
+
+**Whether this is confirmed to be THE exact mechanism behind chairstacker's specific report is
+still open** -- but both fixes are real, independently-justified hardening regardless, closing
+an entire class of "stuck forever on a stale credential, no visible error" failures that could
+otherwise occur for reasons unrelated to this specific report too.
+
+**A separate, unresolved thread from this same report**: `ha_roomba_plus`'s own `manifest.json`
+was found still pinning `roombapy-prime@v0.1.11a6` -- meaning the actual running integration in
+this report predates EVERYTHING from a7 onward (all the region/battery-shadow work, the 21
+wire-key fixes, and this exact reconnect hardening). Whether an outdated pin is itself a
+contributing factor to the report, or just an unrelated finding along the way, isn't confirmed --
+but it means chairstacker's integration cannot benefit from any of this session's fixes until
+`ha_roomba_plus`'s own pin is updated and the HACS update is applied.
+
+468/468 tests green, ruff clean as of this addendum (2 new tests, one per fix).
