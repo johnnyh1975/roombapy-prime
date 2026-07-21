@@ -28,6 +28,11 @@ This file only tracks what changed from a user's point of view.
   token is actually at/near expiry, matching the same check `_refresh_loop()` itself already
   uses. An ordinary reconnect with a still-valid token uses the fast, same-token path exactly as
   it always did before either fix existed.
+- **CI failure**: `decode_rawmap_to_png()`'s new test needs Pillow, which is an optional
+  dependency — CI's own install step didn't include the `[map]` extra, so the import failed
+  there even though it works fine locally. Fixed both directions: CI now installs `[map]` too,
+  and the test itself skips cleanly (rather than failing) if Pillow genuinely isn't present,
+  matching the library's own "not a hard dependency" design.
 
 ### Added
 

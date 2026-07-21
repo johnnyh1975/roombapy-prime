@@ -230,7 +230,16 @@ def test_decode_rawmap_to_png_produces_correctly_oriented_image() -> None:
     white/bottom row black on the wire) and checks decode_rawmap_to_png()
     both parses the confirmed field layout correctly AND applies the
     confirmed vertical flip (top-of-wire ends up at the bottom of the
-    output PNG, matching the real app's own orientation)."""
+    output PNG, matching the real app's own orientation).
+
+    Pillow is an optional dependency (pip install "roombapy-prime[map]")
+    -- skips cleanly rather than failing if it isn't installed, matching
+    decode_rawmap_to_png()'s own "not a hard dependency" design. CI
+    installs the [map] extra specifically so this actually runs there,
+    not just skips."""
+    import pytest
+
+    pytest.importorskip("PIL")
     from roombapy_prime.models.livemap import decode_rawmap_to_png
 
     def _varint(n: int) -> bytes:
