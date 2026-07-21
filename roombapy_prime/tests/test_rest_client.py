@@ -280,6 +280,69 @@ async def test_get_favorites_non_list_response_is_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_favorites_handles_json_encoded_commanddefs_strings() -> None:
+    """NEW (this session, parallel native-analysis track): Favorite's
+    own Kotlin/Java field is typed List<String>, not a list of
+    already-structured objects -- meaning each entry may arrive as a
+    JSON-ENCODED STRING rather than a dict directly. A real
+    string-shaped response would previously have crashed outright
+    (subscripting a string with c["command"]) -- this defends against
+    that."""
+    import json
+
+    from roombapy_prime.models import MissionCommandType
+
+    session = _FakeSession()
+    session.queue_response(payload=[
+        {
+            "favorite_id": "fav1",
+            "name": "Kitchen clean",
+            "default": False,
+            "deleted": False,
+            "hidden": False,
+            "commanddefs": [
+                json.dumps({"command": "clean", "robot_id": "BLID123", "ordered": 0, "select_all": True})
+            ],
+        }
+    ])
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_favorites()
+
+    assert len(result) == 1
+    assert len(result[0].command_defs) == 1
+    assert result[0].command_defs[0].command_type == MissionCommandType.CLEAN
+    assert result[0].command_defs[0].asset_id == "BLID123"
+
+
+@pytest.mark.asyncio
+async def test_get_favorites_handles_mixed_dict_and_string_commanddefs() -> None:
+    """Defensive: a response mixing both shapes across entries (however
+    unlikely) must not crash either -- each entry is checked
+    independently, not the whole list at once."""
+    import json
+
+    session = _FakeSession()
+    session.queue_response(payload=[
+        {
+            "favorite_id": "fav1",
+            "name": "Mixed",
+            "commanddefs": [
+                {"command": "clean", "robot_id": "BLID_A", "ordered": 0, "select_all": True},
+                json.dumps({"command": "dock", "robot_id": "BLID_B", "ordered": 0, "select_all": False}),
+            ],
+        }
+    ])
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    result = await client.get_favorites()
+
+    assert len(result[0].command_defs) == 2
+    assert result[0].command_defs[0].asset_id == "BLID_A"
+    assert result[0].command_defs[1].asset_id == "BLID_B"
+
+
+@pytest.mark.asyncio
 async def test_create_favorite_sends_body_and_query() -> None:
     """CONFIRMED (POST method, via CreateFavoriteRequest.<init>) -- see
     create_favorite()'s docstring."""

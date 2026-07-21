@@ -8,6 +8,168 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a11] - 2026-07-21
+
+### Added
+
+- **`core::MissionData`'s getter return types confirmed via bytecode signature reading — no live
+  device needed for this part.** `getBatteryLevelPercentage()` → `short`, `getTankLevel()` →
+  nullable boxed `Short` (a numeric level, genuinely different from `CurrentStateShadow`'s own
+  `tank_present`, correcting an earlier guess that conflated the two), `getIsCharging()`/
+  `getIsFullyCharged()` → plain `boolean` (neither appears in `ro-currentstate`'s own key list,
+  plausibly folded into `clean_mission_status` instead), `getDockState()` → a genuinely composite
+  86-value enum spanning four dock subsystems (evac dock, fluid replenishment, pad wash, pad
+  dry), `getResolvedMissionStatus()` → a 49-value enum. New, deliberately partial
+  `ResolvedMissionStatus` `IntEnum` added with the values actually transcribed so far — NOT the
+  full 49, extend incrementally rather than guessing at the gaps.
+- **A significant correction to an earlier assumption this session**: `core::MissionData`
+  actually has 27 getters, not the 7 originally listed — it does NOT map 1:1 onto
+  `CurrentStateShadow`'s 12 keys, and is confirmed to be a larger, aggregated object (one of four
+  combined input streams), not a direct shadow-serialization source. The confirmed TYPES above
+  remain directly useful regardless — but which getter (if any) feeds which specific shadow key
+  remains a hypothesis, not a settled mapping. Documented honestly in `CurrentStateShadow`'s own
+  docstring rather than left implying a 1:1 correspondence.
+
+### Changed
+
+- **`CurrentStateShadow`/`StatsShadow` enriched with a cross-reference this project already had
+  but hadn't checked**: `ha_roomba_plus`'s own Classic-tier field registry
+  (`MISSIONSTORE_FIELD_REGISTRY.md`) confirms `batPct`/`detectedPad`/`tankPresent` as real,
+  already-live-verified top-level Classic robot fields (including a real capture showing
+  `batPct` moving 100→100→79 across one mission), and `bbchg3`/`bbrstinfo`'s confirmed Classic
+  sub-field structure (`estCap`/`nAvail`/`hOnDock`/`avgMin`; `nNavRst`/`nMobRst`/`nSafRst`/
+  `safCauses`). Same company, same field vocabulary, different product line — not proof Prime
+  behaves identically, but meaningfully stronger supporting evidence than a bare guess for both
+  models' docstrings.
+
+### Fixed
+
+- **`PolygonEvent` and `CleaningProfile` — the two remaining candidates from the systematic audit
+  for wire-key confidence gaps, both resolved and both wrong.** `PolygonEvent`: 4 of 7 wire keys
+  corrected (`mapId`→`p2mapId`, `mapVersion`→`p2mapvId`, `polyId`→`polyid`, `regionId`→`rid`) —
+  `polyid`/`rid` specifically are not derivable from the property name by any casing
+  transformation, exactly why the earlier DEX-field-list reading couldn't have caught this.
+  `CleaningProfile`: `commandParams`→`params`, doubly confirmed — both by `$$serializer`
+  inspection AND against chairstacker's own real `get_cleaning_profiles()` response from an
+  earlier session, which had shown the correct key the whole time without anyone cross-checking
+  the model against it. **Practical consequence, more significant than the `PolygonEvent`
+  fields**: `command_params` stayed silently `None` against every real response — the actual
+  cleaning-profile parameters (feeding into region-aware commands) were never being read at all.
+  Both existing tests corrected to the real keys.
+
+### Added
+
+- **The battery-status search is resolved — `ro-currentstate` reports `batPct`.** Live-confirmed
+  (chairstacker): the named shadow `"ro-currentstate"` — one of four previously-unknown
+  read-only shadows found earlier this session via `MQTTTopics.java` — reports keys including
+  `batPct` (battery percentage), `dock` (plausibly docked/charging state), and
+  `cleanMissionStatus` (matching, independently, the exact event name this project's own native
+  decompilation found on `AssetIotTopicFactory` months earlier). New `CurrentStateShadow` model
+  captures all 11 confirmed keys. **Only the key names are confirmed so far** — every field is
+  deliberately typed `Any` rather than guessed at, pending a follow-up with the actual reported
+  values (not just the key list) to type this properly.
+- **Models added for the other three "ro-" shadows too** (`StatsShadow`/`ro-stats`,
+  `ServicesShadow`/`ro-services`, `ConfigInfoShadow`/`ro-configinfo`), all confirmed live in the
+  same capture. Same caveat as `CurrentStateShadow` — key names only, values still unconfirmed.
+
+### Fixed
+
+- **A real, currently-existing redaction gap**, found directly by checking this project's own
+  redaction coverage against `ro-configinfo`'s actual field name: `"passwordHash"` would NOT have
+  matched the exact-match `"password"` entry in `diagnostics.py`'s sensitive-key set
+  (`"passwordhash" != "password"` after lowercasing) — meaning a `--dump-config` capture of this
+  shadow would have leaked it unredacted. Added as its own entry.
+
+### Changed
+
+- **Systematic audit for the same wire-key confidence gap that caused the `CommandParams` bug**,
+  across every model in this package: checked every class whose docstring says only "Confirmed
+  (androguard)" without a `$$serializer`/real-live-data cross-reference. Most turned out fine —
+  single-word field names (`CommandPolygon`, `Region`, `ScheduleTime`) carry much lower risk than
+  compound camelCase ones, and several (`PadWetnessParam`, `ScheduleTime`, parts of `Region`) were
+  already independently confirmed against real captured data. Two genuine, unresolved candidates
+  found and downgraded honestly rather than left overclaiming "Confirmed": `PolygonEvent`
+  (`areaCleaned`/`mapId`/`mapVersion`/`polyId`/`regionId`) and `CleaningProfile`
+  (`commandParams`) — both read-side models where a wrong key would silently produce `None` for
+  real data rather than breaking an outgoing command, a different consequence than the
+  `CommandParams` bug but still not confirmed correct. Flagged for the same `$$serializer`-table
+  verification technique that resolved `CommandParams`, not guessed at.
+
+### Fixed
+
+- **A real, significant wire-format bug in `CommandParams` — 18 of 39 fields were using wrong
+  keys, not just differently-cased ones.** Found by a separate native-analysis track
+  investigating region-aware cleaning, via actual `$$serializer.<clinit>` inspection — the
+  stronger evidence than this project's own earlier "DEX field list" reading, which had read
+  Kotlin PROPERTY names, not the `@SerialName` wire keys kotlinx.serialization actually uses.
+  Critically, kotlinx.serialization silently **drops undeclared keys** rather than erroring — a
+  `RoutineCommand` sent with the old keys would have had these 18 parameters vanish entirely on
+  arrival (cleaning strength, mop mode, pass count, and more), not just look slightly different.
+  Corrected in both `to_json()`/`from_json()` (`roomConfine`→`room_confine`,
+  `manualUpdate`→`manUpd`, `timeboxMinutes`→`timebox`, `velocityLeft`/`velocityRight`→`vleft`/
+  `vright`, and 14 more — see `CommandParams.to_json()`'s own docstring for the complete list).
+  `CommandPolygonMetadata`'s single field corrected the same way (`furnitureId`→`furniture_id`).
+  One deliberate exception: `no_auto_passes` (wire key `noAutoPasses`) is NOT in the confirmed
+  serializer list at all — kept exactly as-is because it's independently confirmed from real
+  live data, a genuinely different field from `no_persistent_pass`, not a naming variant of it.
+  New `test_command_params_wire_keys_match_confirmed_serializer_list()` checks every single
+  output key against the confirmed list, not just a couple of examples. **This meaningfully
+  reduces the risk profile of the whole region-aware-cleaning investigation** — `CommandParams`
+  sits inside every region of a region-aware command, so this was a real, silent
+  parameter-loss bug waiting for the first live test to hit, not a cosmetic naming issue.
+- **A real, previously-unnoticed crash risk in `get_favorites()`**, found by a separate
+  native-analysis track investigating region-aware cleaning: `Favorite`'s own Kotlin/Java field
+  for command definitions is typed `List<String>`, not a list of already-structured objects —
+  meaning each entry may arrive as a JSON-encoded string rather than a dict directly. The
+  existing parser assumed dicts unconditionally; a real string-shaped response would have
+  crashed outright. Now defensively handles both shapes. Follow-up analysis confirmed each
+  string entry deserializes to a full `RoutineCommand` object (`check-cast` in the bytecode) —
+  a favorite genuinely carries complete command definitions, not just a reference.
+
+### Changed
+
+- **A significant, well-reasoned recommendation in `send_routine_command_via_cmd_topic()`'s own
+  docstring has been reversed**, following a native-analysis track tracing the real app's
+  `RoutineCommandBuilder`: the earlier advice favored a `favorite_id`-only `RoutineCommand` over
+  hand-built regions, reasoning that referencing something already app-defined would be safer.
+  That's now known to be backwards — `setFromFavorite()` sends the favorite_id AND its full
+  resolved command definitions (regions/params/id_multipolys/map_id) together, never favorite_id
+  alone. A favorite_id-only command isn't a safer subset of real app behavior; it's something
+  the app itself never actually sends.
+- **`routine_modified` confirmed to be a COMPUTED comparison value**, not a free-form field —
+  the real app derives it by comparing the command being built against the original favorite on
+  three axes (region count, region order/IDs, and each region's specifically *user-modifiable*
+  params). Exactly 7 `CommandParams` fields are confirmed non-user-modifiable (`routine_type`,
+  `clean_score_id`, `smart_clean_id`, `replay_of`, `routine_modified`, `adaptive_cleaning`,
+  `cleaning_profile`) — every other field factors into the comparison. **Practical consequence**:
+  the safest possible test design is to resend an *existing* favorite's own command_def
+  completely unchanged (sidestepping the modified-flag computation question entirely) rather
+  than hand-constructing anything from scratch.
+- **`RegionType.TID` (ad-hoc/temporary zones) fully explained**: ad-hoc regions get IDs from a
+  reserved, hardcoded range (160–199) via a dedicated counter, and each one is created alongside
+  a `CommandPolygon` sharing the exact same ID (the region↔geometry linking mechanism), with
+  polygon metadata referencing a real furniture ID. A further, separate risk on top of the
+  favorite-replay guidance above — the safest test design also avoids ad-hoc (TID) regions
+  entirely, sticking to ordinary RID/ZID regions from real map data.
+- **`OperatingModeBitmask` and `RoutineTypeParam` added** — `operating_mode`'s previously
+  unexplained int values (2, 32, and the `cap.oMode` value 550 seen in every `get_state()`
+  shadow response) are now a confirmed, independently-validated bitmask (`cap.oMode` turns out
+  to be the device's advertised *set of supported modes*, not one active mode).
+  `routine_type`'s full enum (`FIRST_RUN`/`CLEAN_ALL`/`CLEAN_DIRTY`/`REPLAY`/`SPOT_CLEAN`/
+  `UNKNOWN`) is now modeled, wire format confirmed to be the constant name itself.
+- **`RoutineCommand`/`CommandParams`'s own docstrings corrected** — both had gone stale
+  (`RoutineCommand` claimed `params`/`regions`/`id_multipolys` "wasn't modeled in detail",
+  `CommandParams` claimed 37 fields instead of its actual 39) after later sessions added detail
+  without updating the summary. The naming discrepancy flagged here against that track's own
+  field list is now resolved -- see the wire-format bug fix above, which corrected exactly the
+  18 fields this discrepancy had flagged.
+
+Final tally for this release: the region-aware-cleaning wire-key audit fixed 21 wrong keys
+across `CommandParams` (18), `PolygonEvent` (4), `CleaningProfile` (1), and
+`CommandPolygonMetadata` (1); the battery-status search resolved with 4 new "ro-" shadow models;
+`core::MissionData`'s types confirmed via bytecode signature reading. 466/466 total tests green,
+ruff clean.
+
 ## [0.1.11a10] - 2026-07-21
 
 ### Changed

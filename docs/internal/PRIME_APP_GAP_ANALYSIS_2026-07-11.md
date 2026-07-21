@@ -3057,3 +3057,342 @@ just a static snapshot via GET.
 450/450 tests green, ruff clean as of this addendum (2 existing tests updated to the new
 candidate names, no new test scenarios needed beyond that since the underlying mechanics --
 querying an arbitrary named shadow -- were already fully covered).
+
+## Addendum: region-aware cleaning research, complete
+
+Unlike the shadow/simple-command experiments so far (worst case: silence), a wrong guess at
+`send_routine_command_via_cmd_topic()`'s payload shape could mean a real device accepts a
+malformed-but-plausible command and behaves unpredictably. A separate native-analysis track was
+asked to research this thoroughly before any live test was considered, across two follow-up
+rounds. This addendum covers the whole thread.
+
+**Does the app send favorite_id alone, or with full resolved regions too?** BOTH, together --
+traced through `RoutineCommandBuilder.setFromFavorite(favoriteId, commandDefs)`. **This directly
+reverses an earlier recommendation in this project's own code** (favor favorite_id-only,
+reasoning it'd be safer) -- backwards: a favorite_id-only command is something the real app never
+actually sends. Corrected in `send_routine_command_via_cmd_topic()`'s own docstring.
+
+**`commandDefs`' true wire shape, resolved cleanly:** each string entry deserializes to a full
+`RoutineCommand` object (a `check-cast` instruction confirms this, not a plain string used
+opaquely) -- a favorite genuinely carries complete command definitions. This project's own
+`_favorite_from_json()` parser previously assumed dicts unconditionally; fixed defensively
+(handles both string and dict shapes) before this was ever hit against a real account.
+
+**`routine_modified`, the most significant single find:** confirmed to be a COMPUTED value
+(`RoutineCommandBuilder.calculateModifiedFlag()`) comparing the command being built against the
+ORIGINAL favorite on three axes -- region count, region order/IDs, and each region's
+specifically *user-modifiable* params. Exactly 7 `CommandParams` fields are confirmed
+non-user-modifiable: `routine_type`, `clean_score_id`, `smart_clean_id`, `replay_of`,
+`routine_modified`, `adaptive_cleaning`, `cleaning_profile`. **Practical consequence**:
+hand-constructing a "favorite_id + resolved regions" command would ALSO need this comparison
+done correctly -- one more thing to get right, not fewer.
+
+**`RegionType.TID` (ad-hoc/temporary zones), fully explained:** ad-hoc regions get IDs from a
+reserved, hardcoded range (160-199) via a dedicated `adHocCounter`, and each is created alongside
+a `CommandPolygon` sharing the exact same ID (the region<->geometry linking mechanism), with
+polygon metadata referencing a real furniture ID (`Integer.parseInt(furnitureId)`). A further,
+separate risk on top of the routine_modified question -- hand-building a TID region correctly
+needs all of: an ID in the reserved range, `type="tid"`, a matching CommandPolygon sharing that
+ID, and valid furniture-ID metadata.
+
+**`OperatingModeBitmask` and `RoutineTypeParam` added**, both independently validated against
+this project's own real data, not just trusted from the bytecode: `operating_mode`'s previously
+unexplained values (2, 32, and the `cap.oMode` value 550 seen in every real `get_state()` shadow
+response) decompose exactly into named bit flags -- `cap.oMode` turns out to be the device's
+*advertised set of supported modes*, not one active mode, a genuinely new retroactive
+explanation for a field this project had captured but never interpreted. `routine_type`'s full
+enum (`FIRST_RUN`/`CLEAN_ALL`/`CLEAN_DIRTY`/`REPLAY`/`SPOT_CLEAN`/`UNKNOWN`) confirmed, wire
+format is the constant name itself as a string.
+
+**Two final loose ends, both closed:** `CommandPolygonMetadata`'s wire field is confirmed to be
+just the furniture ID -- but the same track's own example shows it as snake_case
+(`"furniture_id"`) where this project's independently-confirmed reading uses camelCase
+(`"furnitureId"`). NOT resolved either way -- flagged as an open, specific discrepancy (the exact
+verbatim wire string would settle it) rather than guessed at; kept as the version with its own
+separate confirmation trail. `setScheduleSmartProfile()` confirmed to be DEAD CODE -- a builder
+setter never actually called anywhere in the real app, meaning `scheduleSmartProfile` is always
+false in practice and doesn't need modeling; the only real match for "smart profile" in
+`CommandParams` is `schedule_hold` (`schedHold`), already independently confirmed present in real
+shadow data.
+
+**THE ACTUAL SAFEST TEST, given everything above:** don't hand-construct anything, and avoid
+TID/ad-hoc regions entirely. Fetch an existing favorite via `get_favorites()`, take one of its own
+`command_defs` entries completely UNCHANGED (using ordinary RID/ZID regions from real map data),
+and send exactly that via `send_routine_command_via_cmd_topic()`. Since nothing was modified
+relative to its own origin, whatever `routine_modified` value it already carries should already
+be correct -- sidestepping both the modified-flag computation and the ad-hoc-region-construction
+questions entirely.
+
+**Not yet attempted.** The `CommandParams` naming discrepancy from an earlier round in this same
+thread (this project's `manual_update`/`adaptive_cleaning`/`no_auto_passes` vs. that track's
+`manUpd`/`adaptive` and no clear match for `no_auto_passes`) also remains open, alongside the
+`furniture_id` casing question above -- both flagged for a specific follow-up (exact verbatim
+wire strings) rather than resolved by guessing.
+
+455/455 tests green, ruff clean as of this addendum (5 new tests: 2 for the `commanddefs`
+string/dict defensive handling, 3 for `OperatingModeBitmask`/`RoutineTypeParam`, including direct
+validation against real observed data).
+
+## Addendum: the naming discrepancy resolved -- a real, significant wire-format bug, not a footnote
+
+Both open naming questions from the prior addendum turned out to be the same underlying issue,
+and a serious one. The same native-analysis track went back with the exact verbatim
+`$$serializer.<clinit>` wire keys (not a normalized summary this time) and confirmed: this
+project's own earlier `CommandParams` field-name confirmation ("Confirmed (androguard): ALL 37
+fields directly from CommandParams's DEX field list") had read Kotlin PROPERTY names from the
+class declaration, not the actual `@SerialName` wire keys -- textbook instance of a mistake
+pattern this project has hit before, now identified explicitly by name for future reference: a
+DEX/property-declaration reading is NOT the same as a wire-key confirmation.
+
+**Why this mattered more than a cosmetic naming difference:** kotlinx.serialization silently
+DROPS undeclared keys rather than erroring. 18 of 39 `CommandParams` fields were using wrong
+keys -- `roomConfine` instead of `room_confine`, `manualUpdate` instead of `manUpd`,
+`timeboxMinutes` instead of `timebox`, `velocityLeft`/`velocityRight` instead of `vleft`/`vright`,
+and 14 more (see `CommandParams.to_json()`'s own docstring for the complete before/after list).
+A `RoutineCommand` sent with the old keys would have had these 18 parameters vanish entirely on
+arrival -- cleaning strength, mop mode, pass count and more, silently discarded while the command
+itself still went through. `CommandPolygonMetadata`'s single field had the identical problem
+(`furnitureId` -> `furniture_id`).
+
+**One deliberate exception, checked rather than assumed:** `no_auto_passes` (wire key
+`noAutoPasses`) genuinely does not appear in the confirmed serializer list -- that list has
+`no_persistent_pass` (now corrected to wire key `noPP`) instead. Confirmed via the Kotlin class's
+own field list (which has both, separately) that these are two different fields, not a naming
+variant of each other. `no_auto_passes` is kept exactly as it was, specifically because its own
+confirmation came from real live data (chairstacker's `cleanSchedule2[].cmdStr`, session 27), not
+from this bytecode reading -- the one case where the correction pass deliberately does NOT apply.
+
+Corrected in both `to_json()` and `from_json()`. New
+`test_command_params_wire_keys_match_confirmed_serializer_list()` sets every field to a distinct
+value and checks the FULL output key set against the confirmed list, not spot-checking a few --
+the strongest test available for a correction this broad.
+
+**Practical consequence for the risk assessment:** this meaningfully lowers the risk of the
+region-aware-cleaning investigation as a whole. `CommandParams` sits inside every region of a
+region-aware command -- this was a real, silent parameter-loss bug that the first live test would
+have hit directly, not a footnote. The "safest test" design from the prior addendum (resend an
+existing favorite's command_def unchanged) remains the right approach, but now rests on
+correctly-keyed `CommandParams` underneath it rather than one with 18 silently-broken fields.
+
+456/456 tests green, ruff clean as of this addendum (1 new test, plus 2 existing tests corrected
+to the fixed wire keys they had been asserting against the old, wrong ones).
+
+## Addendum: systematic audit for the same confidence gap elsewhere in the package
+
+Prompted directly by the question "do we have more errors like this" -- every class in
+`models/` whose docstring says only "Confirmed (androguard)" (no `$$serializer`/real-live-data
+cross-reference) was checked against the same risk pattern that caused the `CommandParams` bug.
+
+**Cleared, lower risk:** `CommandPolygon`/`Region` (single-word keys -- `id`/`poly`/`type`/`name`
+-- much lower risk than compound camelCase, since a single Kotlin property name has less room to
+diverge from its own wire key; `Region` additionally already has a real-data-confirmed detail,
+the `region_id`-vs-`id` read/write distinction). `PadWetnessParam`/`ScheduleTime` -- both
+explicitly already confirmed against real captured responses (chairstacker), independent of the
+original androguard reading. `PadCategory`/`RankOverlap`/`CoverageStrategy` (mission_history.py)
+-- enum VALUES already in ALL_CAPS_WITH_UNDERSCORES, the same style already confirmed correct
+for `RoutineTypeParam` elsewhere, lower risk than a property-name question.
+
+**Two genuine, unresolved candidates found, downgraded honestly:**
+
+- `PolygonEvent` (mission_history.py) -- `areaCleaned`/`mapId`/`mapVersion`/`polyId`/`regionId`,
+  all compound camelCase, never cross-checked.
+- `CleaningProfile` (robot_info.py) -- `commandParams`, same pattern, and notably wraps the very
+  `CommandParams` class that was just found to have 18 wrong keys, though `CleaningProfile`'s own
+  field name for it is a separate question from what's inside.
+
+Both are READ-side models only (`from_json()`, no outgoing `to_json()` for the flagged fields) --
+a wrong key here would silently produce `None` for real data rather than breaking an outgoing
+command the way the `CommandParams` bug did. A different, quieter failure mode, but not
+confirmed correct either. Docstrings updated to say so honestly rather than continuing to claim
+"Confirmed" -- flagged for the same `$$serializer.<clinit>` verification technique that resolved
+`CommandParams`, not guessed at or silently left as-is.
+
+456/456 tests green, ruff clean as of this addendum (docstring corrections only -- no new test
+scenarios needed, since nothing here changed actual runtime behavior; the two flagged classes'
+existing behavior is unchanged, only their confidence claim is corrected).
+
+## Addendum: the battery-status search is resolved -- `ro-currentstate` reports `batPct`
+
+chairstacker ran `roombapy-prime-verify-named-shadows` against v0.1.11a10 and got back, live,
+the actual answer this entire multi-session investigation was searching for. `"ro-currentstate"`
+-- one of the four previously-unknown read-only shadows found earlier this session via
+`MQTTTopics.java`, and the one whose name itself matched what was being searched for -- reports:
+
+```
+batPct, bin, cleanMissionStatus, detectedPad, dock, lastDisconnect,
+p2maps, regDate, runtimeStats, svcEndpoints, tankPresent, tz
+```
+
+`batPct` is battery percentage. `dock` plausibly covers docked/charging state.
+`cleanMissionStatus` matches -- independently -- the exact event name this project's own native
+decompilation found on `AssetIotTopicFactory` months earlier, when `mission/timeline/report`
+itself was first discovered. Two separate investigative threads, run at different times, now
+point at the same underlying concept from different angles.
+
+**A note on an earlier retraction, worth being precise about:** this project's own docstring
+trail includes a retraction of an earlier parallel-track claim that a "batPct" finding belonged
+to Classic-layer `RobotV1`/`RobotV2` classes specifically, unrelated to Prime. That retraction
+was correct and stands -- it concerned a specific claim about WHERE a piece of decompiled CODE
+lived, not a claim that the field NAME "batPct" could never appear anywhere in Prime's own cloud
+data. This live result is a directly-observed key on a real Prime device's own shadow,
+independent of and not contradicted by that earlier, narrower retraction.
+
+New `CurrentStateShadow` model captures all 11 confirmed keys. **Still genuinely unconfirmed:**
+only the key NAMES are known (from `get_named_shadow()`'s reported-keys summary, not the actual
+payload) -- every field is deliberately typed `Any` rather than guessed at, since the actual
+values (is `batPct` 0-100? an int or string? what does `dock` actually look like?) haven't been
+seen yet. A follow-up request for the full reported payload is the natural next step.
+
+458/458 tests green, ruff clean as of this addendum (2 new tests for `CurrentStateShadow`).
+
+## Addendum: the other three "ro-" shadows modeled, plus a real redaction gap found along the way
+
+Prompted directly by two questions: "have we done this for all four ro- shadows" (no -- only
+`ro-currentstate` had a model) and "can we find the types some other way" (yes, a promising lead
+-- see below). `StatsShadow`/`ServicesShadow`/`ConfigInfoShadow` added for `ro-stats`/
+`ro-services`/`ro-configinfo`, all confirmed live in the same chairstacker capture, same caveat
+as `CurrentStateShadow` -- key names only, no real values seen yet.
+
+`ro-stats`'s five `bb`-prefixed keys (`bbchg`/`bbchg3`/`bbmssn`/`bbpause`/`bbrstinfo`/`bbsys`) are
+plausibly "battery box" lifetime/historical statistics, complementing `ro-currentstate`'s live
+`batPct` rather than duplicating it -- genuinely unconfirmed, flagged as a reasonable guess only.
+Also noted: `ro-stats`'s `"runtimestats"` is all-lowercase, `ro-currentstate`'s `"runtimeStats"`
+is camelCase -- confirmed as two separately-cased keys (not a transcription error), kept exactly
+as reported rather than assumed to be the same field.
+
+**A real, currently-existing redaction gap found in the process of modeling `ro-configinfo`:**
+its `"passwordHash"` key would not have matched `diagnostics.py`'s exact-match `"password"`
+sensitive-key entry (`"passwordhash" != "password"` after lowercasing) -- a genuinely new field
+name surfacing an existing gap, not a hypothetical concern. Fixed by adding it as its own entry.
+
+**A concrete lead for finding `ro-currentstate`'s value TYPES without needing a live device at
+all**, sent to the parallel track: this project's own earlier finding about `core::MissionData`
+(a JNI proxy class) listed getters -- `getBatteryLevelPercentage()`, `getDockState()`,
+`getResolvedMissionStatus()`, `getTankLevel()`, `getIsCharging()`, `getIsFullyCharged()` -- that
+match `ro-currentstate`'s own keys almost 1:1 (`batPct`, `dock`, `cleanMissionStatus`,
+`tankPresent`, plausibly). If these getters have declared Kotlin/Java return types readable from
+the bytecode signature (an enum for `getDockState()`, a plain Int for the battery percentage,
+etc.), that would settle the typing question without waiting for another live capture --
+genuinely faster than the alternative, not just theoretically possible.
+
+465/465 tests green, ruff clean as of this addendum (6 new tests for the three new shadow
+models, 1 for the redaction fix).
+
+## Addendum: the two remaining wire-key candidates resolved -- both wrong, one significantly so
+
+The same native-analysis track went back to the two classes flagged (not asserted wrong, just
+unconfirmed) in an earlier addendum -- `PolygonEvent` and `CleaningProfile`. Both turned out to
+have real wire-key bugs.
+
+**`PolygonEvent`: 4 of 7 keys wrong.** `mapId`->`p2mapId`, `mapVersion`->`p2mapvId`,
+`polyId`->`polyid`, `regionId`->`rid`. `polyid` and `rid` specifically cannot be derived from the
+Kotlin property name by any casing transformation at all -- concrete proof that the earlier
+"Confirmed (androguard)" DEX-field-list reading structurally could not have caught this, not
+just didn't happen to.
+
+**`CleaningProfile`: `commandParams`->`params`, the more consequential of the two.** Doubly
+confirmed -- both via `$$serializer.<clinit>` inspection AND against chairstacker's own real
+`get_cleaning_profiles()` response from an earlier session (session 57), which had shown the
+correct key the whole time. This was findable without any new bytecode analysis at all, just by
+cross-checking the existing model against already-captured real data -- nobody had done that for
+this specific field until prompted to look. Practical consequence: `command_params` stayed
+silently `None` against every real response, meaning cleaning-profile parameters (light/normal/
+deep settings feeding into region-aware commands) were never actually being read.
+
+**Systematic re-check of all nine remaining "Confirmed (androguard)" spots, completing the
+audit rather than sampling it:** 4 enums (`CoverageStrategy`/`PadCategory`/`RankOverlap`/
+`CleaningProfileType`) -- value lists, no wire-key risk. 4 dataclasses (`CommandPolygon`/
+`PadWetnessParam`/`Region`/`ScheduleTime`) -- all correct, checked against the serializer. One
+side-note: `Region`'s own read/write key asymmetry (`region_id` reading, `id` writing) was
+already correctly documented in this project's own docstring from an earlier session -- no
+action needed there, already right.
+
+**Total for this whole correction round: 21 wrong wire keys across three classes** --
+`CommandParams` (18, both directions), `PolygonEvent` (4, read), `CleaningProfile` (1, read),
+`CommandPolygonMetadata` (1, write). Both existing tests for `PolygonEvent`/`CleaningProfile`
+corrected to the real keys.
+
+465/465 tests green, ruff clean as of this addendum (2 existing tests corrected to the real
+wire keys, no new test scenarios needed beyond that).
+
+## Addendum: an old finding from a sibling project, never cross-checked until asked
+
+Prompted directly by "do we have other old findings we haven't used" -- a broader question than
+the wire-key audit. `ha_roomba_plus`'s own Classic-tier reference doc
+(`MISSIONSTORE_FIELD_REGISTRY.md`, a project file available throughout this whole session but
+never consulted for Prime-side interpretation until now) turned out to contain directly relevant,
+already-confirmed field behavior for the exact same field NAMES now appearing in Prime's own
+`ro-currentstate`/`ro-stats` shadows.
+
+**`batPct`, `detectedPad`, `tankPresent`** are confirmed, real, top-level Classic-robot fields --
+and Classic's own field testers already captured `batPct` moving live during a mission
+(100 -> 100 -> 79 across one ~45-minute run), directly analogous to what's being searched for on
+the Prime side. **`bbchg3`** (in Classic) holds confirmed sub-fields `estCap`/`nAvail`/
+`hOnDock`/`avgMin` (plus firmware-dependent `nLithChrg`/`nNimhChrg`) -- battery-capacity-
+retention and charge-cycle data specifically. **`bbrstinfo`** holds `nNavRst`/`nMobRst`/
+`nSafRst`/`safCauses` (plus firmware-dependent `nOomRst`) -- reset-event diagnostics by
+subsystem. Classic's own docs separately note `bbchg3` can be ENTIRELY ABSENT on some real
+devices (firmware/model-dependent, corrected from an earlier "600-series-only" assumption) --
+worth checking for the same per-device absence pattern on Prime's `ro-stats`, not just whether
+the shadow itself responds.
+
+Same company, same field vocabulary, a different product line -- not proof Prime's own shadows
+share identical sub-structure, but meaningfully stronger supporting evidence than a bare guess.
+Added to both `CurrentStateShadow` and `StatsShadow`'s own docstrings.
+
+**The broader lesson, worth stating plainly:** this project has been treating Prime and Classic
+as fully separate investigations for most of this session, which is correct for PROTOCOL
+questions (different transport, different auth, different topic structure) -- but iRobot's own
+field-NAMING conventions evidently carry across both product lines, and this project's own
+already-existing Classic-side documentation was sitting there the whole time as a source of
+cross-referenceable hints, unused until directly asked whether any old findings had gone
+unused.
+
+465/465 tests green, ruff clean as of this addendum (docstring enrichment only, no behavior or
+test changes).
+
+## Addendum: types confirmed via bytecode signature reading, and a real correction to a mapping assumption
+
+The concrete lead from an earlier addendum -- that `core::MissionData`'s getters might have
+declared return types readable straight from the bytecode signature, without needing a live
+device -- paid off. All five questions asked were answerable this way.
+
+**Confirmed types:** `getBatteryLevelPercentage()` -> `short`. `getDockState()` -> a genuinely
+COMPOSITE 86-value enum across four dock subsystems (`DOCK_*` x18 for the evac dock itself,
+`FLUID_REPLENISHMENT_*` x22, `PAD_WASH_*` x25, `PAD_DRY_*` x20) -- not a simple docked/undocked
+flag at all. `getResolvedMissionStatus()` -> a 49-value enum (0-48), with named values including
+`Ready`(5), `Cleaning`(9), `Paused`(10), `ReturnToDock`(16), a `SendingCommand*` transitional
+family (28-47, modeling "command sent, acknowledgment pending" as its own distinct states), and
+`Unknown`(48). `getTankLevel()` -> nullable boxed `Short` -- a NUMERIC level.
+
+**A real correction, not just a new confirmation:** `getTankLevel()` being numeric, while this
+project's own `CurrentStateShadow.tank_present` reads as a boolean presence flag by name, means
+the implicit earlier assumption connecting the two directly is probably wrong -- consistent with
+(and now further supported by) the Classic cross-reference from the prior addendum, which
+independently keeps `tankLvl` and `tankPresent` as two separate fields. `getIsCharging()`/
+`getIsFullyCharged()` -> both plain `boolean`, but neither appears in `ro-currentstate`'s own key
+list at all -- plausibly folded into `clean_mission_status` instead.
+
+**The single most important correction of this addendum:** `core::MissionData` actually has 27
+getters total, not the 7 originally listed (also includes `getIsBinfull()`, `getMissionId()`,
+`getRobotError()`, `getRobotReadinessState()`, `getPauseTimeRemaining()`,
+`getCurrentLocationName()`, `getSkipLocationName()`, per-subsystem dock-mode getters, and more).
+`MissionData` does NOT map 1:1 onto `CurrentStateShadow`'s 12 keys -- it's a larger, AGGREGATED
+object (one of four combined input streams, per this project's own earlier reducer-architecture
+finding), not a direct shadow-serialization source. The confirmed types remain directly useful
+regardless of this correction -- but which getter (if any) feeds which specific shadow key
+remains a hypothesis, not a settled mapping, and is documented as such rather than implying a
+1:1 correspondence that isn't actually established.
+
+New, deliberately partial `ResolvedMissionStatus` `IntEnum` added with only the values actually
+transcribed -- not the full 49, to be extended incrementally as more are identified rather than
+guessing at the gaps. `DockState` not yet modeled as a Python enum at all, pending the fuller
+86-value list (only ~4 example names are known so far, not enough to build a meaningful partial
+enum with confidence about the wire format itself).
+
+**Still needed:** an actual value dump from a real device remains the only way to confirm which
+(if any) of these getters' outputs actually appear under `CurrentStateShadow`'s specific keys,
+and in what shape (a plain enum name string? a nested object? something else?).
+
+466/466 tests green, ruff clean as of this addendum (1 new test for `ResolvedMissionStatus`'s
+confirmed values).

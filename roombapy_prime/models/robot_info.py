@@ -7,7 +7,7 @@ evidence trail behind any individual field."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 from .enums_common import _enum_or_none
@@ -25,9 +25,25 @@ class CleaningProfileType(StrEnum):
 
 @dataclass(frozen=True)
 class CleaningProfile:
-    """Confirmed (androguard): profile (ProfileType), commandParams
-    (CommandParams -- same class as in RoutineCommand/Region above),
-    regions (List -- structure not further investigated, left raw)."""
+    """CORRECTED (this session, parallel native-analysis track,
+    DOUBLY confirmed -- both by $$serializer.<clinit> inspection AND
+    against chairstacker's real get_cleaning_profiles() response from
+    an earlier session, which had this exact shape the whole time):
+    the wire key is "params", not "commandParams". The real,
+    already-live-captured data had been sitting there showing the
+    right key all along -- this was findable without any new bytecode
+    analysis, just by cross-checking the existing model against
+    already-captured real data, which nobody had done for this
+    specific field before now.
+
+    PRACTICAL CONSEQUENCE, more significant than the PolygonEvent
+    fields fixed alongside this one: command_params stayed silently
+    None against EVERY real response, every time, since "commandParams"
+    never existed on the wire -- the actual parameters were sitting
+    right there under "params", unread. Any caller relying on a
+    cleaning profile's own parameters (light/normal/deep clean
+    settings feeding into region-aware commands) would have gotten
+    nothing, not just occasionally-wrong data."""
 
     profile: CleaningProfileType | str | None = None
     command_params: CommandParams | None = None
@@ -35,7 +51,7 @@ class CleaningProfile:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleaningProfile:
-        params_data = data.get("commandParams")
+        params_data = data.get("params")
         return cls(
             profile=_enum_or_none(CleaningProfileType, data.get("profile")),
             command_params=CommandParams.from_json(params_data) if params_data else None,
@@ -876,6 +892,284 @@ class SoftwareStatusShadow:
         )
 
 
+class ResolvedMissionStatus(IntEnum):
+    """PARTIAL, DELIBERATELY NOT EXHAUSTIVE (this session, parallel
+    native-analysis track, bytecode signature reading of
+    core::MissionData::getResolvedMissionStatus()'s return type). The
+    real enum has 49 values (0-48); only the ones explicitly named in
+    that analysis are included here. Do NOT treat a value missing from
+    this enum as invalid -- it almost certainly just hasn't been
+    transcribed yet, not confirmed absent. Extend this incrementally
+    as more of the 49 values are identified, rather than guessing at
+    the gaps (1-4, 6-8, 11-13, 17, 20-23, 26-27 are among the known
+    gaps as of this writing).
+
+    NOT YET CONFIRMED which shadow field (if any) actually carries
+    this value -- see CurrentStateShadow's own docstring for why
+    "cleanMissionStatus" is a plausible but unconfirmed guess, not a
+    settled mapping. The 28-47 "SendingCommand*" range is notable on
+    its own: the real app models "command sent, acknowledgment
+    pending" as its own distinct transitional states, not just a
+    boolean in-flight flag."""
+
+    INVALID = 0
+    READY = 5
+    CLEANING = 9
+    PAUSED = 10
+    END_JOB_NO_DOCK = 14
+    END_JOB_WITH_DOCK = 15
+    RETURN_TO_DOCK = 16
+    DOCK_EVACUATING = 18
+    DOCK_REFILLING = 19
+    PAD_WASHING = 24
+    PAD_DRYING = 25
+    UNKNOWN = 48
+    # 28-47 are a "SendingCommand*" transitional-state family
+    # (command sent, acknowledgment pending) -- individual members not
+    # yet transcribed, only the range and its general meaning are
+    # confirmed so far.
+
+
+@dataclass(frozen=True)
+class CurrentStateShadow:
+    """CONFIRMED LIVE (this session, chairstacker) -- the actual
+    resolution of this whole project's battery-status search. One of
+    four previously-unknown read-only ("ro-") named shadows found via
+    MQTTTopics.java (see verify_named_shadows.py's own module
+    docstring for that discovery). "ro-currentstate" is the one whose
+    name itself matched what was being searched for, and its live
+    content confirms it: battery percentage ("batPct") is genuinely
+    here, alongside what plausibly covers docked/charging state
+    ("dock") and live mission status ("cleanMissionStatus" -- matching
+    the exact event name this project's own native decompilation
+    found independently, months earlier, on AssetIotTopicFactory).
+
+    STILL UNCONFIRMED: only the KEY NAMES are known so far (from
+    get_named_shadow()'s reported-keys summary, not the actual
+    payload) -- every field here is deliberately typed as `Any`
+    rather than guessed at (int for a percentage, bool for a dock
+    state, etc.) until real values are seen. A follow-up request for
+    the full reported payload (not just the key list) would let these
+    be typed properly.
+
+    CROSS-REFERENCE (this session, from ha_roomba_plus's own Classic-
+    tier field registry, MISSIONSTORE_FIELD_REGISTRY.md -- an old,
+    already-confirmed finding from a DIFFERENT product line this
+    session hadn't cross-checked against Prime's own field names
+    until now): "batPct", "detectedPad", and "tankPresent" all appear,
+    confirmed, as TOP-LEVEL Classic-robot state fields too, alongside
+    "dock", "padWetness", "tankLvl", "lidOpen" -- and Classic's own
+    real captures (chairstacker-equivalent field testers, three
+    captures across a real mission) directly confirmed "batPct" moves
+    LIVE during a mission (100 -> 100 -> 79 across one ~45-minute
+    run), not just on a fixed schedule. Same company, same field
+    vocabulary, different product line -- not proof Prime's own
+    "ro-currentstate" behaves identically, but genuinely stronger
+    supporting evidence than a bare guess: "detected_pad" plausibly
+    mirrors Classic's own pad-type detection (matching this project's
+    own already-confirmed PadCategory enum -- DRY/WET/etc.), and
+    "tank_present" plausibly a boolean presence flag distinct from a
+    separate level value (Classic keeps "tankLvl" and "tankPresent" as
+    two different fields, not one) -- if Prime follows the same
+    split, a numeric tank-level field may exist elsewhere, not
+    necessarily under a key already listed here.
+
+    bin/last_disconnect/reg_date/p2maps/tz remain genuinely
+    unconfirmed guesses at MEANING, not just at type -- included here
+    only as a starting point for whoever looks at the real values
+    next.
+
+    TYPES CONFIRMED (this session, parallel native-analysis track,
+    bytecode signature reading -- no live device needed for this
+    part): core::MissionData's getters have confirmed return types.
+    getBatteryLevelPercentage() -> short (primitive) -- consistent
+    with bat_pct being a plain, non-nullable small int. getDockState()
+    -> a DockState enum with 86 values across four functional areas
+    (DOCK_* x18 for the evac dock itself, FLUID_REPLENISHMENT_* x22,
+    PAD_WASH_* x25, PAD_DRY_* x20) -- this is a COMPOSITE status
+    covering multiple dock subsystems at once, not a simple docked/
+    undocked flag; only a handful of the 86 values have been
+    transcribed so far (e.g. DOCK_READY, DOCK_BAG_FULL,
+    PAD_WASH_IN_PROGRESS), not modeled as a Python enum yet pending
+    the fuller list. getResolvedMissionStatus() -> see
+    ResolvedMissionStatus above (partial, 49 total values).
+    getTankLevel() -> nullable boxed Short -- a NUMERIC fill level.
+
+    A REAL CORRECTION TO AN EARLIER ASSUMPTION IN THIS SESSION:
+    getTankLevel() being numeric, while "tankPresent" (this class's
+    own field) reads as a boolean PRESENCE flag by name, means the
+    earlier guess connecting these two directly is probably wrong --
+    they're plausibly two different concepts (how much water vs.
+    whether a tank is inserted at all), matching the Classic
+    cross-reference above, which independently keeps "tankLvl" and
+    "tankPresent" as two separate fields. If Prime follows the same
+    split, a separate numeric tank-level field may exist somewhere
+    this project hasn't found yet, not necessarily under a key
+    already listed on this class.
+
+    getIsCharging()/getIsFullyCharged() -> both plain boolean, but
+    NEITHER appears in ro-currentstate's own 12-key list at all --
+    plausibly folded into "clean_mission_status" instead (Classic's
+    own cleanMissionStatus field carries both batPct AND a phase
+    string including "charge", per the cross-reference above).
+
+    THE MORE IMPORTANT CORRECTION, to an assumption from earlier this
+    session specifically: core::MissionData actually has 27 getters
+    total, not the 7 originally listed -- including getIsBinfull(),
+    getMissionId(), getRobotError(), getRobotReadinessState(),
+    getPauseTimeRemaining(), getCurrentLocationName(),
+    getSkipLocationName(), dock-mode getters for each of the four
+    DockState subsystems, and more. MissionData does NOT map 1:1 onto
+    this class's 12 keys -- it's a larger, AGGREGATED object (one of
+    four combined input streams per this project's own earlier
+    reducer-architecture finding), not a direct shadow-serialization
+    source. The confirmed TYPES above remain useful and directly
+    usable regardless (short/enum/nullable-Short/boolean are real,
+    confirmed facts about what these getters return) -- but which
+    getter (if any) feeds which of THIS class's specific keys remains
+    a hypothesis, not a settled mapping. A real value dump is still
+    needed to confirm whether e.g. "dock" actually holds a DockState-
+    shaped string, a nested object, or something else entirely."""
+
+    bat_pct: Any | None = None
+    bin: Any | None = None
+    clean_mission_status: Any | None = None
+    detected_pad: Any | None = None
+    dock: Any | None = None
+    last_disconnect: Any | None = None
+    p2maps: Any | None = None
+    reg_date: Any | None = None
+    runtime_stats: Any | None = None
+    tank_present: Any | None = None
+    tz: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CurrentStateShadow:
+        return cls(
+            bat_pct=data.get("batPct"),
+            bin=data.get("bin"),
+            clean_mission_status=data.get("cleanMissionStatus"),
+            detected_pad=data.get("detectedPad"),
+            dock=data.get("dock"),
+            last_disconnect=data.get("lastDisconnect"),
+            p2maps=data.get("p2maps"),
+            reg_date=data.get("regDate"),
+            runtime_stats=data.get("runtimeStats"),
+            tank_present=data.get("tankPresent"),
+            tz=data.get("tz"),
+        )
+
+
+@dataclass(frozen=True)
+class StatsShadow:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete key
+    list of the named "ro-stats" shadow, the second of the four
+    previously-unknown read-only shadows found via MQTTTopics.java.
+    Only key NAMES confirmed so far, not values -- every field typed
+    `Any` rather than guessed at.
+
+    The "bb" prefix on five of these (bbchg, bbchg3, bbmssn, bbpause,
+    bbrstinfo, bbsys) is UNCONFIRMED but plausibly "battery box" or
+    similar -- if so, this shadow may carry lifetime/historical
+    battery statistics (charge cycles, mission counts, pause events,
+    reset info) as a complement to ro-currentstate's live batPct
+    value, not a duplicate of it.
+
+    CROSS-REFERENCE (this session, from ha_roomba_plus's own Classic-
+    tier field registry, MISSIONSTORE_FIELD_REGISTRY.md -- an old,
+    already-confirmed finding from a different product line this
+    session hadn't cross-checked against Prime's field names until
+    now): "bbchg3" and "bbrstinfo" both exist, confirmed with real
+    sub-field structure, on Classic robots too. "bbchg3" there holds
+    "estCap"/"nAvail"/"hOnDock"/"avgMin" (plus firmware-dependent
+    "nLithChrg"/"nNimhChrg") -- battery-capacity-retention and
+    charge-cycle data specifically, confirmed via
+    "const.active_charge_cycles()" reading it for a "battery_cycles"
+    metric. "bbrstinfo" there holds "nNavRst"/"nMobRst"/"nSafRst"/
+    "safCauses" (plus firmware-dependent "nOomRst") -- reset-event
+    diagnostics by subsystem. Same company, same field vocabulary,
+    different product line -- not proof Prime's own "ro-stats" has
+    identical sub-structure, but a concrete, evidence-based starting
+    hypothesis for whoever parses real values here, rather than a
+    bare guess. Classic's own docs also note this exact field
+    (bbchg3 specifically) was ABSENT ENTIRELY on some real robots
+    (firmware/model-dependent, not simply "budget hardware lacks it")
+    -- worth checking whether the same per-device absence pattern
+    exists for Prime's ro-stats too, not just whether it responds to
+    the shadow query at all.
+
+    Note "runtimestats" here is ALL-LOWERCASE, unlike
+    ro-currentstate's camelCase "runtimeStats" -- confirmed as two
+    separate keys with different casing (not a transcription error),
+    kept exactly as reported."""
+
+    bbchg: Any | None = None
+    bbchg3: Any | None = None
+    bbmssn: Any | None = None
+    bbpause: Any | None = None
+    bbrstinfo: Any | None = None
+    bbsys: Any | None = None
+    runtimestats: Any | None = None
+    unprocessed_error: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> StatsShadow:
+        return cls(
+            bbchg=data.get("bbchg"),
+            bbchg3=data.get("bbchg3"),
+            bbmssn=data.get("bbmssn"),
+            bbpause=data.get("bbpause"),
+            bbrstinfo=data.get("bbrstinfo"),
+            bbsys=data.get("bbsys"),
+            runtimestats=data.get("runtimestats"),
+            unprocessed_error=data.get("unprocessedError"),
+        )
+
+
+@dataclass(frozen=True)
+class ServicesShadow:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete key
+    list of the named "ro-services" shadow, the third of the four
+    previously-unknown read-only shadows found via MQTTTopics.java.
+    Only key NAMES confirmed so far, not values. "optFeats"
+    (optional features?) plausibly a feature-flag/capability list,
+    unconfirmed."""
+
+    opt_feats: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> ServicesShadow:
+        return cls(opt_feats=data.get("optFeats"))
+
+
+@dataclass(frozen=True)
+class ConfigInfoShadow:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete key
+    list of the named "ro-configinfo" shadow, the last of the four
+    previously-unknown read-only shadows found via MQTTTopics.java.
+    Only key NAMES confirmed so far, not values.
+
+    "passwordHash" -- PRIVACY NOTE: if this genuinely holds a password
+    hash, it's sensitive regardless of being a hash rather than
+    plaintext. Not automatically redacted by this model itself
+    (redaction happens at the diagnostics/report layer, see
+    diagnostics.py's Report.redact()/sensitive-key masking) -- flagged
+    here so anyone handling this shadow's real content directly is
+    aware, not just relying on downstream redaction to catch it.
+    "hwPartsRev" plausibly a hardware parts revision string,
+    unconfirmed."""
+
+    hw_parts_rev: Any | None = None
+    password_hash: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> ConfigInfoShadow:
+        return cls(
+            hw_parts_rev=data.get("hwPartsRev"),
+            password_hash=data.get("passwordHash"),
+        )
+
+
 @dataclass(frozen=True)
 class DockPadDryReport:
     """NEW (this session, live capture, chairstacker) -- CONFIRMED LIVE,
@@ -1093,7 +1387,47 @@ class RobotStatusV2:
     One real device (chairstacker) showed a shadow version of 5324 --
     over five thousand updates, hard to explain for purely static
     configuration. verify_mission_timeline.py's --watch-shadow-delta
-    and --watch-aws-tree flags exist to actually test this now."""
+    and --watch-aws-tree flags exist to actually test this now.
+
+    FOUND (this session, chairstacker, live -- the actual resolution
+    of the search this whole docstring documents): the named shadow
+    "ro-currentstate" (one of four previously-unknown read-only
+    shadows found via MQTTTopics.java, see verify_named_shadows.py's
+    own module docstring for that discovery) reports these keys:
+    "batPct", "bin", "cleanMissionStatus", "detectedPad", "dock",
+    "lastDisconnect", "p2maps", "regDate", "runtimeStats",
+    "svcEndpoints", "tankPresent", "tz". "batPct" -- battery
+    percentage -- is exactly what this entire investigation was
+    searching for, and "dock"/"cleanMissionStatus" plausibly cover
+    charging/docked state and live mission status respectively.
+    "cleanMissionStatus" specifically matches the exact event name
+    this project's own native decompilation found on
+    AssetIotTopicFactory months earlier (session covering
+    mission/timeline/report's own discovery) -- two independent
+    findings now pointing at the same underlying concept from
+    different angles.
+
+    A NOTE ON THE EARLIER RETRACTION ABOVE: this session's own
+    "ARCHITECTURE, CORRECTED" paragraph above retracted an earlier
+    parallel-track claim that a "batPct" finding belonged to the
+    Classic-layer RobotV1/RobotV2 classes, unrelated to Prime. That
+    retraction concerned a SPECIFIC claim about WHERE a particular
+    piece of decompiled code lived (Classic-only source), not a
+    claim that the field NAME "batPct" could never appear on a Prime
+    device's own cloud data -- iRobot plausibly reuses the same field
+    vocabulary across Classic and Prime cloud infrastructure even
+    where the underlying delivery mechanism differs. This live
+    "ro-currentstate" result is a directly-observed key on a real
+    Prime device's own named shadow, independent of and not
+    contradicted by that earlier retraction.
+
+    STILL UNCONFIRMED: only the KEY NAMES are known so far (from
+    get_named_shadow()'s reported-keys summary) -- the actual VALUES
+    (is batPct 0-100? an int or a string? does "dock" mean boolean
+    docked-or-not, or something richer?) have not yet been seen. A
+    follow-up request for the full reported payload (not just the key
+    list) is the natural next step before modeling this shadow's
+    content as a proper dataclass."""
 
     robot_state: int | None = None
     battery_level: int | None = None

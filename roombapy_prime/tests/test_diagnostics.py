@@ -419,6 +419,21 @@ def test_redact_raw_capture_masks_sensitive_keys() -> None:
     assert result["batteryLevel"] == 80  # nicht sensibel, bleibt sichtbar
 
 
+def test_redact_raw_capture_masks_password_hash() -> None:
+    """NEW (this session): a real gap found by verifying this
+    function's own coverage against ro-configinfo's actual field name
+    -- "passwordHash" did NOT match the exact-match "password" entry
+    ("passwordhash" != "password" after lowercasing). Fixed by adding
+    it as its own entry rather than switching to substring matching."""
+    from roombapy_prime.diagnostics import _redact_raw_capture
+
+    data = {"passwordHash": "abc123def456", "hwPartsRev": "rev3"}
+    result = _redact_raw_capture(data, [])
+
+    assert result["passwordHash"] == "[REDACTED]"
+    assert result["hwPartsRev"] == "rev3"  # nicht sensibel, bleibt sichtbar
+
+
 def test_redact_raw_capture_masks_credential_field_names() -> None:
     """NEW (session 54, security hardening) -- regression test for a
     latent gap found during a security review: ConnectionToken's

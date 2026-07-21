@@ -425,9 +425,25 @@ class PlanEvent:
 
 @dataclass(frozen=True)
 class PolygonEvent:
-    """Confirmed (androguard): area, areaCleaned, mapId, mapVersion,
-    poly (List -- structure not further investigated, left raw),
-    polyId, regionId."""
+    """CORRECTED (this session, parallel native-analysis track,
+    $$serializer.<clinit> inspection): 4 of 7 wire keys were wrong --
+    mapId->p2mapId, mapVersion->p2mapvId, polyId->polyid (fully
+    lowercase, not a casing variant of the property name at all),
+    regionId->rid. "polyid"/"rid" specifically are NOT derivable from
+    the Kotlin property name by any casing transformation -- exactly
+    why the earlier "Confirmed (androguard)" DEX-field-list reading
+    couldn't have caught this (same category as the CommandParams
+    wire-format bug this project fixed earlier this session; see that
+    class's own to_json() docstring for the general lesson). area/
+    areaCleaned/poly were already correct and are unchanged.
+
+    This is a READ-side model (from_json only) -- a wrong key here
+    silently produced None for real data rather than breaking an
+    outgoing command, a quieter failure mode than the CommandParams
+    bug but a real one: any caller reading map_id/map_version/poly_id/
+    region_id from real mission-history data would have gotten None
+    every time, regardless of what the actual polygon event
+    contained."""
 
     area: int | None = None
     area_cleaned: int | None = None
@@ -442,11 +458,11 @@ class PolygonEvent:
         return cls(
             area=data.get("area"),
             area_cleaned=data.get("areaCleaned"),
-            map_id=data.get("mapId"),
-            map_version=data.get("mapVersion"),
+            map_id=data.get("p2mapId"),
+            map_version=data.get("p2mapvId"),
             poly=data.get("poly") or [],
-            poly_id=data.get("polyId"),
-            region_id=data.get("regionId"),
+            poly_id=data.get("polyid"),
+            region_id=data.get("rid"),
         )
 
 

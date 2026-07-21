@@ -765,14 +765,65 @@ def test_routine_command_to_shadow_desired_wraps_under_cmd_key() -> None:
 
 
 def test_command_params_to_json_omits_none_fields() -> None:
-    """Confirmed (androguard): all 37 fields optional, only set
-    values end up in the JSON."""
+    """39 fields, all optional -- only set values end up in the JSON.
+    Wire keys corrected (this session, parallel native-analysis
+    track, $$serializer inspection) -- room_confine, not the earlier
+    camelCase "roomConfine" guess -- see CommandParams' own docstring
+    for the full 18-field correction and why it mattered (silently
+    dropped keys, not a cosmetic mismatch)."""
     from roombapy_prime.models import CommandParams
 
     params = CommandParams(suction_level=3, room_confine=True)
     body = params.to_json()
 
-    assert body == {"suctionLevel": 3, "roomConfine": True}
+    assert body == {"suctionLevel": 3, "room_confine": True}
+
+
+def test_command_params_wire_keys_match_confirmed_serializer_list() -> None:
+    """NEW (this session, parallel native-analysis track): every field
+    set to a distinct, recognizable value, then to_json()'s ACTUAL
+    output keys checked one by one against the confirmed
+    $$serializer.<clinit> list (38 names) plus the one deliberate
+    special case (no_auto_passes/noAutoPasses -- confirmed from real
+    live data, genuinely absent from that list, not a naming variant
+    of no_persistent_pass -- see CommandParams' own class docstring).
+    This is the strongest test of the 18-field correction: it doesn't
+    just check a couple of fields look right, it accounts for every
+    single one."""
+    from roombapy_prime.models import CommandParams
+    from roombapy_prime.models.mission_control import PadWetnessParam
+
+    # One distinct, non-None value per field -- so every key is
+    # guaranteed to appear in to_json()'s output (which omits None).
+    params = CommandParams(
+        adaptive_cleaning=True, bin_pause=True, capture_mode=1, carpet_boost=True,
+        clean_score_id="a", cleaning_profile="b", eco_charge=True, execute_in_place=True,
+        gentle_mode=1, heated_water=1, manual_update=True, monitor_mode=1, no_koz=1,
+        no_auto_passes=True, no_persistent_pass=True, odoa_mode=1, open_only=True,
+        operating_mode=1, pad_wash_after=1, pad_wash_area=1,
+        pad_wetness=PadWetnessParam(disposable=1), rank_overlap=1,
+        replay_of="c", routine_type="d", room_confine=True, rotate=1,
+        routine_modified=True, schedule_hold=True, scrub=1, smart_clean_id="e",
+        speed=1, stream_on_route=True, suction_level=1, timebox_minutes=1,
+        translate=1, two_pass=True, vac_high=True, velocity_left=1, velocity_right=1,
+    )
+
+    body = params.to_json()
+
+    # The 38 confirmed serializer keys (excludes no_auto_passes -- the
+    # one deliberate, independently-justified exception, see above).
+    confirmed_keys = {
+        "noKOZ", "twoPass", "carpetBoost", "vacHigh", "openOnly", "binPause", "schedHold",
+        "manUpd", "noPP", "ecoCharge", "room_confine", "swScrub", "stream_on_route",
+        "execute_in_place", "timebox", "operatingMode", "rankOverlap", "padWetness",
+        "gentleMode", "odoaMode", "monitor_mode", "capture_mode", "vleft", "vright",
+        "trans", "rot", "speed", "padWashArea", "padWashAfter", "suctionLevel",
+        "heatedWater", "routine_type", "clean_score_id", "smart_clean_id", "replay_of",
+        "routine_modified", "adaptive", "profile",
+    }
+    special_case_keys = {"noAutoPasses"}
+
+    assert set(body.keys()) == confirmed_keys | special_case_keys
 
 
 def test_command_params_pad_wetness_nested() -> None:
@@ -795,7 +846,9 @@ def test_region_to_json() -> None:
 
 
 def test_command_polygon_to_json() -> None:
-    """Confirmed (androguard): id, metadata (furnitureId), poly."""
+    """id, metadata (furniture_id -- wire key corrected this session,
+    see CommandPolygonMetadata's own docstring for the full
+    $$serializer-based correction), poly."""
     from roombapy_prime.models import CommandPolygon, CommandPolygonMetadata
 
     polygon = CommandPolygon(
@@ -803,7 +856,7 @@ def test_command_polygon_to_json() -> None:
     )
     body = polygon.to_json()
 
-    assert body == {"id": "poly1", "poly": [[0.0, 0.0], [1.0, 1.0]], "metadata": {"furnitureId": 5}}
+    assert body == {"id": "poly1", "poly": [[0.0, 0.0], [1.0, 1.0]], "metadata": {"furniture_id": 5}}
 
 
 def test_routine_command_with_typed_regions_and_params() -> None:
@@ -907,11 +960,17 @@ def test_command_params_from_json_with_pad_wetness() -> None:
 
 
 def test_cleaning_profile_from_json() -> None:
-    """Confirmed (androguard): profile, commandParams, regions."""
+    """CORRECTED (this session, parallel native-analysis track,
+    doubly confirmed -- $$serializer AND chairstacker's own real
+    get_cleaning_profiles() response from an earlier session): the
+    wire key is "params", not the earlier "commandParams" guess --
+    which had command_params silently None against every real
+    response, this test's own old assertion would never have caught
+    that until updated to the real key."""
     from roombapy_prime.models import CleaningProfile, CleaningProfileType
 
     profile = CleaningProfile.from_json(
-        {"profile": "DEEP", "commandParams": {"suctionLevel": 3}, "regions": [{"id": "r1"}]}
+        {"profile": "DEEP", "params": {"suctionLevel": 3}, "regions": [{"id": "r1"}]}
     )
 
     assert profile.profile == CleaningProfileType.DEEP
@@ -1309,10 +1368,15 @@ def test_plan_event_from_json_with_enum_list() -> None:
 
 
 def test_polygon_event_from_json() -> None:
+    """CORRECTED (this session, parallel native-analysis track,
+    $$serializer.<clinit> inspection): 4 of 7 wire keys were wrong --
+    mapId->p2mapId, mapVersion->p2mapvId, polyId->polyid (fully
+    lowercase, not derivable from the property name by any casing
+    transformation), regionId->rid."""
     from roombapy_prime.models import PolygonEvent
 
     e = PolygonEvent.from_json(
-        {"area": 10, "areaCleaned": 8, "mapId": "m1", "mapVersion": "v1", "poly": [[0, 0]], "polyId": "p1", "regionId": "r1"}
+        {"area": 10, "areaCleaned": 8, "p2mapId": "m1", "p2mapvId": "v1", "poly": [[0, 0]], "polyid": "p1", "rid": "r1"}
     )
     assert e == PolygonEvent(
         area=10, area_cleaned=8, map_id="m1", map_version="v1", poly=[[0, 0]], poly_id="p1", region_id="r1"
@@ -1806,6 +1870,47 @@ def test_region_type_values_are_lowercase() -> None:
 
     assert RegionType.RID.value == "rid"
     assert RegionType.ZID.value == "zid"
+
+
+def test_operating_mode_bitmask_matches_real_observed_values() -> None:
+    """CONFIRMED (parallel native-analysis track) and independently
+    validated here against this project's own real observed data
+    (chairstacker) -- not just trusting the bytecode reading."""
+    from roombapy_prime.models.mission_control import OperatingModeBitmask
+
+    assert OperatingModeBitmask(2) == OperatingModeBitmask.VACUUMING
+    assert OperatingModeBitmask(32) == OperatingModeBitmask.VAC_MOP_COMBO_ONLY
+    assert OperatingModeBitmask(512) == OperatingModeBitmask.VAC_THEN_MOP
+    assert OperatingModeBitmask(6) == OperatingModeBitmask.VACUUMING | OperatingModeBitmask.MOP_ONLY
+
+
+def test_operating_mode_bitmask_decodes_cap_omode_550() -> None:
+    """The specific real value (550, seen as cap.oMode in get_state()'s
+    shadow response on multiple real devices) that was previously an
+    unexplained raw number -- confirmed to decompose exactly into four
+    named flags, meaning cap.oMode is a set of SUPPORTED modes, not a
+    single active one."""
+    from roombapy_prime.models.mission_control import OperatingModeBitmask
+
+    decoded = OperatingModeBitmask(550)
+
+    assert OperatingModeBitmask.VACUUMING in decoded
+    assert OperatingModeBitmask.MOP_ONLY in decoded
+    assert OperatingModeBitmask.VAC_MOP_COMBO_ONLY in decoded
+    assert OperatingModeBitmask.VAC_THEN_MOP in decoded
+    assert OperatingModeBitmask.TRAVELING not in decoded
+    assert OperatingModeBitmask.SCRUBBING not in decoded
+
+
+def test_routine_type_param_wire_values_are_the_enum_names() -> None:
+    """CONFIRMED (parallel native-analysis track) -- unlike most other
+    enums in this module, the wire format IS the constant name itself,
+    matching real observed data ("REPLAY", "CLEAN_ALL")."""
+    from roombapy_prime.models.mission_control import RoutineTypeParam
+
+    assert RoutineTypeParam.REPLAY.value == "REPLAY"
+    assert RoutineTypeParam.CLEAN_ALL.value == "CLEAN_ALL"
+    assert RoutineTypeParam("REPLAY") == RoutineTypeParam.REPLAY
 
 
 def test_routine_command_initiator_field() -> None:
@@ -2348,6 +2453,141 @@ def test_software_status_shadow_handles_missing_fields() -> None:
 
     assert status.deployment_id is None
     assert status.software_version is None
+
+
+def test_resolved_mission_status_partial_enum_has_confirmed_values() -> None:
+    """PARTIAL, deliberately not exhaustive (this session, parallel
+    native-analysis track, bytecode signature reading) -- only checks
+    the values actually transcribed, not the full 49-value range.
+    Mapping to any specific shadow field remains unconfirmed -- this
+    test only covers the enum's own confirmed int values."""
+    from roombapy_prime.models.robot_info import ResolvedMissionStatus
+
+    assert ResolvedMissionStatus.CLEANING == 9
+    assert ResolvedMissionStatus.PAUSED == 10
+    assert ResolvedMissionStatus.RETURN_TO_DOCK == 16
+    assert ResolvedMissionStatus.UNKNOWN == 48
+
+
+def test_current_state_shadow_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- the actual
+    resolution of this whole project's battery-status search.
+    "ro-currentstate" reported these keys live; only the key NAMES
+    are confirmed so far (via get_named_shadow()'s reported-keys
+    summary), not real values -- this test uses placeholder values
+    purely to exercise the from_json() mapping itself."""
+    from roombapy_prime.models import CurrentStateShadow
+
+    state = CurrentStateShadow.from_json(
+        {
+            "batPct": 87,
+            "bin": True,
+            "cleanMissionStatus": {"cycle": "none", "phase": "charge"},
+            "detectedPad": "wet",
+            "dock": True,
+            "lastDisconnect": 1784600000,
+            "p2maps": [{"id": "map1"}],
+            "regDate": "2024-01-01",
+            "runtimeStats": {"totalMissions": 42},
+            "svcEndpoints": {"svcDeplId": "v007"},
+            "tankPresent": True,
+            "tz": "America/New_York",
+        }
+    )
+
+    assert state.bat_pct == 87
+    assert state.dock is True
+    assert state.clean_mission_status == {"cycle": "none", "phase": "charge"}
+    assert state.tank_present is True
+    assert state.tz == "America/New_York"
+
+
+def test_current_state_shadow_handles_missing_fields() -> None:
+    from roombapy_prime.models import CurrentStateShadow
+
+    state = CurrentStateShadow.from_json({})
+
+    assert state.bat_pct is None
+    assert state.dock is None
+
+
+def test_stats_shadow_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete key
+    list of "ro-stats", the second of the four "ro-" shadows found
+    via MQTTTopics.java. Only key names confirmed, not values."""
+    from roombapy_prime.models import StatsShadow
+
+    stats = StatsShadow.from_json(
+        {
+            "bbchg": 1,
+            "bbchg3": 2,
+            "bbmssn": 3,
+            "bbpause": 4,
+            "bbrstinfo": {"reason": "power"},
+            "bbsys": 5,
+            "runtimestats": {"totalMissions": 42},
+            "svcEndpoints": {"svcDeplId": "v007"},
+            "unprocessedError": None,
+        }
+    )
+
+    assert stats.bbchg == 1
+    assert stats.bbmssn == 3
+    assert stats.runtimestats == {"totalMissions": 42}
+
+
+def test_stats_shadow_handles_missing_fields() -> None:
+    from roombapy_prime.models import StatsShadow
+
+    stats = StatsShadow.from_json({})
+
+    assert stats.bbchg is None
+    assert stats.runtimestats is None
+
+
+def test_services_shadow_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete key
+    list of "ro-services", the third of the four "ro-" shadows found
+    via MQTTTopics.java."""
+    from roombapy_prime.models import ServicesShadow
+
+    services = ServicesShadow.from_json({"nsmip": 2, "optFeats": ["feat1", "feat2"], "svcEndpoints": {}})
+
+    assert services.opt_feats == ["feat1", "feat2"]
+
+
+def test_services_shadow_handles_missing_fields() -> None:
+    from roombapy_prime.models import ServicesShadow
+
+    services = ServicesShadow.from_json({})
+
+    assert services.opt_feats is None
+
+
+def test_config_info_shadow_from_real_live_capture() -> None:
+    """CONFIRMED LIVE (this session, chairstacker) -- complete key
+    list of "ro-configinfo", the last of the four "ro-" shadows found
+    via MQTTTopics.java. "passwordHash" specifically prompted a real,
+    separate redaction fix in diagnostics.py -- see that module's own
+    tests for the fix itself; this test only covers the model's own
+    from_json() mapping."""
+    from roombapy_prime.models import ConfigInfoShadow
+
+    config = ConfigInfoShadow.from_json(
+        {"hwPartsRev": "rev3", "nsmip": 2, "passwordHash": "abc123", "svcEndpoints": {}}
+    )
+
+    assert config.hw_parts_rev == "rev3"
+    assert config.password_hash == "abc123"
+
+
+def test_config_info_shadow_handles_missing_fields() -> None:
+    from roombapy_prime.models import ConfigInfoShadow
+
+    config = ConfigInfoShadow.from_json({})
+
+    assert config.hw_parts_rev is None
+    assert config.password_hash is None
 
 
 def test_dock_paddry_report_from_real_live_capture() -> None:

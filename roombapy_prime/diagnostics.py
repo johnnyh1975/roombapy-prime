@@ -817,6 +817,15 @@ def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
         "iot_signature",
         "user_cert",
         "cognitoid",
+        # NEW (this session, prompted directly by a real field name
+        # found live): ro-configinfo's own "passwordHash" key would
+        # NOT have matched the exact-match "password" entry above
+        # ("passwordhash" != "password" after lowercasing) -- a real,
+        # currently-existing gap found by verifying this function's
+        # own coverage against a genuinely new field name, not a
+        # hypothetical. Whether it's a hash rather than plaintext
+        # doesn't make it safe to leave unredacted by default.
+        "passwordhash",
     }
     if isinstance(data, dict):
         result = {}

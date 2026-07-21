@@ -764,8 +764,26 @@ class PrimeRestClient:
     def _favorite_from_json(data: dict[str, Any]) -> FavoriteV1:
         """Builds a FavoriteV1 from raw JSON. Deliberately tolerant
         (.get() everywhere) -- never seen a real server response to
-        know which fields are truly always present."""
+        know which fields are truly always present.
+
+        NEW (this session, parallel native-analysis track): Favorite's
+        own Kotlin/Java field is typed List<String>, not a list of
+        already-structured objects -- meaning each entry may arrive as
+        a JSON-ENCODED STRING (a serialized RoutineCommand) rather than
+        a dict directly. CONFIRMED (same track, follow-up): the real
+        app deserializes each string to a full RoutineCommand object
+        (bytecode shows `check-cast ... RoutineCommand`, not a plain
+        string being used opaquely) -- a favorite genuinely carries
+        complete command definitions (including regions/params), not
+        just a reference. Defensively handles both wire shapes here:
+        json.loads() first if an entry is a str, used as-is if it's
+        already a dict. Without this, a real string-shaped response
+        would crash outright on c["command"] (subscripting a string
+        by a non-integer key)."""
         command_defs_raw = data.get("commanddefs") or []
+        command_defs_raw = [
+            json.loads(c) if isinstance(c, str) else c for c in command_defs_raw
+        ]
         return FavoriteV1(
             favorite_id=data.get("favorite_id"),
             name=data.get("name"),

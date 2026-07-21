@@ -443,13 +443,55 @@ class PrimeRobot:
         confirmed safe), a wrong guess HERE could mean a real device
         accepts a malformed but plausible-looking command and behaves
         unpredictably -- not zero risk, unlike the topic-discovery
-        problem this hypothesis descends from. If experimenting with
-        this, favor a `favorite_id`-based RoutineCommand (referencing
-        an existing, already-defined favorite/routine the person set
-        up themselves in the real app) over hand-built `regions` --
-        that way the actual room/zone definitions come from something
-        already confirmed correct by the app itself, not from this
-        library's own unconfirmed region-construction logic.
+        problem this hypothesis descends from.
+
+        CORRECTED (this session, parallel native-analysis track,
+        directly reversing an earlier recommendation here): the
+        earlier advice was to favor a favorite_id-ONLY RoutineCommand
+        over hand-built regions, reasoning that referencing something
+        already app-defined would be safer. That's now known to be
+        WRONG -- traced directly through the real app's own
+        RoutineCommandBuilder: setFromFavorite(favoriteId, commandDefs)
+        stores BOTH the favorite_id AND the favorite's full, resolved
+        command definitions (regions/params/id_multipolys/map_id/
+        pmap_version_id), and build() sends ALL of it together, not
+        favorite_id alone. A favorite_id-only command is not a safer
+        subset of what the app does -- it's something the app itself
+        never actually sends, and deviating from confirmed real
+        behavior is the greater risk here, not the lesser one.
+
+        UPDATE (same track, follow-up): build() also computes a
+        routine_modified flag by comparing the command being built
+        against the ORIGINAL favorite (region count, region order/IDs,
+        and each region's user-modifiable params -- see CommandParams'
+        own docstring for the exact 7-field non-user-modifiable list).
+        This is a COMPUTED value, not something to set arbitrarily --
+        which means hand-constructing a "favorite_id + resolved
+        regions" command from scratch would ALSO need this comparison
+        done correctly to match real behavior.
+
+        UPDATE (same track, ad-hoc zones specifically): a hand-built
+        TID (ad-hoc/temporary zone) region is a further, separate risk
+        on top of the above -- its id must come from a reserved
+        160-199 range (a real device manages this via its own
+        adHocCounter, not something to invent), and its paired
+        CommandPolygon must share that exact same id, with metadata
+        referencing a real furniture id. RID/ZID (persistent rooms/
+        zones from actual map data) don't have this extra constraint.
+        See RegionType.TID's own docstring for the full mechanism.
+
+        THE ACTUAL SAFEST TEST, given all of this: don't hand-
+        construct anything, and avoid TID/ad-hoc regions entirely.
+        Fetch an existing favorite via get_favorites(), take one of
+        its own command_defs entries completely UNCHANGED (ideally
+        one using ordinary RID/ZID regions from real map data, not an
+        ad-hoc one), and send exactly that via this method. Since
+        nothing was modified relative to its own origin, whatever
+        routine_modified value it already carries (likely False/
+        absent, as an unmodified replay) should already be correct --
+        this sidesteps both the modified-flag computation question and
+        the ad-hoc-region-construction question entirely, rather than
+        needing to get either right from scratch.
 
         Same requirements/behavior as send_simple_command(): needs
         irbt_topic_prefix, fire-and-forget (no response wait, see
