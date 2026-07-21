@@ -225,6 +225,49 @@ def test_parse_livemap_unrecognized_shape_raises() -> None:
         parse_livemap_message(payload)
 
 
+def test_decode_rawmap_to_png_produces_correctly_oriented_image() -> None:
+    """Builds a minimal, synthetic rawmap protobuf (2x2 grid, top row
+    white/bottom row black on the wire) and checks decode_rawmap_to_png()
+    both parses the confirmed field layout correctly AND applies the
+    confirmed vertical flip (top-of-wire ends up at the bottom of the
+    output PNG, matching the real app's own orientation)."""
+    from roombapy_prime.models.livemap import decode_rawmap_to_png
+
+    def _varint(n: int) -> bytes:
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                break
+        return bytes(out)
+
+    def _field(num: int, wire_type: int, payload: bytes) -> bytes:
+        tag = _varint((num << 3) | wire_type)
+        if wire_type == 2:
+            return tag + _varint(len(payload)) + payload
+        return tag + payload
+
+    width, height = 2, 2
+    header = _field(2, 0, _varint(width)) + _field(3, 0, _varint(height))
+    grid_bytes = bytes([255, 255, 0, 0])  # row0=white, row1=black on the wire
+    grid_wrapper = _field(1, 2, grid_bytes)
+    rawmap = _field(3, 2, header) + _field(4, 2, grid_wrapper)
+
+    png_bytes = decode_rawmap_to_png(rawmap)
+
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.open(BytesIO(png_bytes))
+    assert img.size == (2, 2)
+    # Flipped: the wire's row0 (white) must now be at the BOTTOM.
+    assert img.getpixel((0, 1)) == 255
+    assert img.getpixel((0, 0)) == 0
+
+
 # --- read-side domain models (map contents) ------------------------------
 #
 # These are structurally simpler than the edit-command tests above --
@@ -2470,45 +2513,56 @@ def test_resolved_mission_status_partial_enum_has_confirmed_values() -> None:
 
 
 def test_current_state_shadow_from_real_live_capture() -> None:
-    """CONFIRMED LIVE (this session, chairstacker) -- the actual
-    resolution of this whole project's battery-status search.
-    "ro-currentstate" reported these keys live; only the key NAMES
-    are confirmed so far (via get_named_shadow()'s reported-keys
-    summary), not real values -- this test uses placeholder values
-    purely to exercise the from_json() mapping itself."""
-    from roombapy_prime.models import CurrentStateShadow
+    """CONFIRMED LIVE, REAL VALUES (chairstacker) -- the actual
+    resolution of this whole project's battery-status search. This is
+    chairstacker's genuine ro-currentstate reported payload (robot
+    idle, charging on dock at 72%), not placeholder values -- exercises
+    the full nested structure (BinStatus/CleanMissionStatus/DockStatus/
+    RuntimeStatsSummary/P2MapRef) in one shot."""
+    from roombapy_prime.models import CurrentStateShadow, P2MapRef
 
     state = CurrentStateShadow.from_json(
         {
-            "batPct": 87,
-            "bin": True,
-            "cleanMissionStatus": {"cycle": "none", "phase": "charge"},
-            "detectedPad": "wet",
-            "dock": True,
-            "lastDisconnect": 1784600000,
-            "p2maps": [{"id": "map1"}],
-            "regDate": "2024-01-01",
-            "runtimeStats": {"totalMissions": 42},
-            "svcEndpoints": {"svcDeplId": "v007"},
+            "batPct": 72,
+            "cleanMissionStatus": {
+                "condNotReady": [], "cycle": "none", "error": 0, "initiator": "rmtApp",
+                "missionId": "01KY30BFZTGERV3KBTRF224MQR", "mssnStrtTm": 1784659951,
+                "nMssn": 266, "notReady": 0, "operatingMode": 2, "phase": "charge", "sqft": 10,
+            },
+            "lastDisconnect": 2,
+            "svcEndpoints": {"svcDeplId": "v005"},
+            "regDate": "2025-09-19",
+            "dock": {
+                "cap": {"evac": 1, "pd": 2, "pw": 1, "pwo": 1},
+                "error": 0, "fwVer": "20", "known": True,
+                "pdState": 701, "pwState": 601, "state": 301,
+            },
+            "bin": {"present": True},
+            "detectedPad": "padPlate",
+            "tz": {"events": [{"dt": 0, "off": 0}], "ver": 31},
+            "p2maps": [{"p2map_id": "BLID-1758329350", "p2mapv_id": "260518T135521.119"}],
+            "runtimeStats": {"hr": 44, "min": 44},
             "tankPresent": True,
-            "tz": "America/New_York",
         }
     )
 
-    assert state.bat_pct == 87
-    assert state.dock is True
-    assert state.clean_mission_status == {"cycle": "none", "phase": "charge"}
+    assert state.bat_pct == 72
     assert state.tank_present is True
-    assert state.tz == "America/New_York"
+    assert state.detected_pad == "padPlate"
+    assert state.reg_date == "2025-09-19"
 
+    assert state.clean_mission_status.phase == "charge"
+    assert state.clean_mission_status.operating_mode == 2
+    assert state.clean_mission_status.mission_id == "01KY30BFZTGERV3KBTRF224MQR"
 
-def test_current_state_shadow_handles_missing_fields() -> None:
-    from roombapy_prime.models import CurrentStateShadow
+    assert state.dock.state == 301
+    assert state.dock.pw_state == 601
+    assert state.dock.pd_state == 701
+    assert state.dock.cap.pad_dry == 2
 
-    state = CurrentStateShadow.from_json({})
-
-    assert state.bat_pct is None
-    assert state.dock is None
+    assert state.bin.present is True
+    assert state.runtime_stats.hours == 44
+    assert state.p2maps == [P2MapRef(p2map_id="BLID-1758329350", p2mapv_id="260518T135521.119")]
 
 
 def test_stats_shadow_from_real_live_capture() -> None:

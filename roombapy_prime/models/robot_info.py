@@ -931,132 +931,219 @@ class ResolvedMissionStatus(IntEnum):
 
 
 @dataclass(frozen=True)
+class BinStatus:
+    """CONFIRMED LIVE (chairstacker, real ro-currentstate payload):
+    just one field, "present" (bool)."""
+
+    present: bool | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BinStatus:
+        return cls(present=data.get("present"))
+
+
+@dataclass(frozen=True)
+class CleanMissionStatus:
+    """CONFIRMED LIVE (chairstacker, real ro-currentstate payload).
+    "phase" is where charging state actually lives (observed value:
+    "charge") -- confirming the earlier hypothesis that a separate
+    isCharging-style boolean isn't part of this shadow; the real app's
+    own getIsCharging()/getIsFullyCharged() getters (see this class's
+    own module docstring) are plausibly derived FROM this field rather
+    than being a shadow key of their own. "operatingMode" (observed:
+    2) matches OperatingModeBitmask.VACUUMING exactly, independently
+    validating that enum against yet another real data point."""
+
+    cond_not_ready: list[Any] = field(default_factory=list)
+    cycle: str | None = None
+    error: int | None = None
+    initiator: str | None = None
+    mission_id: str | None = None
+    mission_start_time: int | None = None
+    n_missions: int | None = None
+    not_ready: int | None = None
+    operating_mode: int | None = None
+    phase: str | None = None
+    sqft: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CleanMissionStatus:
+        return cls(
+            cond_not_ready=data.get("condNotReady") or [],
+            cycle=data.get("cycle"),
+            error=data.get("error"),
+            initiator=data.get("initiator"),
+            mission_id=data.get("missionId"),
+            mission_start_time=data.get("mssnStrtTm"),
+            n_missions=data.get("nMssn"),
+            not_ready=data.get("notReady"),
+            operating_mode=data.get("operatingMode"),
+            phase=data.get("phase"),
+            sqft=data.get("sqft"),
+        )
+
+
+@dataclass(frozen=True)
+class DockCapabilities:
+    """CONFIRMED LIVE (chairstacker, real ro-currentstate payload,
+    nested under dock.cap) -- meaning of each still a reasonable
+    guess from the name only, not further confirmed: evac (auto-evac
+    capable), pad_dry/pad_wash (self-explanatory), pad_wash_or (name
+    as reported, meaning genuinely unclear)."""
+
+    evac: int | None = None
+    pad_dry: int | None = None
+    pad_wash: int | None = None
+    pad_wash_or: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> DockCapabilities:
+        return cls(
+            evac=data.get("evac"),
+            pad_dry=data.get("pd"),
+            pad_wash=data.get("pw"),
+            pad_wash_or=data.get("pwo"),
+        )
+
+
+@dataclass(frozen=True)
+class DockStatus:
+    """CONFIRMED LIVE (chairstacker, real ro-currentstate payload) --
+    "dock" is a nested object, NOT a simple DockState enum string as
+    might have been assumed from getDockState()'s own return type
+    (see this class's own module docstring) -- that enum's 86 values
+    across four subsystems (DOCK_*/FLUID_REPLENISHMENT_*/PAD_WASH_*/
+    PAD_DRY_*) are plausibly spread across state/pw_state/pd_state
+    below rather than being one single value.
+
+    OBSERVATION, NOT A CONFIRMED MAPPING: the real values seen --
+    state=301, pw_state=601, pd_state=701 -- fall in distinct
+    numeric bands that line up suggestively with three of
+    DockState's four named categories (a 300s/600s/700s split), but
+    the actual enum-value-to-int mapping was never confirmed
+    (bytecode analysis gave names, not their wire integers) -- treat
+    this as a plausible pattern worth testing against more real
+    captures, not a settled fact."""
+
+    cap: DockCapabilities | None = None
+    error: int | None = None
+    fw_version: str | None = None
+    known: bool | None = None
+    pd_state: int | None = None
+    pw_state: int | None = None
+    state: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> DockStatus:
+        cap_data = data.get("cap")
+        return cls(
+            cap=DockCapabilities.from_json(cap_data) if cap_data else None,
+            error=data.get("error"),
+            fw_version=data.get("fwVer"),
+            known=data.get("known"),
+            pd_state=data.get("pdState"),
+            pw_state=data.get("pwState"),
+            state=data.get("state"),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeStatsSummary:
+    """CONFIRMED LIVE (chairstacker, real ro-currentstate payload) --
+    lifetime runtime, hours+minutes. Plausibly analogous to
+    ha_roomba_plus's own Classic-tier bbrun.hr ("wear data"/runtime
+    hours, see MISSIONSTORE_FIELD_REGISTRY.md) -- same underlying
+    concept, not confirmed to be computed identically."""
+
+    hours: int | None = None
+    minutes: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> RuntimeStatsSummary:
+        return cls(hours=data.get("hr"), minutes=data.get("min"))
+
+
+@dataclass(frozen=True)
+class P2MapRef:
+    """CONFIRMED LIVE (chairstacker, real ro-currentstate payload,
+    under p2maps) -- a simple map-id/version-id pair, one per known
+    map. Deliberately a separate, minimal class from P2MapData (this
+    module, above) -- that's the full get_map_metadata() response
+    shape (8+ fields); this is just the two-field reference seen
+    here, not confirmed to be interchangeable with it."""
+
+    p2map_id: str | None = None
+    p2mapv_id: str | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> P2MapRef:
+        return cls(p2map_id=data.get("p2map_id"), p2mapv_id=data.get("p2mapv_id"))
+
+
+@dataclass(frozen=True)
 class CurrentStateShadow:
-    """CONFIRMED LIVE (this session, chairstacker) -- the actual
-    resolution of this whole project's battery-status search. One of
-    four previously-unknown read-only ("ro-") named shadows found via
-    MQTTTopics.java (see verify_named_shadows.py's own module
-    docstring for that discovery). "ro-currentstate" is the one whose
-    name itself matched what was being searched for, and its live
-    content confirms it: battery percentage ("batPct") is genuinely
-    here, alongside what plausibly covers docked/charging state
-    ("dock") and live mission status ("cleanMissionStatus" -- matching
-    the exact event name this project's own native decompilation
-    found independently, months earlier, on AssetIotTopicFactory).
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (chairstacker) -- the
+    actual resolution of this whole project's battery-status search.
+    One of four previously-unknown read-only ("ro-") named shadows
+    found via MQTTTopics.java (see verify_named_shadows.py's own
+    module docstring for that discovery).
 
-    STILL UNCONFIRMED: only the KEY NAMES are known so far (from
-    get_named_shadow()'s reported-keys summary, not the actual
-    payload) -- every field here is deliberately typed as `Any`
-    rather than guessed at (int for a percentage, bool for a dock
-    state, etc.) until real values are seen. A follow-up request for
-    the full reported payload (not just the key list) would let these
-    be typed properly.
+    A real captured payload (battery at 72%, robot idle/charging on
+    dock) confirmed every field below, correcting an earlier
+    assumption that most of these were simple flat values -- several
+    are actually nested objects, now modeled as their own classes
+    above (BinStatus/CleanMissionStatus/DockStatus/
+    RuntimeStatsSummary/P2MapRef). bat_pct/detected_pad/tank_present/
+    reg_date/last_disconnect remain simple scalars, matching what was
+    guessed before -- reg_date is a plain date STRING ("2025-09-19"),
+    not a timestamp int as originally guessed.
 
-    CROSS-REFERENCE (this session, from ha_roomba_plus's own Classic-
-    tier field registry, MISSIONSTORE_FIELD_REGISTRY.md -- an old,
-    already-confirmed finding from a DIFFERENT product line this
-    session hadn't cross-checked against Prime's own field names
-    until now): "batPct", "detectedPad", and "tankPresent" all appear,
-    confirmed, as TOP-LEVEL Classic-robot state fields too, alongside
-    "dock", "padWetness", "tankLvl", "lidOpen" -- and Classic's own
-    real captures (chairstacker-equivalent field testers, three
-    captures across a real mission) directly confirmed "batPct" moves
-    LIVE during a mission (100 -> 100 -> 79 across one ~45-minute
-    run), not just on a fixed schedule. Same company, same field
-    vocabulary, different product line -- not proof Prime's own
-    "ro-currentstate" behaves identically, but genuinely stronger
-    supporting evidence than a bare guess: "detected_pad" plausibly
-    mirrors Classic's own pad-type detection (matching this project's
-    own already-confirmed PadCategory enum -- DRY/WET/etc.), and
-    "tank_present" plausibly a boolean presence flag distinct from a
-    separate level value (Classic keeps "tankLvl" and "tankPresent" as
-    two different fields, not one) -- if Prime follows the same
-    split, a numeric tank-level field may exist elsewhere, not
-    necessarily under a key already listed here.
+    "charging" specifically lives in clean_mission_status.phase
+    (observed: "charge"), not a dedicated boolean on this class --
+    see CleanMissionStatus's own docstring. tank_present (plain bool)
+    is confirmed genuinely distinct from any numeric tank-level field
+    -- none appears anywhere in this real payload, consistent with
+    the earlier Classic cross-reference's prediction that these are
+    two different concepts.
 
-    bin/last_disconnect/reg_date/p2maps/tz remain genuinely
-    unconfirmed guesses at MEANING, not just at type -- included here
-    only as a starting point for whoever looks at the real values
-    next.
+    tz (timezone, with DST transition events) intentionally still
+    left as a raw dict -- lower priority, not yet modeled in detail.
+    svc_endpoints likewise (just one observed key so far,
+    "svcDeplId") -- kept minimal rather than over-modeled from a
+    single example."""
 
-    TYPES CONFIRMED (this session, parallel native-analysis track,
-    bytecode signature reading -- no live device needed for this
-    part): core::MissionData's getters have confirmed return types.
-    getBatteryLevelPercentage() -> short (primitive) -- consistent
-    with bat_pct being a plain, non-nullable small int. getDockState()
-    -> a DockState enum with 86 values across four functional areas
-    (DOCK_* x18 for the evac dock itself, FLUID_REPLENISHMENT_* x22,
-    PAD_WASH_* x25, PAD_DRY_* x20) -- this is a COMPOSITE status
-    covering multiple dock subsystems at once, not a simple docked/
-    undocked flag; only a handful of the 86 values have been
-    transcribed so far (e.g. DOCK_READY, DOCK_BAG_FULL,
-    PAD_WASH_IN_PROGRESS), not modeled as a Python enum yet pending
-    the fuller list. getResolvedMissionStatus() -> see
-    ResolvedMissionStatus above (partial, 49 total values).
-    getTankLevel() -> nullable boxed Short -- a NUMERIC fill level.
-
-    A REAL CORRECTION TO AN EARLIER ASSUMPTION IN THIS SESSION:
-    getTankLevel() being numeric, while "tankPresent" (this class's
-    own field) reads as a boolean PRESENCE flag by name, means the
-    earlier guess connecting these two directly is probably wrong --
-    they're plausibly two different concepts (how much water vs.
-    whether a tank is inserted at all), matching the Classic
-    cross-reference above, which independently keeps "tankLvl" and
-    "tankPresent" as two separate fields. If Prime follows the same
-    split, a separate numeric tank-level field may exist somewhere
-    this project hasn't found yet, not necessarily under a key
-    already listed on this class.
-
-    getIsCharging()/getIsFullyCharged() -> both plain boolean, but
-    NEITHER appears in ro-currentstate's own 12-key list at all --
-    plausibly folded into "clean_mission_status" instead (Classic's
-    own cleanMissionStatus field carries both batPct AND a phase
-    string including "charge", per the cross-reference above).
-
-    THE MORE IMPORTANT CORRECTION, to an assumption from earlier this
-    session specifically: core::MissionData actually has 27 getters
-    total, not the 7 originally listed -- including getIsBinfull(),
-    getMissionId(), getRobotError(), getRobotReadinessState(),
-    getPauseTimeRemaining(), getCurrentLocationName(),
-    getSkipLocationName(), dock-mode getters for each of the four
-    DockState subsystems, and more. MissionData does NOT map 1:1 onto
-    this class's 12 keys -- it's a larger, AGGREGATED object (one of
-    four combined input streams per this project's own earlier
-    reducer-architecture finding), not a direct shadow-serialization
-    source. The confirmed TYPES above remain useful and directly
-    usable regardless (short/enum/nullable-Short/boolean are real,
-    confirmed facts about what these getters return) -- but which
-    getter (if any) feeds which of THIS class's specific keys remains
-    a hypothesis, not a settled mapping. A real value dump is still
-    needed to confirm whether e.g. "dock" actually holds a DockState-
-    shaped string, a nested object, or something else entirely."""
-
-    bat_pct: Any | None = None
-    bin: Any | None = None
-    clean_mission_status: Any | None = None
-    detected_pad: Any | None = None
-    dock: Any | None = None
-    last_disconnect: Any | None = None
-    p2maps: Any | None = None
-    reg_date: Any | None = None
-    runtime_stats: Any | None = None
-    tank_present: Any | None = None
-    tz: Any | None = None
+    bat_pct: int | None = None
+    bin: BinStatus | None = None
+    clean_mission_status: CleanMissionStatus | None = None
+    detected_pad: str | None = None
+    dock: DockStatus | None = None
+    last_disconnect: int | None = None
+    p2maps: list[P2MapRef] = field(default_factory=list)
+    reg_date: str | None = None
+    runtime_stats: RuntimeStatsSummary | None = None
+    tank_present: bool | None = None
+    tz: dict[str, Any] | None = None
+    svc_endpoints: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CurrentStateShadow:
+        bin_data = data.get("bin")
+        mission_data = data.get("cleanMissionStatus")
+        dock_data = data.get("dock")
+        runtime_data = data.get("runtimeStats")
         return cls(
             bat_pct=data.get("batPct"),
-            bin=data.get("bin"),
-            clean_mission_status=data.get("cleanMissionStatus"),
+            bin=BinStatus.from_json(bin_data) if bin_data else None,
+            clean_mission_status=CleanMissionStatus.from_json(mission_data) if mission_data else None,
             detected_pad=data.get("detectedPad"),
-            dock=data.get("dock"),
+            dock=DockStatus.from_json(dock_data) if dock_data else None,
             last_disconnect=data.get("lastDisconnect"),
-            p2maps=data.get("p2maps"),
+            p2maps=[P2MapRef.from_json(m) for m in (data.get("p2maps") or [])],
             reg_date=data.get("regDate"),
-            runtime_stats=data.get("runtimeStats"),
+            runtime_stats=RuntimeStatsSummary.from_json(runtime_data) if runtime_data else None,
             tank_present=data.get("tankPresent"),
             tz=data.get("tz"),
+            svc_endpoints=data.get("svcEndpoints"),
         )
 
 

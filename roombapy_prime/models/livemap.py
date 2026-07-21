@@ -243,3 +243,126 @@ def parse_livemap_message(raw_payload: bytes) -> PositionUpdateMessage | MapUpda
     return parse_livemap_message_data(json.loads(raw_payload))
 
 
+def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    while True:
+        b = buf[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            break
+        shift += 7
+    return result, pos
+
+
+def _read_field(buf: bytes, pos: int) -> tuple[int, int, object, int]:
+    """Returns (field_number, wire_type, value, new_pos)."""
+    tag, pos = _read_varint(buf, pos)
+    field_num = tag >> 3
+    wire_type = tag & 0x7
+    if wire_type == 0:
+        value, pos = _read_varint(buf, pos)
+    elif wire_type == 2:
+        length, pos = _read_varint(buf, pos)
+        value = buf[pos : pos + length]
+        pos += length
+    elif wire_type == 5:
+        value = buf[pos : pos + 4]
+        pos += 4
+    elif wire_type == 1:
+        value = buf[pos : pos + 8]
+        pos += 8
+    else:
+        msg = f"Unsupported protobuf wire type {wire_type} at offset {pos}"
+        raise ValueError(msg)
+    return field_num, wire_type, value, pos
+
+
+def _parse_top_level(buf: bytes) -> dict[int, list[tuple[int, object]]]:
+    fields: dict[int, list[tuple[int, object]]] = {}
+    pos = 0
+    while pos < len(buf):
+        field_num, wire_type, value, pos = _read_field(buf, pos)
+        fields.setdefault(field_num, []).append((wire_type, value))
+    return fields
+
+
+def decode_rawmap_to_png(rawmap_bytes: bytes) -> bytes:
+    """CONFIRMED STRUCTURE (chairstacker, visually verified against
+    the real app's own map view) -- promoted here from a standalone
+    diagnostic script (decode_rawmap.py) into a proper library
+    function, for MapUpdateMessage's "rawmap" path (see that class's
+    own docstring for the full protobuf-layout evidence trail).
+
+    "rawmap" is a Protocol Buffers message (no public .proto schema,
+    walked generically by field number/wire type, not assumed):
+    field 3 -> header (width int, height int, several float32s
+    including a 0.05 resolution matching standard 5cm/cell SLAM
+    grids); field 4 -> wraps field 1, the actual occupancy grid
+    (width*height bytes, one byte per cell).
+
+    Returns PNG bytes, already vertically flipped to match the real
+    app's own orientation directly (image formats conventionally
+    store row 0 at the top; this occupancy grid stores row 0 at the
+    bottom, matching a real-world Y-axis that increases upward --
+    confirmed by directly comparing the unflipped render against the
+    app, not assumed).
+
+    Raises ValueError if the expected field 3 (header)/field 4 (grid)
+    structure isn't found, or if width*height doesn't match the grid
+    byte count -- callers should treat either as "this specific
+    rawmap didn't match the confirmed layout", not silently render a
+    garbled image. Raises ImportError with a clear message if Pillow
+    isn't installed -- deliberately NOT a hard dependency of this
+    library (most callers never need image rendering), install it
+    yourself (`pip install Pillow`) if you need this function."""
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        msg = "decode_rawmap_to_png() needs Pillow -- pip install Pillow"
+        raise ImportError(msg) from exc
+
+    top = _parse_top_level(rawmap_bytes)
+
+    width = height = None
+    if 3 in top:
+        _wt, header_bytes = top[3][0]
+        header_fields = _parse_top_level(header_bytes)
+        for fnum in sorted(header_fields.keys()):
+            for wt, val in header_fields[fnum]:
+                if wt == 0:
+                    if fnum == 2 and width is None:
+                        width = val
+                    elif fnum == 3 and height is None:
+                        height = val
+    if not (width and height):
+        msg = "rawmap header (field 3) didn't contain the expected width/height -- unrecognized layout"
+        raise ValueError(msg)
+
+    if 4 not in top:
+        msg = "rawmap has no field 4 (grid wrapper) -- unrecognized layout"
+        raise ValueError(msg)
+    _wt, grid_wrapper = top[4][0]
+    inner = _parse_top_level(grid_wrapper)
+    if 1 not in inner:
+        msg = "rawmap's field 4 has no field 1 (grid bytes) inside it -- unrecognized layout"
+        raise ValueError(msg)
+    _wt, grid_bytes = inner[1][0]
+
+    if width * height != len(grid_bytes):
+        msg = (
+            f"rawmap grid byte count ({len(grid_bytes)}) doesn't match "
+            f"width*height ({width}*{height}={width * height}) -- unrecognized layout"
+        )
+        raise ValueError(msg)
+
+    img = Image.frombytes("L", (width, height), grid_bytes)
+    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    from io import BytesIO
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+

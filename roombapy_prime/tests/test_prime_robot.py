@@ -392,18 +392,23 @@ async def test_watch_state_delivers_multiple_messages_in_order() -> None:
 @pytest.mark.asyncio
 async def test_watch_topic_reconnect_uses_relogin_when_available() -> None:
     """CORRECTED (this session, prompted by a real field report: an
-    integration stuck permanently reconnecting-but-never-succeeding).
-    reconnect() alone is same-token by design -- if a disconnect lands
-    after the token has already expired (or the proactive refresh
-    task died for any reason), blindly reusing it would retry forever
-    without ever being able to succeed. When relogin is configured,
-    a reconnect must fetch a fresh token via relogin() +
-    replace_token(), NOT call the same-token reconnect() at all."""
+    integration stuck permanently reconnecting-but-never-succeeding),
+    then NARROWED (self-review, same session): reconnect() alone is
+    same-token by design -- if a disconnect lands after the token has
+    already expired, blindly reusing it would retry forever without
+    ever being able to succeed. But relogging in on EVERY reconnect
+    (even for an ordinary transient blip with a still-valid token)
+    would trade a fast MQTT-only reconnect for a full auth round-trip
+    unconditionally -- so a relogin only happens when the token is
+    actually at/near expiry (seconds_until_token_refresh_due() == 0.0,
+    simulated here), not on every reconnect regardless of token
+    freshness."""
     from roombapy_prime.auth import CloudCredentials, ConnectionToken, LoginResult
     from roombapy_prime.prime_robot import PrimeRobot
 
     mqtt = MagicMock()
     rest = MagicMock()
+    mqtt.seconds_until_token_refresh_due.return_value = 0.0  # token due for refresh
 
     fresh_token = ConnectionToken(
         client_id="c2", iot_token="fresh-token", iot_signature="s2",
@@ -460,6 +465,48 @@ async def test_watch_topic_reconnect_uses_relogin_when_available() -> None:
     result = await next_task
     assert result.payload == {"after": "relogin_reconnect"}
 
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_watch_topic_reconnect_skips_relogin_when_token_still_valid() -> None:
+    """The other half of the narrowing above: an ordinary transient
+    disconnect with a still-valid token must use the fast, same-token
+    reconnect() -- NOT pay for a full relogin it doesn't need."""
+    from unittest.mock import AsyncMock
+
+    robot, mqtt, _rest = _robot_with_mocks()
+    robot._relogin = AsyncMock()
+    mqtt.seconds_until_token_refresh_due.return_value = 300.0  # plenty of time left
+
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+    disconnect_event = asyncio.Event()
+    call_count = 0
+
+    async def fake_wait_for_disconnect():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            await disconnect_event.wait()
+            return "connection lost"
+        await asyncio.Event().wait()
+
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
+    mqtt.reconnect = MagicMock()
+
+    agen = robot.watch_state()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    disconnect_event.set()
+    await _wait_until(lambda: mqtt.reconnect.called)
+
+    robot._relogin.assert_not_awaited()
+    mqtt.replace_token.assert_not_called()
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"after": "reconnect"}))
+    await next_task
     await agen.aclose()
 
 

@@ -1136,18 +1136,31 @@ class PrimeRobot:
                         # somehow reused stale state (this specific failure
                         # mode is defended against below regardless of
                         # whether that's the exact mechanism in any given
-                        # report). When relogin is available, get a fresh
-                        # token as part of every reconnect attempt --
-                        # replace_token() already does the same disconnect/
-                        # connect/resubscribe sequence reconnect() does, so
-                        # this trades a slightly more expensive reconnect
-                        # (one extra login round-trip) for eliminating an
-                        # entire class of "stuck forever on a stale
-                        # credential" failures. Falls back to plain,
-                        # same-token reconnect() when no relogin callback
-                        # was configured (auto_refresh=False), unchanged
-                        # from before.
-                        if self._relogin is not None:
+                        # report). See the follow-up correction right below
+                        # for exactly when a fresh token gets fetched.
+                        #
+                        # CORRECTED AGAIN (this session, self-review): an
+                        # earlier version of this fix relogged in on EVERY
+                        # reconnect attempt whenever relogin was configured
+                        # at all -- including ordinary transient blips where
+                        # the token is still perfectly valid. That trades a
+                        # fast, simple MQTT reconnect for a full Gigya+
+                        # iRobot auth round-trip on every single disconnect,
+                        # adding real latency and a genuinely new failure
+                        # mode (if the login backend itself is slow, rate-
+                        # limiting, or briefly unavailable) to the COMMON
+                        # case, not just the rare one this was meant to fix.
+                        # Narrowed: only relogin when the token is ACTUALLY
+                        # at or near expiry (checked the same way
+                        # _refresh_loop() itself decides this) -- an
+                        # ordinary reconnect with a still-valid token uses
+                        # the fast, same-token path exactly as it always did
+                        # before either fix existed.
+                        needs_relogin = (
+                            self._relogin is not None
+                            and self._mqtt.seconds_until_token_refresh_due() == 0.0
+                        )
+                        if needs_relogin:
                             login_result = await self._relogin()
                             new_token = login_result.token_for_blid(self.blid)
                             await asyncio.to_thread(self._mqtt.replace_token, new_token)

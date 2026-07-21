@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime"
-version = "0.1.11a12"
+version = "0.1.11a13"
 description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,6 +40,9 @@ test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
+]
+map = [
+    "Pillow>=10.0",
 ]
 
 [build-system]

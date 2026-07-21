@@ -8,6 +8,35 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a13] - 2026-07-21
+
+### Added
+
+- **`CurrentStateShadow` rebuilt with real, live-confirmed values** (chairstacker) — battery at
+  72%, robot idle/charging. Most fields turned out to be nested objects, not flat values: new
+  `BinStatus`/`CleanMissionStatus`/`DockStatus`/`DockCapabilities`/`RuntimeStatsSummary`/
+  `P2MapRef` classes. Charging state lives in `clean_mission_status.phase` (`"charge"`), not a
+  separate boolean. `dock.state`/`pw_state`/`pd_state` (301/601/701) plausibly align with
+  `DockState`'s four subsystem categories — a pattern worth watching, not a confirmed mapping.
+
+### Fixed
+
+- **Self-correction to the reconnect fix from v0.1.11a12**: that fix relogged in on *every*
+  reconnect attempt whenever a `relogin` callback was configured, even for an ordinary transient
+  disconnect with a perfectly valid token — trading a fast, simple MQTT reconnect for a full
+  Gigya+iRobot auth round-trip unconditionally. Narrowed: a relogin now only happens when the
+  token is actually at/near expiry, matching the same check `_refresh_loop()` itself already
+  uses. An ordinary reconnect with a still-valid token uses the fast, same-token path exactly as
+  it always did before either fix existed.
+
+### Added
+
+- **`decode_rawmap_to_png()`** in `models/livemap.py` — promotes the confirmed rawmap-decoding
+  logic (previously a standalone diagnostic script) into a proper library function. Takes raw
+  `rawmap` bytes, returns PNG bytes, already oriented to match the real app's own view. Optional
+  `Pillow` dependency (`pip install "roombapy-prime[map]"`), not required for the rest of the
+  library.
+
 ## [0.1.11a12] - 2026-07-21
 
 ### Fixed — prompted by a real field report of a permanently stuck connection
