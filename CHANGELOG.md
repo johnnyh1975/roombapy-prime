@@ -10,6 +10,16 @@ This file only tracks what changed from a user's point of view.
 
 ## [0.1.11a15] - 2026-07-22
 
+### Fixed
+
+- **Real UX bug found from a confused field tester's own report**: the four newest staged
+  scripts (`verify-region-commands`, `verify-schedule-write`, `verify-favorite-write`,
+  `verify-virtual-wall-write`) prompted for the Prime account email/password *before* checking
+  whether a valid action or the required safety flag was even present — a bare or malformed
+  invocation would ask for credentials first, then abort. This project's older scripts always
+  validated first and only prompted for credentials once something was actually going to run.
+  All four now follow that same order.
+
 ### Added
 
 - **`SuctionLevel` enum**, from parallel native-analysis extraction: purely numeric

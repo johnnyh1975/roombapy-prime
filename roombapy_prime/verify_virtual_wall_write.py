@@ -187,6 +187,14 @@ def main() -> None:
     parser.add_argument("--i-understand-this-changes-real-map-zones", action="store_true")
     args = parser.parse_args()
 
+    if not (args.list_walls or args.update_unchanged):
+        print("Nothing to do -- pass --list-walls (safe, sends nothing) or --update-unchanged.")
+        return
+
+    if args.update_unchanged and not args.i_understand_this_changes_real_map_zones:
+        print("Aborted: --i-understand-this-changes-real-map-zones is missing.")
+        sys.exit(1)
+
     username = args.username or input("Prime account email: ")
     password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Prime account password: ")
 
@@ -195,15 +203,10 @@ def main() -> None:
         return
 
     if args.update_unchanged:
-        if not args.i_understand_this_changes_real_map_zones:
-            print("Aborted: --i-understand-this-changes-real-map-zones is missing.")
-            sys.exit(1)
         asyncio.run(
             send_update_unchanged(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id)
         )
         return
-
-    print("Nothing to do -- pass --list-walls (safe, sends nothing) or --update-unchanged.")
 
 
 if __name__ == "__main__":

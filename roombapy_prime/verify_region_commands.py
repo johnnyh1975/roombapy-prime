@@ -610,30 +610,27 @@ def main() -> None:
             return False
         return True
 
-    username = args.username or input("Prime account email: ")
-    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Prime account password: ")
-
-    if args.list_favorites:
-        asyncio.run(list_favorites(username, password, args.country_code, args.blid))
-        return
-
-    if args.list_rooms:
-        if not args.p2map_id:
-            print("Aborted: --list-rooms needs --p2map-id.")
-            sys.exit(1)
-        asyncio.run(list_rooms(username, password, args.country_code, args.blid, args.p2map_id))
-        return
-
-    if args.send:
-        if not _require_send_gates():
-            sys.exit(1)
-        asyncio.run(
-            send_stage_one(
-                username, password, args.country_code, args.blid,
-                args.send, args.command_index, args.watch_seconds,
-            )
+    # Validate everything BEFORE ever prompting for credentials -- a
+    # bare or malformed invocation should abort immediately with a
+    # clear message, the same way this project's older diagnostic
+    # scripts already do, not ask for a Prime account login first and
+    # only THEN explain what went wrong.
+    if not (
+        args.list_favorites or args.list_rooms or args.send or args.send_modified
+        or args.send_region or args.send_adhoc
+    ):
+        print(
+            "Nothing to do -- pass --list-favorites/--list-rooms (safe, send nothing), or one of "
+            "--send/--send-modified/--send-region/--send-adhoc."
         )
         return
+
+    if args.list_rooms and not args.p2map_id:
+        print("Aborted: --list-rooms needs --p2map-id.")
+        sys.exit(1)
+
+    if args.send and not _require_send_gates():
+        sys.exit(1)
 
     if args.send_modified:
         if not _require_send_gates():
@@ -641,13 +638,6 @@ def main() -> None:
         if args.suction_level is None:
             print("Aborted: --send-modified needs --suction-level.")
             sys.exit(1)
-        asyncio.run(
-            send_stage_two(
-                username, password, args.country_code, args.blid,
-                args.send_modified, args.command_index, args.suction_level, args.watch_seconds,
-            )
-        )
-        return
 
     if args.send_region:
         if not _require_send_gates():
@@ -655,14 +645,8 @@ def main() -> None:
         if not (args.p2map_id and args.room_id and args.region_type):
             print("Aborted: --send-region needs --p2map-id, --room-id, and --region-type.")
             sys.exit(1)
-        asyncio.run(
-            send_stage_three(
-                username, password, args.country_code, args.blid,
-                args.p2map_id, args.room_id, args.region_type, args.watch_seconds,
-            )
-        )
-        return
 
+    parsed_polygon_points = None
     if args.send_adhoc:
         if not _require_send_gates():
             sys.exit(1)
@@ -676,22 +660,57 @@ def main() -> None:
         if not (args.p2map_id and args.furniture_id is not None and args.polygon_points):
             print("Aborted: --send-adhoc needs --p2map-id, --furniture-id, and --polygon-points.")
             sys.exit(1)
-        points = _parse_polygon_points(args.polygon_points)
-        if points is None:
+        parsed_polygon_points = _parse_polygon_points(args.polygon_points)
+        if parsed_polygon_points is None:
             print('Aborted: --polygon-points must look like "x1,y1 x2,y2 x3,y3 ...".')
             sys.exit(1)
+
+    username = args.username or input("Prime account email: ")
+    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Prime account password: ")
+
+    if args.list_favorites:
+        asyncio.run(list_favorites(username, password, args.country_code, args.blid))
+        return
+
+    if args.list_rooms:
+        asyncio.run(list_rooms(username, password, args.country_code, args.blid, args.p2map_id))
+        return
+
+    if args.send:
         asyncio.run(
-            send_stage_four(
+            send_stage_one(
                 username, password, args.country_code, args.blid,
-                args.p2map_id, args.furniture_id, points, args.watch_seconds,
+                args.send, args.command_index, args.watch_seconds,
             )
         )
         return
 
-    print(
-        "Nothing to do -- pass --list-favorites/--list-rooms (safe, send nothing), or one of "
-        "--send/--send-modified/--send-region/--send-adhoc."
-    )
+    if args.send_modified:
+        asyncio.run(
+            send_stage_two(
+                username, password, args.country_code, args.blid,
+                args.send_modified, args.command_index, args.suction_level, args.watch_seconds,
+            )
+        )
+        return
+
+    if args.send_region:
+        asyncio.run(
+            send_stage_three(
+                username, password, args.country_code, args.blid,
+                args.p2map_id, args.room_id, args.region_type, args.watch_seconds,
+            )
+        )
+        return
+
+    if args.send_adhoc:
+        asyncio.run(
+            send_stage_four(
+                username, password, args.country_code, args.blid,
+                args.p2map_id, args.furniture_id, parsed_polygon_points, args.watch_seconds,
+            )
+        )
+        return
 
 
 if __name__ == "__main__":

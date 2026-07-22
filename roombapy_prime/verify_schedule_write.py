@@ -269,6 +269,15 @@ def main() -> None:
     parser.add_argument("--i-understand-this-changes-a-real-schedule", action="store_true")
     args = parser.parse_args()
 
+    if not (args.list_schedules or args.update_unchanged or args.disable):
+        print("Nothing to do -- pass --list-schedules (safe, sends nothing), --update-unchanged, or --disable.")
+        return
+
+    needs_write_flag = args.update_unchanged or args.disable
+    if needs_write_flag and not args.i_understand_this_changes_a_real_schedule:
+        print("Aborted: --i-understand-this-changes-a-real-schedule is missing.")
+        sys.exit(1)
+
     username = args.username or input("Prime account email: ")
     password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Prime account password: ")
 
@@ -277,26 +286,18 @@ def main() -> None:
         return
 
     if args.update_unchanged:
-        if not args.i_understand_this_changes_a_real_schedule:
-            print("Aborted: --i-understand-this-changes-a-real-schedule is missing.")
-            sys.exit(1)
         asyncio.run(
             send_update_unchanged(username, password, args.country_code, args.blid, args.update_unchanged)
         )
         return
 
     if args.disable:
-        if not args.i_understand_this_changes_a_real_schedule:
-            print("Aborted: --i-understand-this-changes-a-real-schedule is missing.")
-            sys.exit(1)
         asyncio.run(
             send_disable(
                 username, password, args.country_code, args.blid, args.disable, args.schedule_index,
             )
         )
         return
-
-    print("Nothing to do -- pass --list-schedules (safe, sends nothing), --update-unchanged, or --disable.")
 
 
 if __name__ == "__main__":

@@ -273,6 +273,26 @@ def main() -> None:
     parser.add_argument("--i-understand-this-changes-a-real-favorite", action="store_true")
     args = parser.parse_args()
 
+    # Validate flags/arguments BEFORE ever prompting for credentials --
+    # a bare or malformed invocation should abort immediately with a
+    # clear message, the same way this project's older diagnostic
+    # scripts already do, not ask for a Prime account login first and
+    # only THEN explain what went wrong.
+    if not (args.list_favorites or args.update_unchanged or args.update_color or args.create_and_delete_test):
+        print(
+            "Nothing to do -- pass --list-favorites (safe, sends nothing), --update-unchanged, "
+            "--update-color, or --create-and-delete-test."
+        )
+        return
+
+    needs_write_flag = args.update_unchanged or args.update_color or args.create_and_delete_test
+    if needs_write_flag and not args.i_understand_this_changes_a_real_favorite:
+        print("Aborted: --i-understand-this-changes-a-real-favorite is missing.")
+        sys.exit(1)
+    if args.update_color and not args.color:
+        print("Aborted: --update-color needs --color.")
+        sys.exit(1)
+
     username = args.username or input("Prime account email: ")
     password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Prime account password: ")
 
@@ -281,37 +301,20 @@ def main() -> None:
         return
 
     if args.update_unchanged:
-        if not args.i_understand_this_changes_a_real_favorite:
-            print("Aborted: --i-understand-this-changes-a-real-favorite is missing.")
-            sys.exit(1)
         asyncio.run(
             send_update_unchanged(username, password, args.country_code, args.blid, args.update_unchanged)
         )
         return
 
     if args.update_color:
-        if not args.i_understand_this_changes_a_real_favorite:
-            print("Aborted: --i-understand-this-changes-a-real-favorite is missing.")
-            sys.exit(1)
-        if not args.color:
-            print("Aborted: --update-color needs --color.")
-            sys.exit(1)
         asyncio.run(
             send_update_color(username, password, args.country_code, args.blid, args.update_color, args.color)
         )
         return
 
     if args.create_and_delete_test:
-        if not args.i_understand_this_changes_a_real_favorite:
-            print("Aborted: --i-understand-this-changes-a-real-favorite is missing.")
-            sys.exit(1)
         asyncio.run(create_and_delete_test(username, password, args.country_code, args.blid))
         return
-
-    print(
-        "Nothing to do -- pass --list-favorites (safe, sends nothing), --update-unchanged, "
-        "--update-color, or --create-and-delete-test."
-    )
 
 
 if __name__ == "__main__":
