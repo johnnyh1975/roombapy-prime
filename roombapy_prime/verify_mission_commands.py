@@ -270,7 +270,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
                 "the report above for the actual discovery-response keys, which is what's "
                 "needed to fix this properly."
             )
-            for label in ("Start", "Mid-mission capture", "Stop", "Start (for pause test)", "Pause", "Resume", "Stop (after pause test)", "Dock"):
+            for label in ("Start", "Mid-mission capture", "Stop", "Start (for pause test)", "Pause", "Resume", "Stop (after pause test)", "Dock", "Find"):
                 report.add(label, "SKIPPED", "irbt_topic_prefix missing -- see report above")
             await robot.disconnect()
             return report, raw_capture
@@ -300,6 +300,24 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             await _run_command(robot, report, raw_capture, "dock", "Dock")
         else:
             report.add("Dock", "SKIPPED", "not chosen by user")
+
+        print("\n== Locate (\"find my robot\") ==")
+        print(
+            "CONFIRMED WORKING (jayjay, real device test): \"find\" produces a genuine, audible "
+            "chime with no robot movement. Two OTHER mechanisms (a REST endpoint, a shadow "
+            "write) were tried first and confirmed NOT working -- this is the one that actually "
+            "works. Does NOT require an active mission -- works regardless of whether the robot "
+            "is currently cleaning, docked, or idle."
+        )
+        if _confirm('Also test "find" (should make the robot chime)?'):
+            await _run_command(robot, report, raw_capture, "find", "Find")
+            print(
+                "\nDid the robot actually chime? Already confirmed working on at least one real "
+                "device, but still worth noting the result each time when reporting back, since "
+                "device-specific differences (region, firmware, robot model) could still matter."
+            )
+        else:
+            report.add("Find", "SKIPPED", "not chosen by user")
 
         await robot.disconnect()
 

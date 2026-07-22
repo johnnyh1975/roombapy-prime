@@ -24,6 +24,7 @@ from typing import Any
 
 from .enums_common import FurnitureType, RoomCategory, RoomType
 from .geometry import LineString, Polygon, Position
+from .map_bundle import PolicyZoneFeature
 
 
 @dataclass(frozen=True)
@@ -461,6 +462,63 @@ class VirtualWallNoMopZoneV1:
 
 
 VirtualWallV1 = VirtualWallLinearV1 | VirtualWallRectangleV1 | VirtualWallNoMopZoneV1
+
+
+def policy_zone_to_virtual_wall(feature: PolicyZoneFeature) -> VirtualWallV1 | None:
+    """Converts one raw policyZones.geojson feature into the matching
+    VirtualWallV1 subtype for resending via SetVirtualWallsV1/
+    "set_virtual_wall" -- implements the complete, CONFIRMED
+    categorization rule (parallel native-analysis track,
+    P2MapBundleContentHolderPersistentMapKt's own extension functions
+    -- the actual code that builds P2PersistentMap's three separate
+    typed lists from this single raw list):
+
+        zone_type == "KeepOutZone" + geometry is Polygon
+            -> VirtualWallRectangleV1 (a real, persistent keep-out zone)
+        zone_type == "KeepOutZone" + geometry is LineString
+            -> VirtualWallLinearV1 (a virtual wall -- there is NO
+               separate "VirtualWall" zone_type string; this geometry-
+               shape distinction is the only thing that tells them apart)
+        zone_type == "NoMopZone" (always Polygon)
+            -> VirtualWallNoMopZoneV1
+
+    Returns None for "Threshold"-typed features (not part of the
+    virtual-wall family at all) and for anything unrecognized --
+    callers should filter these out of a combined list themselves
+    (e.g. via a list comprehension dropping the None results), rather
+    than this function raising on unexpected input. Geometry is passed
+    through UNCHANGED -- CONFIRMED (same native-analysis track) that
+    no coordinate transformation happens anywhere in this pipeline,
+    from the raw bundle read all the way to the wire command."""
+    zone_type = feature.properties.zone_type
+    geometry = feature.geometry
+
+    if zone_type == "KeepOutZone" and isinstance(geometry, Polygon):
+        return VirtualWallRectangleV1(wall_id=feature.feature_id, polygon=geometry)
+    if zone_type == "KeepOutZone" and isinstance(geometry, LineString):
+        coords = geometry.coordinates
+        if len(coords) < 2:
+            return None
+        return VirtualWallLinearV1(wall_id=feature.feature_id, from_pos=coords[0], to_pos=coords[-1])
+    if zone_type == "NoMopZone" and isinstance(geometry, Polygon):
+        return VirtualWallNoMopZoneV1(wall_id=feature.feature_id, polygon=geometry)
+    return None
+
+
+def policy_zones_to_virtual_walls(features: list[PolicyZoneFeature]) -> list[VirtualWallV1]:
+    """Combines policy_zone_to_virtual_wall() over a full list read
+    from policyZones.geojson, dropping thresholds/unrecognized
+    entries. Order matches the real app's own rebuild order
+    (confirmed, deleteVirtualWall's own real implementation): keep-out
+    zones first, then no-mop zones, then virtual walls -- though since
+    this function derives the category from each feature's own data
+    rather than reading from three pre-split lists, this only produces
+    the SAME order as the real app if the input list's own iteration
+    order already groups by category; if not, use sorted() with a key
+    function to reorder, matching the target write-side command's own
+    lack of any confirmed order-sensitivity (not confirmed either way,
+    kept simple here)."""
+    return [wall for wall in (policy_zone_to_virtual_wall(f) for f in features) if wall is not None]
 
 
 @dataclass(frozen=True)

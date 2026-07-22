@@ -8,6 +8,178 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a15] - 2026-07-22
+
+### Added
+
+- **`SuctionLevel` enum**, from parallel native-analysis extraction: purely numeric
+  (`INVALID`/`LOW`/`MEDIUM`/`HIGH`/`TURBO`) — no "Auto" value. Floor-type adaptation isn't a
+  `suction_level` concept at all — it's the entirely separate `carpet_boost` bool instead, a
+  real, sensor-driven, real-time "boost suction when carpet detected" feature (confirmed via
+  iRobot's own public product documentation), not a three-way selector. `CarpetBoostSettings`
+  (a real three-way `PERFORMANCE`/`ECO`/`AUTO` enum found alongside `SuctionLevel`) is confirmed
+  **dead code** — a follow-up investigation found zero consumers anywhere for it, part of an
+  older View/Fragment/XML UI generation superseded by Compose. Kept in the models module only as
+  a documented dead end.
+- **`set_setting()`'s own docstring clarified** with a concrete `carpetBoost` example and an
+  explicit caution: the generic shadow-write mechanism it uses is confirmed to work at the
+  transport level (the same one `trigger_echo_via_shadow()` already confirmed produces a real,
+  accepted response) — but whether writing any individual key actually changes the robot's real
+  behavior is a separate, per-key question, the same way writing `echo` was accepted but didn't
+  trigger a chime.
+
+### Fixed
+
+- **Documented a real, structural parity gap**: the real app's own basic "Start" button
+  explicitly fetches the account's active cleaning preferences and sends a full `CommandParams`
+  built from them — `send_simple_command()`'s bare payload structurally cannot carry any of this
+  (a fundamentally simpler wire shape than `RoutineCommand`, not a missing optional field). A
+  mission started this way runs with whatever the robot's own fallback decides, not the
+  account's actual saved preferences — a plausible, though not confirmed, explanation for a
+  field report of a mission always running at unexpectedly high power with no adaptation.
+
+### Fixed
+
+- **Locate ("find my robot") CONFIRMED WORKING** (jayjay, real device test): `send_simple_command("find")`
+  produces a genuine, audible chime with no robot movement — resolving this project's own
+  multi-session locate-mechanism search. Two other mechanisms (a REST endpoint, a shadow write)
+  were tried first and confirmed not working — this is the one that actually works. All
+  documentation updated accordingly (`send_simple_command()`'s own docstring, README, API
+  reference).
+
+### Fixed
+
+- **Real bug found and fixed**: `PolicyZoneFeature.from_json()` always assumed `Polygon`
+  geometry — would have silently mis-parsed any real virtual-wall feature (confirmed
+  `LineString` geometry) as if it were a list-of-rings Polygon. Now dispatches on the GeoJSON
+  object's own `"type"` key.
+
+### Added
+
+- **Complete, confirmed categorization rule for virtual walls/keep-out/no-mop zones** (parallel
+  native-analysis track, `P2MapBundleContentHolderPersistentMapKt`'s own real categorization
+  code): there is no separate `"VirtualWall"` type string — a virtual wall is a
+  `"KeepOutZone"`-typed feature whose geometry is a `LineString` instead of a `Polygon`.
+  `policy_zone_to_virtual_wall()`/`policy_zones_to_virtual_walls()` implement this rule,
+  converting raw `policyZones.geojson` features into `VirtualWallV1` subtypes ready to resend.
+  Also answers `CommandPolygon.poly`'s previously-unconfirmed coordinate system: confirmed to
+  pass through unchanged at every stage, so it's whatever this same geometry's own coordinate
+  system already is.
+- **`roombapy-prime-verify-virtual-wall-write`** — a new, staged diagnostic script for testing
+  `SetVirtualWallsV1`. Stage 1 downloads the current map bundle, converts the real policy-zone
+  list, and resends it completely unchanged. Two safety gates; `--list-walls` is pure
+  reconnaissance.
+
+### Added
+
+- **`DockState` fully implemented — all 86 values**, from parallel native-analysis track
+  extraction. Previously only discussed in prose, never a real enum. Directly confirms
+  `DockStatus`'s own real captured values: `state=301` → `DOCK_READY`, `pw_state=601` →
+  `PAD_WASH_OKAY`, `pd_state=701` → `PAD_DRY_OKAY` — what was previously only a suggestive
+  numeric-band pattern is now a confirmed, named value. Two genuine duplicate values in the real
+  enum itself (2 and 3, each shared by a `PAD_DRY_*`/`PAD_WASH_*` pair) — not a transcription
+  error, Python's own `IntEnum` aliasing applies.
+- **`ResolvedMissionStatus` fully implemented — all 49 values (0-48)**, superseding the earlier
+  partial version (only ~12 named before).
+
+### Changed
+
+- **`get_time_estimates()`'s body shape partially clarified**: the real call site is
+  `fetchTimeEstimatesWithAreasForAsset(assetId, mapId, commandDefRegions: ArrayList<String>,
+  screen)` — `commandDefRegions` is a list of region-ID strings (not full objects), `screen` is
+  analytics-only. Exact wire-level JSON keys remain unconfirmed (native from here).
+
+### Added
+
+- **`verify_map_edit.py` gained a `--test-category` mode** — changes an existing room's category
+  (not name) and reverts it back, using the same `SetRoomMetadataV1` command already
+  live-confirmed for renaming (its other field, not a new command type). `RoomMetadataEntry`
+  gained a `category` field (the read-side counterpart of `SetRoomMetadataV1`'s own write-side
+  `room_metadata.type`) — previously missing entirely, needed to capture a room's original
+  category before changing it. The deprecated `SetRoomTypeV1`/`RenameRoomV1` command pair
+  remains deliberately untested — the current app doesn't use either anymore,
+  `SetRoomMetadataV1` replaces both (see that class's own docstring).
+
+### Added
+
+- **`roombapy-prime-verify-favorite-write`** — a new, staged diagnostic script for testing
+  favorite writes (`create_favorite()`/`update_favorite()`/`delete_favorite()`), never tested
+  live before. Stage 1 resends an existing favorite's own data unchanged (`get_favorites()`
+  already returns fully-typed objects, no new parsing needed); stage 2 changes only a
+  favorite's `color` (purely cosmetic, cannot affect what it cleans); stage 3 tests
+  `create_favorite()`/`delete_favorite()` together, self-cleaning (creates a minimal test
+  favorite, confirms it, deletes it again — same "do it, confirm it, revert it" philosophy as
+  map editing's own rename-then-revert test). Two layered safety gates; `--list-favorites` is
+  pure reconnaissance. Not yet live-tested.
+
+### Added
+
+- **`roombapy-prime-verify-schedule-write`** — a new, staged diagnostic script for testing
+  schedule writes (`create_schedules()`/`update_schedules()`), never tested live before. Unlike
+  region commands, a bad schedule write has a delayed effect (whenever the schedule next fires)
+  rather than an immediate one — the staged approach reflects that: stage 1 resends an existing
+  household's own schedules completely unchanged; stage 2 (the only modification implemented)
+  disables one specific schedule, chosen because it can only prevent future unexpected activity,
+  never cause it. Two layered safety gates (an explicit flag plus an interactive confirmation
+  showing the exact payload before sending); `--list-schedules` is pure reconnaissance and sends
+  nothing. Not yet live-tested — a reasoned, safety-checked hypothesis.
+- **`HouseholdSchedule.from_json()`/`ScheduleOptions.from_json()`** — previously missing
+  entirely (only `to_json()` existed), added specifically to support the new script's "resend
+  unchanged" stage 1. `commands`/`end_commands` round-trip as raw dicts rather than parsed
+  `RoutineCommand` objects (no `RoutineCommand.from_json()` exists in this library yet) —
+  `to_json()`'s own handling of these two fields was also made tolerant of raw dicts to match,
+  the same escape hatch `RoutineCommand.to_json()` itself already uses for its own
+  params/regions/id_multipolys fields. A real round-trip test (not just a syntax check) confirms
+  a realistic payload survives from_json() -> to_json() byte-for-byte.
+- **`verify_mission_commands.py` gained a `"find"` test option**, run independently of the
+  existing start/stop/pause/resume/dock sequence (find doesn't need an active mission). This is
+  the third, still-untested locate candidate — the previous two (a REST endpoint, a shadow
+  write) were both tried live and confirmed not working.
+
+### Added
+
+- **`roombapy-prime-verify-region-commands`** — a new, staged diagnostic script for testing
+  region-aware mission commands (`send_routine_command_via_cmd_topic()`), the riskiest,
+  least-confirmed write path this library has. Implements all four stages of a deliberately
+  staged approach, each only worth attempting once the previous stage is confirmed working:
+  stage 1 resends an existing favorite's own `command_def` completely unchanged; stage 2 changes
+  one benign, reversible field (suction level) with `routine_modified` computed correctly; stage
+  3 sends a genuinely from-scratch command for a real room/zone (no favorite at all); stage 4
+  (highest risk) sends a hand-built ad-hoc/TID region, gated behind a third, dedicated safety
+  flag and requiring the caller to supply a real, separately-verified `furniture_id` and polygon
+  coordinates rather than auto-generating them. Every sending stage shares two layered safety
+  gates (two explicit flags plus an interactive confirmation showing the exact payload before
+  sending); `--list-favorites`/`--list-rooms` reconnaissance modes send nothing. Not yet
+  live-tested at any stage — a reasoned, safety-checked hypothesis.
+
+  **Self-caught bug, prompted by a direct correctness challenge**: stage 2's first version tried
+  setting `routine_modified` directly on `RoutineCommand` via `dataclasses.replace()` — that
+  field actually lives on `CommandParams`, and the original code would have raised `TypeError`
+  the first time it actually ran. Confirmed directly against `dataclasses.fields()` on both
+  classes before fixing, and a real executing test (not just a syntax check) added specifically
+  to catch this class of error going forward.
+
+### Changed
+
+- **`ConnectionStatusShadow`/`SoftwareStatusShadow` fields properly typed**, from Ghidra
+  decompilation of the app's own constructor signatures (not guessed): `connected`/
+  `connected_v2`/`echo` are booleans; `deployment_id`/`software_version`/`last_sw_update` are
+  strings; `deployment_state` is a small int enum (5 values, meaning not yet confirmed).
+  `imu_recal`/`submodule_sw_version` confirmed genuinely absent from the app's own code
+  entirely — kept as `Any`, since there's no source at all suggesting a more specific type.
+
+### Added
+
+- **`watch_named_shadows_updates()`** — watches `update/accepted` across all named shadows via a
+  single-level (`+`) wildcard, confirmed safe and distinct from the multi-level (`#`) wildcard
+  already removed elsewhere (`--watch-aws-tree`) after a real connection disruption. AWS's own
+  MQTT design guidance recommends `+` wildcards for exactly this device-subscription use case,
+  and a parallel native-analysis track found the real app uses this exact pattern. Built for
+  read-only, report-only shadow content (like `ro-currentstate`'s battery/dock/bin fields) that
+  `update/delta` structurally can never deliver — delta only reflects desired-vs-reported
+  differences, and purely-reported fields never have a `desired` counterpart. Not yet
+  live-tested — a reasoned, safety-checked hypothesis.
+
 ## [0.1.11a14] - 2026-07-21
 
 ### Fixed

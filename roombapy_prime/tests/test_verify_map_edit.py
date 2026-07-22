@@ -205,3 +205,47 @@ def test_pick_test_room_returns_none_on_raw_unparsed_dicts() -> None:
     ]
 
     assert _pick_test_room(raw_response) is None
+
+
+def test_pick_test_room_with_category_finds_room_through_real_parsing_pipeline() -> None:
+    """NEW -- added specifically to support verify_map_edit.py's own
+    room-category test. Same real-shape data pattern as
+    test_pick_test_room_finds_name_through_the_real_parsing_pipeline()
+    above, with a "type" key added to room_metadata (the read-side
+    counterpart of SetRoomMetadataV1's own write-side field)."""
+    from roombapy_prime.models import RoomCategory, parse_active_map_versions
+    from roombapy_prime.verify_map_edit import _pick_test_room_with_category
+
+    raw_response = [
+        {
+            "p2map_id": "MAP1",
+            "rooms_metadata": [
+                {"room_id": "10", "room_metadata": {"name": "Kitchen", "type": "kitchen"}},
+                {"room_id": "11", "room_metadata": {"name": "No Category Yet"}},
+            ],
+        }
+    ]
+
+    typed_versions = parse_active_map_versions(raw_response)
+    result = _pick_test_room_with_category(typed_versions)
+
+    assert result == ("MAP1", "10", "Kitchen", RoomCategory.KITCHEN)
+
+
+def test_pick_test_room_with_category_skips_room_with_no_known_category() -> None:
+    """A room with a name but no category at all must be skipped --
+    this test needs a known-good original value to revert to."""
+    from roombapy_prime.models import parse_active_map_versions
+    from roombapy_prime.verify_map_edit import _pick_test_room_with_category
+
+    raw_response = [
+        {
+            "p2map_id": "MAP1",
+            "rooms_metadata": [{"room_id": "11", "room_metadata": {"name": "No Category Yet"}}],
+        }
+    ]
+
+    typed_versions = parse_active_map_versions(raw_response)
+    result = _pick_test_room_with_category(typed_versions)
+
+    assert result is None

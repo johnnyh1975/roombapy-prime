@@ -29,13 +29,13 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 ## Features
 
 - **Login & session** — account login (Gigya + AWS Custom Authorizer), automatic MQTT token refresh
-- **Live state** — current robot status, one-shot (`get_state()`) or continuous (`watch_state()`); an optional, bytecode-confirmed `RobotStatusV2` parser for structured battery/charging/dock fields, though it's unconfirmed whether this structure actually appears in `get_state()`'s response yet (see the confidence table)
+- **Live state** — current robot status, one-shot (`get_state()`) or continuous (`watch_state()`); battery percentage and charging/dock state are confirmed live via the named shadow `ro-currentstate` (`CurrentStateShadow`) — a separate, older `RobotStatusV2` parser also exists but is unconfirmed to appear anywhere (see the confidence table)
 - **Mission control** — start/stop/pause/resume/dock via `send_simple_command()`, confirmed working live against a real robot; the richer, region-aware `send_mission_command()` remains available but is now believed incorrect for basic use
 - **Favorites** — list, create, update, delete, reorder saved cleaning routines
 - **Maps** — read map metadata and active versions, edit rooms/zones/furniture/virtual walls, watch the live map while cleaning, download+unpack the full map bundle
 - **Schedules** — recurring cleaning schedules per household (list, create, update, delete)
 - **Mission history** — past cleaning runs with duration, coverage, and end reason
-- **Parts & device info** — consumable part status, reset after replacement, serial number data, find-my-robot echo, time estimates, notification feed
+- **Parts & device info** — consumable part status, reset after replacement, serial number data, time estimates, notification feed. Find-my-robot: **confirmed working** via `send_simple_command("find")` (jayjay) — a genuine, audible chime with no robot movement; two other mechanisms (a REST endpoint, a shadow write) were tried first and confirmed **not working** — see the docstrings on `poll_echo_value()`/`trigger_echo_via_shadow()`/`send_simple_command()`
 - **Settings** — Do Not Disturb windows, cleaning profiles, per-map default routine suggestions
 - **Diagnostics** — a built-in script to validate all of the above against a real account and report back what works (see [Contributing](#contributing--running-diagnostics))
 
@@ -107,7 +107,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-470+ tests, all passing — structural checks against decompiled source,
+494+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -155,7 +155,7 @@ before that link is built, as a defense-in-depth measure. Pass
 `--no-issue-link` to skip this, or `--open-browser` to have it open
 automatically.
 
-### Verifying mission commands (start/stop/pause/dock)
+### Verifying mission commands (start/stop/pause/dock/find)
 
 This is the one thing `roombapy-prime-validate` deliberately never does automatically — sending
 mission commands means your robot actually moves. There's a separate, standalone script for this,
@@ -170,21 +170,30 @@ Both the `--i-understand-...` flag *and* an interactive yes/no prompt before eve
 command are required — declining any prompt skips that step. Runs a conservative start→stop test
 by default, with pause/resume and dock offered as separate, individually-opt-in steps, via
 `send_simple_command()` (see the confidence table below for the transport correction this
-implies). Before and after every command, it also attempts to parse the `RobotStatusV2` model out
-of the reported state and shows the result — useful real-world data for settling whether/where
-that structure actually appears. Produces the same kind of shareable report as
-`roombapy-prime-validate`, including `--dump-config` support.
+implies). Also offers an independent, separately opt-in **`"find"`** test at the end (doesn't
+need an active mission) — **confirmed working** (jayjay): produces a genuine, audible chime with
+no robot movement, resolving this project's own locate-mechanism search after two other
+mechanisms (a REST endpoint, a shadow write) were tried first and confirmed not working. Before
+and after every command, it also attempts to parse the `RobotStatusV2` model out of the reported
+state and shows the result — useful real-world data for settling whether/where that structure
+actually appears. Produces the same kind of shareable report as `roombapy-prime-validate`,
+including `--dump-config` support.
 
-### Verifying map edits (rename a room)
+### Verifying map edits (rename a room, or its category)
 
 Map editing has categorically weaker evidence than mission commands do — no independent
 corroboration of the V1 envelope format exists anywhere, so this script is deliberately much
-narrower and more cautious. It only tests one thing: renaming an existing, already-named room to
-a clearly-marked test name, then immediately back.
+narrower and more cautious. It only tests one command type (`SetRoomMetadataV1`), on either of
+its two fields:
 
 ```bash
+# Default: rename an existing, already-named room to a clearly-marked test name, then back
 roombapy-prime-verify-map-edit --username you@example.com --country-code US \
     --blid YOUR_ROBOT_BLID --i-understand-this-will-edit-my-map
+
+# --test-category: change an existing room's category to a different one, then back
+roombapy-prime-verify-map-edit --blid YOUR_ROBOT_BLID \
+    --i-understand-this-will-edit-my-map --test-category
 ```
 
 Same doubly-secured safety design as the mission-command script. Unlike that script, it also asks
@@ -192,7 +201,9 @@ you to confirm the change in the real app before treating either step as success
 HTTP response only proves the server didn't reject the request, not that anything actually
 changed, which matters more here given the lack of outside confirmation for this command family.
 Deliberately does **not** attempt splitting/merging rooms, deleting permanent areas, virtual
-walls, or furniture — several of those aren't cleanly reversible even in principle.
+walls, or furniture — several of those aren't cleanly reversible even in principle. The
+deprecated `SetRoomTypeV1`/`RenameRoomV1` pair also isn't tested — the current app doesn't use
+either anymore, `SetRoomMetadataV1` replaces both.
 
 ### Watching for live mission status
 
@@ -214,11 +225,14 @@ Pass `--start-mission` to have it send start/stop/dock itself instead, in one te
 this is how live position data and the live map-streaming mechanism were both found.
 
 One more flag, safe by design: `--watch-shadow-delta` runs `watch_state()` (the shadow's
-`update/delta` push channel) for the same duration — this method has existed for a while but was
-never actually run live during an active mission, only assumed (wrongly stated, in fact) to
-behave like the snapshot-diff finding above. It subscribes to exactly one specific,
-AWS-documented shadow topic (the same path used as the example in AWS's own IAM policy
-documentation for this feature) — not a wildcard on the reserved `$aws/` namespace.
+`update/delta` push channel) for the same duration. **Tested live** (chairstacker, a real
+mission): no delta messages arrived during that specific run — but the watch window ended
+before the robot actually finished docking, likely before the moment a charging-related delta
+would plausibly fire. Inconclusive, not a confirmed negative — a longer
+`--post-dock-watch-seconds` (a few minutes) is more likely to catch it. Safe regardless of the
+result: subscribes to exactly one specific, AWS-documented shadow topic (the same path used as
+the example in AWS's own IAM policy documentation for this feature) — not a wildcard on the
+reserved `$aws/` namespace.
 
 **A `--watch-aws-tree` flag briefly existed here and has been removed.** It wildcard-subscribed
 to the entire `$aws/things/{blid}/#` namespace. AWS IoT's own documentation explicitly warns
@@ -231,39 +245,163 @@ a local hang. If you're on v0.1.11a8 and used this flag, update to v0.1.11a9 or 
 
 Same `--dump-config`/shareable-report support as the other scripts.
 
-### Checking named shadows (battery/charging status investigation)
+### Checking named shadows (battery/charging status — resolved)
 
-Battery percentage and charging/docked state remain unconfirmed as of this writing — not in the
-classic shadow, not in `rw-settings`/`rw-constatus`/`rw-schedule`/`rw-software` (all confirmed
-live, none battery-related), not on any MQTT topic captured so far. This script checks all known
-named shadows in one pass, specifically looking for where this data might actually live:
+Battery percentage and charging/docked state are now confirmed, live, with real values: the
+named shadow `ro-currentstate` reports `batPct` (an int, 0-100), and charging state lives in
+`clean_mission_status.phase` (e.g. `"charge"`). See `CurrentStateShadow` in
+`models/robot_info.py` for the full, real-data-confirmed structure. This script checks all nine
+known shadows (five `rw-`/classic, four `ro-`) in one pass:
 
 ```bash
 roombapy-prime-verify-named-shadows --username you@example.com --country-code US \
-    --blid YOUR_ROBOT_BLID
+    --blid YOUR_ROBOT_BLID --delay-seconds 2
 ```
 
-**Result so far (chairstacker, five shadows checked live):** none contain battery/charging data.
-`rw-constatus` — the leading candidate from a native-app symbol trace — turned out to be
-MQTT/AWS-IoT *connection* status, not battery: its content is `{"connected", "connectedv2",
-"echo", "svcEndpoints"}`. The other two also confirmed content, neither battery-related:
-`rw-schedule` is the cleaning schedule, `rw-software` is OTA/firmware update status. See
-`ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in `models/robot_info.py` for
-the full field lists this result is now modeled from.
+**`--delay-seconds` is recommended, not just optional.** A real field report showed shadow
+queries can fail in a striking pattern after a connection drop (some succeed, every one after
+that fails) — `get_shadow()` itself now reconnects proactively when needed (fixed in
+v0.1.11a14), which resolved most of this on its own, but a small delay between queries closed
+the remaining gap in the same real test (9/11 without delay, 11/11 with `--delay-seconds 2`).
 
-**New, not-yet-tested candidates (a separate native-analysis track):** `MQTTTopics.java` builds
-topics for four more shadows this project never knew existed — `ro-currentstate`, `ro-stats`,
-`ro-services`, `ro-configinfo` (`ro-` = read-only, unlike the `rw-` ones above). These never
-appeared in the app's own command config for an identifiable reason: that config only lists
-commands, and nothing writes to a read-only shadow. `ro-currentstate` is now the strongest lead
-this investigation has had — the name itself describes exactly the kind of data being searched
-for (live, device-reported, read-only state). This script now checks all four automatically.
+None of the nine shadows' content is guessed at — `rw-constatus` is MQTT/AWS-IoT connection
+status, `rw-schedule` is the cleaning schedule, `rw-software` is OTA/firmware status, and the
+four `ro-` shadows (`ro-currentstate`/`ro-stats`/`ro-services`/`ro-configinfo`) are all modeled
+in `models/robot_info.py` from real captured payloads.
 
 Purely read-only — no confirmation gate needed, unlike the scripts above; this one never sends
 anything to the robot. These same shadows are now also checked automatically by
 `roombapy-prime-validate` itself, so this standalone script is mainly useful if you want to
 re-check them on their own (e.g. against a different device/account), or want a shorter run
 than the full validation.
+
+### Testing region-aware mission commands (staged, higher risk)
+
+`send_routine_command_via_cmd_topic()` — cleaning specific rooms/zones/favorites — is the single
+riskiest, least-confirmed write path this library has: a wrong guess could mean a real device
+accepts something malformed and behaves unpredictably, not just silence. This script implements
+a deliberately staged approach, each stage only worth attempting after the previous one is
+confirmed working against your specific device — see the method's own docstring for the full
+reasoning, and this script's own module docstring for the complete staged-risk explanation.
+
+```bash
+# Stage 0 -- pure reconnaissance, sends nothing:
+roombapy-prime-verify-region-commands --list-favorites --blid YOUR_ROBOT_BLID
+
+# Stage 1 -- resend one specific, unmodified command_def (moves the robot):
+roombapy-prime-verify-region-commands --send FAVORITE_ID --command-index 0 \
+    --blid YOUR_ROBOT_BLID \
+    --i-understand-this-will-move-my-robot \
+    --i-understand-this-is-experimental-and-unconfirmed
+
+# Stage 2 -- same favorite, one benign field changed (suction level):
+roombapy-prime-verify-region-commands --send-modified FAVORITE_ID --suction-level 2 \
+    --blid YOUR_ROBOT_BLID \
+    --i-understand-this-will-move-my-robot \
+    --i-understand-this-is-experimental-and-unconfirmed
+
+# Stage 3 -- from-scratch command for a REAL room (no favorite at all):
+roombapy-prime-verify-region-commands --list-rooms --p2map-id YOUR_MAP_ID --blid YOUR_ROBOT_BLID
+roombapy-prime-verify-region-commands --send-region --p2map-id YOUR_MAP_ID \
+    --room-id REAL_ROOM_ID --region-type rid \
+    --blid YOUR_ROBOT_BLID \
+    --i-understand-this-will-move-my-robot \
+    --i-understand-this-is-experimental-and-unconfirmed
+
+# Stage 4 (HIGHEST RISK) -- hand-built ad-hoc/TID region, needs a THIRD safety flag
+# plus a real furniture_id and polygon coordinates YOU supply and have verified:
+roombapy-prime-verify-region-commands --send-adhoc --p2map-id YOUR_MAP_ID \
+    --furniture-id 42 --polygon-points "1.0,2.0 3.0,2.0 3.0,4.0 1.0,4.0" \
+    --blid YOUR_ROBOT_BLID \
+    --i-understand-this-will-move-my-robot \
+    --i-understand-this-is-experimental-and-unconfirmed \
+    --i-acknowledge-this-is-the-highest-risk-tier
+```
+
+Every sending stage shares the same two layered safety flags plus an interactive confirmation
+showing the exact JSON payload immediately before it's sent. Stage 4 needs a third, its own
+flag on top of those. `--list-favorites`/`--list-rooms` flag/list eligible targets before you
+pick one — neither sends anything. **Not yet live-tested as of this writing, any stage** — a
+reasoned, safety-checked hypothesis, same status as `watch_named_shadows_updates()` above. Stage
+4 specifically also depends on two genuinely unconfirmed inputs (a real `furniture_id` and the
+polygon's own coordinate format) that this script deliberately does not auto-generate or guess
+at — see `send_stage_four()`'s own docstring for why.
+
+### Testing schedule writes (staged, delayed-effect risk)
+
+`create_schedules()`/`update_schedules()` were never tested live before this script existed.
+Unlike region commands, a bad schedule write has a DELAYED effect (whenever the schedule next
+fires, possibly with nobody watching) rather than an immediate one — this script's own staged
+approach is built around that difference: stage 1 resends an existing household's own schedules
+completely unchanged; stage 2 (the only modification implemented) disables one specific
+schedule, chosen because it can only *prevent* future unexpected activity, never cause it.
+
+```bash
+# Stage 0 -- pure reconnaissance, sends nothing:
+roombapy-prime-verify-schedule-write --list-schedules --blid YOUR_ROBOT_BLID
+
+# Stage 1 -- resend one household's schedules unchanged:
+roombapy-prime-verify-schedule-write --update-unchanged HOUSEHOLD_SCHEDULE_ID \
+    --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-schedule
+
+# Stage 2 -- disable one specific schedule (safest modification):
+roombapy-prime-verify-schedule-write --disable HOUSEHOLD_SCHEDULE_ID --schedule-index 0 \
+    --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-schedule
+```
+
+**Not yet live-tested as of this writing** — a reasoned, safety-checked hypothesis, same status
+as this project's other staged write scripts.
+
+### Testing favorite writes (staged)
+
+`create_favorite()`/`update_favorite()`/`delete_favorite()` were never tested live before this
+script existed. `get_favorites()` already returns fully-typed `FavoriteV1` objects (including
+properly reconstructed `RoutineCommand` entries), so stage 1 needs no new parsing code.
+
+```bash
+# Stage 0 -- pure reconnaissance, sends nothing:
+roombapy-prime-verify-favorite-write --list-favorites --blid YOUR_ROBOT_BLID
+
+# Stage 1 -- resend one favorite's own data unchanged:
+roombapy-prime-verify-favorite-write --update-unchanged FAVORITE_ID \
+    --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-favorite
+
+# Stage 2 -- change only its color (purely cosmetic):
+roombapy-prime-verify-favorite-write --update-color FAVORITE_ID --color "#FF0000" \
+    --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-favorite
+
+# Stage 3 -- create a minimal test favorite, confirm it, then delete it again (self-cleaning):
+roombapy-prime-verify-favorite-write --create-and-delete-test \
+    --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-favorite
+```
+
+**Not yet live-tested as of this writing, any stage** — a reasoned, safety-checked hypothesis,
+same status as this project's other staged write scripts.
+
+### Testing virtual walls / keep-out / no-mop zones (staged)
+
+`SetVirtualWallsV1` ("set_virtual_wall") — never tested live before this script existed. A field
+report initially suggested this command might work by add/delta semantics; direct confirmation
+from the real app's own `deleteVirtualWall()` implementation settled this: it's REPLACE
+semantics (read the current full list, resend the whole thing) — the exact same "resend
+unchanged" stage-1 philosophy already used everywhere else in this project applies here too.
+
+```bash
+# Stage 0 -- pure reconnaissance, sends nothing:
+roombapy-prime-verify-virtual-wall-write --list-walls \
+    --blid YOUR_ROBOT_BLID --p2map-id YOUR_MAP_ID --p2mapv-id YOUR_MAP_VERSION_ID
+
+# Stage 1 -- resend the current, complete list unchanged:
+roombapy-prime-verify-virtual-wall-write --update-unchanged \
+    --blid YOUR_ROBOT_BLID --p2map-id YOUR_MAP_ID --p2mapv-id YOUR_MAP_VERSION_ID \
+    --i-understand-this-changes-real-map-zones
+```
+
+**Not yet live-tested as of this writing** — a reasoned, safety-checked hypothesis. Uses
+`models/map_editing.py`'s `policy_zones_to_virtual_walls()`, which implements the complete,
+confirmed categorization rule: there's no separate "VirtualWall" type string at all — a virtual
+wall is a `"KeepOutZone"`-typed feature whose geometry happens to be a `LineString` instead of a
+`Polygon`.
 
 ## Confidence & known gaps
 
@@ -282,15 +420,14 @@ below.
 | Reading state/favorites/mission history | High (format), partially live-tested | Field names and types confirmed directly from decompiled source/bytecode; several read endpoints (state, favorites, mission history, active map versions, household listing) confirmed live against a real account |
 | AWS SigV4 signing | High (algorithm), unverified (applied to this API) | Byte-identical to a separate, production-tested implementation |
 | Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
-| Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is a new, reasoned-but-unconfirmed hypothesis (see its docstring) — favor a `favorite_id`-referencing command over hand-built regions if experimenting with it |
-| Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. A real bug in the request envelope (`commands`/`end_commands` entries need a `{"command": ...}` wrapper) was found and fixed by reading a real `get_schedules()` response, though the write methods themselves have still never been called against a real server. HTTP methods separately confirmed. |
-| `RobotStatusV2` (structured battery/charging/dock status) | **RESOLVED — see `CurrentStateShadow`** | The original 11-field `RobotStatusV2` model itself remains unconfirmed as ever appearing anywhere (not in `get_state()`, not on any MQTT topic, not in any `rw-` named shadow) — but the underlying search is resolved: the named shadow `ro-currentstate` (one of four read-only shadows found via `MQTTTopics.java`) reports `batPct` (battery percentage) live, confirmed against a real device. New `CurrentStateShadow` model captures all 11 confirmed keys (`batPct`, `bin`, `cleanMissionStatus`, `detectedPad`, `dock`, `lastDisconnect`, `p2maps`, `regDate`, `runtimeStats`, `tankPresent`, `tz`). Only the key NAMES are confirmed so far — every field is typed `Any` pending real values to type them properly. |
+| Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is reasoned-but-unconfirmed — a `favorite_id`-only command is NOT the safer option (an earlier recommendation here was reversed: the real app always sends `favorite_id` plus the favorite's own full resolved regions together, never one alone). `roombapy-prime-verify-region-commands` now implements a staged, safety-gated test package for this (4 stages, increasing risk) — see "Testing region-aware mission commands" above. Not yet live-tested at any stage. |
+| Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. A real bug in the request envelope (`commands`/`end_commands` entries need a `{"command": ...}` wrapper) was found and fixed by reading a real `get_schedules()` response, though the write methods themselves have still never been called against a real server. HTTP methods separately confirmed. `roombapy-prime-verify-schedule-write` now implements a staged, safety-gated test package for this — see "Testing schedule writes" above. Not yet live-tested. |
+| `RobotStatusV2` (structured battery/charging/dock status) | **RESOLVED — see `CurrentStateShadow`** | The original 11-field `RobotStatusV2` model itself remains unconfirmed as ever appearing anywhere (not in `get_state()`, not on any MQTT topic, not in any `rw-` named shadow) — but the underlying search is fully resolved: the named shadow `ro-currentstate` reports real, live-confirmed values (`batPct`: an int 0-100; charging state in `clean_mission_status.phase`, e.g. `"charge"`; `dock`/`bin`/`runtime_stats` as nested objects, not flat values). `CurrentStateShadow` (`models/robot_info.py`) models the full real structure, not placeholders — see `BinStatus`/`CleanMissionStatus`/`DockStatus`/`RuntimeStatsSummary`/`P2MapRef`. |
 | Map editing | **High (envelope + 8/9 commands' fields), unverified (practice)** | The request envelope (`{"edit_cmd": ..., "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (several were wrong camelCase guesses, now corrected). `SetRoomMetadata`/`VirtualWall`'s internal discriminator use hand-written custom serializers and remain unconfirmed. Never sent to a real server -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
 | Deeply nested response fields (map bundle internals) | **High (fields), mostly resolved (envelope details)** | All 12 map-bundle content types (rooms, borders, hazards, trajectories, etc.) now have confirmed wire formats via bytecode (`RoomFeature` and 10 others) — each is a standard GeoJSON Feature with nested `properties`. The bundle's own manifest filename is now confirmed (it's literally `"manifest"`), and a real bundle confirms most content types use a `{type, features}` wrapper while at least one (`BorderFeature`) is a bare single Feature instead. Mission history's 20 timeline sub-event types are also fully typed (`MissionTimelineEvent`) — 10 of the 20 now confirmed against real data. |
 
 **Known unresolved gaps:**
 - The discriminator value inside a map-edit command's `"edit_cmd"` envelope (the envelope shape itself and 8/9 commands' own field names are now bytecode-confirmed — only which `"type"` string selects each command, and `SetRoomMetadata`/`VirtualWall`'s custom-serializer internals, remain unconfirmed)
-- Whether `RobotStatusV2` (see table above) actually appears in `get_state()`'s response at all, and if so, where
 - Multi-robot household / teaming concepts, beyond basic settings scoping
 
 Full details, including what was tried and why some things remain
@@ -360,6 +497,10 @@ there and why.
   three genuine crash bugs and a write-side bug that static analysis
   alone had missed. Most of what this library can say "confirmed
   live" about, it can say because of this testing.
+- **jadestar1864** — a second, independent Prime account (same
+  robot model as chairstacker's, different household) — the first
+  confirmation that this library's behavior is consistent across
+  more than one real account, not just one lucky match.
 
 ## License
 

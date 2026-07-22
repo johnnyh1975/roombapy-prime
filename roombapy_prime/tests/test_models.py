@@ -414,19 +414,110 @@ def test_trajectory_feature_from_json() -> None:
 
 
 def test_policy_zone_feature_replaces_three_previously_separate_guesses() -> None:
-    """NEW (session 47) -- confirms PolicyZoneFeature is the single,
-    now-confirmed type covering what used to be three separate,
-    unconfirmed guesses (NoMopZoneInfo/KeepOutZoneInfoRead/
-    VirtualWallInfo), discriminated by zone_type/threshold_type."""
+    """CONFIRMED (parallel native-analysis track,
+    P2MapBundleContentHolderPersistentMapKt's own categorization code):
+    "NoMopZone" is the real zone_type string -- an earlier version of
+    this test used a placeholder ("no_mop") that was never actually
+    confirmed against real code."""
     from roombapy_prime.models import PolicyZoneFeature
 
     zone = PolicyZoneFeature.from_json({
         "type": "Feature", "id": "z1",
         "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0]]]},
-        "properties": {"type": "no_mop", "threshold_type": "soft"},
+        "properties": {"type": "NoMopZone", "threshold_type": "soft"},
     })
-    assert zone.properties.zone_type == "no_mop"
+    assert zone.properties.zone_type == "NoMopZone"
     assert zone.properties.threshold_type == "soft"
+
+
+def test_policy_zone_feature_parses_linestring_geometry_for_virtual_walls() -> None:
+    """CONFIRMED (parallel native-analysis track): a virtual wall is a
+    "KeepOutZone"-typed feature whose geometry is a LineString, not a
+    Polygon -- there is no separate "VirtualWall" zone_type string.
+    An earlier version of this parser assumed Polygon unconditionally,
+    which would have silently mis-parsed this exact shape (LineString's
+    flat coordinate list read as if it were Polygon's list-of-rings)."""
+    from roombapy_prime.models import PolicyZoneFeature
+    from roombapy_prime.models.geometry import LineString
+
+    wall = PolicyZoneFeature.from_json({
+        "type": "Feature", "id": "w1",
+        "geometry": {"type": "LineString", "coordinates": [[0.0, 0.0], [1.0, 1.0]]},
+        "properties": {"type": "KeepOutZone"},
+    })
+
+    assert wall.properties.zone_type == "KeepOutZone"
+    assert isinstance(wall.geometry, LineString)
+    assert wall.geometry.coordinates == [(0.0, 0.0), (1.0, 1.0)]
+
+
+def test_policy_zone_feature_parses_polygon_geometry_for_keep_out_zones() -> None:
+    """The OTHER half of the same discrimination: "KeepOutZone" +
+    Polygon geometry (a real, persistent rectangular zone), not a
+    virtual wall -- geometry shape, not zone_type alone, decides."""
+    from roombapy_prime.models import PolicyZoneFeature
+    from roombapy_prime.models.geometry import Polygon
+
+    zone = PolicyZoneFeature.from_json({
+        "type": "Feature", "id": "z2",
+        "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]]},
+        "properties": {"type": "KeepOutZone"},
+    })
+
+    assert zone.properties.zone_type == "KeepOutZone"
+    assert isinstance(zone.geometry, Polygon)
+
+
+def test_policy_zones_to_virtual_walls_full_conversion_pipeline() -> None:
+    """CONFIRMED (parallel native-analysis track,
+    P2MapBundleContentHolderPersistentMapKt's own categorization code)
+    -- exercises the complete, real pipeline end to end: a mixed list
+    of raw policyZones.geojson-shaped features (keep-out zone, virtual
+    wall, no-mop zone, and a threshold that must be dropped) correctly
+    sorted into the three VirtualWallV1 subtypes needed to rebuild a
+    SetVirtualWalls command, with coordinates passed through
+    unchanged. This is the actual conversion this project's planned
+    "resend unchanged" stage-1 test for virtual walls depends on."""
+    from roombapy_prime.models import PolicyZoneFeature
+    from roombapy_prime.models.map_editing import (
+        VirtualWallLinearV1,
+        VirtualWallNoMopZoneV1,
+        VirtualWallRectangleV1,
+        policy_zones_to_virtual_walls,
+    )
+
+    features = [
+        PolicyZoneFeature.from_json({
+            "id": "kz1",
+            "geometry": {"type": "Polygon", "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]]},
+            "properties": {"type": "KeepOutZone"},
+        }),
+        PolicyZoneFeature.from_json({
+            "id": "vw1",
+            "geometry": {"type": "LineString", "coordinates": [[2.0, 2.0], [3.0, 3.0]]},
+            "properties": {"type": "KeepOutZone"},
+        }),
+        PolicyZoneFeature.from_json({
+            "id": "nm1",
+            "geometry": {"type": "Polygon", "coordinates": [[[4.0, 4.0], [5.0, 4.0], [5.0, 5.0], [4.0, 5.0]]]},
+            "properties": {"type": "NoMopZone"},
+        }),
+        PolicyZoneFeature.from_json({
+            "id": "th1",
+            "geometry": {"type": "Polygon", "coordinates": [[[6.0, 6.0]]]},
+            "properties": {"type": "Threshold", "threshold_type": "soft"},
+        }),
+    ]
+
+    walls = policy_zones_to_virtual_walls(features)
+
+    assert len(walls) == 3  # the Threshold entry must be dropped
+    assert isinstance(walls[0], VirtualWallRectangleV1)
+    assert isinstance(walls[1], VirtualWallLinearV1)
+    assert isinstance(walls[2], VirtualWallNoMopZoneV1)
+    # coordinates must pass through completely unchanged -- confirmed,
+    # no transformation happens anywhere in this pipeline.
+    assert walls[1].to_json()[2:6] == [2.0, 2.0, 3.0, 3.0]
 
 
 def test_clean_zone_feature_has_name_unlike_adhoc() -> None:
@@ -814,6 +905,31 @@ def test_routine_command_to_shadow_desired_wraps_under_cmd_key() -> None:
 
     assert set(desired.keys()) == {"cmd"}
     assert desired["cmd"]["command"] == "stop"
+
+
+def test_suction_level_and_carpet_boost_settings_enums_confirmed_values() -> None:
+    """CONFIRMED (parallel native-analysis track, SuctionLevel.java):
+    suction_level has NO "Auto" value (0 is an explicit error/
+    placeholder). This is because floor-type adaptation isn't a
+    suction_level concept at all -- it's the entirely separate
+    carpet_boost bool (a real, sensor-driven, real-time "boost suction
+    when carpet detected" feature, confirmed via iRobot's own public
+    product documentation), not a three-way selector. CarpetBoostSettings
+    below is CONFIRMED DEAD CODE (a follow-up investigation found zero
+    consumers anywhere, part of an older, superseded UI generation) --
+    kept here only as a documented dead end, not evidence of an actual
+    three-way carpet-boost mode reaching the current app."""
+    from roombapy_prime.models.mission_control import CarpetBoostSettings, SuctionLevel
+
+    assert SuctionLevel.INVALID == 0
+    assert SuctionLevel.LOW == 1
+    assert SuctionLevel.MEDIUM == 2
+    assert SuctionLevel.HIGH == 3
+    assert SuctionLevel.TURBO == 4
+
+    assert CarpetBoostSettings.PERFORMANCE == 0
+    assert CarpetBoostSettings.ECO == 1
+    assert CarpetBoostSettings.AUTO == 2
 
 
 def test_command_params_to_json_omits_none_fields() -> None:
@@ -1234,6 +1350,39 @@ def test_schedule_options_to_json_uses_confirmed_snake_case_keys() -> None:
     assert "endCommands" not in body
     assert "createdTime" not in body
     assert "forceCloud" not in body
+
+
+def test_household_schedule_round_trips_through_from_json_and_to_json() -> None:
+    """NEW -- added specifically to support verify_schedule_write.py's
+    stage 1 ("resend an existing schedule completely unchanged").
+    commands/end_commands round-trip as raw dicts (no
+    RoutineCommand.from_json() exists in this library), not parsed
+    RoutineCommand objects -- exercised here with a commands entry
+    present specifically to prove that path doesn't break the
+    round-trip, matching to_json()'s own already-established
+    has_json/raw-dict tolerance."""
+    from roombapy_prime.models import HouseholdSchedule
+
+    raw = {
+        "schedule_id": "sched-1",
+        "options": {
+            "robot_id": "BLID123",
+            "name": "Morning clean",
+            "frequency": "WEEKLY",
+            "start": {"day": [1, 4], "hour": 8, "min": 0},
+            "enabled": True,
+            "commands": [
+                {"command": {"command": "clean", "robot_id": "BLID123", "ordered": 0, "select_all": True}}
+            ],
+        },
+    }
+
+    parsed = HouseholdSchedule.from_json(raw)
+
+    assert parsed.schedule_id == "sched-1"
+    assert parsed.options.name == "Morning clean"
+    assert parsed.options.start.day == [1, 4]
+    assert parsed.to_json() == raw
 
 
 def test_parse_default_routines() -> None:
@@ -2046,6 +2195,21 @@ def test_room_metadata_entry_optional_name() -> None:
     assert unnamed.name is None
 
 
+def test_room_metadata_entry_parses_category() -> None:
+    """NEW -- added specifically to support verify_map_edit.py's own
+    room-category test: category is the read-side counterpart of
+    SetRoomMetadataV1's write-side room_metadata.type field, same key
+    name, same RoomCategory enum."""
+    from roombapy_prime.models import RoomMetadataEntry
+    from roombapy_prime.models.enums_common import RoomCategory
+
+    entry = RoomMetadataEntry.from_json(
+        {"room_id": "10", "room_metadata": {"name": "Living Room", "type": "living_room"}}
+    )
+
+    assert entry.category == RoomCategory.LIVING_ROOM
+
+
 def test_p2map_version_from_json_with_multiple_rooms() -> None:
     from roombapy_prime.models import P2MapVersion
 
@@ -2507,18 +2671,58 @@ def test_software_status_shadow_handles_missing_fields() -> None:
     assert status.software_version is None
 
 
-def test_resolved_mission_status_partial_enum_has_confirmed_values() -> None:
-    """PARTIAL, deliberately not exhaustive (this session, parallel
-    native-analysis track, bytecode signature reading) -- only checks
-    the values actually transcribed, not the full 49-value range.
-    Mapping to any specific shadow field remains unconfirmed -- this
-    test only covers the enum's own confirmed int values."""
+def test_resolved_mission_status_enum_has_all_49_confirmed_values() -> None:
+    """FULLY CONFIRMED (parallel native-analysis track) -- all 49
+    values (0-48), superseding the earlier partial version of this
+    enum. Checks a representative sample across the range, including
+    several from the previously-unconfirmed gaps (1-4, 6-8, 11-13, 17,
+    20-23, 26-27) and the full SENDING_COMMAND_* transitional family
+    (28-47). Mapping to any specific shadow field remains unconfirmed
+    -- this test only covers the enum's own confirmed int values."""
     from roombapy_prime.models.robot_info import ResolvedMissionStatus
 
+    assert len(ResolvedMissionStatus) == 49
+    assert ResolvedMissionStatus.INVALID == 0
+    assert ResolvedMissionStatus.CONNECTING == 1
+    assert ResolvedMissionStatus.READY_WITH_CONDITIONAL_START_REFUSE == 7
     assert ResolvedMissionStatus.CLEANING == 9
     assert ResolvedMissionStatus.PAUSED == 10
+    assert ResolvedMissionStatus.WET_MOPPING_PAUSED_WITH_START_REFUSE == 13
     assert ResolvedMissionStatus.RETURN_TO_DOCK == 16
+    assert ResolvedMissionStatus.RETURN_TO_DOCK_SEARCHING == 17
+    assert ResolvedMissionStatus.TRAINING == 20
+    assert ResolvedMissionStatus.VIDEO_STREAMING == 23
+    assert ResolvedMissionStatus.FLUSHING_SLUICE == 26
+    assert ResolvedMissionStatus.STOP_DOCK_EVACUATING == 27
+    assert ResolvedMissionStatus.SENDING_COMMAND_CLEAN == 28
+    assert ResolvedMissionStatus.SENDING_COMMAND_STOP_EVAC == 47
     assert ResolvedMissionStatus.UNKNOWN == 48
+
+
+def test_dock_state_enum_has_all_86_confirmed_values() -> None:
+    """FULLY CONFIRMED (parallel native-analysis track) -- all 86
+    values extracted directly from the real enum; previously only
+    discussed in prose elsewhere in this codebase, never implemented
+    as a real enum until now. Checks a representative sample across
+    all four functional-area bands, plus the confirmed duplicate-value
+    behavior (2 and 3 are each shared by two names in the real enum
+    itself, not a transcription error -- Python's own IntEnum aliasing
+    applies)."""
+    from roombapy_prime.models.robot_info import DockState
+
+    assert DockState.DOCK_NO_COMMON_ERROR == 0
+    assert DockState.DOCK_READY == 301
+    assert DockState.DOCK_HARDWARE_ISSUE_ERROR == 365
+    assert DockState.FLUID_REPLENISHMENT_OKAY == 401
+    assert DockState.FLUID_REPLENISHMENT_ROBOT_TANK_FILLING_TIMEOUT_ERROR == 464
+    assert DockState.PAD_WASH_OKAY == 601
+    assert DockState.PAD_WASH_PAD_ACTUATOR_STALL_ERROR == 669
+    assert DockState.PAD_DRY_OKAY == 701
+    assert DockState.PAD_DRY_COMMUNICATION_FAILURE_ERROR == 757
+
+    # confirmed duplicate values -- both names access the same member.
+    assert DockState.PAD_DRY_UNHEATED_AIR == DockState.PAD_WASH_NORMAL_HEATED_WATER == 2
+    assert DockState.PAD_DRY_HEATED_AIR == DockState.PAD_WASH_MAX_HEATED_WATER == 3
 
 
 def test_current_state_shadow_from_real_live_capture() -> None:
@@ -2567,6 +2771,14 @@ def test_current_state_shadow_from_real_live_capture() -> None:
     assert state.dock.state == 301
     assert state.dock.pw_state == 601
     assert state.dock.pd_state == 701
+    # NOW CONFIRMED (full DockState enum extracted) -- these numeric
+    # values directly resolve to named, meaningful states, not just
+    # bare numbers in a suggestive band.
+    from roombapy_prime.models.robot_info import DockState
+
+    assert state.dock.state == DockState.DOCK_READY
+    assert state.dock.pw_state == DockState.PAD_WASH_OKAY
+    assert state.dock.pd_state == DockState.PAD_DRY_OKAY
     assert state.dock.cap.pad_dry == 2
 
     assert state.bin.present is True

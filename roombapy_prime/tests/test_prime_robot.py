@@ -1310,6 +1310,35 @@ async def test_watch_raw_topic_subscribes_to_exact_given_topic() -> None:
 
 
 @pytest.mark.asyncio
+async def test_watch_named_shadows_updates_subscribes_to_plus_wildcard() -> None:
+    """CONFIRMED SAFE (this session): a single-level ("+") wildcard on
+    the shadow-name segment of update/accepted, distinct from the
+    multi-level ("#") wildcard already removed elsewhere
+    (--watch-aws-tree) after a real connection disruption. Each
+    yielded response's own .topic reveals which named shadow it came
+    from -- a wildcard subscription resolves to the real topic in the
+    actual message, not the wildcard pattern itself."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    _never_disconnects(mqtt)
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+
+    agen = robot.watch_named_shadows_updates()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+
+    assert captured["topic"] == "$aws/things/BLID123/shadow/name/+/update/accepted"
+
+    resolved_topic = "$aws/things/BLID123/shadow/name/ro-currentstate/update/accepted"
+    captured["callback"](ShadowResponse(topic=resolved_topic, payload={"state": {"batPct": 72}}))
+    result = await next_task
+    assert result.topic == resolved_topic
+    assert result.payload == {"state": {"batPct": 72}}
+
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_watch_state_aclose_propagates_to_inner_watch_topic_generator() -> None:
     """Regression test for a real bug found this session, while
     extracting _watch_topic() as shared code behind watch_state() AND

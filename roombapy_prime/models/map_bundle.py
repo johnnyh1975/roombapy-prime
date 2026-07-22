@@ -356,17 +356,27 @@ class FloorPlanFeature:
 
 @dataclass(frozen=True)
 class PolicyZoneFeatureProperties:
-    """NEW (session 47), REPLACES the previous separate
-    `NoMopZoneInfo`/`KeepOutZoneInfoRead`/`VirtualWallInfo` guesses --
-    CONFIRMED there is actually just ONE feature type ("PolicyZone")
-    covering all of these, discriminated by `zone_type`/
-    `threshold_type` rather than being separate classes. This matches
-    the project's own earlier documented puzzle ("keepOutZones"/
-    "noMopZones"/"virtualWalls"/"thresholds" had no dedicated
-    P2MapInfoType field found") -- they were never separate types to
-    begin with. Exact values for zone_type/threshold_type not
-    confirmed (no enum found, only the field names) -- left as raw
-    strings."""
+    """CONFIRMED there is actually just ONE feature type ("PolicyZone")
+    covering keep-out zones, no-mop zones, AND virtual walls --
+    discriminated by `zone_type`/`threshold_type` plus geometry shape,
+    not by being separate classes.
+
+    zone_type FULLY CONFIRMED (parallel native-analysis track,
+    P2MapBundleContentHolderPersistentMapKt's own extension functions
+    -- the actual code that builds P2PersistentMap's three separate
+    typed lists from this one raw list): "KeepOutZone" and "NoMopZone"
+    are the only two real values -- there is NO separate "VirtualWall"
+    string. A virtual wall is a "KeepOutZone"-typed feature whose
+    geometry happens to be a LineString instead of a Polygon -- the
+    real app discriminates by GEOMETRY SHAPE for this one case, not
+    by an additional type value. See PolicyZoneFeature's own docstring
+    for the full, confirmed categorization rule.
+
+    threshold_type: a third real value, "Threshold", also exists on
+    this same feature type (not just keep-out/no-mop) -- confirmed
+    real app code parses this via a Status enum with a DETECTED
+    fallback for unknown/missing values, but the Status enum's own
+    member names weren't extracted."""
 
     zone_type: str | None = None
     threshold_type: str | None = None
@@ -376,19 +386,56 @@ class PolicyZoneFeatureProperties:
         return cls(zone_type=data.get("type"), threshold_type=data.get("threshold_type"))
 
 
+def _policy_zone_geometry_from_geojson(data: dict[str, Any]) -> Polygon | LineString:
+    """PolicyZoneFeature's geometry is Polygon for keep-out/no-mop
+    zones but LineString for virtual walls -- see that class's own
+    docstring for the confirmed evidence. Dispatches on the GeoJSON
+    object's own "type" key rather than assuming Polygon
+    unconditionally (an earlier version of this parser did exactly
+    that, which would have silently mis-parsed any real virtual-wall
+    feature -- LineString's own flat coordinate list read as if it
+    were Polygon's list-of-rings shape)."""
+    if data.get("type") == "LineString":
+        return _linestring_from_geojson(data)
+    return _polygon_from_geojson(data)
+
+
 @dataclass(frozen=True)
 class PolicyZoneFeature:
-    """NEW (session 47) -- REPLACES `NoMopZoneInfo`/
-    `KeepOutZoneInfoRead`/`VirtualWallInfo`. See
-    PolicyZoneFeatureProperties' docstring for why these three guessed
-    classes collapse into this one, now-confirmed type. CONFIRMED via
-    PolicyZoneFeature$$serializer/PolicyZoneFeature$Properties$$serializer.
-    Geometry left as the general Polygon type -- whether a "virtual
-    wall"-like linear case still exists within this unified type, and
-    if so how it's distinguished, is not confirmed."""
+    """CONFIRMED via PolicyZoneFeature$$serializer/
+    PolicyZoneFeature$Properties$$serializer, AND via the actual
+    categorization code (P2MapBundleContentHolderPersistentMapKt's own
+    extension functions building P2PersistentMap's three separate
+    typed lists from this single raw "policyZones" list) -- the
+    complete, confirmed rule:
+
+        properties.zone_type == "KeepOutZone" + geometry is Polygon
+            -> a keep-out zone (-> VirtualWallRectangleV1 on the write side)
+        properties.zone_type == "KeepOutZone" + geometry is LineString
+            -> a virtual wall (-> VirtualWallLinearV1 on the write side)
+        properties.zone_type == "NoMopZone" (always Polygon)
+            -> a no-mop zone (-> VirtualWallNoMopZoneV1 on the write side)
+        properties.zone_type == "Threshold" (always Polygon)
+            -> a threshold, not part of the virtual-wall family at all
+
+    Each category's real code also skips a feature silently (no error)
+    if its id or geometry is missing/None -- not modeled here, callers
+    should expect from_json() to potentially need graceful handling of
+    genuinely incomplete features.
+
+    GEOMETRY CONFIRMED TO PASS THROUGH UNCHANGED at every later stage
+    -- reading this feature, converting it to a VirtualWallV1 subtype,
+    and sending it back via SetVirtualWalls all use the exact same
+    coordinate values, no transformation, no rescaling. This also
+    answers CommandPolygon.poly's own previously-unconfirmed
+    coordinate system: it's whatever this geometry's own coordinate
+    system already is (still not independently pinned to a specific
+    unit/origin, but confirmed to be a SINGLE, consistent system
+    throughout, not something CommandPolygon transforms into
+    separately)."""
 
     feature_id: str
-    geometry: Polygon
+    geometry: Polygon | LineString
     properties: PolicyZoneFeatureProperties = field(default_factory=PolicyZoneFeatureProperties)
     feature_type: str = "Feature"
 
@@ -396,7 +443,7 @@ class PolicyZoneFeature:
     def from_json(cls, data: dict[str, Any]) -> PolicyZoneFeature:
         return cls(
             feature_id=data.get("id", ""),
-            geometry=_polygon_from_geojson(data.get("geometry") or {}),
+            geometry=_policy_zone_geometry_from_geojson(data.get("geometry") or {}),
             properties=PolicyZoneFeatureProperties.from_json(data.get("properties") or {}),
             feature_type=data.get("type", "Feature"),
         )

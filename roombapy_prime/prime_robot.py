@@ -307,7 +307,31 @@ class PrimeRobot:
     async def set_setting(self, key: str, value: object, timeout: float = 8.0) -> ShadowResponse:
         """Writes to the "rw-settings" shadow. Only meaningful on
         SMART tier -- on EPHEMERAL, presumably the same timeout as
-        get_settings(), never tested."""
+        get_settings(), never tested.
+
+        Uses the same generic shadow-write mechanism
+        trigger_echo_via_shadow() already confirmed works at the
+        transport level (a real, accepted update/delta response, not
+        just "no error") -- the "rw-" prefix on this shadow's own name
+        (as opposed to the four "ro-" shadows) is itself a real signal
+        it's meant to be writable, consistent with that result.
+
+        Example: set_setting("carpetBoost", True) to enable the real,
+        sensor-driven "boost suction when carpet detected" feature
+        (confirmed via iRobot's own public product documentation --
+        NOT the three-way Auto/Performance/Eco selector some app code
+        suggests, which is confirmed dead code, see
+        CarpetBoostSettings's own docstring in models/mission_control.py).
+
+        WHAT IS NOT YET CONFIRMED for any individual key: whether
+        writing it actually changes the robot's real behavior, the way
+        writing rw-constatus's "echo" field was confirmed to accept
+        the write but NOT trigger the expected chime (see
+        trigger_echo_via_shadow()'s own docstring). A successful
+        ShadowResponse here confirms the WRITE itself worked, not that
+        the underlying feature actually changed -- checking the real
+        app's own settings screen (or observing the actual behavior)
+        after calling this is the only way to confirm a real effect."""
         return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
 
     async def trigger_echo_via_shadow(self, value: object = True, timeout: float = 8.0) -> ShadowResponse:
@@ -403,37 +427,40 @@ class PrimeRobot:
         working against a real device).
 
         `command` is a plain string, not MissionCommandType -- the
-        confirmed-LIVE verb set (start, pause, stop, resume, dock) is
-        narrower than this library's own 30-value enum (find, evac,
+        confirmed-LIVE verb set (start, pause, stop, resume, dock,
+        find) is narrower than this library's own 30-value enum (evac,
         reset, StartOnDemandOta, and more) -- pass MissionCommandType
         values for enum safety, or a plain string for anything not yet
         in the enum.
 
-        NEW LEAD (this session, prompted by the "find my robot" bug
-        investigation -- see trigger_echo_via_shadow()'s own docstring
-        for the two mechanisms already tried and disproven): a
-        separate native-analysis track traced the real app's locate
-        button through MissionUIServiceCommand.FindLocateRobotRunAction
-        to a CommandType enum value named FIND (Kotlin constant name,
+        CONFIRMED WORKING (jayjay, real device test): sending "find"
+        produced a genuine, audible chime with no robot movement --
+        exactly the expected find-my-robot behavior. This is the
+        RESOLUTION of this whole project's locate-mechanism search --
+        the two earlier attempts (a REST endpoint, a shadow write; see
+        trigger_echo_via_shadow()'s own docstring) were both tried
+        live and confirmed NOT working; this third, distinct transport
+        (send_simple_command's own cmd-topic channel, not another
+        shadow write) is the one that actually works.
+
+        A separate native-analysis track had already traced the real
+        app's locate button through
+        MissionUIServiceCommand.FindLocateRobotRunAction to a
+        CommandType enum value named FIND (Kotlin constant name,
         uppercase, from liblegacyCore.so's own string table) --
         MissionCommandType.FIND above IS this exact same enum
         (com.irobot.data.missioncommand.datamodels.CommandType), and
         its confirmed @SerialName wire value is the lowercase "find"
-        already listed. Genuinely different from the two disproven
-        attempts: this is a THIRD, distinct transport (send_simple_command's
-        own cmd-topic channel), not another shadow write. Untested
-        against a real device as of this writing -- MissionCommandType.FIND
-        itself has been in this enum for a while, but "find" specifically
-        was never part of the confirmed-live verb subset above.
+        already listed -- that reasoning is what predicted this result
+        correctly, now confirmed live rather than just plausible.
 
         A second candidate from that same analysis, "FBEEP" (also
         found in liblegacyCore.so, right next to FIND) is NOT part of
         this project's own confirmed CommandType enum at all --
-        "liblegacyCore" in its own filename raises a real, unresolved
-        question about whether it even applies to Prime robots'
-        command channel the way FIND plausibly does, rather than being
-        Classic-specific. Worth trying only as a fallback if FIND alone
-        doesn't produce an audible result, not with equal confidence.
+        "liblegacyCore" in its own filename raised a real question
+        about whether it even applies to Prime robots' command channel
+        the way FIND does -- moot now that FIND itself is confirmed
+        working, no fallback needed.
 
         Needs irbt_topic_prefix (see __init__/auth.py's LoginResult),
         same requirement as watch_live_map() -- raises RuntimeError
@@ -445,8 +472,24 @@ class PrimeRobot:
         For that, RoutineCommand/send_mission_command() may still be
         the right (if unconfirmed) tool -- or an entirely different,
         not-yet-discovered mechanism may be needed. Fire-and-forget, no
-        response wait -- see publish_cmd()'s docstring for why. NOT YET
-        live-tested by this library itself."""
+        response wait -- see publish_cmd()'s docstring for why.
+
+        CONFIRMED STRUCTURAL LIMITATION (parallel native-analysis
+        track): the real app's own basic "Start" button does NOT send
+        a bare command the way this method does -- it explicitly
+        fetches the account's currently active cleaning preferences
+        (suction level, carpet boost mode, etc.) and sends a full
+        CommandParams built from them (see CommandParams's own
+        docstring for the confirmed evidence trail). This method's
+        payload shape structurally cannot carry any of that -- not a
+        missing optional field, a fundamentally simpler wire shape
+        than RoutineCommand. Whatever suction/carpet-boost setting the
+        robot ends up running a mission with, when started this way,
+        is decided entirely by the robot's own fallback, not by
+        mirroring the account's actual saved preferences -- a real
+        parity gap with the app's own behavior, worth knowing if a
+        mission behaves differently (e.g. runs at unexpectedly high
+        power) than starting the same robot from the real app would."""
         if self._irbt_topic_prefix is None:
             raise RuntimeError(
                 "send_simple_command() needs irbt_topic_prefix (from LoginResult) -- "
@@ -1039,6 +1082,57 @@ class PrimeRobot:
         all -- the caller is responsible for it, unlike the dedicated
         watch_*() methods above which build a specific, evidenced
         topic themselves."""
+        async with contextlib.aclosing(
+            self._watch_topic(
+                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+            )
+        ) as inner:
+            async for response in inner:
+                yield response
+
+    async def watch_named_shadows_updates(
+        self,
+        *,
+        queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
+        max_reconnect_backoff: float = DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS,
+    ) -> AsyncIterator[ShadowResponse]:
+        """Watches update/accepted across ALL named shadows at once via
+        a single-level ("+") wildcard subscription -- CONFIRMED
+        SAFE, distinct from the reserved-namespace multi-level ("#")
+        wildcard this project already removed (--watch-aws-tree, see
+        that flag's own removal history) after it caused a real
+        connection disruption. AWS's own MQTT design guidance
+        distinguishes the two explicitly: multi-level ("#") wildcards
+        are discouraged for device subscriptions ("reserve use of
+        multi-level wildcards as part of the IoT rules engine"),
+        while single-level ("+") wildcards are the RECOMMENDED
+        approach for exactly this use case -- subscribing across
+        several named shadows without listing each one individually.
+        A native-analysis track independently found the real app uses
+        this exact pattern (a "+" wildcard on the shadow-name segment
+        of update/accepted) to monitor all its named shadows at once.
+
+        WHY update/accepted, not update/delta: delta only reflects
+        differences between desired and reported state -- fields that
+        are purely device-reported (never written as "desired", e.g.
+        a battery percentage) never appear in a delta message no
+        matter how often they change, confirmed directly from AWS's
+        own Device Shadow documentation. update/accepted fires on
+        every accepted shadow update regardless of desired/reported
+        matching, making it the correct channel for read-only,
+        report-only shadow content like ro-currentstate's battery/
+        dock/bin fields.
+
+        Each yielded ShadowResponse's own `.topic` tells you which
+        named shadow the update came from (the wildcard resolves to
+        the real shadow name in the actual message) -- parse the
+        segment between ".../shadow/name/" and "/update/accepted" if
+        you need to distinguish them.
+
+        NOT YET LIVE-TESTED as of this writing -- a reasoned, safety-
+        checked hypothesis (matching a confirmed real-app pattern),
+        not a confirmed-working mechanism yet."""
+        topic = f"$aws/things/{self.blid}/shadow/name/+/update/accepted"
         async with contextlib.aclosing(
             self._watch_topic(
                 topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff

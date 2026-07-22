@@ -59,9 +59,9 @@ await robot.connect()
 
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.get_state(timeout=8.0) -> ShadowResponse` | 🟢 | The classic/unnamed shadow — identity, capabilities, current mission status. `models.parse_robot_status_v2(state.payload...)` can attempt to extract a structured `RobotStatusV2` (battery/charging/dock status, bytecode-confirmed fields) from the reported state, but whether this structure actually appears there at all is unresolved — see that function's docstring. |
+| `robot.get_state(timeout=8.0) -> ShadowResponse` | 🟢 | The classic/unnamed shadow — identity, capabilities, current mission status. `models.parse_robot_status_v2(state.payload...)` can attempt to extract a structured `RobotStatusV2` (bytecode-confirmed fields) from the reported state, but this specific structure is confirmed to NOT appear here — battery/charging/dock status actually lives in the named shadow `"ro-currentstate"` instead, see `get_named_shadow()`'s own row below and `CurrentStateShadow`. |
 | `robot.get_settings(timeout=8.0) -> ShadowResponse` | 🟢 | The named `"rw-settings"` shadow — only responds on SMART-tier devices, per binary analysis. |
-| `robot.get_named_shadow(name, timeout=8.0) -> ShadowResponse` | 🟢 (method) / 🟢 (content, now confirmed) | General form of the above two — either is a thin, specifically-named wrapper around this. The three previously-unqueried candidate names (`"rw-constatus"`/`"rw-schedule"`/`"rw-software"`) are now fully confirmed (chairstacker) — see `ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in `models/robot_info.py`. None turned out to be battery/charging-related; `"rw-constatus"` (the leading hypothesis) is MQTT connection status instead. See `roombapy-prime-verify-named-shadows` in the README. |
+| `robot.get_named_shadow(name, timeout=8.0) -> ShadowResponse` | 🟢 (method) / 🟢 (content, now confirmed) | General form of the above two. Nine named shadows are now fully confirmed live: `"rw-constatus"`/`"rw-schedule"`/`"rw-software"` (chairstacker) — see `ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in `models/robot_info.py` — plus four previously-unknown read-only shadows found via `MQTTTopics.java`: `"ro-currentstate"`/`"ro-stats"`/`"ro-services"`/`"ro-configinfo"`. **`"ro-currentstate"` is where battery/charging status actually lives** — `batPct` (int, 0-100), charging state in `cleanMissionStatus.phase` (e.g. `"charge"`) — see `CurrentStateShadow`/`StatsShadow`/`ServicesShadow`/`ConfigInfoShadow`, all with real, live-confirmed structure, not placeholders. See `roombapy-prime-verify-named-shadows` in the README (recommend pairing with `--delay-seconds 2` for reliability). |
 | `robot.set_setting(key, value, timeout=8.0) -> ShadowResponse` | 🟡 | Writes into the `rw-settings` shadow. |
 | `robot.watch_state(named=None, *, queue_maxsize=100) -> AsyncIterator[ShadowResponse]` | 🟢 | Yields every shadow delta as it arrives, until the generator is closed/cancelled. Bounded queue, drops oldest on overflow (logged). Pass `named="rw-settings"` to watch that shadow instead of the default. |
 
@@ -76,8 +76,8 @@ async for delta in robot.watch_state():
 
 | Method | Confidence | Notes |
 |---|---|---|
-| `robot.send_simple_command(command: str, initiator="localApp") -> None` | 🟢 **confirmed live** | `"start"`/`"stop"`/`"pause"`/`"resume"`/`"dock"` — live-tested against a real robot, watched and confirmed by a real user actually reacting, not just an error-free response. Publishes `{"command", "time", "initiator"}` to a dedicated non-shadow MQTT topic (`{irbt_topic_prefix}/things/{blid}/cmd`) — see `mqtt_client.py`'s `cmd_topic()`/`publish_cmd()` for the full evidence trail. Fire-and-forget: no response wait, since there's no known server acknowledgment for this topic — poll `get_state()` afterward if you want confirmation. This is now the recommended way to do basic mission control. |
-| `robot.send_routine_command_via_cmd_topic(command: RoutineCommand) -> None` | 🟡 **experimental, unconfirmed** | For region-aware commands (specific rooms/zones, favorites) that `send_simple_command()` can't express. A reasoned hypothesis (the confirmed simple payload and `RoutineCommand`'s own confirmed fields share two exact key names — not coincidence), but NOT live-tested, and the risk profile is different from the topic-discovery case: a wrong guess here could mean a real device accepts something malformed and behaves unpredictably. Favor a `favorite_id`-referencing command over hand-built `regions` if experimenting with this. |
+| `robot.send_simple_command(command: str, initiator="localApp") -> None` | 🟢 **confirmed live** | `"start"`/`"stop"`/`"pause"`/`"resume"`/`"dock"`/`"find"` — all six live-tested against real robots, watched and confirmed by real users actually reacting, not just an error-free response. Publishes `{"command", "time", "initiator"}` to a dedicated non-shadow MQTT topic (`{irbt_topic_prefix}/things/{blid}/cmd`) — see `mqtt_client.py`'s `cmd_topic()`/`publish_cmd()` for the full evidence trail. Fire-and-forget: no response wait, since there's no known server acknowledgment for this topic — poll `get_state()` afterward if you want confirmation. This is now the recommended way to do basic mission control AND locate ("find my robot") — `"find"` produces a genuine, audible chime with no robot movement (jayjay); two OTHER find-my-robot mechanisms (a REST endpoint, a shadow write) were tried first and confirmed **not working** — this is the one that actually works. |
+| `robot.send_routine_command_via_cmd_topic(command: RoutineCommand) -> None` | 🟡 **experimental, unconfirmed** | For region-aware commands (specific rooms/zones, favorites) that `send_simple_command()` can't express. A reasoned hypothesis (the confirmed simple payload and `RoutineCommand`'s own confirmed fields share two exact key names — not coincidence), but NOT live-tested, and the risk profile is different from the topic-discovery case: a wrong guess here could mean a real device accepts something malformed and behaves unpredictably. **A `favorite_id`-only command is NOT the safer option** — the real app always sends `favorite_id` plus the favorite's own full resolved regions/params together (confirmed via `RoutineCommandBuilder.setFromFavorite()`), never one alone. `roombapy-prime-verify-region-commands` implements a staged, safety-gated 4-stage test package for this (see README) — the safest, stage-1 approach: fetch an existing favorite via `get_favorites()` and resend one of its own `command_def` entries completely unchanged. This also sidesteps `routine_modified`'s own computed-value question (see `CommandParams.routine_modified`'s docstring) and avoids ad-hoc (`TID`) regions, which have their own extra construction requirements (see `RegionType.TID`'s docstring) — stage 4 of the script attempts those specifically, gated behind a third safety flag. |
 | `robot.send_mission_command(command: RoutineCommand, timeout=8.0) -> ShadowResponse` | 🔴 **confirmed NOT working for basic commands** | The original approach (device shadow) — live-tested and found to time out with zero response for `start`/`stop`/etc. Kept only for the region-based use case above, which no source has verified either way. Do not use this for basic mission control — use `send_simple_command()` instead. |
 
 **`RoutineCommand`** — the payload for the two `RoutineCommand`-based methods above. Key fields:
@@ -96,11 +96,14 @@ RoutineCommand(
 )
 ```
 
-`CommandParams` (🟢 all 37 fields confirmed from bytecode, all optional)
-covers things like `suction_level`, `pad_wetness` (a `PadWetnessParam`),
-`carpet_boost`, `room_confine`, `timebox_minutes`, and drive-command
-fields (`velocity_left`/`velocity_right`). `Region` pairs a `RegionType`
-(`RID`/`TID`/`ZID`) with its own `CommandParams`.
+`CommandParams` (🟢 all 39 fields confirmed via `$$serializer.<clinit>` inspection — 18 were
+found to be wrong camelCase guesses in an earlier pass based on a weaker DEX-field-list reading,
+now corrected to the real wire keys) covers things like `suction_level`, `pad_wetness` (a
+`PadWetnessParam`), `carpet_boost`, `room_confine`, `timebox_minutes`, and drive-command fields
+(`velocity_left`/`velocity_right`). `Region` pairs a `RegionType` (`RID`/`ZID` for real,
+persistent rooms/zones; `TID` for ad-hoc zones, which have their own extra ID-range and
+paired-`CommandPolygon` requirements — see `RegionType.TID`'s docstring) with its own
+`CommandParams`.
 
 ---
 
@@ -109,8 +112,8 @@ fields (`velocity_left`/`velocity_right`). `Region` pairs a `RegionType`
 | Method | Confidence | Notes |
 |---|---|---|
 | `robot.get_favorites() -> list[FavoriteV1]` | 🟢 | The only one of the five favorites endpoints with both HTTP method *and* response shape fully confirmed. |
-| `robot.create_favorite(favorite: FavoriteV1) -> dict` | 🟢 | POST, confirmed from bytecode (`CreateFavoriteRequest.<init>`). Response key confirmed via bytecode (session 48): `favorite_id`. |
-| `robot.update_favorite(favorite_id, favorite: FavoriteV1) -> dict` | 🟢 | PUT, confirmed the same way. |
+| `robot.create_favorite(favorite: FavoriteV1) -> dict` | 🟢 | POST, confirmed from bytecode (`CreateFavoriteRequest.<init>`). Response key confirmed via bytecode (session 48): `favorite_id`. Never called against a real server -- `roombapy-prime-verify-favorite-write --create-and-delete-test` implements a self-cleaning test for this (creates a minimal test favorite, confirms it, deletes it again). Not yet live-tested. |
+| `robot.update_favorite(favorite_id, favorite: FavoriteV1) -> dict` | 🟢 | PUT, confirmed the same way. `roombapy-prime-verify-favorite-write` implements a staged test package (see README) -- stage 1 resends an existing favorite unchanged, stage 2 changes only its `color` (purely cosmetic). Not yet live-tested. |
 | `robot.delete_favorite(favorite_id) -> dict` | 🟢 | DELETE, confirmed. |
 | `robot.order_favorite(favorite_id, *, insert_at=None, insert_before=None, insert_after=None) -> dict` | 🟢 | PUT; the three params are query parameters, not body fields (a real bug was caught and fixed here — see gap analysis). |
 
@@ -149,8 +152,8 @@ fields (`velocity_left`/`velocity_right`). `Region` pairs a `RegionType`
 | Method | Confidence | Notes |
 |---|---|---|
 | `robot.get_schedules(household_id) -> SchedulesResponse` | 🟢 | Now returns a parsed `SchedulesResponse` (→ list of `SchedulesList` → list of schedules), confirmed via bytecode — previously raw JSON. |
-| `robot.create_schedules(household_id, schedules: list[ScheduleOptions]) -> dict` | 🟢 | POST, confirmed from bytecode. |
-| `robot.update_schedules(household_id, household_schedule_id, schedules: list[HouseholdSchedule]) -> dict` | 🟢 | PUT, confirmed. |
+| `robot.create_schedules(household_id, schedules: list[ScheduleOptions]) -> dict` | 🟢 | POST, confirmed from bytecode. Never called against a real server -- `roombapy-prime-verify-schedule-write` doesn't attempt this specifically (only `update_schedules()`, see below), since creating a brand-new schedule risks causing new, unexpected future activity, a worse risk direction than that script's own two stages. |
+| `robot.update_schedules(household_id, household_schedule_id, schedules: list[HouseholdSchedule]) -> dict` | 🟢 | PUT, confirmed. `roombapy-prime-verify-schedule-write` implements a staged, safety-gated test package for this (see README) -- stage 1 resends an existing household's own schedules unchanged, stage 2 disables one specific schedule (the only modification implemented, chosen because it can only prevent future activity, never cause it). Not yet live-tested. |
 | `robot.delete_schedule(household_id, household_schedule_id) -> dict` | 🟢 | DELETE. |
 
 `ScheduleOptions` covers `frequency` (`ScheduleFrequency`: `ONCE`,
@@ -268,7 +271,8 @@ down as:
 | Geometry primitives | `Point`, `Polygon`, `MultiPolygon`, `LineString` | used throughout |
 | Live map streaming | `PositionUpdateMessage`, `MapUpdateMessage`, `LiveMapStreamInit` | "Maps" above |
 | Mission preference vocabulary | `CleaningMode`, `VacuumPowerLevel`, `LiquidAmountLevel`, `CleaningPasses`, `SoftwareScrub` | referenced by `CommandParams`/`CleaningProfile` |
-| Structured robot status (unresolved data source) | `RobotStatusV2`, `DockControl`, `RobotStatusButton`, `RobotStatusError` | `get_state()`'s docstring — confirmed NOT to appear there, on any of the 7 originally-found MQTT topics, or in any of the 5 named shadows (the `rw-constatus` hypothesis is disproven — see "Live state" above). Current lead: the newly-discovered `dock/{reportType}/report` topic family, see `DockPadDryReport`. |
+| Structured robot status (older, unresolved model) | `RobotStatusV2`, `DockControl`, `RobotStatusButton`, `RobotStatusError` | `get_state()`'s docstring — confirmed NOT to appear in `get_state()`'s own response. The underlying question (where battery/charging/dock status actually lives) IS resolved — see the next row. |
+| Named shadow content — battery/charging/dock status, connectivity, schedule, software, hardware info (all live-confirmed, real data) | `CurrentStateShadow`, `StatsShadow`, `ServicesShadow`, `ConfigInfoShadow`, `ConnectionStatusShadow`, `ScheduleShadow`, `SoftwareStatusShadow` | `get_named_shadow()` in "Live state" above — the actual, confirmed answer to the battery-status search |
 | Default routines | `RoutinesDefaultsResponse`, `RoutineBuilderDefaults`, `RegionDefaults`, `OperatingModeProfile` | `get_default_routines()` above |
 | Login-response models | `RobotLoginEntry`, `RobotCapabilities`, `RobotDigitalCapabilities` | `auth.py`'s `LoginResult.robots` |
 

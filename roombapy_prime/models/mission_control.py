@@ -7,7 +7,7 @@ evidence trail behind any individual field."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import IntFlag, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 from typing import Any
 
 from .enums_common import _enum_or_none
@@ -408,6 +408,42 @@ class RoutineTypeParam(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class SuctionLevel(IntEnum):
+    """CONFIRMED (parallel native-analysis track, SuctionLevel.java) --
+    the real, complete enum behind CommandParams.suction_level. Purely
+    numeric, ascending -- INVALID(0) is an explicit error/placeholder
+    value, NOT an "Auto"/adaptive option; there is no adaptive suction
+    concept at this level at all (see CarpetBoostSettings below for
+    where that concept actually lives)."""
+
+    INVALID = 0
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    TURBO = 4
+
+
+class CarpetBoostSettings(IntEnum):
+    """CONFIRMED PRESENT (parallel native-analysis track,
+    CarpetBoostSettings.java) but CONFIRMED DEAD CODE, NOT connected to
+    CommandParams.carpet_boost or anything else -- a follow-up
+    investigation found zero consumers anywhere for this enum's own
+    values (.AUTO/.PERFORMANCE/.ECO), and the entire View/Fragment/XML
+    UI screen it would have belonged to
+    (ActivityCarpetBoostSettingsBinding, LayoutInlineCarpetBoostBinding,
+    FragmentCleaningPreferencesBinding) also has zero consumers --
+    leftover from an older, pre-Compose UI generation, still compiled
+    into the APK but never actually instantiated in the current app.
+    Kept here only as a documented dead end, so a future session
+    doesn't waste time re-investigating the same lead: this is NOT the
+    real mechanism behind carpet_boost -- see CommandParams.carpet_boost's
+    own docstring for what actually is."""
+
+    PERFORMANCE = 0
+    ECO = 1
+    AUTO = 2
+
+
 @dataclass(frozen=True)
 class CommandParams:
     """39 fields, matching CommandParams's actual field count
@@ -462,7 +498,66 @@ class CommandParams:
     independently confirmed from real live data (chairstacker's
     cleanSchedule2[].cmdStr, session 27), not from this bytecode
     reading -- a case where the field-list correction specifically
-    does NOT apply, verified rather than assumed."""
+    does NOT apply, verified rather than assumed.
+
+    suction_level/carpet_boost, RESOLVED (parallel native-analysis
+    track, SuctionLevel.java + a follow-up investigation that first
+    found CarpetBoostSettings.java's own three-way enum
+    (PERFORMANCE/ECO/AUTO), then confirmed it CONFIRMED DEAD CODE --
+    zero consumers anywhere, part of an older View/Fragment/XML UI
+    generation superseded by Compose, still compiled into the APK but
+    never instantiated -- see CarpetBoostSettings's own docstring):
+    suction_level is a purely numeric enum, Invalid(0)/Low(1)/
+    Medium(2)/High(3)/Turbo(4) -- 0 is an explicit ERROR/placeholder
+    value, NOT "Auto". carpet_boost really is the plain bool this
+    class already models, confirmed by cross-referencing iRobot's own
+    public product documentation for the real "Carpet Boost" feature:
+    a SENSOR-DRIVEN, REAL-TIME modifier -- the robot detects carpet
+    (via increased brush resistance transitioning from hard floor) and
+    automatically increases suction power for as long as it's on
+    carpet, independent of the manually-set suction_level, reverting
+    on hard floor. This is why suction_level itself has no "Auto"
+    value at all: floor-type adaptation isn't a suction_level concept
+    in the first place, it's this entirely separate boolean toggle
+    (enable/disable the feature; the robot's own sensors decide WHEN
+    to actually apply the boost, not the app).
+
+    A THIRD, separate field worth knowing about here: adaptive_cleaning
+    (isolated, only referenced in RoutineCommand's own source) is
+    plausibly the wire form of iRobot's distinct "Adaptive Cleaning"/
+    "Dirt Detective" feature -- HISTORY-based (learns from past
+    cleaning jobs to prioritize dirtier rooms), not real-time/sensor-
+    based the way carpet_boost is. Genuinely different mechanisms
+    despite both being "the robot adjusts itself" concepts -- don't
+    conflate them if surfacing either as a user-facing setting.
+
+    CRITICAL, CONFIRMED FINDING ABOUT WHAT THE REAL APP SENDS ON A
+    PLAIN "START" TAP (parallel native-analysis track,
+    SpaceDetailsAggregateViewModel.currentDefaultCommandParams()):
+    the real app does NOT omit CommandParams for a basic start --
+    it explicitly fetches the account's currently active preferences
+    (availablePreferencesDataProvider.getFilteredPreferences(), itself
+    populated by a real fetch() through missionRepository) and builds
+    a full CommandParams from them before sending. This means
+    send_simple_command()'s own bare {"command", "time", "initiator"}
+    payload -- confirmed working for start/pause/stop/resume/dock/find
+    at the TRANSPORT level -- is NOT equivalent to what the real app's
+    own "Start" button does regarding suction/carpet-boost/etc: it
+    structurally CANNOT carry these fields at all (a fundamentally
+    different, simpler wire shape than RoutineCommand, not just a
+    missing optional field), so whatever suction/carpet-boost setting
+    the robot ends up running with is decided ENTIRELY by the robot's
+    own internal fallback, not by mirroring the account's actual saved
+    preferences the way the real app's own flow does. A field report
+    of a mission unexpectedly always running at what looked like
+    maximum power, never adapting, is CONSISTENT with this gap -- not
+    confirmed as the definitive explanation, but a real, structural
+    reason to expect a difference here, not just a coincidence.
+    Reaching real preference-aware parity would need the
+    RoutineCommand-carrying path (send_routine_command_via_cmd_topic(),
+    itself still not live-tested for ANY use as of this writing) to
+    become the basic-start path too, not just the region-aware one --
+    a real architectural gap, not just a documentation one."""
 
     adaptive_cleaning: bool | None = None
     bin_pause: bool | None = None

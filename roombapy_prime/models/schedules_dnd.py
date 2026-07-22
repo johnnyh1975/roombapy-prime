@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from .enums_common import _enum_or_none
 from .mission_control import RoutineCommand
 
 
@@ -156,9 +157,13 @@ class ScheduleOptions:
         if self.until is not None:
             body["until"] = self.until.to_json()
         if self.commands:
-            body["commands"] = [{"command": c.to_json()} for c in self.commands]
+            body["commands"] = [
+                {"command": c.to_json() if hasattr(c, "to_json") else c} for c in self.commands
+            ]
         if self.end_commands:
-            body["end_commands"] = [{"command": c.to_json()} for c in self.end_commands]
+            body["end_commands"] = [
+                {"command": c.to_json() if hasattr(c, "to_json") else c} for c in self.end_commands
+            ]
         if self.append:
             body["append"] = self.append
         if self.exclude:
@@ -175,6 +180,42 @@ class ScheduleOptions:
             body["reminder"] = self.reminder
         return body
 
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> ScheduleOptions:
+        """NEW -- added specifically to support verify_schedule_write.py's
+        stage 1 ("resend an existing schedule completely unchanged").
+        commands/end_commands are deliberately NOT parsed into
+        RoutineCommand objects here (no RoutineCommand.from_json()
+        exists in this library yet) -- each entry's inner "command"
+        dict is kept as a raw dict instead, which to_json() above
+        already tolerates (matching the same has_json/raw-dict escape
+        hatch RoutineCommand.to_json() itself uses for its own
+        params/regions/id_multipolys fields). Safe for an unchanged
+        round-trip specifically because nothing here needs to be
+        understood, only preserved byte-for-byte."""
+        start_data = data.get("start")
+        end_data = data.get("end")
+        after_data = data.get("after")
+        until_data = data.get("until")
+        return cls(
+            asset_id=data.get("robot_id"),
+            name=data.get("name"),
+            frequency=_enum_or_none(ScheduleFrequency, data.get("frequency")),
+            start=ScheduleTime.from_json(start_data) if start_data else None,
+            end=ScheduleTime.from_json(end_data) if end_data else None,
+            after=ScheduleDateEntry.from_json(after_data) if after_data else None,
+            until=ScheduleDateEntry.from_json(until_data) if until_data else None,
+            commands=[c.get("command", c) for c in (data.get("commands") or [])],
+            end_commands=[c.get("command", c) for c in (data.get("end_commands") or [])],
+            append=data.get("append") or [],
+            exclude=data.get("exclude") or [],
+            created_time=data.get("created_time"),
+            deleted=data.get("deleted"),
+            enabled=data.get("enabled"),
+            force_cloud=data.get("force_cloud"),
+            reminder=data.get("reminder"),
+        )
+
 
 @dataclass(frozen=True)
 class HouseholdSchedule:
@@ -190,6 +231,16 @@ class HouseholdSchedule:
 
     def to_json(self) -> dict[str, Any]:
         return {"schedule_id": self.schedule_id, "options": self.options.to_json()}
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> HouseholdSchedule:
+        """NEW -- see ScheduleOptions.from_json()'s own docstring for
+        why commands/end_commands round-trip as raw dicts rather than
+        parsed RoutineCommand objects."""
+        return cls(
+            schedule_id=data.get("schedule_id", ""),
+            options=ScheduleOptions.from_json(data.get("options") or {}),
+        )
 
 
 @dataclass(frozen=True)

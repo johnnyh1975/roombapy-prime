@@ -3446,3 +3446,26 @@ but it means chairstacker's integration cannot benefit from any of this session'
 `ha_roomba_plus`'s own pin is updated and the HACS update is applied.
 
 468/468 tests green, ruff clean as of this addendum (2 new tests, one per fix).
+
+## Addendum: the reconnect-before-GET fix confirmed live -- from 1-3 successes to 11/11
+
+chairstacker ran `verify_named_shadows.py` on v0.1.11a14 twice. Without `--delay-seconds`: 9 of
+11 shadows succeeded (only `rw-software`/`ro-configinfo` still failed) -- a dramatic improvement
+over the 1-3 successes seen across every run since the original connectivity issue was first
+reported. Adding `--delay-seconds 2`: **11 of 11**, a fully clean run.
+
+This is a real, live confirmation of the actual root cause: `get_shadow()`'s missing
+reconnect-before-GET check (fixed this release) accounts for the large majority of the earlier
+failures. The remaining two, which needed the extra delay to also succeed, suggest the broker
+itself may need a brief moment to become fully responsive again immediately after a reconnect --
+consistent with, though not a full explanation beyond, the same underlying AWS IoT session-loss
+behavior already documented above.
+
+`ro-currentstate`'s reported keys in this run match exactly what `CurrentStateShadow` already
+models (`batPct`/`bin`/`cleanMissionStatus`/`detectedPad`/`dock`/`lastDisconnect`/`p2maps`/
+`regDate`/`runtimeStats`/`svcEndpoints`/`tankPresent`/`tz`) -- no new fields, a clean
+cross-check against the earlier real-payload confirmation.
+
+**Practical recommendation going forward**: pair the automatic reconnect fix with
+`--delay-seconds 2` (or similar) for the most reliable diagnostic runs, until/unless further
+investigation narrows down why the remaining two shadows specifically needed the extra spacing.

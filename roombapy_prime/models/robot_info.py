@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any
 
-from .enums_common import _enum_or_none
+from .enums_common import RoomCategory, _enum_or_none
 from .mission_control import CommandParams, PadWetnessParam, RegionType
 
 
@@ -329,13 +329,25 @@ class RoomMetadataEntry:
     last_operating_mode, operating_mode_defaults (dict, keys =
     operating-mode ID as a string like "512"/"32"/"2", values
     CommandParams-shaped), region_type, optional name (only set for
-    some rooms, e.g. "Bathroom")."""
+    some rooms, e.g. "Bathroom").
+
+    category (NEW -- see verify_map_edit.py's own room-category test):
+    the READ-side counterpart of SetRoomMetadataV1's own write-side
+    room_metadata.type field (RoomCategory, enums_common.py) -- same
+    key name ("type"), same enum, confirmed by construction since
+    SetRoomMetadataV1's own docstring establishes this is the current
+    app's room-edit path (read and write sides agreeing, same pattern
+    already seen elsewhere in this project, e.g. set_map_name()/
+    P2MapData.name). Added specifically so a category-change test can
+    capture the ORIGINAL value before changing it, the same
+    capture-then-revert safety pattern already used for room renaming."""
 
     room_id: str
     last_operating_mode: int | None = None
     operating_mode_defaults: dict[str, CommandParams] = field(default_factory=dict)
     region_type: RegionType | str | None = None
     name: str | None = None
+    category: RoomCategory | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoomMetadataEntry:
@@ -347,6 +359,7 @@ class RoomMetadataEntry:
             operating_mode_defaults={k: CommandParams.from_json(v) for k, v in defaults_raw.items()},
             region_type=_enum_or_none(RegionType, meta.get("region_type")),
             name=meta.get("name"),
+            category=_enum_or_none(RoomCategory, meta.get("type")),
         )
 
 
@@ -831,23 +844,30 @@ class ConnectionStatusShadow:
     was originally (and, per this finding, correctly) associated with
     in the app's command config.
 
-    "echo" AS A CHIME TRIGGER -- ALSO DISPROVEN (this session,
-    chairstacker, real device test): writing True to this field
-    produced a genuine, accepted shadow write (a real update/delta
-    response came back), but the robot did NOT chime -- and "locate"
-    from the real app worked fine on the same device immediately
-    after. See PrimeRobot.trigger_echo_via_shadow()'s own docstring
-    for the full result. What "echo" actually represents remains
-    unresolved -- possibly a connectivity heartbeat/ping (consistent
-    with the rest of this shadow being about connection status), not
-    necessarily anything chime-related at all. connected_v2's
-    relationship to connected (newer replacement? different
-    granularity?) is not confirmed either -- both are stored as opaque
-    values rather than guessed at."""
+    "echo" AS A CHIME TRIGGER -- ALSO DISPROVEN (chairstacker, real
+    device test): writing True to this field produced a genuine,
+    accepted shadow write (a real update/delta response came back),
+    but the robot did NOT chime -- and "locate" from the real app
+    worked fine on the same device immediately after. See
+    PrimeRobot.trigger_echo_via_shadow()'s own docstring for the full
+    result. What "echo" actually represents remains unresolved --
+    possibly a connectivity heartbeat/ping (consistent with the rest
+    of this shadow being about connection status), not necessarily
+    anything chime-related at all.
 
-    connected: Any | None = None
-    connected_v2: Any | None = None
-    echo: Any | None = None
+    TYPES CONFIRMED (parallel native-analysis track, Ghidra
+    decompilation of the app's own constructor signatures, not
+    guessed): connected/connected_v2 are both plain booleans.
+    connected_v2's relationship to connected (newer replacement?
+    different granularity?) is still not confirmed. echo is
+    PROBABLY also a boolean (a packed flag in the decompiled
+    constructor, slightly less certain than the other two but not
+    contradicted by anything) -- kept as a plain bool here rather than
+    Any, consistent with how confident this specific finding is."""
+
+    connected: bool | None = None
+    connected_v2: bool | None = None
+    echo: bool | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ConnectionStatusShadow:
@@ -860,21 +880,39 @@ class ConnectionStatusShadow:
 
 @dataclass(frozen=True)
 class SoftwareStatusShadow:
-    """CONFIRMED LIVE (this session, chairstacker) -- complete content
-    of the named "rw-software" shadow, one of the two remaining
-    never-before-queried candidates alongside rw-constatus (see
-    ConnectionStatusShadow). Also NOT battery/charging-related --
-    this is OTA/firmware deployment and update status. "imuRecal" is
-    the one field with genuine unresolved meaning (IMU recalibration
-    status/trigger?, not confirmed); the rest are self-describing
-    deployment/version bookkeeping fields."""
+    """CONFIRMED LIVE (chairstacker) -- complete content of the named
+    "rw-software" shadow, one of the two remaining never-before-queried
+    candidates alongside rw-constatus (see ConnectionStatusShadow).
+    Also NOT battery/charging-related -- this is OTA/firmware
+    deployment and update status.
 
-    deployment_id: Any | None = None
+    TYPES CONFIRMED where a real deserializer for the specific field
+    was found (parallel native-analysis track, Ghidra decompilation --
+    not guessed): deployment_id/software_version are plain strings
+    (type-tag 3). last_sw_update is a string too, parsed by the app as
+    a date. deployment_state is a small int enum, 5 values (0-4) plus
+    a fallback, found via a lookup table in the decompiled code -- the
+    MEANING of each of the 5 values is not yet confirmed, only that
+    there are exactly 5 named ones.
+
+    deployment_mpkg/last_command have a schema constant referencing
+    them but no deserializer was found for either -- their real type
+    remains unconfirmed, kept as Any rather than guessed at.
+
+    imu_recal/submodule_sw_version are CONFIRMED ABSENT from the app's
+    own code entirely -- no schema constant, no deserializer at all.
+    The robot's real shadow payload includes them anyway (this
+    project's own confirmed key list) -- consistent with the same
+    "server sends more than the app declares" pattern already seen on
+    ro-currentstate. Kept as Any: there is no source at all (live or
+    static) suggesting a more specific type for these two."""
+
+    deployment_id: str | None = None
     deployment_mpkg: Any | None = None
-    deployment_state: Any | None = None
+    deployment_state: int | None = None
     imu_recal: Any | None = None
     last_command: Any | None = None
-    last_sw_update: Any | None = None
+    last_sw_update: str | None = None
     software_version: str | None = None
     submodule_sw_version: Any | None = None
 
@@ -893,41 +931,78 @@ class SoftwareStatusShadow:
 
 
 class ResolvedMissionStatus(IntEnum):
-    """PARTIAL, DELIBERATELY NOT EXHAUSTIVE (this session, parallel
-    native-analysis track, bytecode signature reading of
-    core::MissionData::getResolvedMissionStatus()'s return type). The
-    real enum has 49 values (0-48); only the ones explicitly named in
-    that analysis are included here. Do NOT treat a value missing from
-    this enum as invalid -- it almost certainly just hasn't been
-    transcribed yet, not confirmed absent. Extend this incrementally
-    as more of the 49 values are identified, rather than guessing at
-    the gaps (1-4, 6-8, 11-13, 17, 20-23, 26-27 are among the known
-    gaps as of this writing).
+    """FULLY CONFIRMED (parallel native-analysis track, all 49 values
+    0-48 extracted directly from the real enum, not partially
+    transcribed anymore). Supersedes the earlier, deliberately-partial
+    version of this class.
 
     NOT YET CONFIRMED which shadow field (if any) actually carries
     this value -- see CurrentStateShadow's own docstring for why
     "cleanMissionStatus" is a plausible but unconfirmed guess, not a
-    settled mapping. The 28-47 "SendingCommand*" range is notable on
+    settled mapping. The 28-47 "SENDING_COMMAND_*" range is notable on
     its own: the real app models "command sent, acknowledgment
-    pending" as its own distinct transitional states, not just a
-    boolean in-flight flag."""
+    pending" as its own distinct transitional states per command type,
+    not just a single boolean in-flight flag.
+
+    ALSO CONFIRMED TO EXIST, NOT YET TRANSCRIBED HERE: the real app's
+    own Companion object has isTraining()/isReady()-style helpers that
+    group specific members of this enum together (e.g. which values
+    count as "the robot is ready to start" as a category) -- the exact
+    member lists for these groupings weren't extracted, only that they
+    exist. Treat any grouping you might infer from these names alone
+    (e.g. assuming READY/READY_WITH_ERROR are the only two "ready"
+    members) as a guess, not a confirmed fact, until that companion
+    logic itself is transcribed."""
 
     INVALID = 0
+    CONNECTING = 1
+    CONNECTION_REMOTE_MISSING = 2
+    CONNECTION_ERROR = 3
+    CONNECTION_DISCONNECTED = 4
     READY = 5
+    READY_WITH_ERROR = 6
+    READY_WITH_CONDITIONAL_START_REFUSE = 7
+    NOT_READY_START_REFUSE = 8
     CLEANING = 9
     PAUSED = 10
+    PAUSED_WITH_ERROR = 11
+    PAUSED_WITH_START_REFUSE = 12
+    WET_MOPPING_PAUSED_WITH_START_REFUSE = 13
     END_JOB_NO_DOCK = 14
     END_JOB_WITH_DOCK = 15
     RETURN_TO_DOCK = 16
+    RETURN_TO_DOCK_SEARCHING = 17
     DOCK_EVACUATING = 18
     DOCK_REFILLING = 19
+    TRAINING = 20
+    SPOT_CLEANING = 21
+    TIDYING_UP = 22
+    VIDEO_STREAMING = 23
     PAD_WASHING = 24
     PAD_DRYING = 25
+    FLUSHING_SLUICE = 26
+    STOP_DOCK_EVACUATING = 27
+    SENDING_COMMAND_CLEAN = 28
+    SENDING_COMMAND_DOCK = 29
+    SENDING_COMMAND_EVAC = 30
+    SENDING_COMMAND_REFILL = 31
+    SENDING_COMMAND_STOP_REFILL = 32
+    SENDING_COMMAND_PAUSE = 33
+    SENDING_COMMAND_RESUME = 34
+    SENDING_COMMAND_START = 35
+    SENDING_COMMAND_STOP = 36
+    SENDING_COMMAND_TRAIN = 37
+    SENDING_COMMAND_TIDYING_UP = 38
+    SENDING_COMMAND_SPOT = 39
+    SENDING_COMMAND_SKIP = 40
+    SENDING_COMMAND_POINT_CLEAN = 41
+    SENDING_COMMAND_PAD_WASH = 42
+    SENDING_COMMAND_STOP_PAD_WASH = 43
+    SENDING_COMMAND_PAD_DRY = 44
+    SENDING_COMMAND_STOP_PAD_DRY = 45
+    SENDING_COMMAND_FLUSH_SLUICE = 46
+    SENDING_COMMAND_STOP_EVAC = 47
     UNKNOWN = 48
-    # 28-47 are a "SendingCommand*" transitional-state family
-    # (command sent, acknowledgment pending) -- individual members not
-    # yet transcribed, only the range and its general meaning are
-    # confirmed so far.
 
 
 @dataclass(frozen=True)
@@ -983,6 +1058,132 @@ class CleanMissionStatus:
         )
 
 
+class DockState(IntEnum):
+    """FULLY CONFIRMED (parallel native-analysis track, all 86 values
+    extracted directly from the real enum) -- previously only
+    discussed in prose elsewhere in this codebase (e.g.
+    DockStatus's own docstring), never actually implemented as a real
+    enum until now.
+
+    Four functional-area bands, matching the numeric-range pattern
+    already observed in DockStatus's own real captured values (state/
+    pw_state/pd_state = 301/601/701): DOCK_* (general dock, 300s, plus
+    two low outliers at 0-3 shared with the pad-wash/pad-dry bands --
+    see the duplicate-value note below), FLUID_REPLENISHMENT_* (400s),
+    PAD_WASH_* (600s), PAD_DRY_* (700s).
+
+    CONFIRMS DockStatus's own real captured values directly:
+    state=301 -> DOCK_READY, pw_state=601 -> PAD_WASH_OKAY,
+    pd_state=701 -> PAD_DRY_OKAY -- chairstacker's device was
+    dock-ready with both pad subsystems in their own "okay" (idle,
+    no error) state at capture time. What was previously only an
+    "OBSERVATION, NOT A CONFIRMED MAPPING" (see DockStatus's own
+    docstring) about which numeric band belongs to which category is
+    now a directly confirmed, named value for each of the three
+    fields captured live.
+
+    DUPLICATE VALUES, CONFIRMED PRESENT IN THE REAL ENUM ITSELF (NOT A
+    TRANSCRIPTION ERROR): 2 is shared by PAD_DRY_UNHEATED_AIR and
+    PAD_WASH_NORMAL_HEATED_WATER; 3 is shared by PAD_DRY_HEATED_AIR and
+    PAD_WASH_MAX_HEATED_WATER. Plausibly context-dependent (meaningful
+    only within whichever specific field/subsystem reports it, not
+    globally unique) -- not independently confirmed which
+    interpretation is correct, only that the duplication itself is
+    real. Python's own IntEnum aliasing applies here: both names for
+    each duplicated value remain accessible as class attributes, but
+    DockState(2)/DockState(3) themselves resolve to whichever name is
+    listed first below (the PAD_DRY_* one, alphabetically/positionally
+    earlier here) -- an artifact of Python enum mechanics, not
+    evidence that one name is somehow more "correct" than the other."""
+
+    DOCK_NO_COMMON_ERROR = 0
+    PAD_WASH_UNHEATED_WATER = 1
+    PAD_DRY_UNHEATED_AIR = 2
+    PAD_WASH_NORMAL_HEATED_WATER = 2
+    PAD_DRY_HEATED_AIR = 3
+    PAD_WASH_MAX_HEATED_WATER = 3
+    DOCK_UNKNOWN = 300
+    DOCK_READY = 301
+    DOCK_EVACUATION_IN_PROGRESS = 302
+    DOCK_EVACUATION_COMPLETE = 303
+    DOCK_EVACUATION_STOPPING = 304
+    DOCK_EVACUATION_UPGRADING = 305
+    DOCK_BAG_MISSING = 350
+    DOCK_CLOGGED = 351
+    DOCK_VACUUM_INOPERABLE = 352
+    DOCK_BAG_FULL = 353
+    DOCK_MOTOR_FAILURE = 354
+    DOCK_PARTIAL_CLOG = 355
+    DOCK_COMMUNICATION_FAILURE = 360
+    DOCK_EVACUATION_REPORT_ERROR = 361
+    DOCK_LIFETIME_DATA_REPORT_ERROR = 362
+    DOCK_ALL_REPORTS_ERROR = 363
+    DOCK_HARDWARE_ISSUE_ERROR = 365
+    FLUID_REPLENISHMENT_UNKNOWN = 400
+    FLUID_REPLENISHMENT_OKAY = 401
+    FLUID_REPLENISHMENT_STARTED = 402
+    FLUID_REPLENISHMENT_IN_PROGRESS = 403
+    FLUID_REPLENISHMENT_COMPLETE = 404
+    FLUID_REPLENISHMENT_COMPLETE_NOT_ENOUGH_WATER = 405
+    FLUID_REPLENISHMENT_INVALID_DOCK_STATE_ERROR = 449
+    FLUID_REPLENISHMENT_TANK_MISSING_ERROR = 450
+    FLUID_REPLENISHMENT_TANK_LEVEL_TOO_LOW_ERROR = 451
+    FLUID_REPLENISHMENT_TANK_LEVEL_SENSOR_ISSUE_ERROR = 452
+    FLUID_REPLENISHMENT_COULDNT_INSERT_SNORKEL_ERROR = 453
+    FLUID_REPLENISHMENT_CLOG_ERROR = 454
+    FLUID_REPLENISHMENT_PUMP_FAILURE_ERROR = 455
+    FLUID_REPLENISHMENT_INCORRECT_ROBOT_TANK_ERROR = 456
+    FLUID_REPLENISHMENT_COMMUNICATION_FAILURE_ERROR = 457
+    FLUID_REPLENISHMENT_COULDNT_EXTEND_SNORKEL_ERROR = 458
+    FLUID_REPLENISHMENT_COULDNT_RETRACT_SNORKEL_ERROR = 459
+    FLUID_REPLENISHMENT_DOCK_TANK_LEVEL_NOT_DECREASING_ERROR = 460
+    FLUID_REPLENISHMENT_ROBOT_TANK_LEVEL_NOT_INCREASING_ERROR = 461
+    FLUID_REPLENISHMENT_HARDWARE_ISSUE_ERROR = 462
+    FLUID_REPLENISHMENT_DOCK_TANK_LEVEL_DECREASING_ERROR = 463
+    FLUID_REPLENISHMENT_ROBOT_TANK_FILLING_TIMEOUT_ERROR = 464
+    PAD_WASH_UNKNOWN = 600
+    PAD_WASH_OKAY = 601
+    PAD_WASH_IN_PROGRESS = 602
+    PAD_WASH_COMPLETE_WITH_SUCCESS = 603
+    PAD_WET_IN_PROGRESS = 604
+    PAD_WET_COMPLETE = 605
+    PAD_WASH_NOT_AVAILABLE_DOCK_UPDATING = 606
+    PAD_WASH_FLUSHING_SLUICE = 607
+    PAD_WASH_SLUICE_FLUSH_COMPLETE = 608
+    PAD_WASH_INVALID_DOCK_STATE_ERROR = 649
+    PAD_WASH_CLEAR_FLUID_TANK_MISSING_ERROR = 650
+    PAD_WASH_CLEAR_FLUID_TANK_LEVEL_TOO_LOW_ERROR = 651
+    PAD_WASH_CLEAR_FLUID_TANK_LEVEL_SENSOR_ISSUE_ERROR = 652
+    PAD_WASH_GREY_WATER_TANK_MISSING_ERROR = 653
+    PAD_WASH_GREY_WATER_TANK_LEVEL_TOO_FULL_ERROR = 654
+    PAD_WASH_HARDWARE_ERROR = 655
+    PAD_WASH_COMMUNICATION_FAILURE_ERROR = 660
+    PAD_WASH_GREY_WATER_TANK_LEVEL_NOT_DECREASING_ERROR = 661
+    PAD_WASH_GREY_WATER_TANK_LEVEL_NOT_INCREASING_ERROR = 662
+    PAD_WASH_CLEAR_FLUID_TANK_LEVEL_DECREASING_ERROR = 663
+    PAD_WASH_GREY_WATER_TANK_LEVEL_DECREASING_ERROR = 664
+    PAD_WASH_HARDWARE_ISSUE_ERROR = 665
+    PAD_WASH_NO_PAD_ATTACHED_ERROR = 668
+    PAD_WASH_PAD_ACTUATOR_STALL_ERROR = 669
+    PAD_DRY_UNKNOWN = 700
+    PAD_DRY_OKAY = 701
+    PAD_DRY_IN_PROGRESS = 702
+    PAD_DRY_COMPLETE_WITH_SUCCESS = 703
+    PAD_DRY_INTERRUPT_BY_ROBOT = 704
+    PAD_DRY_INTERRUPT_BY_MISSION = 705
+    PAD_DRY_INTERRUPT_BY_USER = 706
+    PAD_DRY_NOT_AVAILABLE_DOCK_UPDATING = 707
+    PAD_DRY_INVALID_STATE_ERROR = 749
+    PAD_DRY_MOTOR_STALL_ERROR = 750
+    PAD_DRY_MOTOR_FAIL_TO_START_ERROR = 751
+    PAD_DRY_ACTUATOR_STALL_ERROR = 752
+    PAD_DRY_PAD_NOT_WASHED_ERROR = 753
+    PAD_DRY_MOTOR_F_E_T_FAULT_ERROR = 754
+    PAD_DRY_HARDWARE_ISSUE_ERROR = 755
+    PAD_DRY_NO_PAD_ATTACHED_ERROR = 756
+    PAD_DRY_COMMUNICATION_FAILURE_ERROR = 757
+
+
 @dataclass(frozen=True)
 class DockCapabilities:
     """CONFIRMED LIVE (chairstacker, real ro-currentstate payload,
@@ -1011,27 +1212,27 @@ class DockStatus:
     """CONFIRMED LIVE (chairstacker, real ro-currentstate payload) --
     "dock" is a nested object, NOT a simple DockState enum string as
     might have been assumed from getDockState()'s own return type
-    (see this class's own module docstring) -- that enum's 86 values
-    across four subsystems (DOCK_*/FLUID_REPLENISHMENT_*/PAD_WASH_*/
-    PAD_DRY_*) are plausibly spread across state/pw_state/pd_state
-    below rather than being one single value.
+    (see this class's own module docstring).
 
-    OBSERVATION, NOT A CONFIRMED MAPPING: the real values seen --
-    state=301, pw_state=601, pd_state=701 -- fall in distinct
-    numeric bands that line up suggestively with three of
-    DockState's four named categories (a 300s/600s/700s split), but
-    the actual enum-value-to-int mapping was never confirmed
-    (bytecode analysis gave names, not their wire integers) -- treat
-    this as a plausible pattern worth testing against more real
-    captures, not a settled fact."""
+    CONFIRMED (parallel native-analysis track, all 86 DockState
+    values extracted -- see that enum's own docstring): the real
+    values seen here -- state=301, pw_state=601, pd_state=701 --
+    directly resolve to DockState.DOCK_READY, DockState.PAD_WASH_OKAY,
+    DockState.PAD_DRY_OKAY. What was previously only an "OBSERVATION,
+    NOT A CONFIRMED MAPPING" (a numeric-band pattern noticed before
+    the full enum was available) is now a directly confirmed, named
+    value for all three fields -- chairstacker's device was
+    dock-ready with both pad subsystems idle/okay at capture time.
+    state/pw_state/pd_state are typed DockState here, not the plain
+    int this class used before that enum existed."""
 
     cap: DockCapabilities | None = None
     error: int | None = None
     fw_version: str | None = None
     known: bool | None = None
-    pd_state: int | None = None
-    pw_state: int | None = None
-    state: int | None = None
+    pd_state: DockState | None = None
+    pw_state: DockState | None = None
+    state: DockState | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockStatus:
@@ -1041,9 +1242,9 @@ class DockStatus:
             error=data.get("error"),
             fw_version=data.get("fwVer"),
             known=data.get("known"),
-            pd_state=data.get("pdState"),
-            pw_state=data.get("pwState"),
-            state=data.get("state"),
+            pd_state=_enum_or_none(DockState, data.get("pdState")),
+            pw_state=_enum_or_none(DockState, data.get("pwState")),
+            state=_enum_or_none(DockState, data.get("state")),
         )
 
 

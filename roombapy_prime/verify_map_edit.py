@@ -37,15 +37,22 @@ SetRoomMetadataV1 specifically, not the other eight V1 command types
 SetVirtualWalls, AdjustFurniture, RenameRoomV1, SetRoomTypeV1), none of
 which have been live-tested at all yet.
 
-For that reason, THIS SCRIPT DELIBERATELY ONLY TESTS ONE OPERATION:
-renaming an existing, already-named room to a clearly-marked test name,
-and immediately renaming it back to its original name. Nothing else
-from the V1 vocabulary (SplitRoom, MergeRooms, SetPermanentAreas,
-DeletePermanentAreas, SetVirtualWalls, AdjustFurniture) is attempted
-here -- those either aren't cleanly reversible at all (a merge/split
-can't be undone by calling the inverse operation, since the original
-boundary information is gone) or carry meaningfully higher risk for a
-first live test. A successful rename test is useful evidence about the
+For that reason, THIS SCRIPT DELIBERATELY ONLY TESTS ONE COMMAND TYPE
+(SetRoomMetadataV1), on either of its two fields: renaming an
+existing, already-named room to a clearly-marked test name and
+immediately renaming it back (the default), OR changing an existing
+room's category to a different one and immediately changing it back
+(--test-category, added once the rename direction was confirmed
+working -- see RoomMetadataEntry.category's own docstring for the
+matching read-side field this needed). Nothing else from the V1
+vocabulary (SplitRoom, MergeRooms, SetPermanentAreas,
+DeletePermanentAreas, SetVirtualWalls, AdjustFurniture, the deprecated
+RenameRoomV1/SetRoomTypeV1 pair) is attempted here -- those either
+aren't cleanly reversible at all (a merge/split can't be undone by
+calling the inverse operation, since the original boundary information
+is gone), carry meaningfully higher risk for a first live test, or (the
+deprecated pair specifically) aren't even the current app's own path
+anymore. A successful rename test is useful evidence about the
 general V1 envelope shape and about SetRoomMetadataV1 specifically
 (now confirmed twice), but does NOT by itself confirm any of the other
 command types.
@@ -98,7 +105,7 @@ from typing import Any
 import aiohttp
 
 from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
-from .models import P2MapVersion, SetRoomMetadataV1, parse_active_map_versions
+from .models import P2MapVersion, RoomCategory, SetRoomMetadataV1, parse_active_map_versions
 from .prime_factory import PrimeFactory
 from .verify_mission_commands import _confirm
 
@@ -373,12 +380,139 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
     return report, raw_capture
 
 
+def _pick_test_room_with_category(map_versions: list[P2MapVersion]) -> tuple[str, str, str, Any] | None:
+    """Returns (p2map_id, room_id, current_name, current_category) for
+    the first room found with BOTH a name (for display/identification)
+    AND a known category -- deliberately requires both, same
+    capture-then-revert safety philosophy as _pick_test_room()'s own
+    docstring: this test needs a known-good original category value to
+    revert to, not just any room. current_category may be None if the
+    room genuinely has no category set yet -- SetRoomMetadataV1 itself
+    tolerates omitting either field, so reverting to "no category" by
+    NOT setting room_type again is possible, but a room with an
+    already-set category is preferred so the revert is a real,
+    round-trip-able value rather than an omission."""
+    for version in map_versions:
+        p2map_id = getattr(version, "p2map_id", None)
+        rooms = getattr(version, "rooms_metadata", None) or []
+        for room in rooms:
+            name = getattr(room, "name", None)
+            room_id = getattr(room, "room_id", None)
+            category = getattr(room, "category", None)
+            if name and room_id and p2map_id and category is not None:
+                return p2map_id, room_id, name, category
+    return None
+
+
+async def run_category_test(username: str, password: str, country_code: str, blid: str) -> tuple[Report, dict[str, Any]]:
+    """Stage: change a room's CATEGORY (not name) via SetRoomMetadataV1,
+    the same LIVE-CONFIRMED command already used for renaming -- this
+    is NOT a new, untested command, just a second field on one that's
+    already been observed to actually work against a real robot in
+    both directions. Same capture-then-revert safety pattern as the
+    rename test above."""
+    report = Report()
+    raw_capture: dict[str, Any] = {}
+
+    async with aiohttp.ClientSession() as session:
+        print("\n== Login ==")
+        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+        report.add("Login", "OK", f"BLID={robot.blid}")
+        await robot.connect()
+        report.add("MQTT connection", "OK")
+
+        _report_topic_prefix_status(report, robot)
+
+        print("\n== Finding a room with a known category to test on ==")
+        try:
+            map_versions = await robot.get_active_map_versions()
+        except Exception as exc:  # noqa: BLE001
+            report.add("Fetching active map versions", "FAILED", f"{type(exc).__name__}: {exc}")
+            await robot.disconnect()
+            return report, raw_capture
+
+        typed_versions = parse_active_map_versions(map_versions)
+        picked = _pick_test_room_with_category(typed_versions)
+        if picked is None:
+            report.add(
+                "Finding a room with a known category", "SKIPPED",
+                "no room with both a name and a known category was found",
+            )
+            await robot.disconnect()
+            return report, raw_capture
+        p2map_id, room_id, room_name, original_category = picked
+        report.add(
+            "Finding a room with a known category", "OK",
+            f"room_id={room_id!r} ({room_name!r}), current category={original_category!r}",
+        )
+
+        # Pick any OTHER category as the temporary test value, deterministically.
+        other_categories = [c for c in RoomCategory if c != original_category]
+        test_category = other_categories[0]
+
+        print(f"\n{'=' * 60}")
+        print(f"TEST ROOM: {room_name!r} (room_id={room_id})")
+        print(f"Current category: {original_category!r} -> temporarily changing to: {test_category!r}")
+        print(
+            "Using SetRoomMetadataV1 (command='set_room_metadata') -- the SAME command already "
+            "LIVE-CONFIRMED for renaming, just its other field (room_type/category instead of name)."
+        )
+        if not _confirm("Proceed with the category change?"):
+            report.add("Change room category (test)", "SKIPPED", "not confirmed by user")
+            await robot.disconnect()
+            return report, raw_capture
+
+        try:
+            result = await robot.edit_map(p2map_id, SetRoomMetadataV1(room_id=room_id, room_type=test_category))
+            raw_capture["edit_map response (category change)"] = result
+            print(f"  Server response: {result}")
+        except Exception as exc:  # noqa: BLE001
+            report.add("Change room category (test)", "FAILED", f"{type(exc).__name__}: {exc}")
+            await robot.disconnect()
+            return report, raw_capture
+
+        changed_confirmed = _confirm(
+            f"Please check the real app now: does the room show category {test_category.value!r}? (y/n)"
+        )
+        if changed_confirmed:
+            report.add("Change room category (test)", "OK", f"confirmed by user in the real app: now {test_category!r}")
+        else:
+            report.add(
+                "Change room category (test)", "FAILED",
+                "server accepted the request without error, but the category did NOT actually "
+                "change in the app -- the envelope is likely being silently ignored server-side",
+            )
+
+        print(f"\n{'=' * 60}")
+        print(f"Reverting room_id={room_id} back to its original category: {original_category!r}")
+        if not _confirm("Proceed with the revert?"):
+            report.add(
+                "Revert room category", "SKIPPED",
+                f"NOT confirmed by user -- room_id={room_id} may still show {test_category!r}. "
+                "Please revert this manually in the app.",
+            )
+            await robot.disconnect()
+            return report, raw_capture
+
+        try:
+            result = await robot.edit_map(p2map_id, SetRoomMetadataV1(room_id=room_id, room_type=original_category))
+            raw_capture["edit_map response (category revert)"] = result
+            print(f"  Server response: {result}")
+            report.add("Revert room category", "OK", f"reverted to {original_category!r}")
+        except Exception as exc:  # noqa: BLE001
+            report.add("Revert room category", "FAILED", f"{type(exc).__name__}: {exc}")
+
+        await robot.disconnect()
+
+    return report, raw_capture
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Manual, observed verification of map editing (room rename only, see the module "
-            "docstring for why this is deliberately narrow) against a REAL Prime/V4 robot's "
-            "REAL, in-use map."
+            "Manual, observed verification of map editing (room rename OR category, both via "
+            "SetRoomMetadataV1 -- see the module docstring for why the OTHER eight V1 command "
+            "types remain untested) against a REAL Prime/V4 robot's REAL, in-use map."
         )
     )
     parser.add_argument("--username", default=os.environ.get("ROOMBAPY_PRIME_USERNAME"))
@@ -398,6 +532,12 @@ def main() -> None:
     parser.add_argument("--dump-config", default=None, metavar="PATH")
     parser.add_argument("--no-issue-link", action="store_true")
     parser.add_argument("--open-browser", action="store_true")
+    parser.add_argument(
+        "--test-category", action="store_true",
+        help="Test room CATEGORY (not name) instead -- same LIVE-CONFIRMED SetRoomMetadataV1 "
+        "command, its other field. Deprecated SetRoomTypeV1 is NOT tested by this script at "
+        "all (the current app doesn't use it anymore, see the module docstring).",
+    )
     args = parser.parse_args()
 
     if not args.confirmed:
@@ -411,13 +551,20 @@ def main() -> None:
     password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Password: ")
 
     print(f"\nTARGET DEVICE: {args.blid}")
-    print("This script is about to temporarily rename one room on this device's real map, then")
-    print("rename it back. See the module docstring for why only this one operation is tested.")
+    if args.test_category:
+        print("This script is about to temporarily change one room's CATEGORY on this device's")
+        print("real map, then change it back. Same command already confirmed for renaming.")
+    else:
+        print("This script is about to temporarily rename one room on this device's real map, then")
+        print("rename it back. See the module docstring for why only this one operation is tested.")
     if not _confirm("Continue?"):
         print("Aborted.")
         sys.exit(0)
 
-    report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid))
+    if args.test_category:
+        report, raw_capture = asyncio.run(run_category_test(username, password, args.country_code, args.blid))
+    else:
+        report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid))
     report.redact(username, password)
 
     ok, failed, skipped = report.summary()

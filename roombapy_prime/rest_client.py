@@ -703,10 +703,19 @@ class PrimeRestClient:
         base_roomba_config.json (commandId "GetTimeEstimates",
         httpMethod=POST despite "read": true -- presumably POST because
         the request needs a body to know WHICH mission/rooms to
-        estimate, not because it's a write). Body shape not
-        investigated -- raw dict passed through, to be filled in by the
-        caller themselves (presumably robot_id + regions/command type,
-        by analogy to RoutineCommand)."""
+        estimate, not because it's a write).
+
+        PARTIALLY CONFIRMED (parallel native-analysis track,
+        MissionTimeEstimatesRepositoryImpl.java): the real call site is
+        fetchTimeEstimatesWithAreasForAsset(assetId, mapId,
+        commandDefRegions: ArrayList<String>, screen) --
+        commandDefRegions is a LIST OF REGION-ID STRINGS specifically
+        (not full region/command objects), and "screen" is an
+        analytics-tracking parameter only, not part of the actual wire
+        body. The exact JSON key names the body ultimately serializes
+        to remain unconfirmed (native-level from here) -- body is
+        still passed through as a raw dict, to be filled in by the
+        caller themselves."""
         url = f"{self._http_base_auth}/v1/time-estimates"
         return await self._request("POST", url, body=body)
 
