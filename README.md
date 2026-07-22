@@ -129,6 +129,24 @@ roombapy-prime-validate --username you@example.com --country-code US
 # or without installing: python -m roombapy_prime.diagnostics --username you@example.com --country-code US
 ```
 
+Every script in this project also accepts credentials and the target device via environment
+variables, so you don't have to retype them for every run:
+
+```bash
+export ROOMBAPY_PRIME_USERNAME="you@example.com"
+export ROOMBAPY_PRIME_PASSWORD="..."      # skips the interactive password prompt
+export ROOMBAPY_PRIME_COUNTRY="US"
+export ROOMBAPY_PRIME_BLID="YOUR_ROBOT_BLID"
+
+roombapy-prime-verify-favorite-write --list-favorites   # no --username/--blid needed
+```
+
+Any of these can still be overridden per-run with the matching `--username`/`--country-code`/
+`--blid` flag — the env var is only used when the flag is omitted. There's no environment
+variable for password *replacement* of the interactive prompt beyond `ROOMBAPY_PRIME_PASSWORD` —
+consider a local `.env` file (not committed) or your shell's own secret-handling if you're
+concerned about it ending up in shell history.
+
 Read-only by default (login, REST reads including parts/serial/
 notifications, shadow state, a bounded `watch_state()` sample, live-map
 stream request, map bundle download) — nothing here can change

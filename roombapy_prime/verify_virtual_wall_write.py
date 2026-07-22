@@ -173,7 +173,7 @@ def main() -> None:
     )
     parser.add_argument("--username", default=os.environ.get("ROOMBAPY_PRIME_USERNAME"))
     parser.add_argument("--country-code", default=os.environ.get("ROOMBAPY_PRIME_COUNTRY", "US"))
-    parser.add_argument("--blid", required=True, help="The exact target device -- no 'first device found'.")
+    parser.add_argument("--blid", default=os.environ.get("ROOMBAPY_PRIME_BLID"), help="The exact target device -- no 'first device found'. Falls back to ROOMBAPY_PRIME_BLID env var.")
     parser.add_argument("--p2map-id", required=True)
     parser.add_argument("--p2mapv-id", required=True, help="From get_active_map_versions()'s own active_p2mapv_id.")
     parser.add_argument(
@@ -186,6 +186,9 @@ def main() -> None:
     )
     parser.add_argument("--i-understand-this-changes-real-map-zones", action="store_true")
     args = parser.parse_args()
+    if not args.blid:
+        print("Aborted: --blid is required (or set the ROOMBAPY_PRIME_BLID env var).")
+        sys.exit(1)
 
     if not (args.list_walls or args.update_unchanged):
         print("Nothing to do -- pass --list-walls (safe, sends nothing) or --update-unchanged.")
@@ -195,8 +198,8 @@ def main() -> None:
         print("Aborted: --i-understand-this-changes-real-map-zones is missing.")
         sys.exit(1)
 
-    username = args.username or input("Prime account email: ")
-    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Prime account password: ")
+    username = args.username or input("iRobot account email: ")
+    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("iRobot account password: ")
 
     if args.list_walls:
         asyncio.run(list_walls(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id))

@@ -8,7 +8,18 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
-## [0.1.11a15] - 2026-07-22
+## [0.1.11a16] - 2026-07-22
+
+### Changed
+
+- **All credential prompts reworded from "Prime account" to "iRobot account"** — real field
+  tester confusion: "Prime" is this project's own internal codename for the V4/Prime robot
+  generation, not a term that appears anywhere in the real app or account itself (understandably
+  got confused with "Amazon Prime"). No functional change, just clearer wording.
+- **`--blid` now also falls back to a `ROOMBAPY_PRIME_BLID` environment variable**, across every
+  script in this project — matching the existing `ROOMBAPY_PRIME_USERNAME`/
+  `ROOMBAPY_PRIME_PASSWORD`/`ROOMBAPY_PRIME_COUNTRY` pattern. Requested by a field tester tired of
+  retyping the same BLID for every run.
 
 ### Fixed
 

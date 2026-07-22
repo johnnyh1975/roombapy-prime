@@ -853,7 +853,7 @@ def main() -> None:
     )
     parser.add_argument("--username", default=os.environ.get("ROOMBAPY_PRIME_USERNAME"))
     parser.add_argument("--country-code", default=os.environ.get("ROOMBAPY_PRIME_COUNTRY", "US"))
-    parser.add_argument("--blid", default=None, help="Optional: target this specific robot instead of the first one found")
+    parser.add_argument("--blid", default=os.environ.get("ROOMBAPY_PRIME_BLID"), help="Optional: target this specific robot instead of the first one found")
     parser.add_argument(
         "--allow-writes",
         action="store_true",
@@ -884,7 +884,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    username = args.username or input("Prime account email: ")
+    username = args.username or input("iRobot account email: ")
     password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Password: ")
 
     print(f"\nroombapy-prime live validation against account for country '{args.country_code}'...")

@@ -252,7 +252,7 @@ def main() -> None:
     )
     parser.add_argument("--username", default=os.environ.get("ROOMBAPY_PRIME_USERNAME"))
     parser.add_argument("--country-code", default=os.environ.get("ROOMBAPY_PRIME_COUNTRY", "US"))
-    parser.add_argument("--blid", required=True, help="The exact target device -- no 'first device found'.")
+    parser.add_argument("--blid", default=os.environ.get("ROOMBAPY_PRIME_BLID"), help="The exact target device -- no 'first device found'. Falls back to ROOMBAPY_PRIME_BLID env var.")
     parser.add_argument(
         "--list-favorites", action="store_true",
         help="Stage 0: list favorites. Sends nothing.",
@@ -272,6 +272,9 @@ def main() -> None:
     )
     parser.add_argument("--i-understand-this-changes-a-real-favorite", action="store_true")
     args = parser.parse_args()
+    if not args.blid:
+        print("Aborted: --blid is required (or set the ROOMBAPY_PRIME_BLID env var).")
+        sys.exit(1)
 
     # Validate flags/arguments BEFORE ever prompting for credentials --
     # a bare or malformed invocation should abort immediately with a
@@ -293,8 +296,8 @@ def main() -> None:
         print("Aborted: --update-color needs --color.")
         sys.exit(1)
 
-    username = args.username or input("Prime account email: ")
-    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Prime account password: ")
+    username = args.username or input("iRobot account email: ")
+    password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("iRobot account password: ")
 
     if args.list_favorites:
         asyncio.run(list_favorites(username, password, args.country_code, args.blid))

@@ -336,9 +336,9 @@ def main() -> None:
     parser.add_argument("--country-code", default=os.environ.get("ROOMBAPY_PRIME_COUNTRY", "US"))
     parser.add_argument(
         "--blid",
-        required=True,
-        help="Required (unlike diagnostics.py) -- the exact target device must be chosen "
-        "deliberately, no 'first device found'.",
+        default=os.environ.get("ROOMBAPY_PRIME_BLID"),
+        help="The exact target device must be chosen deliberately, no 'first device found'. "
+        "Falls back to ROOMBAPY_PRIME_BLID env var.",
     )
     parser.add_argument(
         "--i-understand-this-will-move-my-robot",
@@ -351,6 +351,9 @@ def main() -> None:
     parser.add_argument("--no-issue-link", action="store_true")
     parser.add_argument("--open-browser", action="store_true")
     args = parser.parse_args()
+    if not args.blid:
+        print("Aborted: --blid is required (or set the ROOMBAPY_PRIME_BLID env var).")
+        sys.exit(1)
 
     if not args.confirmed:
         print(
@@ -359,7 +362,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    username = args.username or input("Prime account email: ")
+    username = args.username or input("iRobot account email: ")
     password = os.environ.get("ROOMBAPY_PRIME_PASSWORD") or getpass.getpass("Password: ")
 
     print(f"\nTARGET DEVICE: {args.blid}")
