@@ -21,6 +21,8 @@ This file only tracks what changed from a user's point of view.
   `ROOMBAPY_PRIME_PASSWORD`/`ROOMBAPY_PRIME_COUNTRY` pattern. Requested by a field tester tired of
   retyping the same BLID for every run.
 
+## [0.1.11a15] - 2026-07-22
+
 ### Fixed
 
 - **Real UX bug found from a confused field tester's own report**: the four newest staged
