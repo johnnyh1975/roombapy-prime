@@ -8,6 +8,17 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a18] - 2026-07-23
+
+### Fixed
+
+- **`PrimeRobot.get_map_geojson_link()`'s own docstring was outdated**, still claiming the
+  response shape/URL key name was unconfirmed — `rest_client.py`'s own docstring had already
+  confirmed this (session 48, `P2MapURL$$serializer`'s own `<clinit>`: the key is `map_url`).
+  Documentation-only fix, found while reviewing `verify-virtual-wall-write` for the same class
+  of bug already found twice elsewhere this session — no such bug found there, but this stale
+  claim was.
+
 ## [0.1.11a17] - 2026-07-23
 
 ### Added

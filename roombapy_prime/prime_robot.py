@@ -714,8 +714,12 @@ class PrimeRobot:
     async def get_map_geojson_link(self, map_id: str, map_version: str) -> dict:
         """NEW (thirteenth session) -- was missing as a wrapper. Returns
         the presigned download URL for download_map_bundle() (see
-        there). Response shape/URL key name unconfirmed -- see
-        rest_client.py's docstring."""
+        there). CORRECTED (session 48, this docstring was outdated):
+        response shape IS confirmed -- the URL lives under the
+        "map_url" key (P2MapURL$$serializer's own <clinit>), not an
+        unconfirmed guess among candidate keys the way this docstring
+        used to say. See rest_client.py's own get_map_geojson_link()
+        docstring for the full evidence trail."""
         return await self._rest.get_map_geojson_link(map_id, map_version)
 
     async def download_map_bundle(self, url: str) -> bytes:

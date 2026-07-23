@@ -122,7 +122,30 @@ English per project convention).
 If you have a Prime/V4 account, the single most useful thing you can do
 is run the built-in diagnostics script against it and share the
 results — this is the only way any of the "unverified" items below get
-resolved:
+resolved.
+
+**If you don't already have this installed:** these scripts are a separate,
+standalone Python library — not part of any Home Assistant integration, and not
+something HACS installs for you. You run them on your own computer, outside
+Home Assistant entirely.
+
+```bash
+# 1. Confirm you have Python 3.11+
+python3 --version
+
+# 2. Create a virtual environment (keeps this separate from anything else on
+#    your system) and activate it -- you'll need to re-run this "source" line
+#    every time you open a new terminal to use these scripts again
+python3 -m venv ~/roombapy-test-venv
+source ~/roombapy-test-venv/bin/activate
+
+# 3. Install directly from GitHub (swap the version tag for whichever you're
+#    testing against)
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a17"
+```
+
+Every script has its own `--help` — worth checking before running anything for
+real, to see exactly what it does first.
 
 ```bash
 roombapy-prime-validate --username you@example.com --country-code US
