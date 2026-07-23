@@ -1,7 +1,19 @@
 """Systematic, staged test package for schedule writes
-(create_schedules()/update_schedules()) -- never tested live before
-this script existed. Read create_schedules()/update_schedules()'s own
-docstrings in prime_robot.py first.
+(create_schedules()/update_schedules()).
+
+STAGES 1 AND 2 CONFIRMED WORKING LIVE (chairstacker, real device
+test): "seems to all work fine" -- resending a household's schedules
+unchanged, and disabling one specific schedule, both genuinely took
+effect. One real-world observation worth knowing about, NOT a bug in
+this script or the underlying write itself: the real app's own
+Automations screen did not always refresh in real time after the
+write -- the very first test happened to show up almost immediately,
+but later runs needed navigating away from the screen and back (or
+just more patience) before the change appeared. This is the app's own
+UI refresh/caching behavior, not evidence the write didn't work --
+get_schedules() itself (this script's own --list-schedules) reflects
+the change immediately regardless of what the app's own screen shows
+at that moment.
 
 WHY THIS HAS A DIFFERENT RISK PROFILE THAN verify_region_commands.py's
 OWN STAGED APPROACH: a region command's effect is immediate and
@@ -15,17 +27,18 @@ difference specifically.
 THE STAGED APPROACH:
 
   Stage 1 (--update-unchanged): resend an EXISTING household's own
-  schedules list, completely unchanged, via update_schedules(). Same
-  philosophy as verify_region_commands.py's own stage 1 -- confirms
-  the write path/schema without introducing any actual change to what
-  the schedule says or when it fires.
+  schedules list, completely unchanged, via update_schedules().
+  CONFIRMED WORKING LIVE. Same philosophy as verify_region_commands.py's
+  own stage 1 -- confirms the write path/schema without introducing
+  any actual change to what the schedule says or when it fires.
 
   Stage 2 (--disable): the single safest MODIFICATION available --
   setting one specific schedule's own `enabled` field to False.
-  Deliberately chosen because it can only PREVENT future unexpected
-  robot activity, never cause it -- the opposite risk direction from
-  almost any other possible schedule change (a changed time/day could
-  cause the robot to start unexpectedly; disabling a schedule cannot).
+  CONFIRMED WORKING LIVE. Deliberately chosen because it can only
+  PREVENT future unexpected robot activity, never cause it -- the
+  opposite risk direction from almost any other possible schedule
+  change (a changed time/day could cause the robot to start
+  unexpectedly; disabling a schedule cannot).
 
   create_schedules() (creating a brand-new schedule from scratch) and
   any schedule TIME/day change are deliberately NOT implemented by

@@ -1,7 +1,11 @@
 """Systematic, staged test package for favorite writes
-(create_favorite()/update_favorite()/delete_favorite()) -- never
-tested live before this script existed. Read those methods' own
-docstrings in prime_robot.py first.
+(create_favorite()/update_favorite()/delete_favorite()).
+
+STAGES 1 AND 2 CONFIRMED WORKING LIVE (chairstacker, real device
+test) -- the first live confirmation across ANY of this project's four
+new staged write-test scripts. Stage 3 (create) is also confirmed to
+genuinely create a real favorite server-side, but see the important
+caveat below before relying on it.
 
 THE STAGED APPROACH, same general philosophy as
 verify_region_commands.py/verify_schedule_write.py's own staged
@@ -9,18 +13,19 @@ scripts -- each stage only worth attempting once the previous one is
 confirmed working:
 
   Stage 1 (--update-unchanged): resend an EXISTING favorite's own
-  data, completely unchanged, via update_favorite(). get_favorites()
-  already returns fully-typed FavoriteV1 objects (including properly
-  reconstructed RoutineCommand entries in command_defs -- see
-  rest_client.py's own _favorite_from_json() for the evidence trail),
-  so this needs no new parsing code -- fetch, find, resend as-is.
+  data, completely unchanged, via update_favorite(). CONFIRMED WORKING
+  LIVE. get_favorites() already returns fully-typed FavoriteV1 objects
+  (including properly reconstructed RoutineCommand entries in
+  command_defs -- see rest_client.py's own _favorite_from_json() for
+  the evidence trail), so this needs no new parsing code -- fetch,
+  find, resend as-is.
 
   Stage 2 (--update-color): the safest available MODIFICATION --
-  changing only a favorite's own `color` field. Deliberately chosen
-  because it's purely cosmetic (how the favorite is displayed) and
-  cannot affect what the favorite actually cleans or when -- the
-  favorite's own command_defs are resent completely unchanged
-  alongside it.
+  changing only a favorite's own `color` field. CONFIRMED WORKING
+  LIVE. Deliberately chosen because it's purely cosmetic (how the
+  favorite is displayed) and cannot affect what the favorite actually
+  cleans or when -- the favorite's own command_defs are resent
+  completely unchanged alongside it.
 
   Stage 3 (--create-and-delete-test): tests create_favorite() and
   delete_favorite() TOGETHER, self-cleaning -- same "do it, confirm
@@ -28,8 +33,30 @@ confirmed working:
   editing's own rename-then-revert test. Creates a minimal,
   clearly-named test favorite (empty command_defs -- no region data
   needed at all for this), asks you to confirm it appeared in the
-  real app, then deletes it again. Does NOT leave a stray test
-  favorite behind if you follow through both confirmations.
+  real app, then deletes it again.
+
+  IMPORTANT, CONFIRMED CAVEAT (chairstacker, real device test): a
+  favorite created with EMPTY command_defs is real and listable via
+  this library's own get_favorites() (a genuine favorite_id comes
+  back), but was NOT visible anywhere in the real app's own UI. This
+  means stage 3's own in-app confirmation step can never be answered
+  "yes" as written -- if you hit this, use --delete FAVORITE_ID
+  directly instead (see below) rather than waiting on app visibility
+  that won't come. Whether a NON-empty command_defs favorite would be
+  visible is untested -- this caveat is specifically about the
+  empty-command_defs case this stage currently creates.
+
+  ALSO FIXED (chairstacker, real device test): an earlier version used
+  a fixed test-favorite name -- a second run without deleting the
+  first one's favorite hit a real HTTP 409 conflict from
+  create_favorite() (the server rejected a duplicate name). The name
+  now includes a timestamp, so every run is unique regardless of
+  whether an earlier test favorite still exists.
+
+--delete FAVORITE_ID: standalone cleanup for a favorite you have the
+ID for but can't see in the app (exactly the stage-3 caveat above) --
+added specifically because of it. Deletes directly by ID, no app
+visibility required.
 
 TWO SEPARATE SAFETY GATES (same reasoning as
 verify_schedule_write.py's own two-gate design -- see that module's
@@ -182,6 +209,37 @@ async def send_update_color(
     print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
 
 
+async def delete_by_id(username: str, password: str, country_code: str, blid: str, favorite_id: str) -> None:
+    """Deletes a favorite directly by its favorite_id -- deliberately
+    does NOT require it to be visible in the real app first (CONFIRMED
+    NECESSARY, chairstacker: a favorite created via create_favorite()
+    with empty command_defs was NOT visible in the real app's own UI
+    at all, despite being real and listable via this library's own
+    list_favorites(). Since --create-and-delete-test's own in-app
+    confirmation step can't be answered for a favorite you can't see,
+    this standalone command is the only way to clean it up)."""
+    report = Report()
+    async with aiohttp.ClientSession() as session:
+        print("\n== Login ==")
+        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+        report.add("Login", "OK", f"BLID={robot.blid}")
+
+        if not _confirm(f"Delete favorite_id={favorite_id!r} now? This cannot be undone."):
+            print("Aborted by user -- nothing deleted.")
+            return
+
+        print("\n== Deleting ==")
+        try:
+            result = await robot.delete_favorite(favorite_id)
+            report.add("delete_favorite()", "OK", f"response: {result!r}")
+        except Exception as exc:  # noqa: BLE001
+            report.add("delete_favorite()", "FAILED", f"{type(exc).__name__}: {exc}")
+
+    report.redact(username, password)
+    ok, failed, skipped = report.summary()
+    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+
+
 async def create_and_delete_test(username: str, password: str, country_code: str, blid: str) -> None:
     """Stage 3 -- tests create_favorite() and delete_favorite()
     together, self-cleaning. Creates a minimal, clearly-named test
@@ -192,7 +250,15 @@ async def create_and_delete_test(username: str, password: str, country_code: str
     from .models.favorites import FavoriteV1
 
     report = Report()
-    test_name = "[roombapy-prime-test]"
+    # CONFIRMED NECESSARY (chairstacker): a fixed name here caused a real
+    # HTTP 409 conflict on a second run, since the FIRST run's favorite
+    # was never deleted (declined at the confirmation step) -- a repeat
+    # create with the identical name collided with it server-side. A
+    # timestamp makes every run's name unique, regardless of whether an
+    # earlier test favorite is still around.
+    import datetime
+
+    test_name = f"[roombapy-prime-test {datetime.datetime.now(datetime.UTC):%Y-%m-%d %H:%M:%S}]"
 
     async with aiohttp.ClientSession() as session:
         print("\n== Login ==")
@@ -270,6 +336,12 @@ def main() -> None:
         "--create-and-delete-test", action="store_true",
         help="Stage 3: create a minimal test favorite, confirm it, then delete it again.",
     )
+    parser.add_argument(
+        "--delete", metavar="FAVORITE_ID", default=None,
+        help="Delete a favorite directly by its favorite_id -- does NOT require it to be "
+        "visible in the real app first. Use this to clean up a stage-3 test favorite the "
+        "app didn't show, or any other favorite you have the ID for.",
+    )
     parser.add_argument("--i-understand-this-changes-a-real-favorite", action="store_true")
     args = parser.parse_args()
     if not args.blid:
@@ -281,14 +353,17 @@ def main() -> None:
     # clear message, the same way this project's older diagnostic
     # scripts already do, not ask for a Prime account login first and
     # only THEN explain what went wrong.
-    if not (args.list_favorites or args.update_unchanged or args.update_color or args.create_and_delete_test):
+    if not (
+        args.list_favorites or args.update_unchanged or args.update_color
+        or args.create_and_delete_test or args.delete
+    ):
         print(
             "Nothing to do -- pass --list-favorites (safe, sends nothing), --update-unchanged, "
-            "--update-color, or --create-and-delete-test."
+            "--update-color, --create-and-delete-test, or --delete."
         )
         return
 
-    needs_write_flag = args.update_unchanged or args.update_color or args.create_and_delete_test
+    needs_write_flag = args.update_unchanged or args.update_color or args.create_and_delete_test or args.delete
     if needs_write_flag and not args.i_understand_this_changes_a_real_favorite:
         print("Aborted: --i-understand-this-changes-a-real-favorite is missing.")
         sys.exit(1)
@@ -317,6 +392,10 @@ def main() -> None:
 
     if args.create_and_delete_test:
         asyncio.run(create_and_delete_test(username, password, args.country_code, args.blid))
+        return
+
+    if args.delete:
+        asyncio.run(delete_by_id(username, password, args.country_code, args.blid, args.delete))
         return
 
 

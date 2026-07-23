@@ -577,7 +577,24 @@ class PrimeRobot:
 
         Same requirements/behavior as send_simple_command(): needs
         irbt_topic_prefix, fire-and-forget (no response wait, see
-        publish_cmd()'s docstring for why)."""
+        publish_cmd()'s docstring for why).
+
+        FIRST LIVE TEST RESULT (chairstacker, real device): the
+        actual safest test described above -- an existing favorite's
+        own command_def, resent completely unchanged -- produced NO
+        observable effect. The robot did not move, and nothing
+        appeared in the real app either. Cause not yet isolated
+        between two real possibilities: (a) the favorite's own map/
+        zone reference (p2map_id + user_p2mapv_id) may simply be
+        stale if the map has been rebuilt since the favorite was
+        created -- a robot-side rejection of an outdated reference
+        that would happen regardless of transport, or (b) the
+        transport hypothesis itself (this method existing at all) may
+        be wrong. Distinguishing test in progress: whether the exact
+        same favorite still works when run from the real app. Treat
+        this method as still fully unconfirmed either way -- this
+        result doesn't newly confirm OR rule out the hypothesis by
+        itself."""
         if self._irbt_topic_prefix is None:
             raise RuntimeError(
                 "send_routine_command_via_cmd_topic() needs irbt_topic_prefix (from LoginResult) "
@@ -811,6 +828,40 @@ class PrimeRobot:
         """Not used by the current app version -- see
         rest_client.py::get_user_households()'s docstring."""
         return await self._rest.get_user_households()
+
+    async def get_household_id(self) -> str | None:
+        """Convenience wrapper: finds the household_id of the
+        household that contains THIS robot (matched by
+        HouseholdRobot.robot_id == self.blid), without the caller
+        needing to know the response shape.
+
+        Response shape handled defensively on purpose: get_user_households()'s
+        own docstring describes a CONFIRMED real response with
+        household_id/owner_cognito_id/etc. as TOP-LEVEL keys (a single
+        household, not a list) -- but parse_user_households() (this
+        module's own models) expects `list[dict] | None`. These two
+        haven't been reconciled against a real multi-household account,
+        so this method accepts either shape rather than assuming one:
+        a bare dict (single household) or a list of dicts (multiple
+        households, or a wrapping structure).
+
+        Returns None if no household contains a robot matching this
+        blid (including the case where the account genuinely has none) --
+        never raises for a simple "not found"."""
+        from .models import parse_user_households
+
+        raw = await self.get_user_households()
+        if isinstance(raw, dict) and "household_robots" in raw:
+            raw_list = [raw]
+        elif isinstance(raw, list):
+            raw_list = raw
+        else:
+            raw_list = []
+
+        for household in parse_user_households(raw_list):
+            if any(r.robot_id == self.blid for r in household.household_robots):
+                return household.household_id
+        return None
 
     async def get_dnd_settings(self, household_id: str) -> DNDStatusResponse:
         """UPDATED (session 53) -- now returns a parsed

@@ -107,7 +107,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-494+ tests, all passing — structural checks against decompiled source,
+498+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -312,6 +312,15 @@ roombapy-prime-verify-region-commands --send FAVORITE_ID --command-index 0 \
     --i-understand-this-will-move-my-robot \
     --i-understand-this-is-experimental-and-unconfirmed
 
+# Stage 1b -- identical, but adds initiator="localApp" if the stored command_def has none
+# (CONFIRMED FINDING: a real stage-1 test's own favorite had no initiator at all, meaning
+# the original hypothesis -- "command" AND "initiator" as shared keys -- was only partially
+# exercised; this tests the missing half, purely additively):
+roombapy-prime-verify-region-commands --send-with-initiator FAVORITE_ID --command-index 0 \
+    --blid YOUR_ROBOT_BLID \
+    --i-understand-this-will-move-my-robot \
+    --i-understand-this-is-experimental-and-unconfirmed
+
 # Stage 2 -- same favorite, one benign field changed (suction level):
 roombapy-prime-verify-region-commands --send-modified FAVORITE_ID --suction-level 2 \
     --blid YOUR_ROBOT_BLID \
@@ -347,54 +356,64 @@ at — see `send_stage_four()`'s own docstring for why.
 
 ### Testing schedule writes (staged, delayed-effect risk)
 
-`create_schedules()`/`update_schedules()` were never tested live before this script existed.
-Unlike region commands, a bad schedule write has a DELAYED effect (whenever the schedule next
-fires, possibly with nobody watching) rather than an immediate one — this script's own staged
-approach is built around that difference: stage 1 resends an existing household's own schedules
-completely unchanged; stage 2 (the only modification implemented) disables one specific
-schedule, chosen because it can only *prevent* future unexpected activity, never cause it.
+**Stages 1 and 2 CONFIRMED WORKING LIVE** (chairstacker). Unlike region commands, a bad schedule
+write has a DELAYED effect (whenever the schedule next fires, possibly with nobody watching)
+rather than an immediate one — this script's own staged approach is built around that
+difference: stage 1 resends an existing household's own schedules completely unchanged; stage 2
+(the only modification implemented) disables one specific schedule, chosen because it can only
+*prevent* future unexpected activity, never cause it.
 
 ```bash
 # Stage 0 -- pure reconnaissance, sends nothing:
 roombapy-prime-verify-schedule-write --list-schedules --blid YOUR_ROBOT_BLID
 
-# Stage 1 -- resend one household's schedules unchanged:
+# Stage 1 -- resend one household's schedules unchanged (CONFIRMED WORKING):
 roombapy-prime-verify-schedule-write --update-unchanged HOUSEHOLD_SCHEDULE_ID \
     --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-schedule
 
-# Stage 2 -- disable one specific schedule (safest modification):
+# Stage 2 -- disable one specific schedule, safest modification (CONFIRMED WORKING):
 roombapy-prime-verify-schedule-write --disable HOUSEHOLD_SCHEDULE_ID --schedule-index 0 \
     --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-schedule
 ```
 
-**Not yet live-tested as of this writing** — a reasoned, safety-checked hypothesis, same status
-as this project's other staged write scripts.
+Real-world note (chairstacker): the real app's own Automations screen doesn't always refresh in
+real time after a write — later runs needed navigating away and back before the change appeared.
+Not a sign the write failed; `--list-schedules` itself reflects the change immediately either
+way.
+
 
 ### Testing favorite writes (staged)
 
-`create_favorite()`/`update_favorite()`/`delete_favorite()` were never tested live before this
-script existed. `get_favorites()` already returns fully-typed `FavoriteV1` objects (including
-properly reconstructed `RoutineCommand` entries), so stage 1 needs no new parsing code.
+**Stages 1 and 2 CONFIRMED WORKING LIVE** (chairstacker) — the first live confirmation across
+any of this project's four new staged write-test scripts. `get_favorites()` already returns
+fully-typed `FavoriteV1` objects (including properly reconstructed `RoutineCommand` entries), so
+stage 1 needs no new parsing code.
 
 ```bash
 # Stage 0 -- pure reconnaissance, sends nothing:
 roombapy-prime-verify-favorite-write --list-favorites --blid YOUR_ROBOT_BLID
 
-# Stage 1 -- resend one favorite's own data unchanged:
+# Stage 1 -- resend one favorite's own data unchanged (CONFIRMED WORKING):
 roombapy-prime-verify-favorite-write --update-unchanged FAVORITE_ID \
     --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-favorite
 
-# Stage 2 -- change only its color (purely cosmetic):
+# Stage 2 -- change only its color, purely cosmetic (CONFIRMED WORKING):
 roombapy-prime-verify-favorite-write --update-color FAVORITE_ID --color "#FF0000" \
     --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-favorite
 
-# Stage 3 -- create a minimal test favorite, confirm it, then delete it again (self-cleaning):
+# Stage 3 -- create a minimal test favorite, confirm it, then delete it again:
 roombapy-prime-verify-favorite-write --create-and-delete-test \
+    --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-favorite
+
+# Standalone cleanup -- delete by ID directly, no app visibility required:
+roombapy-prime-verify-favorite-write --delete FAVORITE_ID \
     --blid YOUR_ROBOT_BLID --i-understand-this-changes-a-real-favorite
 ```
 
-**Not yet live-tested as of this writing, any stage** — a reasoned, safety-checked hypothesis,
-same status as this project's other staged write scripts.
+**Stage 3 has a confirmed caveat** (chairstacker): a favorite created with empty `command_defs`
+is real and listable via `get_favorites()`, but was **not visible in the real app's own UI** —
+meaning stage 3's own in-app confirmation can't be answered as written. Use `--delete
+FAVORITE_ID` to clean it up instead of waiting on app visibility that won't come.
 
 ### Testing virtual walls / keep-out / no-mop zones (staged)
 
@@ -439,7 +458,7 @@ below.
 | AWS SigV4 signing | High (algorithm), unverified (applied to this API) | Byte-identical to a separate, production-tested implementation |
 | Sending mission commands (`send_simple_command()`) | **High — confirmed live** | Live-tested against a real robot: `start`/`stop`/`pause`/`resume`/`dock` all confirmed by a real user watching the robot actually react, not just an error-free response. The old device-shadow approach (`send_mission_command()`) was separately confirmed **not working** for this — every attempt timed out with zero response. |
 | Sending mission commands, region-based (`send_mission_command()`, `send_routine_command_via_cmd_topic()`) | Low | `send_mission_command()` (shadow-based) confirmed **not working** for basic commands, unconfirmed either way for regions. `send_routine_command_via_cmd_topic()` is reasoned-but-unconfirmed — a `favorite_id`-only command is NOT the safer option (an earlier recommendation here was reversed: the real app always sends `favorite_id` plus the favorite's own full resolved regions together, never one alone). `roombapy-prime-verify-region-commands` now implements a staged, safety-gated test package for this (4 stages, increasing risk) — see "Testing region-aware mission commands" above. Not yet live-tested at any stage. |
-| Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | Medium-high (fields), unverified (practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. A real bug in the request envelope (`commands`/`end_commands` entries need a `{"command": ...}` wrapper) was found and fixed by reading a real `get_schedules()` response, though the write methods themselves have still never been called against a real server. HTTP methods separately confirmed. `roombapy-prime-verify-schedule-write` now implements a staged, safety-gated test package for this — see "Testing schedule writes" above. Not yet live-tested. |
+| Schedules/DND writes (`create_schedules()`, `update_schedules()`, DND models) | High for `update_schedules()` (CONFIRMED LIVE), medium-high for `create_schedules()`/DND (fields, unverified in practice) | Wire keys directly confirmed via bytecode (same technique as `RobotStatusV2`) — several were wrong camelCase guesses, now corrected to the real snake_case keys. A real bug in the request envelope (`commands`/`end_commands` entries need a `{"command": ...}` wrapper) was found and fixed by reading a real `get_schedules()` response. `update_schedules()` **CONFIRMED WORKING LIVE** (chairstacker) — both an unchanged resend and a real `enabled=False` toggle genuinely took effect. `create_schedules()`/DND writes remain unconfirmed against a real server. `roombapy-prime-verify-schedule-write` implements the staged, safety-gated test package that confirmed this — see "Testing schedule writes" above. |
 | `RobotStatusV2` (structured battery/charging/dock status) | **RESOLVED — see `CurrentStateShadow`** | The original 11-field `RobotStatusV2` model itself remains unconfirmed as ever appearing anywhere (not in `get_state()`, not on any MQTT topic, not in any `rw-` named shadow) — but the underlying search is fully resolved: the named shadow `ro-currentstate` reports real, live-confirmed values (`batPct`: an int 0-100; charging state in `clean_mission_status.phase`, e.g. `"charge"`; `dock`/`bin`/`runtime_stats` as nested objects, not flat values). `CurrentStateShadow` (`models/robot_info.py`) models the full real structure, not placeholders — see `BinStatus`/`CleanMissionStatus`/`DockStatus`/`RuntimeStatsSummary`/`P2MapRef`. |
 | Map editing | **High (envelope + 8/9 commands' fields), unverified (practice)** | The request envelope (`{"edit_cmd": ..., "response_type": ...}`) and 8 of 9 commands' field names are now bytecode-confirmed (several were wrong camelCase guesses, now corrected). `SetRoomMetadata`/`VirtualWall`'s internal discriminator use hand-written custom serializers and remain unconfirmed. Never sent to a real server -- a verification script exists (`roombapy-prime-verify-map-edit`), deliberately narrow in scope (room rename only), but hasn't been run against a real device yet |
 | Deeply nested response fields (map bundle internals) | **High (fields), mostly resolved (envelope details)** | All 12 map-bundle content types (rooms, borders, hazards, trajectories, etc.) now have confirmed wire formats via bytecode (`RoomFeature` and 10 others) — each is a standard GeoJSON Feature with nested `properties`. The bundle's own manifest filename is now confirmed (it's literally `"manifest"`), and a real bundle confirms most content types use a `{type, features}` wrapper while at least one (`BorderFeature`) is a bare single Feature instead. Mission history's 20 timeline sub-event types are also fully typed (`MissionTimelineEvent`) — 10 of the 20 now confirmed against real data. |

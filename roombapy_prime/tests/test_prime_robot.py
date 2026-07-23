@@ -1364,3 +1364,57 @@ async def test_watch_state_aclose_propagates_to_inner_watch_topic_generator() ->
     await agen.aclose()
 
     mqtt.unsubscribe.assert_called_once_with(captured["topic"], captured["callback"])
+
+
+class TestGetHouseholdId:
+    """get_household_id() -- handles BOTH possible get_user_households()
+    response shapes (see that method's own docstring for why: a single
+    household dict with top-level keys, per the CONFIRMED real
+    response, vs. a list of dicts, per parse_user_households()'s own
+    type hint -- these were never reconciled against a real
+    multi-household account)."""
+
+    @pytest.mark.asyncio
+    async def test_single_household_dict_shape_with_matching_robot(self) -> None:
+        robot, rest = _robot_with_autospec_rest()
+        rest.get_user_households.return_value = {
+            "household_id": "hh1",
+            "household_robots": [{"household_id": "hh1", "robot_id": "BLID123"}],
+        }
+
+        result = await robot.get_household_id()
+
+        assert result == "hh1"
+
+    @pytest.mark.asyncio
+    async def test_list_of_households_shape_with_matching_robot(self) -> None:
+        robot, rest = _robot_with_autospec_rest()
+        rest.get_user_households.return_value = [
+            {"household_id": "hh1", "household_robots": [{"robot_id": "OTHER_BLID"}]},
+            {"household_id": "hh2", "household_robots": [{"robot_id": "BLID123"}]},
+        ]
+
+        result = await robot.get_household_id()
+
+        assert result == "hh2"
+
+    @pytest.mark.asyncio
+    async def test_no_matching_robot_returns_none_not_raises(self) -> None:
+        robot, rest = _robot_with_autospec_rest()
+        rest.get_user_households.return_value = {
+            "household_id": "hh1",
+            "household_robots": [{"robot_id": "SOME_OTHER_BLID"}],
+        }
+
+        result = await robot.get_household_id()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_unexpected_shape_returns_none_not_raises(self) -> None:
+        robot, rest = _robot_with_autospec_rest()
+        rest.get_user_households.return_value = "totally unexpected string response"
+
+        result = await robot.get_household_id()
+
+        assert result is None

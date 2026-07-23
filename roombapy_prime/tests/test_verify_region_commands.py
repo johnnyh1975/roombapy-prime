@@ -106,3 +106,65 @@ def test_build_modified_command_handles_original_with_no_params_at_all():
     assert original_level is None
     assert modified.params.suction_level == 2
     assert modified.params.routine_modified is True
+
+
+def test_build_modified_command_handles_real_favorite_raw_dict_params():
+    """REAL CRASH FOUND AND FIXED (jayjay, real device test): favorites
+    are ALWAYS constructed with command_defs[].params kept as a RAW
+    DICT (rest_client.py's own _favorite_from_json() does
+    `params=c.get("params")` directly, by design) -- never a
+    CommandParams instance the way the OTHER test above unrealistically
+    assumes. This is the shape stage 2 will encounter against every
+    real favorite, and the exact one that raised
+    "TypeError: replace() should be called on dataclass instances" in
+    the field."""
+    from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+    from roombapy_prime.verify_region_commands import _build_modified_command
+
+    original = RoutineCommand(
+        command_type=MissionCommandType.START,
+        asset_id="BLID123",
+        regions=[{"region_id": "100", "type": "zid", "params": {"suctionLevel": 2}}],
+        params={"profile": "light"},  # the real, raw-dict shape -- not CommandParams(...)
+    )
+
+    modified, original_level = _build_modified_command(original, suction_level=3)
+
+    assert original_level is None  # "profile" dict has no suctionLevel key to begin with
+    assert modified.params == {"profile": "light", "suctionLevel": 3, "routineModified": True}
+    # regions must be untouched -- stage 2 only changes the top-level params.
+    assert modified.regions == original.regions
+
+
+def test_add_initiator_if_missing_adds_local_app_when_unset():
+    """CONFIRMED FINDING (chairstacker, real device test): stage 1's
+    own real favorite had initiator=None, meaning RoutineCommand.to_json()
+    omitted the field entirely -- the original hypothesis behind this
+    transport expected "initiator" to be a shared key, but the actual
+    live test accidentally exercised a version without it."""
+    from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+    from roombapy_prime.verify_region_commands import _add_initiator_if_missing
+
+    original = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID", initiator=None)
+
+    result = _add_initiator_if_missing(original)
+
+    assert result is not None
+    assert result.initiator == "localApp"
+    assert result.to_json()["initiator"] == "localApp"
+    # everything else must be untouched.
+    assert result.command_type == original.command_type
+    assert result.asset_id == original.asset_id
+
+
+def test_add_initiator_if_missing_returns_none_when_already_set():
+    """A command_def that already has an initiator has nothing for
+    stage 1b to add -- callers should redirect to plain --send."""
+    from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+    from roombapy_prime.verify_region_commands import _add_initiator_if_missing
+
+    original = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID", initiator="cloud")
+
+    result = _add_initiator_if_missing(original)
+
+    assert result is None

@@ -2264,6 +2264,71 @@ def test_parse_active_map_versions_handles_none_and_empty() -> None:
     assert parse_active_map_versions([]) == []
 
 
+class TestBuildRoomNameMap:
+    """build_room_name_map() -- generic region_id -> room name lookup,
+    shared groundwork for calendar features across robot generations."""
+
+    def test_newer_map_version_wins_for_the_same_room_id(self):
+        from roombapy_prime.models.robot_info import P2MapVersion, RoomMetadataEntry, build_room_name_map
+
+        older = P2MapVersion(
+            p2map_id="m1", robot_id="BLID1", last_p2mapv_ts=100,
+            rooms_metadata=[RoomMetadataEntry(room_id="23", name="Kitchen (old)")],
+        )
+        newer = P2MapVersion(
+            p2map_id="m1", robot_id="BLID1", last_p2mapv_ts=200,
+            rooms_metadata=[RoomMetadataEntry(room_id="23", name="Kitchen")],
+        )
+
+        # Order in the input list must not matter -- last_p2mapv_ts decides, not position.
+        result = build_room_name_map([newer, older])
+
+        assert result == {"23": "Kitchen"}
+
+    def test_unnamed_rooms_are_skipped_not_included_as_empty(self):
+        from roombapy_prime.models.robot_info import P2MapVersion, RoomMetadataEntry, build_room_name_map
+
+        version = P2MapVersion(
+            p2map_id="m1", robot_id="BLID1",
+            rooms_metadata=[RoomMetadataEntry(room_id="24", name=None)],
+        )
+
+        result = build_room_name_map([version])
+
+        assert result == {}
+
+    def test_blid_filters_out_other_robots_maps(self):
+        from roombapy_prime.models.robot_info import P2MapVersion, RoomMetadataEntry, build_room_name_map
+
+        mine = P2MapVersion(
+            p2map_id="m1", robot_id="BLID1",
+            rooms_metadata=[RoomMetadataEntry(room_id="23", name="Kitchen")],
+        )
+        other_robot = P2MapVersion(
+            p2map_id="m2", robot_id="BLID_OTHER",
+            rooms_metadata=[RoomMetadataEntry(room_id="23", name="Should not appear")],
+        )
+
+        result = build_room_name_map([mine, other_robot], blid="BLID1")
+
+        assert result == {"23": "Kitchen"}
+
+    def test_no_blid_given_includes_all_robots_maps(self):
+        from roombapy_prime.models.robot_info import P2MapVersion, RoomMetadataEntry, build_room_name_map
+
+        v1 = P2MapVersion(p2map_id="m1", robot_id="BLID1", rooms_metadata=[RoomMetadataEntry(room_id="23", name="Kitchen")])
+        v2 = P2MapVersion(p2map_id="m2", robot_id="BLID2", rooms_metadata=[RoomMetadataEntry(room_id="99", name="Garage")])
+
+        result = build_room_name_map([v1, v2])
+
+        assert result == {"23": "Kitchen", "99": "Garage"}
+
+    def test_empty_input_returns_empty_dict(self):
+        from roombapy_prime.models.robot_info import build_room_name_map
+
+        assert build_room_name_map([]) == {}
+
+
 def test_robot_serial_info_from_json() -> None:
     """Confirmed from a real get_serial_number_data() response
     (chairstacker) -- including "family": "Roomba Combo", confirms a

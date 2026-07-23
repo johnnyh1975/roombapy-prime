@@ -555,6 +555,43 @@ def parse_active_map_versions(data: list[dict[str, Any]] | None) -> list[P2MapVe
     return [P2MapVersion.from_json(entry) for entry in data]
 
 
+def build_room_name_map(map_versions: list[P2MapVersion], blid: str | None = None) -> dict[str, str]:
+    """Turns a list of map versions into a simple {room_id: name}
+    lookup -- a generic, protocol-level convenience so any consumer of
+    this library (not just Home Assistant) can resolve a schedule's or
+    mission's own region_id into a real room name without re-deriving
+    this from scratch.
+
+    blid, if given, filters to only map versions belonging to THIS
+    robot (P2MapVersion.robot_id == blid) -- an account can have
+    multiple robots, each with their own maps, and a bare room_id
+    (e.g. "23") is only meaningful within one specific robot's own
+    map, not globally unique across an entire account.
+
+    Entries with no name set at all (RoomMetadataEntry.name is only
+    populated for some rooms, per that class's own docstring) are
+    skipped entirely -- an empty result for a given room_id means "no
+    name assigned", not "unknown room".
+
+    If the same room_id appears in more than one map version (e.g. a
+    map that's been rebuilt since a room was last named), the entry
+    from the version with the higher last_p2mapv_ts (more recent) wins
+    -- map_versions is not assumed to already be in any particular
+    order."""
+    relevant = (
+        [v for v in map_versions if v.robot_id == blid] if blid is not None else map_versions
+    )
+    # Process oldest-first so a later (more recent) map version's own
+    # name naturally overwrites an earlier one for the same room_id.
+    ordered = sorted(relevant, key=lambda v: v.last_p2mapv_ts or 0)
+    result: dict[str, str] = {}
+    for version in ordered:
+        for room in version.rooms_metadata:
+            if room.name:
+                result[room.room_id] = room.name
+    return result
+
+
 @dataclass(frozen=True)
 class RobotSerialInfo:
     """Confirmed (real live response, chairstacker,

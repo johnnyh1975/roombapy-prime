@@ -8,6 +8,59 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a17] - 2026-07-23
+
+### Added
+
+- **`PrimeRobot.get_household_id()`** — convenience wrapper that finds the household_id
+  containing this specific robot, without the caller needing to know
+  `get_user_households()`'s own response shape (handled defensively: a single household
+  dict per that method's own confirmed docstring, or a list, per `parse_user_households()`'s
+  own type hint — these were never reconciled against a real multi-household account).
+- **`build_room_name_map(map_versions, blid=None)`** (`models/robot_info.py`) — generic
+  `{room_id: name}` lookup from a list of `P2MapVersion` objects, optionally filtered to one
+  robot. Newer map versions win for a given room_id; unnamed rooms are skipped, not included
+  as empty. Groundwork for calendar/schedule features that need to show a real room name
+  rather than a bare region_id.
+
+### Fixed
+
+- **`verify-region-commands` stage 2 (`--send-modified`) crashed against EVERY real
+  favorite** (jayjay, real device test): `TypeError: replace() should be called on
+  dataclass instances`. Favorites are always constructed with their `command_defs[].params`
+  kept as a plain dict, by design (`rest_client.py`'s own `_favorite_from_json()`) — never
+  upgraded to a `CommandParams` instance. `_build_modified_command()` assumed the latter
+  unconditionally. Now branches on the actual runtime type instead, and correctly preserves
+  any other fields already present (e.g. a favorite's own `cleaning_profile`/"profile" — a
+  confirmed, already-modeled field, not a new discovery) while only changing suction level.
+
+### Added
+
+- **`verify-region-commands` gained stage 1b (`--send-with-initiator`)**: a real stage-1 test
+  (chairstacker) produced no observable effect, and the actual payload sent had no `"initiator"`
+  field at all — the stored favorite's own `command_def` had `initiator=None`, which
+  `RoutineCommand.to_json()` omits entirely. This matters because the original hypothesis behind
+  this whole transport was that `"command"` AND `"initiator"` are shared keys with the
+  confirmed-working simple-command payload — the real test accidentally exercised a version
+  missing that second field. Stage 1b tests the natural next, still-minimal step: identical to
+  stage 1, with only `initiator="localApp"` added if unset — purely additive, nothing overridden.
+
+### Fixed
+
+- **`verify-schedule-write` stages 1 and 2 CONFIRMED WORKING LIVE** (chairstacker): resending a
+  household's schedules unchanged, and disabling one specific schedule, both genuinely took
+  effect. Real-world note, not a bug: the real app's own Automations screen doesn't always
+  refresh in real time after a write — `get_schedules()` itself reflects the change immediately
+  regardless of what the app's own screen shows at that moment.
+- **`verify-favorite-write` stages 1 and 2 CONFIRMED WORKING LIVE** (chairstacker) — the first
+  live confirmation across any of this project's four new staged write-test scripts. Two real
+  bugs found and fixed along the way: a hardcoded test-favorite name caused a genuine HTTP 409
+  conflict on a second stage-3 run (now includes a timestamp, so every run is unique); and a
+  confirmed caveat — a favorite created with empty `command_defs` is real and listable via
+  `get_favorites()`, but was **not visible in the real app's own UI at all**. A new standalone
+  `--delete FAVORITE_ID` command was added specifically for this — cleans up a favorite by ID
+  directly, no app visibility required.
+
 ## [0.1.11a16] - 2026-07-22
 
 ### Changed

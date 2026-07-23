@@ -254,6 +254,93 @@ async def send_stage_one(
     report.redact(username, password)
     ok, failed, skipped = report.summary()
     print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+
+
+def _add_initiator_if_missing(original) -> object | None:
+    """Stage 1b's core logic, pulled out of the async I/O so it's
+    directly unit-testable -- same lesson as this project's other
+    staged scripts' own _build_modified_command()-style helpers: an
+    executing test catches real construction bugs a syntax check
+    cannot. Returns None if initiator was ALREADY set (nothing to add
+    -- caller should treat this as "use --send instead"), otherwise
+    the command with initiator="localApp" added, everything else
+    unchanged."""
+    import dataclasses
+
+    if original.initiator is not None:
+        return None
+    return dataclasses.replace(original, initiator="localApp")
+
+
+async def send_stage_one_with_initiator(
+    username: str,
+    password: str,
+    country_code: str,
+    blid: str,
+    favorite_id: str,
+    command_index: int,
+    watch_seconds: int,
+) -> None:
+    """Stage 1b -- CONFIRMED FINDING (chairstacker, real device test):
+    stage 1's own real-world first attempt produced no observable
+    effect, and the actual payload sent had NO "initiator" field at
+    all -- the stored favorite's own command_def had initiator=None,
+    and RoutineCommand.to_json() omits the field entirely when unset.
+    This matters because the ORIGINAL hypothesis behind this whole
+    transport was that "command" AND "initiator" are shared keys
+    between the confirmed-working simple-command payload
+    ({"command", "time", "initiator": "localApp"}) and RoutineCommand's
+    own schema -- stage 1's own real test accidentally exercised a
+    version of the hypothesis missing that second shared field, not
+    the full hypothesis as originally reasoned.
+
+    This stage tests the natural next, still-minimal step: identical
+    to stage 1 in every other way (same favorite, same command_def,
+    completely unchanged otherwise), with ONLY initiator explicitly
+    set to "localApp" -- purely additive (supplies a value where none
+    existed, does not override anything that was actually set)."""
+    report = Report()
+    async with aiohttp.ClientSession() as session:
+        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+
+        print("\n== Fetching favorites ==")
+        favorites = await robot.get_favorites()
+        favorite = next((f for f in favorites if f.favorite_id == favorite_id), None)
+        if favorite is None:
+            print(f"ERROR: no favorite with favorite_id={favorite_id!r} found on this account.")
+            return
+        if not favorite.command_defs or command_index >= len(favorite.command_defs):
+            print(f"ERROR: favorite {favorite_id!r} has no command_defs[{command_index}].")
+            return
+        original = favorite.command_defs[command_index]
+
+        if not _is_safe_command_def(original):
+            print(
+                "ABORTED: this command_def contains a TID (ad-hoc/temporary) region. "
+                "This is stage 1b (RID/ZID regions only) -- see --send-adhoc for the "
+                "separate, higher-risk stage 4 path instead."
+            )
+            return
+
+        command = _add_initiator_if_missing(original)
+        if command is None:
+            print(
+                f"This favorite's command_def already has initiator={original.initiator!r} set "
+                "-- stage 1b has nothing to add here (it was designed for the initiator=None "
+                "case). Use --send instead; this would be identical to that."
+            )
+            return
+
+        await _confirm_show_send_watch(
+            robot, command, report, watch_seconds,
+            f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
+            f"command_defs[{command_index}] with initiator added (was unset -> \"localApp\"), "
+            "nothing else changed:",
+        )
+
+    report.redact(username, password)
+    ok, failed, skipped = report.summary()
+    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -262,24 +349,43 @@ async def send_stage_one(
 
 def _build_modified_command(original, suction_level: int):
     """Stage 2's core logic, pulled out of the async I/O so it's
-    directly unit-testable -- see this session's own hard lesson:
-    an earlier version of this tried
+    directly unit-testable.
+
+    REAL CRASH FOUND AND FIXED (jayjay, real device test): favorites
+    are ALWAYS constructed with their command_defs[].params kept as a
+    RAW DICT, never upgraded to a CommandParams instance --
+    rest_client.py's own _favorite_from_json() does `params=c.get(
+    "params")` directly, by design (RoutineCommand.params is typed as
+    `CommandParams | dict[str, Any] | None` specifically to allow
+    this). This function previously assumed a CommandParams instance
+    unconditionally and called dataclasses.replace() directly on it --
+    which raises TypeError immediately for EVERY real favorite, not
+    an edge case tied to any particular field. Now branches on the
+    actual runtime type instead of assuming one.
+
+    An earlier version of this same function ALSO once tried
     dataclasses.replace(original, routine_modified=True) directly on
-    the RoutineCommand, which would have raised TypeError at runtime
-    the first time this code path actually ran (RoutineCommand has no
-    such field at all -- routine_modified lives on CommandParams,
-    confirmed directly via dataclasses.fields() on both classes, not
-    just reasoned about after the fact). Returns (modified_command,
+    the RoutineCommand itself, which would have raised TypeError the
+    first time that code path ran (RoutineCommand has no such field at
+    all -- routine_modified lives on CommandParams, confirmed directly
+    via dataclasses.fields() on both classes, not just reasoned about
+    after the fact). Returns (modified_command,
     original_suction_level_for_display)."""
     import dataclasses
 
     from .models.mission_control import CommandParams
 
     original_params = getattr(original, "params", None)
-    original_level = getattr(original_params, "suction_level", None) if original_params is not None else None
-    if original_params is not None:
+    if isinstance(original_params, dict):
+        original_level = original_params.get("suctionLevel")
+        new_params: CommandParams | dict = {
+            **original_params, "suctionLevel": suction_level, "routineModified": True,
+        }
+    elif original_params is not None:
+        original_level = getattr(original_params, "suction_level", None)
         new_params = dataclasses.replace(original_params, suction_level=suction_level, routine_modified=True)
     else:
+        original_level = None
         new_params = CommandParams(suction_level=suction_level, routine_modified=True)
     modified = dataclasses.replace(original, params=new_params)
     return modified, original_level
@@ -541,6 +647,12 @@ def main() -> None:
         help="Stage 1: resend this favorite's own command_def unchanged.",
     )
     parser.add_argument(
+        "--send-with-initiator", metavar="FAVORITE_ID", default=None,
+        help="Stage 1b: identical to --send, but adds initiator=\"localApp\" if the stored "
+        "command_def has none set. Purely additive -- see send_stage_one_with_initiator()'s "
+        "own docstring for why this is worth testing specifically.",
+    )
+    parser.add_argument(
         "--send-modified", metavar="FAVORITE_ID", default=None,
         help="Stage 2: resend this favorite's command_def with --suction-level changed.",
     )
@@ -619,12 +731,12 @@ def main() -> None:
     # scripts already do, not ask for a Prime account login first and
     # only THEN explain what went wrong.
     if not (
-        args.list_favorites or args.list_rooms or args.send or args.send_modified
-        or args.send_region or args.send_adhoc
+        args.list_favorites or args.list_rooms or args.send or args.send_with_initiator
+        or args.send_modified or args.send_region or args.send_adhoc
     ):
         print(
             "Nothing to do -- pass --list-favorites/--list-rooms (safe, send nothing), or one of "
-            "--send/--send-modified/--send-region/--send-adhoc."
+            "--send/--send-with-initiator/--send-modified/--send-region/--send-adhoc."
         )
         return
 
@@ -633,6 +745,9 @@ def main() -> None:
         sys.exit(1)
 
     if args.send and not _require_send_gates():
+        sys.exit(1)
+
+    if args.send_with_initiator and not _require_send_gates():
         sys.exit(1)
 
     if args.send_modified:
@@ -684,6 +799,15 @@ def main() -> None:
             send_stage_one(
                 username, password, args.country_code, args.blid,
                 args.send, args.command_index, args.watch_seconds,
+            )
+        )
+        return
+
+    if args.send_with_initiator:
+        asyncio.run(
+            send_stage_one_with_initiator(
+                username, password, args.country_code, args.blid,
+                args.send_with_initiator, args.command_index, args.watch_seconds,
             )
         )
         return
