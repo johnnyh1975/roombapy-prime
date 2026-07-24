@@ -8,7 +8,9 @@ docstring."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from roombapy_prime.models.mission_control import Region, RegionType
 from roombapy_prime.verify_region_commands import _is_safe_command_def, _region_types
@@ -136,7 +138,7 @@ def test_build_modified_command_handles_real_favorite_raw_dict_params():
     assert modified.regions == original.regions
 
 
-def test_add_initiator_if_missing_adds_local_app_when_unset():
+def test_add_initiator_if_missing_adds_rmt_app_when_unset():
     """CONFIRMED FINDING (chairstacker, real device test): stage 1's
     own real favorite had initiator=None, meaning RoutineCommand.to_json()
     omitted the field entirely -- the original hypothesis behind this
@@ -168,3 +170,203 @@ def test_add_initiator_if_missing_returns_none_when_already_set():
     result = _add_initiator_if_missing(original)
 
     assert result is None
+
+
+class TestSummarizeEvents:
+    """NEW (this session) -- _summarize_events(), built specifically so
+    a human doesn't have to parse raw MissionTimelineEvent reprs by eye
+    to judge whether region-targeting worked. Reports facts (what
+    fields were present), not a verdict -- see its own docstring."""
+
+    def test_empty_list_notes_no_events_and_references_the_known_negative_result(self):
+        from roombapy_prime.verify_region_commands import _summarize_events
+
+        result = _summarize_events([])
+
+        assert "NO events" in result
+        assert "chairstacker" in result
+
+    def test_extracts_command_event_fields(self):
+        from roombapy_prime.verify_region_commands import _summarize_events
+
+        event = MagicMock()
+        event.event_type = "cmd"
+        event.command = MagicMock(command="start", initiator="rmtApp")
+        event.room = None
+        event.zone = None
+        event.error = None
+
+        result = _summarize_events([event])
+
+        assert "command='start'" in result
+        assert "initiator='rmtApp'" in result
+
+    def test_extracts_room_event_fields_using_the_real_field_name_region_id(self):
+        """REAL FIELD NAME CHECK: RoomEvent's actual attribute is
+        region_id, not room_id -- confirmed against
+        models/mission_history.py directly (session correction) rather
+        than assumed."""
+        from roombapy_prime.verify_region_commands import _summarize_events
+
+        event = MagicMock()
+        event.event_type = "room"
+        event.command = None
+        event.room = MagicMock(region_id="101", area=354, total_area=0)
+        event.zone = None
+        event.error = None
+
+        result = _summarize_events([event])
+
+        assert "region_id='101'" in result
+        assert "area=354" in result
+        assert "total_area=0" in result
+
+    def test_extracts_zone_event_fields(self):
+        from roombapy_prime.verify_region_commands import _summarize_events
+
+        event = MagicMock()
+        event.event_type = "zone"
+        event.command = None
+        event.room = None
+        event.zone = MagicMock(zone_id="100", area=200, total_area=150)
+        event.error = None
+
+        result = _summarize_events([event])
+
+        assert "zone_id='100'" in result
+
+    def test_flags_error_event_prominently(self):
+        from roombapy_prime.verify_region_commands import _summarize_events
+
+        event = MagicMock()
+        event.event_type = "error"
+        event.command = None
+        event.room = None
+        event.zone = None
+        event.error = MagicMock(value=17)
+
+        result = _summarize_events([event])
+
+        assert "ERROR value=17" in result
+
+
+class TestConfirmShowSendWatchDisconnectAfter:
+    """NEW (this session) -- disconnect_after param, so
+    verify_region_commands_session.py can keep one connection alive
+    across stages 1/1b/2 instead of reconnecting for each. All four
+    existing standalone stage functions rely on the default (True) and
+    are unaffected -- this only tests the new parameter itself."""
+
+    @pytest.mark.asyncio
+    async def test_default_still_disconnects(self):
+        from roombapy_prime.verify_region_commands import _confirm_show_send_watch
+
+        robot = AsyncMock()
+        command = MagicMock()
+        command.to_json.return_value = {"command": "start"}
+        report = MagicMock()
+
+        with patch("roombapy_prime.verify_region_commands._confirm", return_value=True):
+            await _confirm_show_send_watch(robot, command, report, watch_seconds=0, description="test")
+
+        robot.disconnect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_after_false_does_not_disconnect(self):
+        from roombapy_prime.verify_region_commands import _confirm_show_send_watch
+
+        robot = AsyncMock()
+        command = MagicMock()
+        command.to_json.return_value = {"command": "start"}
+        report = MagicMock()
+
+        with patch("roombapy_prime.verify_region_commands._confirm", return_value=True):
+            await _confirm_show_send_watch(
+                robot, command, report, watch_seconds=0, description="test", disconnect_after=False,
+            )
+
+        robot.disconnect.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_captured_events(self):
+        from roombapy_prime.verify_region_commands import _confirm_show_send_watch
+
+        robot = AsyncMock()
+        command = MagicMock()
+        command.to_json.return_value = {"command": "start"}
+        report = MagicMock()
+
+        fake_event = MagicMock(event_type="cmd", command=None, room=None, zone=None, error=None)
+
+        async def fake_watch():
+            yield fake_event
+
+        robot.watch_mission_timeline = fake_watch
+
+        with patch("roombapy_prime.verify_region_commands._confirm", return_value=True):
+            events = await _confirm_show_send_watch(
+                robot, command, report, watch_seconds=1, description="test", disconnect_after=False,
+            )
+
+        assert events == [fake_event]
+
+
+class TestStageTwoAndThreeNowIncludeInitiator:
+    """REAL GAP FOUND AND FIXED (this session, jayjay13011's own field
+    report showing all three stages' actual payloads side by side):
+    stage 2 and stage 3 never added "initiator", always testing the
+    same "no initiator" shape as stage 1 -- never actually exercising
+    the initiator+command hypothesis stage 1b was built to test."""
+
+    @pytest.mark.asyncio
+    async def test_stage_two_payload_includes_rmt_app_initiator(self):
+        from roombapy_prime.models.mission_control import MissionCommandType, Region, RegionType, RoutineCommand
+        from roombapy_prime.verify_region_commands import send_stage_two
+
+        original = RoutineCommand(
+            command_type=MissionCommandType.START, asset_id="BLID", initiator=None,
+            regions=[Region(region_id="1", region_type=RegionType.RID)],
+        )
+        favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
+        robot = AsyncMock()
+        robot.get_favorites.return_value = [favorite]
+        captured = {}
+
+        async def fake_confirm_show_send_watch(robot_arg, command, report, watch_seconds, description):
+            captured["command"] = command
+            return []
+
+        fake_session_cm = MagicMock()
+        fake_session_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        fake_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("roombapy_prime.verify_region_commands._login_and_connect", new=AsyncMock(return_value=robot)), \
+             patch("roombapy_prime.verify_region_commands._confirm_show_send_watch", fake_confirm_show_send_watch), \
+             patch("aiohttp.ClientSession", return_value=fake_session_cm):
+            await send_stage_two("u", "p", "US", "BLID", "fav1", 0, suction_level=2, watch_seconds=0)
+
+        assert captured["command"].initiator == "rmtApp"
+
+    @pytest.mark.asyncio
+    async def test_stage_three_payload_includes_rmt_app_initiator(self):
+        from roombapy_prime.verify_region_commands import send_stage_three
+
+        robot = AsyncMock()
+        captured = {}
+
+        async def fake_confirm_show_send_watch(robot_arg, command, report, watch_seconds, description):
+            captured["command"] = command
+            return []
+
+        fake_session_cm = MagicMock()
+        fake_session_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        fake_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("roombapy_prime.verify_region_commands._login_and_connect", new=AsyncMock(return_value=robot)), \
+             patch("roombapy_prime.verify_region_commands._confirm_show_send_watch", fake_confirm_show_send_watch), \
+             patch("aiohttp.ClientSession", return_value=fake_session_cm):
+            await send_stage_three(
+                "u", "p", "US", "BLID", p2map_id="MAP1", room_id="2", region_type="rid", watch_seconds=0,
+            )
+
+        assert captured["command"].initiator == "rmtApp"

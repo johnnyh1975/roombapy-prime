@@ -8,6 +8,33 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a20] - 2026-07-24
+
+### Added
+
+- **New `roombapy-prime-verify-region-commands-session`**, a low-friction session runner for
+  region-commands stages 1 / 1b / 2 — one login, one favorite lookup, a "continue to next stage?"
+  prompt between each instead of retyping the full command and credentials every time. Every
+  sending stage still shows the exact payload and requires its own explicit y/N confirmation —
+  this only removes retyping friction between stages, not the human-in-the-loop safety gate
+  itself. `--favorite-id` is now optional too: since the script fetches every favorite anyway, a
+  separate `--list-favorites` run first (just to copy an id) was redundant — omit it and the
+  script lists STAGE-1-ELIGIBLE command_defs inline and lets you pick one by number instead. Also
+  adds `_summarize_events()` to `verify_region_commands.py` (used by both the new session runner
+  and available to the existing standalone stage functions): pulls the specific fields that
+  matter for judging whether region-targeting worked (echoed region/zone id, area, initiator) out
+  of the raw `mission/timeline/report` events, instead of leaving a human to parse event reprs by
+  eye.
+
+### Fixed
+
+- **`send_stage_two()`/`send_stage_three()` (region-commands) never added `initiator` at all**,
+  found via a real field test (jayjay13011) that showed all three stages' actual payloads side by
+  side. Only stage 1b ever added it — stage 2/3 always sent the same "no initiator" shape as
+  stage 1, meaning a negative result at either never actually tested the initiator+command
+  hypothesis stage 1b was specifically built to test. Both now compose with
+  `_add_initiator_if_missing()`, same as stage 1b.
+
 ## [0.1.11a19] - 2026-07-24
 
 ### Added

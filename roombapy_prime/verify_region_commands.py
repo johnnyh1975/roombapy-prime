@@ -148,24 +148,42 @@ async def _login_and_connect(session: aiohttp.ClientSession, username: str, pass
 
 async def _confirm_show_send_watch(
     robot, command, report: Report, watch_seconds: int, description: str,
-) -> None:
+    disconnect_after: bool = True,
+) -> list:
     """Shared final step for every stage: show the exact payload,
     require interactive confirmation, send, optionally watch
     mission/timeline/report afterward. Used identically by stages
     1-4 -- the only thing that differs between stages is HOW `command`
-    was constructed before reaching this point."""
+    was constructed before reaching this point.
+
+    NOW RETURNS the captured events (this session) -- previously
+    printed raw event reprs and returned nothing, discarded by every
+    existing caller. Backward compatible (all four existing stage
+    functions still ignore the return value, unaffected) -- added
+    specifically so verify_region_commands_session.py can build a
+    genuinely useful, structured summary instead of a human having to
+    parse raw event reprs live in a terminal. See _summarize_events()'s
+    own docstring for what "structured" means here and why.
+
+    disconnect_after=False (this session) -- for verify_region_commands
+    _session.py specifically, which reuses ONE connection across
+    stages 1/1b/2 rather than reconnecting for each (the whole point
+    of that script is fewer logins, not more). All four existing
+    standalone stage functions keep the original disconnect_after=True
+    default, unaffected."""
     payload = command.to_json()
     print(f"\n{description}")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
     if not _confirm("\nSend this EXACT payload now? This will move the robot."):
         print("Aborted by user -- nothing sent.")
-        return
+        return []
 
     print("\n== Sending ==")
     await robot.send_routine_command_via_cmd_topic(command)
     report.add("send_routine_command_via_cmd_topic()", "OK", "payload sent, fire-and-forget (no response wait)")
 
+    events: list = []
     if watch_seconds > 0:
         print(f"\n== Watching mission/timeline/report for {watch_seconds}s ==")
         print("(Ctrl+C to stop watching early -- the command has already been sent either way)")
@@ -173,12 +191,70 @@ async def _confirm_show_send_watch(
             async with asyncio.timeout(watch_seconds):
                 async for event in robot.watch_mission_timeline():
                     print(f"  {event}")
+                    events.append(event)
         except TimeoutError:
             pass
         except KeyboardInterrupt:
             pass
+        print(_summarize_events(events))
 
-    await robot.disconnect()
+    if disconnect_after:
+        await robot.disconnect()
+    return events
+
+
+def _summarize_events(events: list) -> str:
+    """Pulls out the specific fields that actually matter for judging
+    whether a region-targeted command worked, from the raw
+    MissionTimelineEvent list _confirm_show_send_watch() captured --
+    rather than leaving a human to parse repr() output live in a
+    terminal. Deliberately reports FACTS only (what fields were
+    present and what they said), not a verdict -- "did this work" is
+    still a judgment call for whoever watched the robot, this just
+    makes the judgment easier to make correctly.
+
+    NEW (this session), built specifically because "zero events in
+    the watch window" (chairstacker/jayjay13011's real stage 1/1b
+    results) and "events arrived but don't mention the requested
+    region" are two different findings that raw printing didn't
+    distinguish clearly enough."""
+    if not events:
+        return (
+            "\n== Summary: NO events observed during the watch window ==\n"
+            "This matches what stage 1 showed for both chairstacker and jayjay13011 -- "
+            "consistent with \"nothing happened\", not proof of it (a real event could "
+            "still arrive after the watch window closed)."
+        )
+
+    lines = [f"\n== Summary: {len(events)} event(s) observed =="]
+    for event in events:
+        event_type = getattr(event, "event_type", None)
+        parts = [f"  [{event_type}]"]
+        command_ev = getattr(event, "command", None)
+        if command_ev is not None:
+            parts.append(
+                f"command={getattr(command_ev, 'command', None)!r} "
+                f"initiator={getattr(command_ev, 'initiator', None)!r}"
+            )
+        room_ev = getattr(event, "room", None)
+        if room_ev is not None:
+            parts.append(
+                f"region_id={getattr(room_ev, 'region_id', None)!r} "
+                f"area={getattr(room_ev, 'area', None)!r} "
+                f"total_area={getattr(room_ev, 'total_area', None)!r}"
+            )
+        zone_ev = getattr(event, "zone", None)
+        if zone_ev is not None:
+            parts.append(
+                f"zone_id={getattr(zone_ev, 'zone_id', None)!r} "
+                f"area={getattr(zone_ev, 'area', None)!r} "
+                f"total_area={getattr(zone_ev, 'total_area', None)!r}"
+            )
+        error_ev = getattr(event, "error", None)
+        if error_ev is not None:
+            parts.append(f"** ERROR value={getattr(error_ev, 'value', None)!r} **")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
 
 
 async def list_favorites(username: str, password: str, country_code: str, blid: str) -> None:
@@ -423,7 +499,17 @@ async def send_stage_two(
     region's user-modifiable params against the original favorite --
     since something WAS genuinely changed here (relative to the
     favorite this came from), True is the correct value to send, not
-    an arbitrary guess."""
+    an arbitrary guess.
+
+    REAL GAP FOUND AND FIXED (this session, jayjay13011's own field
+    report): this used to never add "initiator", regardless of
+    whether the favorite had one -- meaning stage 2 always tested the
+    SAME "no initiator" shape as stage 1, never actually exercising
+    the initiator+command hypothesis stage 1b was specifically built
+    to test. Now reuses _add_initiator_if_missing() (unchanged,
+    already-tested) exactly like stage 1b does, so a positive/negative
+    result here is no longer confounded by a field stage 1b's own
+    result suggests might matter."""
     report = Report()
     async with aiohttp.ClientSession() as session:
         robot = await _login_and_connect(session, username, password, country_code, blid, report)
@@ -448,12 +534,18 @@ async def send_stage_two(
             return
 
         modified, original_level = _build_modified_command(original, suction_level)
+        with_initiator = _add_initiator_if_missing(modified)
+        final_command = with_initiator if with_initiator is not None else modified
+        initiator_note = (
+            " and initiator added (was unset -> \"rmtApp\")" if with_initiator is not None
+            else f" (initiator already set to {modified.initiator!r}, unchanged)"
+        )
 
         await _confirm_show_send_watch(
-            robot, modified, report, watch_seconds,
+            robot, final_command, report, watch_seconds,
             f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
             f"command_defs[{command_index}] with suction_level changed "
-            f"({original_level!r} -> {suction_level!r}), routine_modified=True:",
+            f"({original_level!r} -> {suction_level!r}), routine_modified=True{initiator_note}:",
         )
 
     report.redact(username, password)
@@ -510,7 +602,14 @@ async def send_stage_three(
     so the modified-vs-unmodified comparison this field represents
     doesn't apply the same way it does for stages 1-2 -- unconfirmed
     whether the real app ever constructs a from-scratch command this
-    way at all, let alone what it would set this to if so."""
+    way at all, let alone what it would set this to if so.
+
+    REAL GAP FOUND AND FIXED (this session, jayjay13011's own field
+    report): this never set "initiator" either, for the same reason
+    stage 2 didn't -- nobody had connected stage 1b's own finding back
+    to stages 2/3 until a real field test showed all three payloads
+    side by side. Now adds it via _add_initiator_if_missing(), same as
+    stages 1b/2."""
     from .models.mission_control import MissionCommandType, Region, RoutineCommand
 
     if region_type.lower() not in (str(RegionType.RID).lower(), str(RegionType.ZID).lower()):
@@ -527,11 +626,13 @@ async def send_stage_three(
             map_id=p2map_id,
             regions=[Region(region_id=room_id, region_type=RegionType(region_type.lower()))],
         )
+        with_initiator = _add_initiator_if_missing(command)
+        final_command = with_initiator if with_initiator is not None else command
 
         await _confirm_show_send_watch(
-            robot, command, report, watch_seconds,
+            robot, final_command, report, watch_seconds,
             f"From-scratch command: clean room_id={room_id!r} ({region_type}) on map {p2map_id!r}, "
-            "no favorite_id, nothing derived from an existing favorite:",
+            "no favorite_id, nothing derived from an existing favorite, initiator=\"rmtApp\" added:",
         )
 
     report.redact(username, password)
