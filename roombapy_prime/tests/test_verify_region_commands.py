@@ -288,7 +288,7 @@ class TestConfirmShowSendWatchDisconnectAfter:
         robot.disconnect.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_returns_captured_events(self):
+    async def test_returns_captured_events_and_empty_rejections_by_default(self):
         from roombapy_prime.verify_region_commands import _confirm_show_send_watch
 
         robot = AsyncMock()
@@ -298,17 +298,90 @@ class TestConfirmShowSendWatchDisconnectAfter:
 
         fake_event = MagicMock(event_type="cmd", command=None, room=None, zone=None, error=None)
 
-        async def fake_watch():
+        async def fake_watch_timeline():
             yield fake_event
 
-        robot.watch_mission_timeline = fake_watch
+        async def fake_watch_rejected():
+            return
+            yield  # pragma: no cover -- makes this an async generator
+
+        robot.watch_mission_timeline = fake_watch_timeline
+        robot.watch_rejected_commands = fake_watch_rejected
 
         with patch("roombapy_prime.verify_region_commands._confirm", return_value=True):
-            events = await _confirm_show_send_watch(
+            events, rejected = await _confirm_show_send_watch(
                 robot, command, report, watch_seconds=1, description="test", disconnect_after=False,
             )
 
         assert events == [fake_event]
+        assert rejected == []
+
+    @pytest.mark.asyncio
+    async def test_captures_a_real_rejection_if_one_arrives(self):
+        """NEW (this session) -- watch_rejected_commands() is now
+        watched concurrently with watch_mission_timeline(), genuinely
+        for the first time in this project's region-command testing.
+        See _confirm_show_send_watch()'s own docstring for why this
+        matters: a rejection and a silent ignore look identical on
+        mission/timeline/report alone."""
+        from roombapy_prime.verify_region_commands import _confirm_show_send_watch
+
+        robot = AsyncMock()
+        command = MagicMock()
+        command.to_json.return_value = {"command": "start"}
+        report = MagicMock()
+
+        fake_rejection = MagicMock()
+
+        async def fake_watch_timeline():
+            return
+            yield  # pragma: no cover
+
+        async def fake_watch_rejected():
+            yield fake_rejection
+
+        robot.watch_mission_timeline = fake_watch_timeline
+        robot.watch_rejected_commands = fake_watch_rejected
+
+        with patch("roombapy_prime.verify_region_commands._confirm", return_value=True):
+            events, rejected = await _confirm_show_send_watch(
+                robot, command, report, watch_seconds=1, description="test", disconnect_after=False,
+            )
+
+        assert events == []
+        assert rejected == [fake_rejection]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_rejected_watch_does_not_break_the_timeline_watch(self):
+        """A failure in watch_rejected_commands() (EXPLORATORY, per its
+        own docstring -- e.g. a ValueError if irbt_topic_prefix is
+        unexpectedly missing) must not take down the already-working
+        mission-timeline watch running alongside it."""
+        from roombapy_prime.verify_region_commands import _confirm_show_send_watch
+
+        robot = AsyncMock()
+        command = MagicMock()
+        command.to_json.return_value = {"command": "start"}
+        report = MagicMock()
+
+        fake_event = MagicMock(event_type="cmd", command=None, room=None, zone=None, error=None)
+
+        async def fake_watch_timeline():
+            yield fake_event
+
+        def fake_watch_rejected():
+            raise ValueError("simulated: irbt_topic_prefix missing")
+
+        robot.watch_mission_timeline = fake_watch_timeline
+        robot.watch_rejected_commands = fake_watch_rejected
+
+        with patch("roombapy_prime.verify_region_commands._confirm", return_value=True):
+            events, rejected = await _confirm_show_send_watch(
+                robot, command, report, watch_seconds=1, description="test", disconnect_after=False,
+            )
+
+        assert events == [fake_event]
+        assert rejected == []
 
 
 class TestStageTwoAndThreeNowIncludeInitiator:
@@ -369,4 +442,124 @@ class TestStageTwoAndThreeNowIncludeInitiator:
                 "u", "p", "US", "BLID", p2map_id="MAP1", room_id="2", region_type="rid", watch_seconds=0,
             )
 
+        assert captured["command"].initiator == "rmtApp"
+
+
+def test_add_favorite_id_if_missing_adds_it_when_unset():
+    """REAL GAP FOUND (this session, re-analyzing prior research):
+    the real app's own RoutineCommandBuilder.setFromFavorite() always
+    sends favorite_id together with a favorite's resolved
+    command_defs (confirmed via send_routine_command_via_cmd_topic()'s
+    own docstring) -- but no stage of this script ever added it,
+    despite RoutineCommand.to_json() having supported emitting it
+    since it was written."""
+    from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+    from roombapy_prime.verify_region_commands import _add_favorite_id_if_missing
+
+    original = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID", favorite_id=None)
+
+    result = _add_favorite_id_if_missing(original, "fav123")
+
+    assert result is not None
+    assert result.favorite_id == "fav123"
+    assert result.to_json()["favorite_id"] == "fav123"
+    # everything else must be untouched.
+    assert result.command_type == original.command_type
+    assert result.asset_id == original.asset_id
+
+
+def test_add_favorite_id_if_missing_returns_none_when_already_set():
+    from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+    from roombapy_prime.verify_region_commands import _add_favorite_id_if_missing
+
+    original = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID", favorite_id="already-set")
+
+    result = _add_favorite_id_if_missing(original, "fav123")
+
+    assert result is None
+
+
+class TestStagesOneOneBTwoNowIncludeFavoriteId:
+    """REAL GAP FOUND AND FIXED (this session) -- see
+    _add_favorite_id_if_missing()'s own docstring for the full finding.
+    Every real payload shown by any field tester so far was missing
+    this field entirely."""
+
+    def _fake_session_cm(self):
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm
+
+    @pytest.mark.asyncio
+    async def test_stage_one_payload_includes_favorite_id(self):
+        from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+        from roombapy_prime.verify_region_commands import send_stage_one
+
+        original = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID", favorite_id=None)
+        favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
+        robot = AsyncMock()
+        robot.get_favorites.return_value = [favorite]
+        captured = {}
+
+        async def fake_confirm_show_send_watch(robot_arg, command, report, watch_seconds, description):
+            captured["command"] = command
+            return []
+
+        with patch("roombapy_prime.verify_region_commands._login_and_connect", new=AsyncMock(return_value=robot)), \
+             patch("roombapy_prime.verify_region_commands._confirm_show_send_watch", fake_confirm_show_send_watch), \
+             patch("aiohttp.ClientSession", return_value=self._fake_session_cm()):
+            await send_stage_one("u", "p", "US", "BLID", "fav1", 0, watch_seconds=0)
+
+        assert captured["command"].favorite_id == "fav1"
+
+    @pytest.mark.asyncio
+    async def test_stage_one_with_initiator_payload_includes_both_fields(self):
+        from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+        from roombapy_prime.verify_region_commands import send_stage_one_with_initiator
+
+        original = RoutineCommand(
+            command_type=MissionCommandType.START, asset_id="BLID", favorite_id=None, initiator=None,
+        )
+        favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
+        robot = AsyncMock()
+        robot.get_favorites.return_value = [favorite]
+        captured = {}
+
+        async def fake_confirm_show_send_watch(robot_arg, command, report, watch_seconds, description):
+            captured["command"] = command
+            return []
+
+        with patch("roombapy_prime.verify_region_commands._login_and_connect", new=AsyncMock(return_value=robot)), \
+             patch("roombapy_prime.verify_region_commands._confirm_show_send_watch", fake_confirm_show_send_watch), \
+             patch("aiohttp.ClientSession", return_value=self._fake_session_cm()):
+            await send_stage_one_with_initiator("u", "p", "US", "BLID", "fav1", 0, watch_seconds=0)
+
+        assert captured["command"].favorite_id == "fav1"
+        assert captured["command"].initiator == "rmtApp"
+
+    @pytest.mark.asyncio
+    async def test_stage_two_payload_includes_favorite_id_alongside_initiator(self):
+        from roombapy_prime.models.mission_control import MissionCommandType, Region, RegionType, RoutineCommand
+        from roombapy_prime.verify_region_commands import send_stage_two
+
+        original = RoutineCommand(
+            command_type=MissionCommandType.START, asset_id="BLID", initiator=None, favorite_id=None,
+            regions=[Region(region_id="1", region_type=RegionType.RID)],
+        )
+        favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
+        robot = AsyncMock()
+        robot.get_favorites.return_value = [favorite]
+        captured = {}
+
+        async def fake_confirm_show_send_watch(robot_arg, command, report, watch_seconds, description):
+            captured["command"] = command
+            return []
+
+        with patch("roombapy_prime.verify_region_commands._login_and_connect", new=AsyncMock(return_value=robot)), \
+             patch("roombapy_prime.verify_region_commands._confirm_show_send_watch", fake_confirm_show_send_watch), \
+             patch("aiohttp.ClientSession", return_value=self._fake_session_cm()):
+            await send_stage_two("u", "p", "US", "BLID", "fav1", 0, suction_level=2, watch_seconds=0)
+
+        assert captured["command"].favorite_id == "fav1"
         assert captured["command"].initiator == "rmtApp"

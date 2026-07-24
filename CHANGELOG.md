@@ -8,6 +8,48 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a21] - 2026-07-24
+
+### Fixed
+
+- **Real race condition found and fixed: region-command tests used to SEND the command before
+  subscribing to watch anything.** `_watch_topic()` (the shared mechanism behind
+  `watch_mission_timeline()`/`watch_rejected_commands()`) subscribes fresh on every call, not from
+  a persistent subscription held since `connect()` — a response arriving faster than the time it
+  takes to start watching afterward would have been silently missed entirely. Plausible for a
+  REJECTION specifically (a schema/validation check could return in milliseconds, far faster than
+  a physical robot could ever react) — every prior region-command test subscribed only AFTER
+  already sending. `_confirm_show_send_watch()` now subscribes first (as background tasks), waits
+  a short settle period for the subscriptions to actually reach the broker, THEN sends, THEN lets
+  the same tasks keep running for the full watch window.
+
+- **`send_stage_one()`/`send_stage_one_with_initiator()`/`send_stage_two()` (region-commands)
+  never added `favorite_id` to the outgoing command, in any version, on any stage.** Found while
+  re-analyzing this project's own prior research: `send_routine_command_via_cmd_topic()`'s own
+  docstring already confirmed, via the real app's own `RoutineCommandBuilder`, that
+  `setFromFavorite()` always sends `favorite_id` together with a favorite's resolved
+  `command_defs` — and `RoutineCommand.to_json()` has supported emitting it since it was written
+  — but nothing in this script ever actually set it on the command being sent, despite fetching
+  the favorite (and therefore knowing its real `favorite_id`) in every stage. Every real payload
+  shown by any field tester so far (chairstacker, jayjay13011) was missing this field entirely.
+  All three stages, plus `verify-region-commands-session`'s own inline copies of the same logic,
+  now add it via a new `_add_favorite_id_if_missing()` helper, mirroring
+  `_add_initiator_if_missing()`'s own "only fill in if missing" contract. Stage 3
+  (`--send-region`, deliberately no favorite at all) is unaffected — it has no `favorite_id` to
+  add by design.
+
+### Added
+
+- **Region-command tests now also watch `watch_rejected_commands()` (`rejected/report`),
+  concurrently with `mission/timeline/report`.** Never done before in this script, despite the
+  method existing and already being proven functional elsewhere (`verify_mission_timeline.py`'s
+  own combined watch). Every prior region-command "nothing happened" result only ever checked the
+  mission-timeline channel — a silent server-side rejection and the robot simply ignoring an
+  accepted command would have looked identical. `_confirm_show_send_watch()` now returns
+  `(timeline_events, rejected_events)` instead of a single list; a failure watching the
+  (exploratory, unconfirmed) rejected channel is caught and logged without affecting the
+  already-working timeline watch running alongside it.
+
 ## [0.1.11a20] - 2026-07-24
 
 ### Added

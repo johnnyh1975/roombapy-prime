@@ -43,6 +43,7 @@ import aiohttp
 
 from .diagnostics import Report
 from .verify_region_commands import (
+    _add_favorite_id_if_missing,
     _add_initiator_if_missing,
     _build_modified_command,
     _confirm,
@@ -102,7 +103,7 @@ async def run_session(
     favorite_id: str | None, command_index: int | None, suction_level: int, watch_seconds: int,
 ) -> None:
     report = Report()
-    all_results: list[tuple[str, list]] = []
+    all_results: list[tuple[str, list, list]] = []
 
     async with aiohttp.ClientSession() as session:
         robot = await _login_and_connect(session, username, password, country_code, blid, report)
@@ -143,13 +144,19 @@ async def run_session(
         print("\n" + "=" * 60)
         print("STAGE 1 -- resend this favorite's own command, completely unchanged")
         print("=" * 60)
-        events = await _confirm_show_send_watch(
-            robot, original, report, watch_seconds,
+        # REAL GAP FOUND AND FIXED (this session, same finding as
+        # verify_region_commands.py's own send_stage_one() docstring):
+        # favorite_id was never added here either.
+        with_favorite_id_1 = _add_favorite_id_if_missing(original, favorite_id)
+        stage_1_command = with_favorite_id_1 if with_favorite_id_1 is not None else original
+        events, rejected = await _confirm_show_send_watch(
+            robot, stage_1_command, report, watch_seconds,
             f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
-            f"command_defs[{command_index}] -- EXACTLY as stored, nothing modified:",
+            f"command_defs[{command_index}] -- as stored, favorite_id added to match "
+            "the real app's own confirmed behavior, nothing else changed:",
             disconnect_after=False,
         )
-        all_results.append(("Stage 1 (unchanged)", events))
+        all_results.append(("Stage 1 (unchanged)", events, rejected))
         if not _confirm("\nContinue to stage 1b (adds initiator if missing)?"):
             await robot.disconnect()
             _print_final_summary(all_results)
@@ -166,15 +173,22 @@ async def run_session(
                 "-- stage 1b has nothing to add (it's identical to stage 1 for this favorite). Skipping."
             )
             events_1b: list = []
+            rejected_1b: list = []
         else:
-            events_1b = await _confirm_show_send_watch(
-                robot, with_initiator, report, watch_seconds,
+            # REAL GAP FOUND AND FIXED (this session): favorite_id
+            # composed on top of the initiator addition, same as
+            # verify_region_commands.py's own send_stage_one_with_initiator().
+            with_favorite_id_1b = _add_favorite_id_if_missing(with_initiator, favorite_id)
+            stage_1b_command = with_favorite_id_1b if with_favorite_id_1b is not None else with_initiator
+            events_1b, rejected_1b = await _confirm_show_send_watch(
+                robot, stage_1b_command, report, watch_seconds,
                 f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
-                f"command_defs[{command_index}] with initiator added (was unset -> \"rmtApp\"), "
+                f"command_defs[{command_index}] with initiator added (was unset -> \"rmtApp\") "
+                "and favorite_id added to match the real app's own confirmed behavior, "
                 "nothing else changed:",
                 disconnect_after=False,
             )
-        all_results.append(("Stage 1b (+initiator)", events_1b))
+        all_results.append(("Stage 1b (+initiator)", events_1b, rejected_1b))
         if not _confirm(f"\nContinue to stage 2 (changes suction level to {suction_level})?"):
             await robot.disconnect()
             _print_final_summary(all_results)
@@ -191,14 +205,20 @@ async def run_session(
         # full finding. Fixed identically here.
         with_initiator_2 = _add_initiator_if_missing(modified)
         final_stage_2_command = with_initiator_2 if with_initiator_2 is not None else modified
-        events_2 = await _confirm_show_send_watch(
+        # REAL GAP FOUND AND FIXED (this session): favorite_id composed
+        # on top, same finding as stage 1/1b above.
+        with_favorite_id_2 = _add_favorite_id_if_missing(final_stage_2_command, favorite_id)
+        if with_favorite_id_2 is not None:
+            final_stage_2_command = with_favorite_id_2
+        events_2, rejected_2 = await _confirm_show_send_watch(
             robot, final_stage_2_command, report, watch_seconds,
             f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
             f"command_defs[{command_index}] with suction_level changed "
-            f"({original_level!r} -> {suction_level!r}), regions untouched, initiator included:",
+            f"({original_level!r} -> {suction_level!r}), regions untouched, "
+            "initiator and favorite_id included:",
             disconnect_after=False,
         )
-        all_results.append((f"Stage 2 (suction_level -> {suction_level})", events_2))
+        all_results.append((f"Stage 2 (suction_level -> {suction_level})", events_2, rejected_2))
         await robot.disconnect()
 
     _print_final_summary(all_results)
@@ -213,13 +233,23 @@ async def run_session(
     )
 
 
-def _print_final_summary(results: list[tuple[str, list]]) -> None:
+def _print_final_summary(results: list[tuple[str, list, list]]) -> None:
     print("\n" + "#" * 60)
     print("# SESSION SUMMARY -- every stage attempted this run")
     print("#" * 60)
-    for label, events in results:
+    any_rejected = False
+    for label, events, rejected in results:
         print(f"\n--- {label} ---")
         print(_summarize_events(events))
+        if rejected:
+            any_rejected = True
+            print(f"  ** {len(rejected)} REJECTION(S) on rejected/report for this stage **")
+    if any_rejected:
+        print(
+            "\nAt least one stage received a rejection -- a genuinely new finding, since no "
+            "prior region-command test ever watched this channel. Worth reporting the raw "
+            "rejection content shown above."
+        )
 
 
 def main() -> None:

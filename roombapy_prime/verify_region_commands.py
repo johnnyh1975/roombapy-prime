@@ -84,6 +84,7 @@ import argparse
 import asyncio
 import getpass
 import json
+import logging
 import os
 import sys
 from typing import Any
@@ -93,6 +94,8 @@ import aiohttp
 from .diagnostics import Report
 from .models.mission_control import Region, RegionType
 from .prime_factory import PrimeFactory
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _confirm(prompt: str) -> bool:
@@ -149,58 +152,121 @@ async def _login_and_connect(session: aiohttp.ClientSession, username: str, pass
 async def _confirm_show_send_watch(
     robot, command, report: Report, watch_seconds: int, description: str,
     disconnect_after: bool = True,
-) -> list:
+) -> tuple[list, list]:
     """Shared final step for every stage: show the exact payload,
-    require interactive confirmation, send, optionally watch
-    mission/timeline/report afterward. Used identically by stages
-    1-4 -- the only thing that differs between stages is HOW `command`
-    was constructed before reaching this point.
+    require interactive confirmation, subscribe to mission/timeline/
+    report AND rejected/report, THEN send, then keep watching. Used
+    identically by stages 1-4 -- the only thing that differs between
+    stages is HOW `command` was constructed before reaching this
+    point.
 
-    NOW RETURNS the captured events (this session) -- previously
-    printed raw event reprs and returned nothing, discarded by every
-    existing caller. Backward compatible (all four existing stage
-    functions still ignore the return value, unaffected) -- added
-    specifically so verify_region_commands_session.py can build a
-    genuinely useful, structured summary instead of a human having to
-    parse raw event reprs live in a terminal. See _summarize_events()'s
-    own docstring for what "structured" means here and why.
+    RETURNS (timeline_events, rejected_events) (this session) --
+    previously returned just a plain list of timeline events. Every
+    existing caller either ignores the return value (the four
+    standalone stage functions) or has been updated to unpack the
+    tuple (verify_region_commands_session.py).
 
-    disconnect_after=False (this session) -- for verify_region_commands
-    _session.py specifically, which reuses ONE connection across
-    stages 1/1b/2 rather than reconnecting for each (the whole point
-    of that script is fewer logins, not more). All four existing
-    standalone stage functions keep the original disconnect_after=True
-    default, unaffected."""
+    NOW ALSO WATCHES watch_rejected_commands() (this session) --
+    genuinely never done before in this script, despite the method
+    existing and already being proven functional elsewhere
+    (verify_mission_timeline.py's own combined watch). Every region-
+    command test so far has only watched mission/timeline/report,
+    which would show nothing at all if the server silently rejects a
+    malformed/incomplete command rather than the robot simply
+    ignoring an accepted one -- two different findings this project's
+    prior "nothing happened" results have never actually
+    distinguished between.
+
+    REAL RACE CONDITION FOUND AND FIXED (this session): this used to
+    SEND the command FIRST, then start watching -- but _watch_topic()
+    (prime_robot.py) subscribes fresh on every call, not from a
+    persistent subscription held since connect(). A response arriving
+    faster than the time it takes this function to start its two
+    watch loops afterward would have been silently missed entirely --
+    plausible for a REJECTION specifically, which could come back in
+    milliseconds (a schema/validation check), far faster than a
+    physical robot could ever react. Every prior region-command test
+    subscribed only AFTER already sending. Now subscribes first (as
+    background tasks), waits a short settle period for the
+    subscriptions to actually establish with the broker, THEN sends,
+    THEN lets the same tasks keep running for watch_seconds."""
     payload = command.to_json()
     print(f"\n{description}")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
     if not _confirm("\nSend this EXACT payload now? This will move the robot."):
         print("Aborted by user -- nothing sent.")
-        return []
+        return [], []
+
+    events: list = []
+    rejected: list = []
+
+    async def _watch_timeline() -> None:
+        async for event in robot.watch_mission_timeline():
+            print(f"  [timeline] {event}")
+            events.append(event)
+
+    async def _watch_rejected() -> None:
+        async for response in robot.watch_rejected_commands():
+            print(f"  ** REJECTED ** {response}")
+            rejected.append(response)
+
+    timeline_task: asyncio.Task | None = None
+    rejected_task: asyncio.Task | None = None
+    if watch_seconds > 0:
+        print(
+            "\n== Subscribing to mission/timeline/report and rejected/report BEFORE "
+            "sending (a fast response, especially a rejection, could otherwise arrive "
+            "before we're listening) =="
+        )
+        timeline_task = asyncio.create_task(_watch_timeline())
+        rejected_task = asyncio.create_task(_watch_rejected())
+        # Give the subscribe() calls a moment to actually reach the
+        # broker before sending -- there's no "subscription confirmed"
+        # signal to await precisely here, so a short, fixed settle
+        # period is the safest available option.
+        await asyncio.sleep(1.0)
 
     print("\n== Sending ==")
     await robot.send_routine_command_via_cmd_topic(command)
     report.add("send_routine_command_via_cmd_topic()", "OK", "payload sent, fire-and-forget (no response wait)")
 
-    events: list = []
     if watch_seconds > 0:
-        print(f"\n== Watching mission/timeline/report for {watch_seconds}s ==")
+        print(f"\n== Watching for {watch_seconds}s (already subscribed since before sending) ==")
         print("(Ctrl+C to stop watching early -- the command has already been sent either way)")
         try:
             async with asyncio.timeout(watch_seconds):
-                async for event in robot.watch_mission_timeline():
-                    print(f"  {event}")
-                    events.append(event)
+                await asyncio.gather(timeline_task, rejected_task)
         except TimeoutError:
             pass
         except KeyboardInterrupt:
             pass
+        except Exception:  # noqa: BLE001 -- watch_rejected_commands() is
+            # EXPLORATORY (see its own docstring, prime_robot.py) -- a
+            # failure watching it (e.g. ValueError if irbt_topic_prefix
+            # is unexpectedly missing) must not take down the
+            # already-working mission-timeline watch alongside it.
+            _LOGGER.exception("roomba_prime: watch_rejected_commands() failed during this test")
+        finally:
+            for task in (timeline_task, rejected_task):
+                if task is not None and not task.done():
+                    task.cancel()
         print(_summarize_events(events))
+        if rejected:
+            print(
+                f"\n== {len(rejected)} REJECTION(S) received -- see above for the raw "
+                "response(s). This is a genuinely new finding if it happens -- no prior "
+                "region-command test has ever watched this channel. =="
+            )
+        else:
+            print(
+                "\nNo rejection received on rejected/report either -- consistent with "
+                "\"silently ignored\", not \"actively rejected with a reason\"."
+            )
 
     if disconnect_after:
         await robot.disconnect()
-    return events
+    return events, rejected
 
 
 def _summarize_events(events: list) -> str:
@@ -298,6 +364,25 @@ async def send_stage_one(
     command_index: int,
     watch_seconds: int,
 ) -> None:
+    """Stage 1: resend an existing favorite's own command_def exactly
+    as stored -- see this module's own docstring for the full
+    staged-risk reasoning.
+
+    REAL GAP FOUND AND FIXED (this session, re-analyzing this
+    project's own prior research after two negative field results):
+    the command_def as stored on a favorite apparently never carries
+    its OWN favorite_id (that lives on the parent favorite object, not
+    copied down) -- but send_routine_command_via_cmd_topic()'s own
+    docstring already confirmed, via the real app's own
+    RoutineCommandBuilder, that setFromFavorite() always sends
+    favorite_id together with the resolved command_defs. Resending
+    just the command_def, without adding favorite_id back, was never
+    actually byte-for-byte what the real app sends when replaying a
+    favorite -- see _add_favorite_id_if_missing()'s own docstring for
+    the full finding. This completes stage 1 to match that confirmed
+    real behavior; it isn't a new modification of the kind stage 1's
+    own "completely unchanged" promise is about (suction level,
+    regions, etc. remain untouched)."""
     report = Report()
     async with aiohttp.ClientSession() as session:
         robot = await _login_and_connect(session, username, password, country_code, blid, report)
@@ -311,9 +396,9 @@ async def send_stage_one(
         if not favorite.command_defs or command_index >= len(favorite.command_defs):
             print(f"ERROR: favorite {favorite_id!r} has no command_defs[{command_index}].")
             return
-        command = favorite.command_defs[command_index]
+        original = favorite.command_defs[command_index]
 
-        if not _is_safe_command_def(command):
+        if not _is_safe_command_def(original):
             print(
                 "ABORTED: this command_def contains a TID (ad-hoc/temporary) region. "
                 "This is stage 1 (RID/ZID regions only, completely unchanged) -- see "
@@ -321,15 +406,56 @@ async def send_stage_one(
             )
             return
 
+        with_favorite_id = _add_favorite_id_if_missing(original, favorite_id)
+        command = with_favorite_id if with_favorite_id is not None else original
+
         await _confirm_show_send_watch(
             robot, command, report, watch_seconds,
             f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
-            f"command_defs[{command_index}] -- EXACTLY as stored, nothing modified:",
+            f"command_defs[{command_index}] -- as stored, favorite_id added to match "
+            "the real app's own confirmed behavior, nothing else changed:",
         )
 
     report.redact(username, password)
     ok, failed, skipped = report.summary()
     print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+
+
+def _add_favorite_id_if_missing(original, favorite_id: str) -> object | None:
+    """NEW (this session, real gap found while re-analyzing this
+    project's own prior research): confirmed directly through the
+    real app's own RoutineCommandBuilder (see
+    send_routine_command_via_cmd_topic()'s own docstring,
+    prime_robot.py) -- setFromFavorite(favoriteId, commandDefs) stores
+    BOTH the favorite_id AND the favorite's resolved command_defs, and
+    build() sends them together. RoutineCommand.to_json() has
+    supported emitting "favorite_id" since it was written (see its own
+    to_json() -- `if self.favorite_id is not None: body["favorite_id"]
+    = self.favorite_id`) -- but NOTHING in this script's stages 1/1b/2
+    ever actually SET it on the command being sent, despite fetching
+    the favorite (and therefore knowing its real favorite_id) in every
+    one of them. Every real payload shown by any field tester so far
+    (chairstacker, jayjay13011) is missing this field entirely.
+
+    For stage 1 specifically, this isn't "changing" the command
+    relative to stage 1's own "completely unchanged" promise -- the
+    favorite's OWN command_defs entry, as stored, apparently never
+    carries its parent favorite's id (that lives one level up, on the
+    favorite object itself, not copied into each command_def) -- so
+    resending the command_def alone was never actually byte-for-byte
+    what the real app sends when replaying that favorite. Adding this
+    completes stage 1 to match the app's own confirmed behavior,
+    rather than deviating from it.
+
+    Same "only fill in if missing" contract as
+    _add_initiator_if_missing(): returns None if already set (nothing
+    to add), otherwise the command with favorite_id added, everything
+    else unchanged."""
+    import dataclasses
+
+    if original.favorite_id is not None:
+        return None
+    return dataclasses.replace(original, favorite_id=favorite_id)
 
 
 def _add_initiator_if_missing(original) -> object | None:
@@ -421,10 +547,18 @@ async def send_stage_one_with_initiator(
             )
             return
 
+        # REAL GAP FOUND AND FIXED (this session): same finding as
+        # stage 1's own docstring -- favorite_id was never added here
+        # either. Compose it on top of the initiator addition.
+        with_favorite_id = _add_favorite_id_if_missing(command, favorite_id)
+        if with_favorite_id is not None:
+            command = with_favorite_id
+
         await _confirm_show_send_watch(
             robot, command, report, watch_seconds,
             f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
-            f"command_defs[{command_index}] with initiator added (was unset -> \"rmtApp\"), "
+            f"command_defs[{command_index}] with initiator added (was unset -> \"rmtApp\") "
+            "and favorite_id added to match the real app's own confirmed behavior, "
             "nothing else changed:",
         )
 
@@ -509,7 +643,14 @@ async def send_stage_two(
     to test. Now reuses _add_initiator_if_missing() (unchanged,
     already-tested) exactly like stage 1b does, so a positive/negative
     result here is no longer confounded by a field stage 1b's own
-    result suggests might matter."""
+    result suggests might matter.
+
+    A SECOND REAL GAP, found the same session while re-analyzing prior
+    research: favorite_id was never added here either -- see stage 1's
+    own docstring and _add_favorite_id_if_missing()'s own docstring
+    for the full finding (the real app's own RoutineCommandBuilder
+    always sends favorite_id together with a favorite's resolved
+    command_defs). Composed on top of the initiator addition."""
     report = Report()
     async with aiohttp.ClientSession() as session:
         robot = await _login_and_connect(session, username, password, country_code, blid, report)
@@ -541,11 +682,19 @@ async def send_stage_two(
             else f" (initiator already set to {modified.initiator!r}, unchanged)"
         )
 
+        # REAL GAP FOUND AND FIXED (this session, same finding as
+        # stage 1/1b's own docstrings): favorite_id was never added
+        # here either. Compose it on top of the initiator addition.
+        with_favorite_id = _add_favorite_id_if_missing(final_command, favorite_id)
+        if with_favorite_id is not None:
+            final_command = with_favorite_id
+
         await _confirm_show_send_watch(
             robot, final_command, report, watch_seconds,
             f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
             f"command_defs[{command_index}] with suction_level changed "
-            f"({original_level!r} -> {suction_level!r}), routine_modified=True{initiator_note}:",
+            f"({original_level!r} -> {suction_level!r}), routine_modified=True{initiator_note}, "
+            "favorite_id added to match the real app's own confirmed behavior:",
         )
 
     report.redact(username, password)

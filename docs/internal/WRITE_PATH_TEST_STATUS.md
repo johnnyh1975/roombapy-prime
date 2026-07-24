@@ -1,6 +1,6 @@
 # roombapy-prime — Write-Path Test Status (systematisch)
 
-> Stand: v0.1.11a20 / Roomba+ v4.0.0a6. Konsolidiert aus allen bisherigen Feldtests,
+> Stand: v0.1.11a21 / Roomba+ v4.0.0a6. Konsolidiert aus allen bisherigen Feldtests,
 > damit nichts doppelt gefragt oder übersehen wird.
 
 ## Legende
@@ -49,17 +49,29 @@
 | Stufe | Status | Von | Anmerkung |
 |---|---|---|---|
 | 0 — Favoriten listen | ✅ | chairstacker, jayjay13011 | |
-| 1 — Resend unverändert | ✅ negativ | chairstacker, jayjay13011 | Beide: keine Wirkung |
-| 1b — mit `initiator` | ❌ | — | War mit falschem Wert (`localApp`) angefragt, nie mit dem korrekten (`rmtApp`, seit a19) abgeschlossen — **die wichtigste offene Einzelfrage im ganzen Projekt** |
-| 2 — Suction-Level ändern | ❌ | — | jayjay13011 traf einen echten Crash (behoben in a17), nie erneut versucht |
-| 3 — Eigener Raum, kein Favorit | ❌ | — | Höheres Risiko, noch niemand |
+| 1 — Resend unverändert | ✅ negativ (vor Fix) | chairstacker, jayjay13011 | Beide: keine Wirkung — aber `favorite_id` fehlte im gesendeten Payload, siehe unten |
+| 1b — mit `initiator` | ⏳ ausstehend | jayjay13011 (a19, korrekter `rmtApp`-Wert) | Ergebnis noch nicht zurückgemeldet — **die wichtigste offene Einzelfrage** |
+| 2 — Suction-Level ändern | ✅ negativ (ohne initiator/favorite_id) | jayjay13011 | Lief technisch fehlerfrei, aber ohne beide jetzt bekannten fehlenden Felder |
+| 3 — Eigener Raum, kein Favorit | ✅ negativ (ohne initiator) | jayjay13011 | Echte Raumnamen erstmals bestätigt (`--list-rooms`) |
 | 4 — Ad-hoc/TID-Zone | ❌ | — | Höchstes Risiko, braucht selbst ermittelte Geometriedaten |
 
-**Der Engpass.** Stufe 1b ist gerade als eigene, konsolidierte Anfrage raus (an alle vier).
+**Zwei reale Codelücken in dieser Session gefunden, beide behoben:**
+- **a20**: Stufe 2/3 haben `initiator` nie gesetzt (nur Stufe 1b) — jeder bisherige Stufe-2/3-Test hat die eigentliche Hypothese nie geprüft
+- **a21, größerer Fund**: **`favorite_id` wurde in keiner Stufe (1/1b/2) je gesetzt**, obwohl die eigene Recherche (`send_routine_command_via_cmd_topic()`s Docstring) längst bestätigt, dass die echte App es beim Wiederholen eines Favoriten immer mitschickt. Betrifft **rückwirkend alle bisherigen negativen Ergebnisse** — keiner der bisherigen Tests hat je ein wirklich app-äquivalentes Kommando gesendet.
+
+**Der Engpass bleibt Stufe 1b/2 mit dem jetzt vollständigen Payload** (a21) — noch nicht erneut getestet. Alles bisher Beobachtete (inkl. jayjays Stufe 1b auf a19) ist damit vorläufig überholt, sobald jemand auf a21 aktualisiert.
 
 ---
 
-## 5. `verify-virtual-wall-write` (`SetVirtualWallsV1`)
+## 5. `roombapy-prime-verify-region-commands-session` (neu, a19+)
+
+Session-Runner für Stufe 1→1b→2 mit einem Login, automatischer Favoriten-Auswahl, strukturierter
+Event-Zusammenfassung. Reduziert Wiederholungsaufwand, ersetzt aber nicht die eigentlichen
+Testergebnisse — noch niemand hat ihn mit dem vollständigen (a21) Payload durchlaufen.
+
+---
+
+## 6. `verify-virtual-wall-write` (`SetVirtualWallsV1`)
 
 | Stufe | Status | Von |
 |---|---|---|
@@ -70,7 +82,7 @@
 
 ---
 
-## 6. `verify-settings-write` (`set_setting()` für 5 Settings)
+## 7. `verify-settings-write` (`set_setting()` für 5 Settings)
 
 | Setting | Status |
 |---|---|
@@ -86,9 +98,11 @@
 
 ## Priorisierter Plan für die nächste Testrunde
 
-1. **Region-Commands Stufe 1b** — bereits raus, höchste Priorität, wartet auf Rückmeldung
-2. **Favoriten-Rückfrage an chairstacker** — kurze Klärung, kein neuer Test
-3. **Virtual-Wall-Write Stufe 0/1** — niedrigstes Risiko unter den komplett unangefassten Skripten, nächstes Issue
+1. **Region-Commands Stufe 1b/2 auf a21 erneut testen** — mit `favorite_id` **und** `initiator`
+   jetzt erstmals vollständig — höchste Priorität, überholt alle bisherigen Ergebnisse
+2. **Favoriten-Rückfrage an chairstacker** — kurze Klärung (App- vs. API-Sichtbarkeit), kein neuer Test
+3. **Virtual-Wall-Write Stufe 0/1** — niedrigstes Risiko unter den komplett unangefassten Skripten
 4. **Settings-Write** — danach, inkl. der `schedHold`-Doppelquellen-Frage
-5. **Region-Commands Stufe 2** (mit dem a17-Fix) — kann parallel zu 1b angefragt werden, an jayjay13011 (der den Crash hatte)
-6. **Region-Commands Stufe 3/4** — erst, wenn 1b ein klares Ergebnis liefert (bei "funktioniert nicht", ändert sich vermutlich der ganze Ansatz für 3/4 mit)
+5. **Region-Commands Stufe 3** erneut mit `initiator` (a20-Fix) — jayjay13011 hat bereits echte
+   Raumdaten und Erfahrung damit
+6. **Region-Commands Stufe 4** — erst, wenn 1b/2 auf a21 ein klares Ergebnis liefern

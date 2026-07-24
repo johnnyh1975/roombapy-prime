@@ -550,6 +550,16 @@ class PrimeRobot:
         pmap_version_id), and build() sends ALL of it together, not
         favorite_id alone. A favorite_id-only command is not a safer
         subset of what the app does -- it's something the app itself
+
+        GAP CLOSED (roombapy-prime v0.1.11a21): this finding sat
+        documented but unimplemented for a while -- verify_region_
+        commands.py's own stages 1/1b/2 never actually added
+        favorite_id to the outgoing command, despite fetching the
+        favorite (and therefore knowing its real id) every time. Every
+        real field-test payload up to that point (chairstacker,
+        jayjay13011) was missing this field entirely. Now fixed via
+        _add_favorite_id_if_missing() -- see that function's own
+        docstring in verify_region_commands.py.
         never actually sends, and deviating from confirmed real
         behavior is the greater risk here, not the lesser one.
 
