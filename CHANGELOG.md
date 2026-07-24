@@ -8,6 +8,69 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a19] - 2026-07-24
+
+### Added
+
+- **New `roombapy-prime-verify-settings-write`**, a staged test package for `set_setting()` writes
+  against five previously-unverified-effect settings (`child_lock`, `eco_charge`, `sched_hold`,
+  `no_auto_passes`, `vac_high`). `--list-settings` (read-only) shows current values plus a
+  cross-check between `rw-settings.schedHold` and the classic/unnamed shadow's own, separately-
+  updated `schedHold` field. `--toggle KEY` flips one setting and reads back whether the write
+  stuck — explicitly does not (and cannot) confirm the robot's actual physical behavior changed.
+
+- **`get_state()`'s classic/unnamed shadow now has a typed model** (`ClassicShadowState`,
+  `CapabilityFlags`, `DigiCap`) instead of returning an untyped `ShadowResponse`. Confirmed via
+  a real live capture (chairstacker) that first surfaced this shadow's content at all.
+  `CapabilityFlags` (36 fields, from the shadow's `cap` object) is the only per-device capability
+  data found anywhere in this project so far — previously, no Prime-side capability gating
+  existed at all. Also confirmed: this shadow's own `schedHold` is a **separate** value from
+  `rw-settings.sched_hold`, updated independently — worth resolving which one the schedule
+  executor actually reads before building anything that assumes they're the same value.
+
+- **`roombapy-prime-verify-mission-timeline` gained `--watch-rrtp-candidate`**, a new, purely
+  passive option subscribing to one specific candidate topic for live position/pose data
+  (`.../mission/rrtp/report/update`), found via native decompilation of
+  `createRobotPositionTopic()` (same report/request pair structure as
+  `mission/timeline/report`/`.../request`). Deliberately kept as a diagnostic-script-only
+  candidate (not a new `PrimeRobot` method) until live-confirmed — the exact template string
+  itself is BSS-initialized, not found as a literal, so this remains a well-reasoned candidate,
+  not a confirmed topic. Safe to combine with `--watch-wildcard`: a normal topic, not the
+  reserved `$aws/` namespace.
+
+### Fixed
+
+- **`roombapy-prime-verify-region-commands`' stage 1b (`--send-with-initiator`) now adds
+  `initiator="rmtApp"` instead of `"localApp"`.** The old default was borrowed from
+  `send_simple_command()`'s own default, itself Classic's literal observed value for a
+  local-MQTT connection — never independently confirmed on a real Prime device. A real
+  capture (chairstacker) shows Prime's own `rw-software.lastCommand.initiator` as `"rmtApp"`
+  for an app-triggered command — the first actual evidence of what this field looks like on
+  Prime specifically.
+
+- **`roombapy-prime-verify-map-edit` now sources room data exclusively from the downloaded map
+  bundle, never from `get_active_map_versions()`.** A full APK decompilation (prompted by a
+  cross-check with the `ha_roomba_plus` side) confirmed the app itself never reads room names
+  from that endpoint at any level of richness: `fetchActiveVersions()`'s actual REST response
+  class, `P2MapData`, declares no room-metadata field at all, and the further-reduced
+  `P2MapIdentifier` the app builds from it (id + version only) obviously doesn't either. The
+  script's own room-picking (`_pick_test_room()`/`_pick_test_room_with_category()`) now reads
+  `RoomFeature.properties.name`/`.room_type` from the bundle instead — the source the app
+  itself is bytecode-confirmed to actually display. The category picker additionally guards
+  against `room_type`'s value space not matching the write-side `RoomCategory` enum (only the
+  field *name* is confirmed on the read side, not its values) by skipping any room whose
+  `room_type` doesn't parse as a known `RoomCategory`, rather than guessing.
+
+### Docs
+
+- **`rw-software`/`ro-configinfo`'s persistent fetch failures (even after the a14 reconnect fix)
+  confirmed as NOT client-side.** `NamedThingShadowTopicFactory::getSupportedPaths()` was
+  decompiled and found to do simple regex prefix-matching (`^ro-.*`/`^rw-.*`) only, with no
+  per-shadow special handling anywhere — ruling out an app-side capability gate as the cause.
+  See the new addendum in `docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md` for the full
+  finding; the cause is now understood to be server-side (most plausibly timing/provisioning),
+  not something further decompilation can resolve.
+
 ## [0.1.11a18] - 2026-07-23
 
 ### Fixed

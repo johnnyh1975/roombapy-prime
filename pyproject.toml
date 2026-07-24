@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime"
-version = "0.1.11a18"
+version = "0.1.11a19"
 description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -38,6 +38,7 @@ roombapy-prime-verify-region-commands = "roombapy_prime.verify_region_commands:m
 roombapy-prime-verify-schedule-write = "roombapy_prime.verify_schedule_write:main"
 roombapy-prime-verify-favorite-write = "roombapy_prime.verify_favorite_write:main"
 roombapy-prime-verify-virtual-wall-write = "roombapy_prime.verify_virtual_wall_write:main"
+roombapy-prime-verify-settings-write = "roombapy_prime.verify_settings_write:main"
 
 [project.optional-dependencies]
 test = [

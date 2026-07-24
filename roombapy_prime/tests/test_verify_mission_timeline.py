@@ -68,6 +68,21 @@ def test_build_watch_specs_adds_shadow_delta_when_requested() -> None:
     assert matching == [robot.watch_state]
 
 
+def test_build_watch_specs_adds_rrtp_candidate_when_requested() -> None:
+    """NEW (this session): the position/pose candidate topic found via
+    decompilation of createRobotPositionTopic() -- see the module
+    docstring for the full evidence trail. Uses watch_raw_topic() (a
+    lambda wrapper), same pattern as the wildcard topic, not a
+    dedicated PrimeRobot method yet -- this stays a diagnostic-script-
+    only candidate until live-confirmed."""
+    robot = _fake_robot()
+
+    specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False, watch_rrtp_candidate=True)
+
+    labels = [label for _factory, label in specs]
+    assert "v011-irbthbu/things/BLID123/mission/rrtp/report/update" in labels
+
+
 def test_build_watch_specs_no_longer_accepts_watch_aws_tree() -> None:
     """REMOVED (this session, real field incident): a --watch-aws-tree
     flag briefly wildcard-subscribed to the entire reserved "$aws/"

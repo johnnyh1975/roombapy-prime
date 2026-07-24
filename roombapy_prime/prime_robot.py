@@ -234,7 +234,18 @@ class PrimeRobot:
     async def get_state(self, timeout: float = 8.0) -> ShadowResponse:
         """Classic/unnamed shadow -- identity, capabilities, current
         mission status. Responds reliably on both tiers tested so
-        far (EPHEMERAL + SMART)."""
+        far (EPHEMERAL + SMART).
+
+        Response shape CONFIRMED (this session, real live response,
+        chairstacker): for a typed result, apply
+        models/robot_info.py::ClassicShadowState.from_json() to
+        response.payload["state"]["reported"] (same nesting as
+        get_settings()). Was untyped for a long time simply because no
+        capture had ever reached this specific (unnamed) shadow before
+        -- not because it's less confirmed than the named ones. See
+        ClassicShadowState's own docstring, especially the CapabilityFlags
+        sub-model (the only per-device capability data found anywhere
+        in this project so far) and the schedHold duplication note."""
         return await asyncio.to_thread(self._mqtt.get_shadow, None, timeout)
 
     async def get_settings(self, timeout: float = 8.0) -> ShadowResponse:

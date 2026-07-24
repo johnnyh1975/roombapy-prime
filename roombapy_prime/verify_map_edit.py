@@ -66,10 +66,14 @@ SAFETY DESIGN (same doubly-secured pattern as verify_mission_commands.py):
    (by its current, real name) is about to be affected.
 
 FLOW:
-  1. Fetch active map versions, list rooms that currently HAVE a name
-     (a room with no name is skipped entirely for this test -- see
-     _pick_test_room()'s docstring for why: there'd be no reliable way
-     to revert it back to "no name" afterward).
+  1. Fetch active map versions, then download+parse each one's map
+     bundle to list rooms that currently HAVE a name (room names come
+     exclusively from the map bundle, not from get_active_map_versions()
+     itself -- confirmed via APK decompilation this session, see
+     _fetch_bundle_rooms()'s docstring). A room with no name is skipped
+     entirely for this test -- see _pick_test_room()'s docstring for
+     why: there'd be no reliable way to revert it back to "no name"
+     afterward.
   2. Let the user choose which named room to test on, showing the
      room_id and current name explicitly.
   3. Rename it to "{original name} [roombapy-prime-test]".
@@ -105,39 +109,94 @@ from typing import Any
 import aiohttp
 
 from .diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
-from .models import P2MapVersion, RoomCategory, SetRoomMetadataV1, parse_active_map_versions
+from .models import (
+    P2MapVersion,
+    RoomCategory,
+    RoomFeature,
+    SetRoomMetadataV1,
+    parse_active_map_versions,
+    parse_map_bundle,
+)
 from .prime_factory import PrimeFactory
 from .verify_mission_commands import _confirm
 
 _TEST_SUFFIX = " [roombapy-prime-test]"
 
 
-def _pick_test_room(map_versions: list[P2MapVersion]) -> tuple[str, str, str] | None:
+async def _fetch_bundle_rooms(robot: Any, typed_versions: list[P2MapVersion]) -> list[tuple[str, RoomFeature]]:
+    """Downloads and parses the map bundle for every active map version,
+    returning (p2map_id, RoomFeature) pairs for every room feature
+    found -- REPLACES the old get_active_map_versions()-based room
+    lookup entirely (this session).
+
+    WHY THE SWITCH: a full APK decompilation, prompted by jadestar1864's
+    real capture showing named rooms nested under
+    get_active_map_versions()'s own "rooms_metadata" (see the removed
+    _pick_test_room() docstring's history in git blame for that
+    capture), found that the app itself never reads room names from
+    this endpoint at all -- at ANY level of richness. The REST call
+    behind get_active_map_versions() (fetchActiveVersions()) actually
+    deserializes to a List<P2MapData> (package
+    com.irobot.irobotdata.maps.internal.p2maps.editing.common.responses)
+    with a confirmed, complete field list (create_time/last_p2mapv_ts/
+    p2map_id/active_p2mapv_id/name [the MAP name, not room-specific]/
+    state/user_orientation_rad/visible) -- no room-metadata field
+    anywhere. The app then further reduces this to just id+version
+    (P2MapIdentifier) for its own internal use. Neither class declares
+    anything room-related.
+
+    ONE OPEN CAVEAT, not fully closeable by decompilation alone:
+    kotlinx.serialization silently ignores unknown JSON keys by
+    default, so it remains theoretically possible the server sends
+    additional fields (e.g. a real "rooms_metadata") that the app's own
+    model simply never declares and therefore never reads or displays.
+    This script deliberately doesn't rely on that possibility: even if
+    the server-side data were real, there'd be no way to know whether
+    it stays in sync with what the app actually shows the user -- and
+    this script needs a name it can safely revert to. The map bundle's
+    RoomFeature/RoomFeatureProperties (models/map_bundle.py), by
+    contrast, is bytecode-confirmed as something the app itself reads
+    and displays.
+
+    Geometry fields are read into the returned RoomFeature objects
+    (parse_map_bundle() itself returns raw dicts; RoomFeature.from_json()
+    is applied here) but never printed/logged by this script -- see
+    diagnostics.py's map bundle handling for the same "a floor plan is
+    more personal than most other data" rule."""
+    rooms: list[tuple[str, RoomFeature]] = []
+    for version in typed_versions:
+        p2map_id = getattr(version, "p2map_id", None)
+        p2mapv_id = getattr(version, "active_p2mapv_id", None)
+        if not (p2map_id and p2mapv_id):
+            continue
+        try:
+            link = await robot.get_map_geojson_link(p2map_id, p2mapv_id)
+            # CONFIRMED (session 48): "map_url" via P2MapURL$$serializer.
+            url = link.get("map_url") or next(
+                (v for v in link.values() if isinstance(v, str) and v.startswith("http")), None
+            )
+            if not url:
+                continue
+            bundle_bytes = await robot.download_map_bundle(url)
+            parsed = parse_map_bundle(bundle_bytes)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  (map bundle check for {p2map_id!r} failed: {type(exc).__name__}: {exc})")
+            continue
+        rooms_file = parsed.get("rooms")
+        if not isinstance(rooms_file, list):
+            continue
+        for entry in rooms_file:
+            if isinstance(entry, dict):
+                rooms.append((p2map_id, RoomFeature.from_json(entry)))
+    return rooms
+
+
+def _pick_test_room(rooms: list[tuple[str, RoomFeature]]) -> tuple[str, str, str] | None:
     """Returns (p2map_id, room_id, current_name) for the first named
-    room found across all active map versions, or None if no named
-    room exists anywhere.
-
-    BUG FIX (this session, real capture from jadestar1864): this
-    function expects typed P2MapVersion/RoomMetadataEntry objects (real
-    attributes via getattr), but was previously being fed the RAW
-    list[dict] that robot.get_active_map_versions() actually returns
-    (see prime_robot.py's own type hint) -- getattr() on a plain dict
-    always silently returns the default, for every field, at every
-    level. This meant the function could never find a name even when
-    one genuinely existed: jadestar1864's real get_active_map_versions()
-    response had "rooms_metadata": [{"room_id": "10", "room_metadata":
-    {"name": "Living Room", ...}}, ...] -- a real name, one level
-    deeper than a flat .name, and reachable only via dict keys, not
-    attribute access. The existing, already-correct
-    parse_active_map_versions()/RoomMetadataEntry.from_json() (session
-    26/session 51) already does exactly this flattening -- run() now
-    calls it before passing data here, so this function's own logic
-    didn't need to change, only its input's type.
-
-    The existing test suite didn't catch this because its SimpleNamespace
-    helpers built an idealized, flat shape (name=... directly) that never
-    matched what the real API returns -- same class of problem as
-    MagicMock hiding a real attribute mismatch.
+    room found across all fetched map bundles, or None if no named
+    room exists anywhere. See _fetch_bundle_rooms() for why this reads
+    from the map bundle rather than get_active_map_versions() (this
+    session's finding).
 
     Deliberately requires an EXISTING name, not just any room: this
     script's whole safety design rests on being able to revert to a
@@ -146,66 +205,12 @@ def _pick_test_room(map_versions: list[P2MapVersion]) -> tuple[str, str, str] | 
     "clear" a name back to none, so a room that currently has no name
     is not a safe candidate for this test at all, regardless of how
     the test itself goes."""
-    for version in map_versions:
-        p2map_id = getattr(version, "p2map_id", None)
-        rooms = getattr(version, "rooms_metadata", None) or []
-        for room in rooms:
-            name = getattr(room, "name", None)
-            room_id = getattr(room, "room_id", None)
-            if name and room_id and p2map_id:
-                return p2map_id, room_id, name
+    for p2map_id, feature in rooms:
+        name = feature.properties.name
+        room_id = feature.feature_id
+        if name and room_id:
+            return p2map_id, room_id, name
     return None
-
-
-def _room_names_from_bundle(parsed_bundle: dict[str, Any]) -> list[dict[str, Any]]:
-    """NEW (session 44). If get_active_map_versions()'s rooms_metadata
-    doesn't have a named room, the real, app-visible room names might
-    live in the downloaded map bundle instead -- a completely
-    different data source. UPDATE (session 47): this used to be a
-    completely unconfirmed model (RoomInfo had no from_json() at all);
-    the bundle's real structure has since been bytecode-confirmed
-    (see models/map_bundle.py's RoomFeature/RoomFeatureProperties) -- a GeoJSON
-    Feature with room_id/name/type nested under "properties", not the
-    flat shape this function's raw dict-scanning approach assumed.
-    This function is kept as a pre-model, raw investigation tool
-    regardless (still useful for confirming the exact FILE that
-    contains rooms, and cross-checking real data against the now-
-    confirmed model), extracting only room_id/name/type-shaped fields
-    from whatever raw dict the bundle's "rooms" file actually
-    contains.
-
-    DELIBERATELY EXCLUDES geometry/polygon/coordinate fields FROM THIS
-    DIAGNOSTIC REPORT SPECIFICALLY -- consistent with this project's
-    existing rule (see diagnostics.py's map bundle handling) that a
-    floor plan is considerably more personal than most other data this
-    library captures, and this report is the kind of thing people
-    casually paste into a public GitHub issue without thinking about
-    it. This is NOT a statement that the library shouldn't support
-    geometry -- models/map_bundle.py's RoomFeature already has a `geometry` field,
-    unaffected by this function, and will genuinely be needed for
-    building an actual map/floor-plan feature later. This function
-    only controls what THIS diagnostic script prints/captures for a
-    shared report, nothing about the library's own data model. If the
-    real field name for room names turns out to be something this
-    filter doesn't recognize, it may need to be adjusted -- but erring
-    toward showing less, not more, until the actual shape is
-    confirmed."""
-    rooms_file = None
-    for key in ("rooms", "rooms.json"):
-        if key in parsed_bundle:
-            rooms_file = parsed_bundle[key]
-            break
-    if not isinstance(rooms_file, list):
-        return []
-
-    geometry_like = {"geometry", "polygon", "simplified_geometry", "simplifiedgeometry", "coordinates", "poly"}
-    result = []
-    for entry in rooms_file:
-        if not isinstance(entry, dict):
-            continue
-        filtered = {k: v for k, v in entry.items() if k.lower() not in geometry_like}
-        result.append(filtered)
-    return result
 
 
 async def run(username: str, password: str, country_code: str, blid: str) -> tuple[Report, dict[str, Any]]:
@@ -232,63 +237,30 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         report.add("Fetching active map versions", "OK", f"{len(map_versions)} map version(s) found")
         raw_capture["Active map versions"] = [getattr(v, "__dict__", str(v)) for v in map_versions]
 
-        # BUG FIX (this session): map_versions here is the RAW list[dict]
-        # from get_active_map_versions() (see prime_robot.py's own type
-        # hint) -- _pick_test_room() needs real typed objects with a
-        # flattened .name, which parse_active_map_versions() already does
-        # correctly (session 26/51). Passing the raw dicts straight
-        # through silently broke room-finding entirely; see
-        # _pick_test_room()'s docstring for the real-capture evidence.
         typed_versions = parse_active_map_versions(map_versions)
-        picked = _pick_test_room(typed_versions)
-        if picked is None:
-            print(
-                "\nNo room with a name was found via get_active_map_versions() -- checking the "
-                "downloaded map bundle instead, in case the real, app-visible room names live "
-                "there (a different, less-confirmed data source -- see _room_names_from_bundle()'s "
-                "docstring). Geometry/polygon fields are deliberately never shown or captured."
-            )
-            bundle_rooms: list[dict[str, Any]] = []
-            for version in typed_versions:
-                p2map_id = getattr(version, "p2map_id", None)
-                p2mapv_id = getattr(version, "active_p2mapv_id", None)
-                if not (p2map_id and p2mapv_id):
-                    continue
-                try:
-                    link = await robot.get_map_geojson_link(p2map_id, p2mapv_id)
-                    # CORRECTED (session 48): "map_url" confirmed via P2MapURL$$serializer.
-                    url = link.get("map_url") or next(
-                        (v for v in link.values() if isinstance(v, str) and v.startswith("http")), None
-                    )
-                    if not url:
-                        continue
-                    bundle_bytes = await robot.download_map_bundle(url)
-                    from .models import parse_map_bundle
 
-                    parsed = parse_map_bundle(bundle_bytes)
-                    bundle_rooms.extend(_room_names_from_bundle(parsed))
-                except Exception as exc:  # noqa: BLE001
-                    print(f"  (map bundle check for {p2map_id!r} failed: {type(exc).__name__}: {exc})")
-            if bundle_rooms:
-                report.add(
-                    "Finding a named room to test on",
-                    "SKIPPED",
-                    "no named room via get_active_map_versions(), but the map bundle's own "
-                    f"\"rooms\" file DOES contain room entries -- non-geometry fields found: "
-                    f"{bundle_rooms}. This test doesn't use this data source (its wire format "
-                    "is unconfirmed, see _room_names_from_bundle()'s docstring) -- sharing this "
-                    "would help confirm it for a future version. Nothing was sent.",
-                )
-                raw_capture["Map bundle room entries (geometry excluded)"] = bundle_rooms
-            else:
-                report.add(
-                    "Finding a named room to test on",
-                    "SKIPPED",
-                    "no room with an existing name was found via get_active_map_versions(), AND "
-                    "the map bundle's \"rooms\" file (if present at all) had no recognizable "
-                    "name field either. This test needs a room to already have a name, so it "
-                    "has something known-good to revert back to. Nothing was sent.",
-                )
+        # SOURCE SWITCH (this session): room names now come exclusively
+        # from the downloaded map bundle, not get_active_map_versions().
+        # A full APK decompilation confirmed the app itself never reads
+        # room names from that endpoint, at any level of richness (the
+        # underlying REST response class, P2MapData, has no room field
+        # either) -- see _fetch_bundle_rooms()'s docstring for the full
+        # evidence trail and the one remaining theoretical caveat.
+        print(
+            "\nFetching the map bundle to find a named room -- get_active_map_versions() itself "
+            "never carries room names (confirmed via APK decompilation, see _fetch_bundle_rooms()'s "
+            "docstring). Geometry/polygon fields are read but never printed or captured here."
+        )
+        bundle_rooms = await _fetch_bundle_rooms(robot, typed_versions)
+        picked = _pick_test_room(bundle_rooms)
+        if picked is None:
+            report.add(
+                "Finding a named room to test on",
+                "SKIPPED",
+                f"{len(bundle_rooms)} room feature(s) found across all map bundles, but none had "
+                "both a name and a room_id. This test needs a room to already have a name, so it "
+                "has something known-good to revert back to. Nothing was sent.",
+            )
             await robot.disconnect()
             return report, raw_capture
         p2map_id, room_id, original_name = picked
@@ -380,27 +352,37 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
     return report, raw_capture
 
 
-def _pick_test_room_with_category(map_versions: list[P2MapVersion]) -> tuple[str, str, str, Any] | None:
+def _pick_test_room_with_category(rooms: list[tuple[str, RoomFeature]]) -> tuple[str, str, str, RoomCategory] | None:
     """Returns (p2map_id, room_id, current_name, current_category) for
-    the first room found with BOTH a name (for display/identification)
-    AND a known category -- deliberately requires both, same
-    capture-then-revert safety philosophy as _pick_test_room()'s own
-    docstring: this test needs a known-good original category value to
-    revert to, not just any room. current_category may be None if the
-    room genuinely has no category set yet -- SetRoomMetadataV1 itself
-    tolerates omitting either field, so reverting to "no category" by
-    NOT setting room_type again is possible, but a room with an
-    already-set category is preferred so the revert is a real,
-    round-trip-able value rather than an omission."""
-    for version in map_versions:
-        p2map_id = getattr(version, "p2map_id", None)
-        rooms = getattr(version, "rooms_metadata", None) or []
-        for room in rooms:
-            name = getattr(room, "name", None)
-            room_id = getattr(room, "room_id", None)
-            category = getattr(room, "category", None)
-            if name and room_id and p2map_id and category is not None:
-                return p2map_id, room_id, name, category
+    the first bundle room found with BOTH a name (for display/
+    identification) AND a category value that actually parses as a
+    known RoomCategory -- same bundle source switch as _pick_test_room()
+    (this session), for the same reason (see _fetch_bundle_rooms()).
+
+    THE ADDED WRINKLE HERE, specific to category: RoomFeatureProperties.
+    room_type (models/map_bundle.py) is deliberately left as a raw,
+    unconfirmed value -- only its FIELD NAME is bytecode-confirmed, not
+    which value space it uses (a human-readable string enum? the same
+    numeric codes as the unrelated, edit-side RoomType? something else
+    entirely?). RoomCategory (models/enums_common.py) is the confirmed
+    WRITE-side enum for SetRoomMetadataV1 specifically -- there's no
+    confirmation the read-side room_type uses the same value space at
+    all. Rather than assume they match, this function tries to parse
+    room_type as a RoomCategory and simply SKIPS the room if that
+    fails -- a wrong guess here would write back a category on revert
+    that doesn't match what the room actually had, which is exactly
+    the class of mistake this script's whole design exists to avoid."""
+    for p2map_id, feature in rooms:
+        name = feature.properties.name
+        room_id = feature.feature_id
+        raw_type = feature.properties.room_type
+        if not (name and room_id and raw_type is not None):
+            continue
+        try:
+            category = RoomCategory(raw_type)
+        except (ValueError, TypeError):
+            continue
+        return p2map_id, room_id, name, category
     return None
 
 
@@ -432,11 +414,19 @@ async def run_category_test(username: str, password: str, country_code: str, bli
             return report, raw_capture
 
         typed_versions = parse_active_map_versions(map_versions)
-        picked = _pick_test_room_with_category(typed_versions)
+
+        # SOURCE SWITCH (this session) -- same reasoning as run()'s own
+        # comment: room data comes from the map bundle now, never from
+        # get_active_map_versions(). See _fetch_bundle_rooms()'s docstring.
+        bundle_rooms = await _fetch_bundle_rooms(robot, typed_versions)
+        picked = _pick_test_room_with_category(bundle_rooms)
         if picked is None:
             report.add(
                 "Finding a room with a known category", "SKIPPED",
-                "no room with both a name and a known category was found",
+                f"{len(bundle_rooms)} room feature(s) found across all map bundles, but none had "
+                "both a name and a room_type that parses as a known RoomCategory (see "
+                "_pick_test_room_with_category()'s docstring on why a non-matching value is "
+                "skipped rather than guessed at)",
             )
             await robot.disconnect()
             return report, raw_capture

@@ -150,8 +150,8 @@ def test_add_initiator_if_missing_adds_local_app_when_unset():
     result = _add_initiator_if_missing(original)
 
     assert result is not None
-    assert result.initiator == "localApp"
-    assert result.to_json()["initiator"] == "localApp"
+    assert result.initiator == "rmtApp"
+    assert result.to_json()["initiator"] == "rmtApp"
     # everything else must be untouched.
     assert result.command_type == original.command_type
     assert result.asset_id == original.asset_id

@@ -263,13 +263,25 @@ def _add_initiator_if_missing(original) -> object | None:
     executing test catches real construction bugs a syntax check
     cannot. Returns None if initiator was ALREADY set (nothing to add
     -- caller should treat this as "use --send instead"), otherwise
-    the command with initiator="localApp" added, everything else
-    unchanged."""
+    the command with initiator="rmtApp" added, everything else
+    unchanged.
+
+    CORRECTED (this session, real capture from chairstacker's
+    raw_shadows.json): this used to default to "localApp" -- borrowed
+    from send_simple_command()'s own default, which is itself
+    documented (mqtt_client.py's publish_cmd()) as CLASSIC's literal
+    observed value for a local-MQTT connection, never independently
+    confirmed as a value real Prime traffic uses. chairstacker's own
+    rw-software shadow shows a real, live PRIME lastCommand.initiator
+    of "rmtApp" (for an app-triggered stoppaddry command) -- the first
+    actual evidence of what a Prime device itself reports for this
+    field, and a stronger candidate than a value borrowed from a
+    different product line's own local-transport convention."""
     import dataclasses
 
     if original.initiator is not None:
         return None
-    return dataclasses.replace(original, initiator="localApp")
+    return dataclasses.replace(original, initiator="rmtApp")
 
 
 async def send_stage_one_with_initiator(
@@ -297,8 +309,10 @@ async def send_stage_one_with_initiator(
     This stage tests the natural next, still-minimal step: identical
     to stage 1 in every other way (same favorite, same command_def,
     completely unchanged otherwise), with ONLY initiator explicitly
-    set to "localApp" -- purely additive (supplies a value where none
-    existed, does not override anything that was actually set)."""
+    set to "rmtApp" -- purely additive (supplies a value where none
+    existed, does not override anything that was actually set). See
+    _add_initiator_if_missing()'s own docstring for why "rmtApp", not
+    the earlier "localApp"."""
     report = Report()
     async with aiohttp.ClientSession() as session:
         robot = await _login_and_connect(session, username, password, country_code, blid, report)
@@ -334,7 +348,7 @@ async def send_stage_one_with_initiator(
         await _confirm_show_send_watch(
             robot, command, report, watch_seconds,
             f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
-            f"command_defs[{command_index}] with initiator added (was unset -> \"localApp\"), "
+            f"command_defs[{command_index}] with initiator added (was unset -> \"rmtApp\"), "
             "nothing else changed:",
         )
 
@@ -648,7 +662,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--send-with-initiator", metavar="FAVORITE_ID", default=None,
-        help="Stage 1b: identical to --send, but adds initiator=\"localApp\" if the stored "
+        help="Stage 1b: identical to --send, but adds initiator=\"rmtApp\" if the stored "
         "command_def has none set. Purely additive -- see send_stage_one_with_initiator()'s "
         "own docstring for why this is worth testing specifically.",
     )

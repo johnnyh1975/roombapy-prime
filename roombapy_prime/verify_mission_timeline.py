@@ -81,13 +81,32 @@ USAGE (one-terminal, this script starts/stops the mission itself):
   mqtt_client.py's notes next to rejected_report_topic() for the full
   investigation trail).
 
+  Add --watch-rrtp-candidate to instead (or additionally) subscribe to
+  one SPECIFIC candidate topic for live position/pose data:
+  "{irbt_topic_prefix}/things/{blid}/mission/rrtp/report/update" --
+  found via native decompilation of createRobotPositionTopic()
+  (structurally the same report/request pair pattern as
+  mission/timeline/report vs mission/timeline/request, "rrtp"
+  presumably standing for something position/pose-related). UNCONFIRMED:
+  the exact template string itself is BSS-initialized (runtime-built),
+  not found as a literal in .rodata -- this is a well-reasoned
+  candidate, not a confirmed topic. Safe regardless: it's a normal,
+  non-"$"-prefixed topic (see _build_watch_specs()'s own docstring for
+  why a literal "$aws/..." wildcard specifically caused a real
+  connection-degradation incident once -- this candidate doesn't share
+  that risk). Prefer this over --watch-wildcard alone when specifically
+  hunting for position/pose data: a match here is immediately
+  attributable, whereas a wildcard match still needs a human to spot
+  which of potentially dozens of topics is the right one.
+
   Add --try-pose-request to also send an EXPERIMENTAL, UNCONFIRMED
   {"do": "get", "args": ["pose"], "id": 1} request on the cmd topic --
   a request format found via native decompilation, not known to work
-  over this specific (AWS IoT) topic. Combine with --watch-wildcard,
-  since there's no predictable topic to watch for a response
-  otherwise. Asks for its own interactive confirmation regardless of
-  this flag. See send_umi_get_request()'s own docstring.
+  over this specific (AWS IoT) topic. Combine with --watch-wildcard
+  and/or --watch-rrtp-candidate, since there's no predictable topic to
+  watch for a response otherwise. Asks for its own interactive
+  confirmation regardless of this flag. See send_umi_get_request()'s
+  own docstring.
 
 Credentials same as diagnostics.py: ROOMBAPY_PRIME_PASSWORD env var or
 interactive prompt, never as a command-line argument.
@@ -182,7 +201,7 @@ async def _watch_one(
 
 
 def _build_watch_specs(
-    robot: Any, watch_wildcard: bool, watch_shadow_delta: bool
+    robot: Any, watch_wildcard: bool, watch_shadow_delta: bool, watch_rrtp_candidate: bool = False
 ) -> list[tuple[Callable[[], Any], str]]:
     """Factored out of run() specifically so it's unit-testable on its
     own -- run() as a whole has no dedicated test (needs a full
@@ -194,6 +213,18 @@ def _build_watch_specs(
     docstring for the full reasoning: watch_state() has existed for a
     while but was never run live during an active mission (only a
     get_state() snapshot diff was ever tested).
+
+    watch_rrtp_candidate is NEW (this session): subscribes to one
+    specific, decompilation-derived candidate topic for live position/
+    pose data ("mission/rrtp/report/update") instead of relying solely
+    on the broad --watch-wildcard. See this module's own docstring for
+    the full finding and why "rrtp" is believed to be the right family.
+    Deliberately only watches the "report" (push) side here -- the
+    "request" side (mission/rrtp/request) is the other half of the
+    pair by analogy with mission/timeline/report vs .../request, but
+    isn't useful to SUBSCRIBE to for this purpose (it would carry a
+    bare correlation ID at most, per the timeline pair's own confirmed
+    behavior, not the actual position data being searched for).
 
     REMOVED (this session, real field incident): a --watch-aws-tree
     flag briefly existed here, wildcard-subscribing to the entire
@@ -214,7 +245,9 @@ def _build_watch_specs(
     it subscribes to exactly one specific, AWS-documented shadow topic
     (the same path used as the example in AWS's own IAM policy
     documentation for this exact feature), not a wildcard on the
-    reserved namespace."""
+    reserved namespace. watch_rrtp_candidate is equally unaffected --
+    a normal, non-"$"-prefixed topic, same category of safety as
+    mission/timeline/report itself."""
     watch_specs: list[tuple[Callable[[], Any], str]] = [
         (robot.watch_mission_timeline, "mission/timeline/report"),
         (robot.watch_rejected_commands, "rejected/report"),
@@ -224,13 +257,16 @@ def _build_watch_specs(
         watch_specs.append((lambda: robot.watch_raw_topic(wildcard_topic), wildcard_topic))
     if watch_shadow_delta:
         watch_specs.append((robot.watch_state, "$aws/things/{blid}/shadow/update/delta"))
+    if watch_rrtp_candidate:
+        rrtp_topic = f"{robot._irbt_topic_prefix}/things/{robot.blid}/mission/rrtp/report/update"
+        watch_specs.append((lambda: robot.watch_raw_topic(rrtp_topic), rrtp_topic))
     return watch_specs
 
 
 async def run(
     username: str, password: str, country_code: str, blid: str,
     duration: float, watch_wildcard: bool, start_mission: bool, try_pose_request: bool,
-    post_dock_watch: float, watch_shadow_delta: bool = False,
+    post_dock_watch: float, watch_shadow_delta: bool = False, watch_rrtp_candidate: bool = False,
 ) -> tuple[Report, dict[str, Any]]:
     report = Report()
     raw_capture: dict[str, Any] = {}
@@ -254,7 +290,7 @@ async def run(
             await robot.disconnect()
             return report, raw_capture
 
-        watch_specs = _build_watch_specs(robot, watch_wildcard, watch_shadow_delta)
+        watch_specs = _build_watch_specs(robot, watch_wildcard, watch_shadow_delta, watch_rrtp_candidate)
 
         print(f"\n== Watching for up to {duration:.0f}s ==")
         for _factory, label in watch_specs:
@@ -452,6 +488,20 @@ def main() -> None:
         "_build_watch_specs() for why that distinction matters).",
     )
     parser.add_argument(
+        "--watch-rrtp-candidate", action="store_true",
+        help='NEW: subscribes to one SPECIFIC candidate topic for live position/pose data -- '
+        '"{irbt_topic_prefix}/things/{blid}/mission/rrtp/report/update", found via native '
+        "decompilation of createRobotPositionTopic() (same report/request pair structure as "
+        "mission/timeline/report vs .../request). UNCONFIRMED: the exact template string is "
+        "BSS-initialized (runtime-built), not found as a literal -- a well-reasoned candidate, "
+        "not a confirmed topic. Prefer this over --watch-wildcard alone when specifically "
+        "hunting for position/pose data: a match here is immediately attributable to the right "
+        "topic, unlike a wildcard match among potentially dozens of others. Safe to combine with "
+        "--watch-wildcard -- this is a normal topic, not the reserved \"$aws/\" namespace (see "
+        "the removed --watch-aws-tree flag's history in _build_watch_specs() for why that "
+        "distinction matters).",
+    )
+    parser.add_argument(
         "--start-mission", action="store_true",
         help="Also send a real 'start' command once subscribed (and 'stop'+'dock' at the end, so "
         "the robot returns home afterward) -- lets "
@@ -517,7 +567,7 @@ def main() -> None:
         run(
             username, password, args.country_code, args.blid, args.duration,
             args.watch_wildcard, args.start_mission, args.try_pose_request,
-            args.post_dock_watch_seconds, args.watch_shadow_delta,
+            args.post_dock_watch_seconds, args.watch_shadow_delta, args.watch_rrtp_candidate,
         )
     )
     report.redact(username, password)

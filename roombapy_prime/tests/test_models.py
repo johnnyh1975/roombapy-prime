@@ -2646,6 +2646,84 @@ def test_robot_settings_handles_missing_optional_nested_objects() -> None:
     assert s.pad_wetness is None
 
 
+def test_classic_shadow_state_from_real_live_capture() -> None:
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
+    chairstacker's raw_shadows.json) -- get_state()'s classic/unnamed
+    shadow, previously returned as an untyped ShadowResponse only.
+    Uses a trimmed version of the real cap object (a handful of fields,
+    not all 36) -- CapabilityFlags' own test covers the full field
+    list."""
+    from roombapy_prime.models import ClassicShadowState
+
+    state = ClassicShadowState.from_json(
+        {
+            "digiCap": {"appVer": 1, "timeline": 1},
+            "nsmip": 2,
+            "cap": {"5ghz": 1, "carpetBoost": 3, "binFullDetect": 0},
+            "cleanSchedule2": [{"cmdStr": "some-repr-like-string", "enabled": True}],
+            "schedHold": False,
+            "sku": "G185020",
+            "soldAsSku": "G185020",
+            "svcEndpoints": {"svcDeplId": "v005"},
+        }
+    )
+
+    assert state.digi_cap.app_ver == 1
+    assert state.digi_cap.timeline == 1
+    assert state.cap.wifi_5ghz == 1
+    assert state.cap.carpet_boost == 3
+    assert state.cap.bin_full_detect == 0  # a confirmed negative, not a missing value
+    assert state.clean_schedule2_raw == [{"cmdStr": "some-repr-like-string", "enabled": True}]
+    assert state.sched_hold is False
+    assert state.sku == "G185020"
+
+
+def test_classic_shadow_state_handles_missing_fields() -> None:
+    from roombapy_prime.models import ClassicShadowState
+
+    state = ClassicShadowState.from_json({})
+
+    assert state.digi_cap is None
+    assert state.cap is None
+    assert state.clean_schedule2_raw == []
+    assert state.sched_hold is None
+
+
+def test_capability_flags_from_real_live_capture() -> None:
+    """CONFIRMED LIVE, ALL 36 FIELDS, REAL VALUES (this session,
+    chairstacker's raw_shadows.json) -- the full "cap" object, the only
+    per-device capability data found anywhere in this project so far.
+    Spot-checks a representative subset (graduated/tiered values, not
+    just booleans) rather than asserting all 36 individually."""
+    from roombapy_prime.models import CapabilityFlags
+
+    cap = CapabilityFlags.from_json(
+        {
+            "5ghz": 1, "area": 1, "autoevac": 1, "binFullDetect": 0, "carpetBoost": 3,
+            "dPause": 1, "dnd": 1, "dockComm": 1, "expectingUserConf": 2, "floorTypeDetect": 4,
+            "idl": 0, "lang": 2, "langOta": 2, "lmap": 1, "log": 2, "maps": 6, "matter": 0,
+            "mc": 3, "multiPass": 1, "ns": 1, "oMode": 550, "ota": 3, "ppWetLvl": 0, "prov": 3,
+            "pw": 3, "sched": 2, "scrub": 3, "suctionLvl": 4, "svcConf": 1, "tLine": 2,
+            "vmStrat": 1, "bleLog": 1, "dSpot": 1, "mapMax": 5, "p2maps": 1, "saSku": 1,
+        }
+    )
+
+    assert cap.wifi_5ghz == 1
+    assert cap.matter == 0  # confirmed absent, not just unmodeled
+    assert cap.o_mode == 550  # graduated value, not a boolean
+    assert cap.map_max == 5
+    assert cap.sa_sku == 1
+
+
+def test_capability_flags_handles_missing_fields() -> None:
+    from roombapy_prime.models import CapabilityFlags
+
+    cap = CapabilityFlags.from_json({})
+
+    assert cap.wifi_5ghz is None
+    assert cap.matter is None
+
+
 def test_schedule_shadow_from_real_live_capture() -> None:
     """CONFIRMED LIVE (this session, chairstacker) -- the complete
     content of "rw-schedule", the third of the three never-before-
@@ -2852,28 +2930,44 @@ def test_current_state_shadow_from_real_live_capture() -> None:
 
 
 def test_stats_shadow_from_real_live_capture() -> None:
-    """CONFIRMED LIVE (this session, chairstacker) -- complete key
-    list of "ro-stats", the second of the four "ro-" shadows found
-    via MQTTTopics.java. Only key names confirmed, not values."""
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
+    chairstacker's raw_shadows.json) -- replaces the earlier version of
+    this test, which used placeholder shapes (bbchg=1, bbchg3=2, etc.)
+    written back when only key names were confirmed. Real payload shape
+    used here verbatim (including the still-unexplained same-name
+    nested duplicate under each bbX key)."""
     from roombapy_prime.models import StatsShadow
 
     stats = StatsShadow.from_json(
         {
-            "bbchg": 1,
-            "bbchg3": 2,
-            "bbmssn": 3,
-            "bbpause": 4,
-            "bbrstinfo": {"reason": "power"},
-            "bbsys": 5,
-            "runtimestats": {"totalMissions": 42},
-            "svcEndpoints": {"svcDeplId": "v007"},
-            "unprocessedError": None,
+            "bbchg": {"bbchg": {"nChgErr": 0, "nChgOk": 0}, "nChgErr": 0, "nChgOk": 561},
+            "bbchg3": {"bbchg3": {"hOnDock": 0, "nAvail": 0}, "hOnDock": 293109, "nAvail": 285},
+            "bbmssn": {
+                "bbmssn": {"nMssn": 0, "nMssnC": 0, "nMssnF": 0, "nMssnOk": 0},
+                "nMssn": 276, "nMssnC": 25, "nMssnF": 4, "nMssnOk": 247,
+            },
+            "bbpause": {"bbpause": {"pauses": [29, -1]}, "pauses": [1, 48, 48, 48, 48, 48, 48, 48, 48, 48]},
+            "bbrstinfo": {"bbrstinfo": {"nNavRst": 1}, "nNavRst": 22},
+            "bbsys": {"bbsys": {"hr": 0, "min": 0}, "hr": 7354, "min": 0},
+            "runtimestats": {"hr": 7, "min": 57},
+            "svcEndpoints": {"svcDeplId": "v005"},
+            "unprocessedError": "picea unknown fault code:2105",
         }
     )
 
-    assert stats.bbchg == 1
-    assert stats.bbmssn == 3
-    assert stats.runtimestats == {"totalMissions": 42}
+    assert stats.bbchg.n_chg_ok == 561
+    assert stats.bbchg.n_chg_err == 0
+    assert stats.bbchg.raw_nested == {"nChgErr": 0, "nChgOk": 0}
+    assert stats.bbmssn.n_mssn == 276
+    # THE internal-consistency check that confirms these are real lifetime
+    # counters, not arbitrary numbers: canceled+failed+ok sums to the total.
+    assert stats.bbmssn.n_mssn_canceled + stats.bbmssn.n_mssn_failed + stats.bbmssn.n_mssn_ok == stats.bbmssn.n_mssn
+    assert stats.bbpause.pauses == [1, 48, 48, 48, 48, 48, 48, 48, 48, 48]
+    assert stats.bbrstinfo.n_nav_rst == 22
+    assert stats.bbsys.hours == 7354
+    assert stats.runtimestats.hours == 7
+    assert stats.runtimestats.minutes == 57
+    assert stats.unprocessed_error == "picea unknown fault code:2105"
 
 
 def test_stats_shadow_handles_missing_fields() -> None:
@@ -2886,14 +2980,15 @@ def test_stats_shadow_handles_missing_fields() -> None:
 
 
 def test_services_shadow_from_real_live_capture() -> None:
-    """CONFIRMED LIVE (this session, chairstacker) -- complete key
-    list of "ro-services", the third of the four "ro-" shadows found
-    via MQTTTopics.java."""
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUE (this session,
+    chairstacker) -- replaces the earlier version of this test, which
+    assumed "optFeats" was a plain list (["feat1", "feat2"]); the real
+    payload shows it's an object mapping feature name -> int."""
     from roombapy_prime.models import ServicesShadow
 
-    services = ServicesShadow.from_json({"nsmip": 2, "optFeats": ["feat1", "feat2"], "svcEndpoints": {}})
+    services = ServicesShadow.from_json({"nsmip": 2, "optFeats": {"carpetBoost": 0}, "svcEndpoints": {}})
 
-    assert services.opt_feats == ["feat1", "feat2"]
+    assert services.opt_feats == {"carpetBoost": 0}
 
 
 def test_services_shadow_handles_missing_fields() -> None:
@@ -2905,19 +3000,31 @@ def test_services_shadow_handles_missing_fields() -> None:
 
 
 def test_config_info_shadow_from_real_live_capture() -> None:
-    """CONFIRMED LIVE (this session, chairstacker) -- complete key
-    list of "ro-configinfo", the last of the four "ro-" shadows found
-    via MQTTTopics.java. "passwordHash" specifically prompted a real,
-    separate redaction fix in diagnostics.py -- see that module's own
-    tests for the fix itself; this test only covers the model's own
-    from_json() mapping."""
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
+    chairstacker) -- replaces the earlier version of this test, which
+    assumed "hwPartsRev" was a plain string ("rev3"); the real payload
+    shows it's an object with mostly-empty string fields plus one real
+    serial number. "passwordHash" specifically prompted a real, separate
+    redaction fix in diagnostics.py -- see that module's own tests for
+    the fix itself; this test only covers the model's own from_json()
+    mapping."""
     from roombapy_prime.models import ConfigInfoShadow
 
     config = ConfigInfoShadow.from_json(
-        {"hwPartsRev": "rev3", "nsmip": 2, "passwordHash": "abc123", "svcEndpoints": {}}
+        {
+            "hwPartsRev": {
+                "aoaSerialNo": "", "fan": "", "imuPartNo": "", "lrDrv": "", "mobBlid": "",
+                "mobBrd": 0, "navSerialNo": "G185020H250311N105749", "ui": "", "wlan0HwAddr": "",
+            },
+            "nsmip": 2,
+            "passwordHash": "abc123",
+            "svcEndpoints": {},
+        }
     )
 
-    assert config.hw_parts_rev == "rev3"
+    assert config.hw_parts_rev.nav_serial_no == "G185020H250311N105749"
+    assert config.hw_parts_rev.mob_board == 0
+    assert config.hw_parts_rev.fan == ""
     assert config.password_hash == "abc123"
 
 

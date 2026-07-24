@@ -837,6 +837,176 @@ class RobotSettings:
 
 
 @dataclass(frozen=True)
+class DigiCap:
+    """CONFIRMED LIVE, REAL VALUES (this session, chairstacker's
+    raw_shadows.json) -- a small, separate capability namespace from
+    "cap" (see CapabilityFlags below), nested under the classic/
+    unnamed shadow's own "digiCap" key. Real values seen: app_ver=1,
+    timeline=1. "timeline" plausibly correlates with the already-
+    confirmed mission/timeline/report topic (a per-device flag for
+    whether this robot even sends timeline events at all) -- a
+    hypothesis, not confirmed by name alone."""
+
+    app_ver: int | None = None
+    timeline: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> DigiCap:
+        return cls(app_ver=data.get("appVer"), timeline=data.get("timeline"))
+
+
+@dataclass(frozen=True)
+class CapabilityFlags:
+    """CONFIRMED LIVE, REAL VALUES (this session, chairstacker's
+    raw_shadows.json) -- the classic/unnamed shadow's "cap" object, 36
+    fields. THE ONLY PLACE, across every shadow this project has ever
+    queried (named or unnamed), that describes what a SPECIFIC device
+    can actually do -- not "what Prime supports in general", but this
+    one robot's own real, per-device/per-firmware capability flags.
+
+    Values are ints, NOT bools -- several are graduated/tiered rather
+    than on/off (real examples: carpet_boost=3, floor_type_detect=4,
+    suction_lvl=4, operating_mode=550) -- resist the temptation to
+    truthy-check these as booleans; a 0 is a confirmed negative
+    ("this device cannot do X"), but a nonzero value's actual meaning
+    beyond "some level of support" is otherwise unconfirmed per field.
+
+    Classic's own ha_roomba_plus integration already gates real
+    features off an equivalent "cap" dict this same way (see
+    ha_roomba_plus's const.py, e.g. cap.get("carpetBoost")/
+    cap.get("pose")/cap.get("maps")) -- this is the same underlying
+    concept for Prime devices, previously entirely unavailable because
+    no Prime capture had ever reached this specific (unnamed) shadow
+    before. Prime-side entities currently have NO capability gating at
+    all -- built without knowing this data existed."""
+
+    wifi_5ghz: int | None = None
+    area: int | None = None
+    autoevac: int | None = None
+    bin_full_detect: int | None = None
+    carpet_boost: int | None = None
+    d_pause: int | None = None
+    dnd: int | None = None
+    dock_comm: int | None = None
+    expecting_user_conf: int | None = None
+    floor_type_detect: int | None = None
+    idl: int | None = None
+    lang: int | None = None
+    lang_ota: int | None = None
+    lmap: int | None = None
+    log: int | None = None
+    maps: int | None = None
+    matter: int | None = None
+    mc: int | None = None
+    multi_pass: int | None = None
+    ns: int | None = None
+    o_mode: int | None = None
+    ota: int | None = None
+    pp_wet_lvl: int | None = None
+    prov: int | None = None
+    pw: int | None = None
+    sched: int | None = None
+    scrub: int | None = None
+    suction_lvl: int | None = None
+    svc_conf: int | None = None
+    t_line: int | None = None
+    vm_strat: int | None = None
+    ble_log: int | None = None
+    d_spot: int | None = None
+    map_max: int | None = None
+    p2maps: int | None = None
+    sa_sku: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CapabilityFlags:
+        return cls(
+            wifi_5ghz=data.get("5ghz"),
+            area=data.get("area"),
+            autoevac=data.get("autoevac"),
+            bin_full_detect=data.get("binFullDetect"),
+            carpet_boost=data.get("carpetBoost"),
+            d_pause=data.get("dPause"),
+            dnd=data.get("dnd"),
+            dock_comm=data.get("dockComm"),
+            expecting_user_conf=data.get("expectingUserConf"),
+            floor_type_detect=data.get("floorTypeDetect"),
+            idl=data.get("idl"),
+            lang=data.get("lang"),
+            lang_ota=data.get("langOta"),
+            lmap=data.get("lmap"),
+            log=data.get("log"),
+            maps=data.get("maps"),
+            matter=data.get("matter"),
+            mc=data.get("mc"),
+            multi_pass=data.get("multiPass"),
+            ns=data.get("ns"),
+            o_mode=data.get("oMode"),
+            ota=data.get("ota"),
+            pp_wet_lvl=data.get("ppWetLvl"),
+            prov=data.get("prov"),
+            pw=data.get("pw"),
+            sched=data.get("sched"),
+            scrub=data.get("scrub"),
+            suction_lvl=data.get("suctionLvl"),
+            svc_conf=data.get("svcConf"),
+            t_line=data.get("tLine"),
+            vm_strat=data.get("vmStrat"),
+            ble_log=data.get("bleLog"),
+            d_spot=data.get("dSpot"),
+            map_max=data.get("mapMax"),
+            p2maps=data.get("p2maps"),
+            sa_sku=data.get("saSku"),
+        )
+
+
+@dataclass(frozen=True)
+class ClassicShadowState:
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
+    chairstacker's raw_shadows.json capture) -- the actual, complete
+    content of get_state()'s classic/unnamed shadow, previously
+    returned only as an untyped ShadowResponse with no dedicated model
+    at all (unlike get_settings()'s RobotSettings). Confirmed real
+    fields: cap (see CapabilityFlags), digiCap (see DigiCap),
+    cleanSchedule2 (kept raw -- see ScheduleShadow's own docstring for
+    why; same shape, reused rather than duplicated), schedHold, sku,
+    soldAsSku, svcEndpoints.
+
+    IMPORTANT, SEPARATE FROM rw-settings.sched_hold: this shadow has
+    its OWN "schedHold" field, confirmed via metadata timestamps to be
+    updated independently (~January 2026) from rw-settings' own
+    sched_hold (~unchanged since device registration in the one real
+    capture seen) -- NOT necessarily the same value at any given
+    moment. Before building a schedule-hold switch against
+    rw-settings.sched_hold alone, confirm which of the two the actual
+    schedule executor reads -- see the project's own notes on this
+    open question."""
+
+    digi_cap: DigiCap | None = None
+    nsmip: int | None = None
+    cap: CapabilityFlags | None = None
+    clean_schedule2_raw: list[Any] = field(default_factory=list)
+    sched_hold: bool | None = None
+    sku: str | None = None
+    sold_as_sku: str | None = None
+    svc_endpoints: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> ClassicShadowState:
+        digi_cap = data.get("digiCap")
+        cap = data.get("cap")
+        return cls(
+            digi_cap=DigiCap.from_json(digi_cap) if isinstance(digi_cap, dict) else None,
+            nsmip=data.get("nsmip"),
+            cap=CapabilityFlags.from_json(cap) if isinstance(cap, dict) else None,
+            clean_schedule2_raw=data.get("cleanSchedule2") or [],
+            sched_hold=data.get("schedHold"),
+            sku=data.get("sku"),
+            sold_as_sku=data.get("soldAsSku"),
+            svc_endpoints=data.get("svcEndpoints"),
+        )
+
+
+@dataclass(frozen=True)
 class ScheduleShadow:
     """CONFIRMED LIVE (this session, chairstacker) -- complete content
     of the named "rw-schedule" shadow, the third of the three
@@ -1386,111 +1556,304 @@ class CurrentStateShadow:
 
 
 @dataclass(frozen=True)
+class BbChgStats:
+    """CONFIRMED, REAL VALUES (this session, chairstacker's raw_shadows.json
+    capture): lifetime charge-cycle counters. Real values seen: n_chg_ok=561,
+    n_chg_err=0 -- plausible for a device registered roughly 10 months
+    before the capture.
+
+    THE NESTED "bbchg" KEY (raw_nested below): the real payload has a
+    SECOND, same-named sub-object nested one level down
+    (state.reported.bbchg.bbchg), holding its OWN nChgOk/nChgErr -- both
+    0 in the one real capture seen so far. Purpose unconfirmed; kept raw
+    rather than dropped, since a sibling field (BbPauseStats.raw_nested)
+    shows this same nested-duplicate shape is NOT always just a zeroed-
+    out artifact elsewhere in this shadow -- possibly a "since last
+    reset"/session-scoped counter alongside the lifetime total, but
+    that's a hypothesis, not a confirmed fact."""
+
+    n_chg_ok: int | None = None
+    n_chg_err: int | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbChgStats:
+        return cls(n_chg_ok=data.get("nChgOk"), n_chg_err=data.get("nChgErr"), raw_nested=data.get("bbchg"))
+
+
+@dataclass(frozen=True)
+class BbChg3Stats:
+    """CONFIRMED, REAL VALUES (this session, chairstacker): n_avail=285,
+    hours_on_dock=293109 -- units unconfirmed (if hours, an implausibly
+    large number for a ~10-month-old device; more likely a different,
+    finer-grained tick unit, or a counter that isn't literally "hours").
+
+    est_capacity/avg_minutes/n_lith_chrg/n_nimh_chrg are NOT present at
+    all in the one real capture seen (not null -- entirely absent keys)
+    -- included here anyway per this class's own cross-reference finding
+    (see StatsShadow's docstring): Classic's own "bbchg3" carries these
+    same field names, and Classic's own docs note this exact field can be
+    ABSENT ENTIRELY on some real robots (firmware/model-dependent). Kept
+    as optional fields for whichever future capture (different firmware/
+    SKU) might show them, rather than omitted and rediscovered later."""
+
+    n_avail: int | None = None
+    hours_on_dock: int | None = None
+    est_capacity: int | None = None
+    avg_minutes: int | None = None
+    n_lith_chrg: int | None = None
+    n_nimh_chrg: int | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbChg3Stats:
+        return cls(
+            n_avail=data.get("nAvail"),
+            hours_on_dock=data.get("hOnDock"),
+            est_capacity=data.get("estCap"),
+            avg_minutes=data.get("avgMin"),
+            n_lith_chrg=data.get("nLithChrg"),
+            n_nimh_chrg=data.get("nNimhChrg"),
+            raw_nested=data.get("bbchg3"),
+        )
+
+
+@dataclass(frozen=True)
+class BbMssnStats:
+    """CONFIRMED, REAL VALUES (this session, chairstacker): lifetime
+    mission-outcome counters, and a strong internal-consistency check
+    that these are exactly what they appear to be: n_mssn_canceled (25)
+    + n_mssn_failed (4) + n_mssn_ok (247) = 276 = n_mssn, an exact match.
+    n_mssn (276) also matches ro-currentstate's cleanMissionStatus.nMssn
+    from the SAME capture -- cross-shadow consistency, not just internal."""
+
+    n_mssn: int | None = None
+    n_mssn_canceled: int | None = None
+    n_mssn_failed: int | None = None
+    n_mssn_ok: int | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbMssnStats:
+        return cls(
+            n_mssn=data.get("nMssn"),
+            n_mssn_canceled=data.get("nMssnC"),
+            n_mssn_failed=data.get("nMssnF"),
+            n_mssn_ok=data.get("nMssnOk"),
+            raw_nested=data.get("bbmssn"),
+        )
+
+
+@dataclass(frozen=True)
+class BbPauseStats:
+    """CONFIRMED, REAL VALUES (this session, chairstacker): a plain list
+    of ints, real value seen [1, 48, 48, 48, 48, 48, 48, 48, 48, 48] (10
+    entries) -- likely a histogram/duration-bucket array (10 buckets?)
+    rather than one entry per pause event; exact semantics unconfirmed.
+
+    Unlike BbChgStats/BbChg3Stats/BbMssnStats, this one's raw_nested
+    (bbpause.bbpause) is NOT all-zero in the real capture ([29, -1]) --
+    the clearest evidence so far that this nested duplicate shape isn't
+    simply a zeroed-out artifact everywhere in this shadow, whatever it
+    actually represents."""
+
+    pauses: list[int] = field(default_factory=list)
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbPauseStats:
+        pauses = data.get("pauses")
+        return cls(
+            pauses=list(pauses) if isinstance(pauses, list) else [],
+            raw_nested=data.get("bbpause"),
+        )
+
+
+@dataclass(frozen=True)
+class BbRstInfoStats:
+    """CONFIRMED, REAL VALUE (this session, chairstacker): n_nav_rst=22
+    (navigation resets, lifetime). n_mob_rst/n_saf_rst/saf_causes are NOT
+    present at all in the one real capture seen -- kept as optional
+    fields on the same cross-reference basis as BbChg3Stats's absent
+    fields (Classic's own "bbrstinfo" has these same names; presence may
+    be firmware/model-dependent, not confirmed absent on every device)."""
+
+    n_nav_rst: int | None = None
+    n_mob_rst: int | None = None
+    n_saf_rst: int | None = None
+    saf_causes: Any | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbRstInfoStats:
+        return cls(
+            n_nav_rst=data.get("nNavRst"),
+            n_mob_rst=data.get("nMobRst"),
+            n_saf_rst=data.get("nSafRst"),
+            saf_causes=data.get("safCauses"),
+            raw_nested=data.get("bbrstinfo"),
+        )
+
+
+@dataclass(frozen=True)
+class BbSysStats:
+    """CONFIRMED, REAL VALUES (this session, chairstacker): hours=7354,
+    minutes=0. Plausible as total system uptime: device registered
+    2025-09-19, capture taken 2026-07-23 -- roughly 307 days elapsed,
+    307*24=7368 hours, close enough to 7354 to be a believable "hours
+    since registration/total uptime" counter, not an arbitrary number."""
+
+    hours: int | None = None
+    minutes: int | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbSysStats:
+        return cls(hours=data.get("hr"), minutes=data.get("min"), raw_nested=data.get("bbsys"))
+
+
+@dataclass(frozen=True)
 class StatsShadow:
-    """CONFIRMED LIVE (this session, chairstacker) -- complete key
-    list of the named "ro-stats" shadow, the second of the four
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
+    chairstacker's raw_shadows.json capture) -- complete key list AND
+    real values of the named "ro-stats" shadow, the second of the four
     previously-unknown read-only shadows found via MQTTTopics.java.
-    Only key NAMES confirmed so far, not values -- every field typed
-    `Any` rather than guessed at.
+    Previously only key names were confirmed (every field typed `Any`);
+    see each bbX sub-class's own docstring for its specific real values
+    and the cross-validation that confirms they're genuinely lifetime
+    statistics, not arbitrary numbers (BbMssnStats's counters sum
+    exactly; BbSysStats's hour count matches the device's registration
+    age).
 
-    The "bb" prefix on five of these (bbchg, bbchg3, bbmssn, bbpause,
-    bbrstinfo, bbsys) is UNCONFIRMED but plausibly "battery box" or
-    similar -- if so, this shadow may carry lifetime/historical
-    battery statistics (charge cycles, mission counts, pause events,
-    reset info) as a complement to ro-currentstate's live batPct
-    value, not a duplicate of it.
+    The "bb" prefix (bbchg, bbchg3, bbmssn, bbpause, bbrstinfo, bbsys) is
+    still unconfirmed by name, but "battery box"/blackbox-style lifetime
+    telemetry is a good fit for what's actually in each one now that real
+    values exist. CROSS-REFERENCE (still holds): "bbchg3" and
+    "bbrstinfo" both exist with the same field vocabulary on Classic
+    robots too (MISSIONSTORE_FIELD_REGISTRY.md) -- same underlying
+    blackbox telemetry subsystem, relayed over a different transport.
 
-    CROSS-REFERENCE (this session, from ha_roomba_plus's own Classic-
-    tier field registry, MISSIONSTORE_FIELD_REGISTRY.md -- an old,
-    already-confirmed finding from a different product line this
-    session hadn't cross-checked against Prime's field names until
-    now): "bbchg3" and "bbrstinfo" both exist, confirmed with real
-    sub-field structure, on Classic robots too. "bbchg3" there holds
-    "estCap"/"nAvail"/"hOnDock"/"avgMin" (plus firmware-dependent
-    "nLithChrg"/"nNimhChrg") -- battery-capacity-retention and
-    charge-cycle data specifically, confirmed via
-    "const.active_charge_cycles()" reading it for a "battery_cycles"
-    metric. "bbrstinfo" there holds "nNavRst"/"nMobRst"/"nSafRst"/
-    "safCauses" (plus firmware-dependent "nOomRst") -- reset-event
-    diagnostics by subsystem. Same company, same field vocabulary,
-    different product line -- not proof Prime's own "ro-stats" has
-    identical sub-structure, but a concrete, evidence-based starting
-    hypothesis for whoever parses real values here, rather than a
-    bare guess. Classic's own docs also note this exact field
-    (bbchg3 specifically) was ABSENT ENTIRELY on some real robots
-    (firmware/model-dependent, not simply "budget hardware lacks it")
-    -- worth checking whether the same per-device absence pattern
-    exists for Prime's ro-stats too, not just whether it responds to
-    the shadow query at all.
+    "unprocessedError" is a plain STRING (not an object as its name
+    might suggest) -- real value seen: "picea unknown fault code:2105".
+    Notable: "picea" appearing in a real backend string, consistent with
+    the Shenzhen Picea Robotics acquisition (Jan 2026) already reflected
+    in this project's own context notes.
 
-    Note "runtimestats" here is ALL-LOWERCASE, unlike
-    ro-currentstate's camelCase "runtimeStats" -- confirmed as two
-    separate keys with different casing (not a transcription error),
-    kept exactly as reported."""
+    Note "runtimestats" here is ALL-LOWERCASE, unlike ro-currentstate's
+    camelCase "runtimeStats" -- confirmed as two separate keys with
+    different casing (not a transcription error). Reuses
+    RuntimeStatsSummary (same hr/min shape, confirmed identical in the
+    real capture: {"hr": 7, "min": 57})."""
 
-    bbchg: Any | None = None
-    bbchg3: Any | None = None
-    bbmssn: Any | None = None
-    bbpause: Any | None = None
-    bbrstinfo: Any | None = None
-    bbsys: Any | None = None
-    runtimestats: Any | None = None
-    unprocessed_error: Any | None = None
+    bbchg: BbChgStats | None = None
+    bbchg3: BbChg3Stats | None = None
+    bbmssn: BbMssnStats | None = None
+    bbpause: BbPauseStats | None = None
+    bbrstinfo: BbRstInfoStats | None = None
+    bbsys: BbSysStats | None = None
+    runtimestats: RuntimeStatsSummary | None = None
+    unprocessed_error: str | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> StatsShadow:
         return cls(
-            bbchg=data.get("bbchg"),
-            bbchg3=data.get("bbchg3"),
-            bbmssn=data.get("bbmssn"),
-            bbpause=data.get("bbpause"),
-            bbrstinfo=data.get("bbrstinfo"),
-            bbsys=data.get("bbsys"),
-            runtimestats=data.get("runtimestats"),
+            bbchg=BbChgStats.from_json(data["bbchg"]) if isinstance(data.get("bbchg"), dict) else None,
+            bbchg3=BbChg3Stats.from_json(data["bbchg3"]) if isinstance(data.get("bbchg3"), dict) else None,
+            bbmssn=BbMssnStats.from_json(data["bbmssn"]) if isinstance(data.get("bbmssn"), dict) else None,
+            bbpause=BbPauseStats.from_json(data["bbpause"]) if isinstance(data.get("bbpause"), dict) else None,
+            bbrstinfo=BbRstInfoStats.from_json(data["bbrstinfo"]) if isinstance(data.get("bbrstinfo"), dict) else None,
+            bbsys=BbSysStats.from_json(data["bbsys"]) if isinstance(data.get("bbsys"), dict) else None,
+            runtimestats=(
+                RuntimeStatsSummary.from_json(data["runtimestats"])
+                if isinstance(data.get("runtimestats"), dict)
+                else None
+            ),
             unprocessed_error=data.get("unprocessedError"),
         )
 
 
 @dataclass(frozen=True)
 class ServicesShadow:
-    """CONFIRMED LIVE (this session, chairstacker) -- complete key
-    list of the named "ro-services" shadow, the third of the four
-    previously-unknown read-only shadows found via MQTTTopics.java.
-    Only key NAMES confirmed so far, not values. "optFeats"
-    (optional features?) plausibly a feature-flag/capability list,
-    unconfirmed."""
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUE (this session,
+    chairstacker) -- complete key list AND real value of the named
+    "ro-services" shadow, the third of the four previously-unknown
+    read-only shadows found via MQTTTopics.java.
 
-    opt_feats: Any | None = None
+    "optFeats" is an OBJECT (a prior working assumption that it might be
+    a plain list was WRONG), mapping feature name -> int. Real value
+    seen: {"carpetBoost": 0} -- exactly one entry in this capture,
+    unclear whether 0 means "not an optional/paid feature for this
+    device" or "feature disabled"/some other flag meaning. Kept as a
+    raw dict rather than a specific dataclass since only one key has
+    ever been seen -- not enough evidence yet for a typed shape."""
+
+    opt_feats: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ServicesShadow:
-        return cls(opt_feats=data.get("optFeats"))
+        opt_feats = data.get("optFeats")
+        return cls(opt_feats=opt_feats if isinstance(opt_feats, dict) else None)
+
+
+@dataclass(frozen=True)
+class HwPartsRev:
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
+    chairstacker) -- the actual content of ro-configinfo's "hwPartsRev"
+    object. Real capture: every string field empty ("") except
+    nav_serial_no, which holds a real serial number
+    ("G185020H250311N105749" -- matches the device's own SKU prefix,
+    G185020). mob_board is an int, =0 in the real capture."""
+
+    aoa_serial_no: str | None = None
+    fan: str | None = None
+    imu_part_no: str | None = None
+    lr_drv: str | None = None
+    mob_blid: str | None = None
+    mob_board: int | None = None
+    nav_serial_no: str | None = None
+    ui: str | None = None
+    wlan0_hw_addr: str | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> HwPartsRev:
+        return cls(
+            aoa_serial_no=data.get("aoaSerialNo"),
+            fan=data.get("fan"),
+            imu_part_no=data.get("imuPartNo"),
+            lr_drv=data.get("lrDrv"),
+            mob_blid=data.get("mobBlid"),
+            mob_board=data.get("mobBrd"),
+            nav_serial_no=data.get("navSerialNo"),
+            ui=data.get("ui"),
+            wlan0_hw_addr=data.get("wlan0HwAddr"),
+        )
 
 
 @dataclass(frozen=True)
 class ConfigInfoShadow:
-    """CONFIRMED LIVE (this session, chairstacker) -- complete key
-    list of the named "ro-configinfo" shadow, the last of the four
-    previously-unknown read-only shadows found via MQTTTopics.java.
-    Only key NAMES confirmed so far, not values.
+    """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
+    chairstacker) -- complete key list AND real values of the named
+    "ro-configinfo" shadow, the last of the four previously-unknown
+    read-only shadows found via MQTTTopics.java.
 
-    "passwordHash" -- PRIVACY NOTE: if this genuinely holds a password
-    hash, it's sensitive regardless of being a hash rather than
-    plaintext. Not automatically redacted by this model itself
-    (redaction happens at the diagnostics/report layer, see
-    diagnostics.py's Report.redact()/sensitive-key masking) -- flagged
+    "passwordHash" -- PRIVACY NOTE: confirmed as a plain STRING in the
+    real capture (correctly shown as "[REDACTED]" by diagnostics.py's
+    own redaction layer before the capture was ever shared with this
+    project -- redaction confirmed working as intended, not just
+    theoretical). Sensitive regardless of being a hash rather than
+    plaintext; this model itself still does no redaction of its own
+    (that stays diagnostics.py's job, see Report.redact()) -- flagged
     here so anyone handling this shadow's real content directly is
-    aware, not just relying on downstream redaction to catch it.
-    "hwPartsRev" plausibly a hardware parts revision string,
-    unconfirmed."""
+    aware, not just relying on downstream redaction to catch it."""
 
-    hw_parts_rev: Any | None = None
-    password_hash: Any | None = None
+    hw_parts_rev: HwPartsRev | None = None
+    password_hash: str | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ConfigInfoShadow:
+        hw_parts_rev = data.get("hwPartsRev")
         return cls(
-            hw_parts_rev=data.get("hwPartsRev"),
+            hw_parts_rev=HwPartsRev.from_json(hw_parts_rev) if isinstance(hw_parts_rev, dict) else None,
             password_hash=data.get("passwordHash"),
         )
 

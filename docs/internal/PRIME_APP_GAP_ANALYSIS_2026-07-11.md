@@ -3469,3 +3469,30 @@ cross-check against the earlier real-payload confirmation.
 **Practical recommendation going forward**: pair the automatic reconnect fix with
 `--delay-seconds 2` (or similar) for the most reliable diagnostic runs, until/unless further
 investigation narrows down why the remaining two shadows specifically needed the extra spacing.
+
+## Addendum: `rw-software`/`ro-configinfo` -- client-side cause ruled out
+
+The two shadows that still failed even with `--delay-seconds 2` (9/11 -> 11/11 needed the delay;
+these two were among the original stragglers before that) were suspected to have some kind of
+app-side special handling distinct from the other seven confirmed named shadows. A full
+decompilation of `NamedThingShadowTopicFactory::getSupportedPaths(shadowName)` (native, via the
+same Ghidra approach used throughout this investigation) rules that out cleanly: the function
+does **regex-based prefix matching only**, against exactly two patterns --
+
+```
+^ro-.*   (every read-only shadow, as one group)
+^rw-.*   (every read-write shadow, as one group)
+```
+
+-- with no per-shadow branch, allowlist, or special case anywhere in the function. `rw-software`
+gets byte-identical treatment to `rw-settings`/`rw-schedule`/`rw-constatus`; `ro-configinfo` gets
+byte-identical treatment to `ro-currentstate`/`ro-stats`/`ro-services`. There is no app-side
+capability gate, feature flag, or subscription difference that could explain these two being
+harder to fetch than the other seven.
+
+**Conclusion: the cause, whatever it is, is server-side** -- most plausibly a timing/provisioning
+difference specific to these two shadows (e.g. built lazily on first real request, or populated
+from a slower backend service), not anything discoverable from the client APK. No further native
+decompilation is expected to resolve this; the next step, if anyone wants to keep pursuing it,
+would be comparing request/response timing across all eleven shadows on a real device to see
+whether these two consistently take measurably longer to become available after a reconnect.
