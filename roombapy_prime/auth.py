@@ -159,29 +159,80 @@ def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> None:
     AuthSSLError instead of letting the raw aiohttp exception bubble
     up as an opaque "unknown error occurred".
 
-    NEW (V4/Prime prep, ha_roomba_plus login consolidation). Carried
-    over from ha_roomba_plus's cloud_api.py::_raise_clear_ssl_error()
-    (v3.5.0 bug-hunt fix, real-world report from wecoyote5: iRobot's
-    own disc-prod.iot.irobotapi.com TLS certificate briefly expired on
-    their end -- not a bug in the calling code, and not something a
-    user can fix locally). Belongs here rather than only in
-    ha_roomba_plus: every consumer of this library hits the exact same
-    endpoints, including chairstacker/jadestar1864 running the
-    standalone verify-* scripts directly, not just through Roomba+.
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#auth_raise_clear_ssl_error
+    """
+    reason = _ssl_verify_reason(exc)
+    hint = (
+        "\n\nOpenSSL reported: " + reason if reason else ""
+    )
 
-    Deliberately does NOT offer any way to skip/ignore certificate
-    verification -- that would remove protection against
-    man-in-the-middle attacks for every future connection this
-    library ever makes, to work around a problem that is both
-    temporary (resolves once iRobot renews their certificate) and
-    outside any caller's control either way."""
+    if reason and ("local issuer" in reason or "self signed" in reason or "unable to get" in reason):
+        raise AuthSSLError(
+            "Could not verify iRobot's cloud server certificate, because this machine "
+            "has no trusted root certificate to check it against. This is a LOCAL setup "
+            "problem, not an iRobot outage -- waiting will not fix it.\n\n"
+            "On macOS with Python from python.org, this is almost always the missing "
+            "one-time certificate install. Run (adjusting the version to match yours):\n"
+            "  /Applications/Python\\ 3.13/Install\\ Certificates.command\n\n"
+            "Otherwise, updating the certifi package usually fixes it:\n"
+            "  pip install --upgrade certifi\n\n"
+            "A corporate proxy or VPN that re-signs TLS traffic can produce the same "
+            "error." + hint
+        ) from exc
+
+    if reason and "expired" in reason:
+        raise AuthSSLError(
+            "iRobot's cloud server certificate has expired. This is on their end, not "
+            "yours -- nothing to fix locally; it usually resolves within a few hours "
+            "once they renew it." + hint
+        ) from exc
+
     raise AuthSSLError(
-        "Could not verify iRobot's cloud server certificate. This is "
-        "almost always a temporary problem on iRobot's servers (an "
-        "expired or currently-renewing TLS certificate), not something "
-        "wrong with your setup -- it should resolve on its own within a "
-        "few hours."
+        "Could not verify iRobot's cloud server certificate. Two causes are roughly "
+        "equally likely and this error alone cannot tell them apart:\n"
+        "  1. This machine's trusted-root store -- on macOS with Python from "
+        "python.org, run 'Install Certificates.command' once; otherwise try "
+        "'pip install --upgrade certifi'.\n"
+        "  2. A genuinely expired certificate on iRobot's servers, which resolves on "
+        "its own.\n"
+        "If it fails repeatedly across hours or versions, cause 1 is far likelier." + hint
     ) from exc
+
+
+def _ssl_verify_reason(exc: BaseException) -> str | None:
+    """Digs OpenSSL's own verify_message out of the exception chain --
+    the single most informative field for telling a local trust-store
+    problem apart from a genuinely bad server certificate. Returns None
+    rather than guessing if the chain doesn't carry one."""
+    import ssl  # noqa: PLC0415
+
+    # NEVER str() the aiohttp exception itself: ClientSSLError.__str__
+    # dereferences its connection_key, which is None when the exception
+    # was constructed directly (as our own tests do, and as some aiohttp
+    # paths do too) -- stringifying it raises AttributeError from inside
+    # the error handler. Found the hard way. We walk args/causes and
+    # collect only the strings, which is safe regardless.
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    texts: list[str] = []
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            message = getattr(current, "verify_message", None)
+            if message:
+                return message
+        for arg in getattr(current, "args", ()):
+            if isinstance(arg, str):
+                texts.append(arg)
+            elif isinstance(arg, BaseException):
+                stack.append(arg)
+        stack.append(current.__cause__)
+        stack.append(current.__context__)
+    return "; ".join(texts) or None
 
 
 def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> None:
@@ -424,101 +475,9 @@ class LoginResult:
     is kept too, since callers may want fields this class doesn't
     explicitly model (e.g. per-robot capability/state data).
 
-    http_base is carried through from the discovery response (the same
-    value used internally for the /v2/login POST). http_base_auth is a
-    SEPARATE field (see rest_client.py) -- confirmed pattern from
-    ha_roomba_plus's cloud_api.py: httpBase is for /v2/login only,
-    httpBaseAuth is the base for all authenticated data endpoints. Using
-    http_base for both (an earlier mistake in this module) would be
-    wrong for anything beyond login itself.
-
-    credentials: AWS Cognito credentials for SigV4-signing REST calls
-    (see CloudCredentials) -- required, not optional, mirroring
-    cloud_api.py's "validate at the gate" lesson (a response missing
-    these should fail loudly at login(), not with a confusing KeyError
-    deep inside a later REST call).
-
-    irbt_topic_prefix / iot_topic_prefix: CONFIRMED (session 43, see
-    below) -- this field's long uncertainty is resolved. Needed to
-    build MQTT topics outside the shadow system (mission commands via
-    cmd_topic(), the live map topic via livemap_topic()).
-
-    UPDATE (session 36): traced the two underlying native constants
-    (core::ServiceDiscoveryImpl::kIotTopicPrefixFieldName /
-    kIrbtTopicPrefixFieldName) further via native disassembly. Found
-    them used as key arguments to a generic
-    `AccountServiceImpl::sendUserRequest(key, callback)` call inside
-    `onAccountInfoRefreshed()`, right alongside near-identical
-    conditional checks for account country/locale/notification-center/
-    commercial-messages settings -- a pattern that reads more like "sync
-    this one account attribute via its own request if a pending-change
-    flag is set" than "read this key out of the discovery response
-    body". This is new, genuine context, but doesn't resolve the
-    original question -- if anything, it opens a competing hypothesis
-    (these values might come from a follow-up account-info fetch,
-    not from ServiceDiscoveryData/login discovery directly) that
-    wasn't previously considered. The literal JSON key string itself
-    remains unfound either way (it's stored in a std::string bss
-    global, filled in by a static initializer that couldn't be
-    isolated among the many other things AccountServiceImpl's
-    translation unit initializes at load time). Still needs either a
-    real traffic capture or a substantially deeper native trace to
-    resolve -- not further pursued this session.
-
-    UPDATE (session 39): the underlying CONCEPT and its NECESSITY are
-    now much more strongly evidenced, even though the literal JSON
-    field name here is still unconfirmed. A live test (chairstacker)
-    showed every mission command sent via update_shadow() (the classic
-    shadow -- this library's previous best guess for mission control)
-    timing out with zero response. Independently, this library's own
-    native disassembly (objdump on libcorebase.so) found the literal
-    format string "/things/%s/cmd" -- a topic family entirely separate
-    from the shadow system, requiring exactly this kind of prefix.
-    Separately, a third-party, unaffiliated GitHub project
-    (lvigilantecorreo-commits/roomba-v4, MIT-licensed, author reports
-    the command actually moving a real robot) documents the same shape
-    explicitly: "{irbt_topics}/things/{BLID}/cmd", confirming the
-    prefix is genuinely required for mission control, not just the
-    live-map topic as previously assumed. This is an external,
-    unverified-by-us source, but its topic pattern independently
-    matches this library's own native string discovery -- see
-    mqtt_client.py's cmd_topic()/publish_cmd() docstrings for the full
-    trail and prime_robot.py's send_simple_command() for the new,
-    corrected mission-control path built on this. The literal
-    discovery-response JSON key itself remains the same long-standing
-    guess ("irbtTopicPrefix"/"iotTopicPrefix") -- not resolved by any
-    of this, only its importance is now much clearer.
-
-    UPDATE (session 43): DEFINITIVELY RESOLVED. chairstacker's
-    diagnostics run (using the new _report_topic_prefix_status()
-    reporting from session 41) showed the guessed keys really were
-    wrong, and the follow-up --dump-config capture showed the actual
-    deployment object in full. The real keys are "irbtTopics" and
-    "iotTopics" (plural "Topics", not "TopicPrefix" as guessed --
-    close, but not exact). Confirmed real values from a live account:
-    `irbtTopics: "v011-irbthbu"`, `iotTopics: "$aws"`. Two things this
-    also confirms in passing: (1) "v011" matches the same account's
-    `svcDeplId: "v011"` -- the same correlation already suspected from
-    session 28's "v007" observation on a different account, now
-    confirmed as a general pattern (`irbtTopics ==
-    f"{svcDeplId}-irbthbu"`), though the field itself should still be
-    read directly rather than reconstructed from svcDeplId. (2) the
-    "v011-irbthbu" value is byte-for-byte identical to the example
-    value shown in the third-party GitHub project cited in the
-    thirty-ninth session's update -- as strong a confirmation as this
-    project could hope for that project's corroboration was genuine,
-    not coincidental. `login()` updated to read the correct keys.
-
-    UPDATE (session 52): a fourth, independent confirmation, this time
-    directly from the app's own bytecode rather than live/external
-    data. A systematic `$$serializer` scan (the same technique behind
-    most of this project's other confirmed models) found
-    `DiscoveryResponse$Deployment$$serializer`, whose confirmed fields
-    include `iotTopics`/`irbtTopics` -- an exact, direct bytecode match
-    for the field names chairstacker's real account had already
-    settled. This closes the loop about as completely as this kind of
-    question can be closed: live account data, an independent
-    third-party project, and the app's own compiled source all agree."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#authloginresult
+    """
 
     mqtt_endpoint: str
     http_base: str
@@ -560,8 +519,37 @@ class LoginResult:
         return self.primary_token()
 
     def primary_blid(self) -> str:
+        """The BLID to use when the caller didn't name one.
+
+        RAISES on a multi-robot account (this session, real field
+        report). This used to return next(iter(self.robots)) -- the
+        first key of a dict, which is arbitrary. On an account with two
+        robots it silently picked one and told nobody.
+
+        That is exactly what happened: a tester's region-command tests
+        went to the wrong robot for an entire session. The integration,
+        which asks for a specific BLID, was talking to the right one
+        the whole time -- so the two tools disagreed about which robot
+        was "the" robot, and nothing said so.
+
+        A wrong-but-plausible default is worse than an error here: the
+        command still sends, the robot still does nothing, and the
+        result looks like a protocol mystery instead of a
+        misconfiguration."""
         if not self.robots:
             raise AuthError("Login succeeded but no robots were returned", self.raw)
+        if len(self.robots) > 1:
+            listed = "\n".join(
+                f"  --blid {blid}   {getattr(entry, 'name', None) or '(unnamed)'}"
+                f"  (sku {getattr(entry, 'sku', None) or '?'})"
+                for blid, entry in self.robots.items()
+            )
+            raise AuthError(
+                f"This account has {len(self.robots)} robots, so there is no single obvious "
+                f"target -- please name one explicitly:\n{listed}\n"
+                "Set --blid, or the ROOMBAPY_PRIME_BLID environment variable.",
+                self.raw,
+            )
         return next(iter(self.robots.keys()))
 
 

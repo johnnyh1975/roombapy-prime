@@ -71,27 +71,9 @@ class RoutineCommand:
       dedicated @SerialName -- they serialize under their property
       name.
 
-    CORRECTED (eleventh session, via cross-checking with
-    ha_roomba_plus): "ordered" is NOT an indication of sequencing
-    multiple separately-sent RoutineCommand objects (e.g. from a
-    FavoriteV1/Routine.commandDefs list). ha_roomba_plus (verified
-    against real Classic devices in production for years) uses
-    "ordered" as an INTRA-command property alongside "regions" within
-    the same command object: whether the regions WITHIN this one
-    command should be visited in listed order, or the robot itself is
-    allowed to optimize. Whether multiple commandDefs entries are
-    actually sent as separate, sequential commands thus remains
-    UNRESOLVED -- "ordered" is not evidence for that.
-
-    params/regions/id_multipolys accept either the bytecode-confirmed
-    types (CommandPolygon/CommandParams/Region, see below in this
-    module) or still raw dicts (backward-compatible escape hatch for
-    anything not covered by the typed models). CORRECTED (this
-    session, parallel native-analysis track): this docstring
-    previously said these "wasn't modeled in detail" -- stale as of
-    several sessions ago; Region/CommandPolygon/CommandParams are all
-    fully modeled below, this Union type is deliberate flexibility,
-    not an admission of missing work."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#mission_controlroutinecommand
+    """
 
     command_type: MissionCommandType
     asset_id: str
@@ -109,6 +91,19 @@ class RoutineCommand:
     spot_geometry: dict[str, Any] | None = None
     favorite_id: str | None = None
     initiator: str | None = None
+    # Wire key "id". CONFIRMED to be written by the real app's own
+    # buildJsonFromCommandDef (parallel APK research) -- one of exactly
+    # seven fields it emits -- but its MEANING is unknown, and no
+    # capture this project has contains it.
+    #
+    # Deliberately a PASSTHROUGH, never generated: if a stored favorite
+    # carries one, we preserve it; if it does not, we send nothing.
+    # Inventing a value would be worse than omitting the field, since
+    # we cannot know what it identifies. This exists so that our
+    # parse-then-reserialize round-trip stops silently DROPPING it --
+    # exactly the failure mode verify_region_commands' own fidelity
+    # check was built to catch.
+    command_id: str | None = None
     """NEW (session 25) -- confirmed from real mission history
     (chairstacker): wire key "initiator", observed values "cloud"
     (schedule-triggered) and "rmtApp" (manually triggered via the
@@ -144,6 +139,8 @@ class RoutineCommand:
             body["geom"] = self.spot_geometry
         if self.favorite_id is not None:
             body["favorite_id"] = self.favorite_id
+        if self.command_id is not None:
+            body["id"] = self.command_id
         if self.initiator is not None:
             body["initiator"] = self.initiator
         return body
@@ -177,7 +174,20 @@ class RegionType(StrEnum):
     ad-hoc region is created alongside a CommandPolygon sharing the
     SAME id (the region<->geometry linking mechanism) -- see
     CommandPolygon's own docstring. Still not observed directly on a
-    real device (only RID and ZID have been)."""
+    real device (only RID and ZID have been).
+
+    A FOURTH TYPE EXISTS AND IS DELIBERATELY NOT LISTED HERE:
+    kZoneTypeWId, found alongside kZoneTypeRId/ZId/TId in the same
+    constant table (parallel APK research). Its wire value could not be
+    resolved, and guessing it would be worse than omitting it -- note
+    that TID is "furniture", NOT "tid", so the obvious lowercase-the-
+    prefix pattern is already known to be wrong here. An earlier
+    version of this enum did exactly that guess for TID and was wrong
+    for months.
+
+    If a real capture ever shows a region type this enum does not
+    recognise, that is very likely WID, and the observed value settles
+    it. Until then it stays unmodelled rather than invented."""
 
     RID = "rid"
     # CORRECTED (parallel native-analysis track, later session): the
@@ -549,106 +559,9 @@ class CommandParams:
     many more. Meaning of some more cryptic individual fields (noKOZ,
     odoaMode, rankOverlap, gentleMode) not further investigated.
 
-    CORRECTED (this session, parallel native-analysis track,
-    $$serializer.<clinit> inspection -- superseding an earlier "DEX
-    field list" reading this docstring used to cite): 18 of this
-    class's wire keys were wrong, not just differently-cased. The
-    earlier reading had read Kotlin PROPERTY names from the class
-    declaration, not the actual @SerialName wire keys -- two different
-    things in kotlinx.serialization, and critically, undeclared keys
-    are silently DROPPED by the deserializer rather than erroring. A
-    RoutineCommand built with the old keys would have had these 18
-    parameters vanish entirely on arrival, not just look slightly
-    different -- a real functional bug for anything using CommandParams
-    (which sits inside every region of a region-aware command), not a
-    cosmetic one. Corrected in both to_json() and from_json() below;
-    see to_json()'s own docstring for the full before/after list.
-    GENERAL LESSON, worth remembering for future bytecode findings in
-    this project: a DEX/property-declaration reading is not the same
-    as a wire-key confirmation -- always check the actual
-    $$serializer.<clinit> table, not just the class's own field list.
-
-    CONFIRMED (same session, onlyUserModifiableParams()/
-    onlyNonUserModifiableParams()): exactly seven fields are
-    NON-user-modifiable (system/metadata, kept as-is when the rest of
-    a command is edited) -- routine_type, clean_score_id,
-    smart_clean_id, replay_of, routine_modified, adaptive_cleaning,
-    cleaning_profile. Every other field on this class is
-    user-modifiable and factors into the real app's own
-    modified-vs-unmodified comparison (see routine_modified's own
-    field docstring below for how that comparison actually works).
-
-    SPECIAL CASE, deliberately NOT touched by the correction above:
-    no_auto_passes (wire key noAutoPasses) does not appear in the
-    confirmed serializer list at all -- that list has
-    no_persistent_pass (now corrected to wire key "noPP") instead.
-    These are confirmed to be two genuinely DIFFERENT fields, not a
-    spelling variant of each other -- checked directly against the
-    Kotlin class's own field list, which has both separately.
-    no_auto_passes is kept exactly as it was because it's
-    independently confirmed from real live data (chairstacker's
-    cleanSchedule2[].cmdStr, session 27), not from this bytecode
-    reading -- a case where the field-list correction specifically
-    does NOT apply, verified rather than assumed.
-
-    suction_level/carpet_boost, RESOLVED (parallel native-analysis
-    track, SuctionLevel.java + a follow-up investigation that first
-    found CarpetBoostSettings.java's own three-way enum
-    (PERFORMANCE/ECO/AUTO), then confirmed it CONFIRMED DEAD CODE --
-    zero consumers anywhere, part of an older View/Fragment/XML UI
-    generation superseded by Compose, still compiled into the APK but
-    never instantiated -- see CarpetBoostSettings's own docstring):
-    suction_level is a purely numeric enum, Invalid(0)/Low(1)/
-    Medium(2)/High(3)/Turbo(4) -- 0 is an explicit ERROR/placeholder
-    value, NOT "Auto". carpet_boost really is the plain bool this
-    class already models, confirmed by cross-referencing iRobot's own
-    public product documentation for the real "Carpet Boost" feature:
-    a SENSOR-DRIVEN, REAL-TIME modifier -- the robot detects carpet
-    (via increased brush resistance transitioning from hard floor) and
-    automatically increases suction power for as long as it's on
-    carpet, independent of the manually-set suction_level, reverting
-    on hard floor. This is why suction_level itself has no "Auto"
-    value at all: floor-type adaptation isn't a suction_level concept
-    in the first place, it's this entirely separate boolean toggle
-    (enable/disable the feature; the robot's own sensors decide WHEN
-    to actually apply the boost, not the app).
-
-    A THIRD, separate field worth knowing about here: adaptive_cleaning
-    (isolated, only referenced in RoutineCommand's own source) is
-    plausibly the wire form of iRobot's distinct "Adaptive Cleaning"/
-    "Dirt Detective" feature -- HISTORY-based (learns from past
-    cleaning jobs to prioritize dirtier rooms), not real-time/sensor-
-    based the way carpet_boost is. Genuinely different mechanisms
-    despite both being "the robot adjusts itself" concepts -- don't
-    conflate them if surfacing either as a user-facing setting.
-
-    CRITICAL, CONFIRMED FINDING ABOUT WHAT THE REAL APP SENDS ON A
-    PLAIN "START" TAP (parallel native-analysis track,
-    SpaceDetailsAggregateViewModel.currentDefaultCommandParams()):
-    the real app does NOT omit CommandParams for a basic start --
-    it explicitly fetches the account's currently active preferences
-    (availablePreferencesDataProvider.getFilteredPreferences(), itself
-    populated by a real fetch() through missionRepository) and builds
-    a full CommandParams from them before sending. This means
-    send_simple_command()'s own bare {"command", "time", "initiator"}
-    payload -- confirmed working for start/pause/stop/resume/dock/find
-    at the TRANSPORT level -- is NOT equivalent to what the real app's
-    own "Start" button does regarding suction/carpet-boost/etc: it
-    structurally CANNOT carry these fields at all (a fundamentally
-    different, simpler wire shape than RoutineCommand, not just a
-    missing optional field), so whatever suction/carpet-boost setting
-    the robot ends up running with is decided ENTIRELY by the robot's
-    own internal fallback, not by mirroring the account's actual saved
-    preferences the way the real app's own flow does. A field report
-    of a mission unexpectedly always running at what looked like
-    maximum power, never adapting, is CONSISTENT with this gap -- not
-    confirmed as the definitive explanation, but a real, structural
-    reason to expect a difference here, not just a coincidence.
-    Reaching real preference-aware parity would need the
-    RoutineCommand-carrying path (send_routine_command_via_cmd_topic(),
-    itself still not live-tested for ANY use as of this writing) to
-    become the basic-start path too, not just the region-aware one --
-    a real architectural gap, not just a documentation one."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#mission_controlcommandparams
+    """
 
     adaptive_cleaning: bool | None = None
     bin_pause: bool | None = None

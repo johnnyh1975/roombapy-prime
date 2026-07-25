@@ -3251,3 +3251,56 @@ class TestPolicyZoneCategory:
         from roombapy_prime.models import PolicyZoneCategory
 
         assert self._feature(self.POLYGON, "SomethingNewFromFirmware").category is PolicyZoneCategory.UNKNOWN
+
+
+class TestCommandIdPassthrough:
+    """Wire key "id" -- confirmed to be one of exactly seven fields the
+    real app's own buildJsonFromCommandDef emits, but its MEANING is
+    unknown and no capture this project has contains it.
+
+    Hence passthrough, never generated. Preserving what the server sent
+    is defensible without understanding it; inventing a value for a
+    field that identifies something unknown is not."""
+
+    def _command(self, **kwargs):
+        from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+
+        return RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID", **kwargs)
+
+    def test_a_server_supplied_id_survives_the_round_trip(self):
+        assert self._command(command_id="abc-123").to_json()["id"] == "abc-123"
+
+    def test_no_id_is_invented_when_the_server_did_not_send_one(self):
+        """The failure mode this guards against is not omission -- it is
+        confidently sending a made-up identifier."""
+        assert "id" not in self._command().to_json()
+
+    def test_it_is_read_from_the_wire_key_id_not_from_a_python_name(self):
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        favorite = PrimeRestClient._favorite_from_json({
+            "favorite_id": "fav1",
+            # Wire key is "commanddefs", all lowercase -- confirmed,
+            # and easy to get wrong from the Python attribute name.
+            "commanddefs": [{"command": "start", "robot_id": "BLID", "id": "srv-99"}],
+        })
+
+        assert favorite.command_defs[0].command_id == "srv-99"
+
+
+def test_region_type_has_exactly_the_three_resolvable_values():
+    """A fourth constant, kZoneTypeWId, exists in the same table but its
+    wire value could not be resolved -- so it is documented and NOT
+    modelled.
+
+    This is not caution for its own sake: TID's value is "furniture",
+    not "tid", so the obvious lowercase-the-prefix guess is already
+    known to be wrong here. An earlier version of this enum made
+    exactly that guess for TID and carried it for months.
+
+    If this test ever fails because someone added WID, the question to
+    ask is whether its value was observed or inferred."""
+    from roombapy_prime.models.mission_control import RegionType
+
+    assert {m.value for m in RegionType} == {"rid", "zid", "furniture"}
+    assert "kZoneTypeWId" in RegionType.__doc__, "the fourth type must stay documented"

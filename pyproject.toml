@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime"
-version = "0.1.11a22"
+version = "0.1.11a23"
 description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,19 +28,6 @@ Repository = "https://github.com/johnnyh1975/roombapy-prime"
 Issues = "https://github.com/johnnyh1975/roombapy-prime/issues"
 Changelog = "https://github.com/johnnyh1975/roombapy-prime/blob/main/CHANGELOG.md"
 
-[project.scripts]
-roombapy-prime-validate = "roombapy_prime.diagnostics:main"
-roombapy-prime-verify-commands = "roombapy_prime.verify_mission_commands:main"
-roombapy-prime-verify-map-edit = "roombapy_prime.verify_map_edit:main"
-roombapy-prime-verify-mission-timeline = "roombapy_prime.verify_mission_timeline:main"
-roombapy-prime-verify-named-shadows = "roombapy_prime.verify_named_shadows:main"
-roombapy-prime-verify-region-commands = "roombapy_prime.verify_region_commands:main"
-roombapy-prime-verify-schedule-write = "roombapy_prime.verify_schedule_write:main"
-roombapy-prime-verify-favorite-write = "roombapy_prime.verify_favorite_write:main"
-roombapy-prime-verify-virtual-wall-write = "roombapy_prime.verify_virtual_wall_write:main"
-roombapy-prime-verify-settings-write = "roombapy_prime.verify_settings_write:main"
-roombapy-prime-verify-region-commands-session = "roombapy_prime.verify_region_commands_session:main"
-
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",
@@ -49,6 +36,19 @@ test = [
 ]
 map = [
     "Pillow>=10.0",
+]
+# Pulls in the separately-distributed diagnostic tooling. Deliberately
+# NOT part of the base install: those modules register console scripts,
+# several of which MOVE A REAL ROBOT -- they have no business on the
+# PATH of every Home Assistant installation that merely consumes this
+# library. See tools/pyproject.toml.
+tools = [
+    # Installable only from this repository, not from an index -- the
+    # project is not published to PyPI, so a bare name here would look
+    # resolvable and fail. Kept as a documented pointer rather than a
+    # promise pip can keep. To actually get the tooling, see
+    # tools/README.md.
+    "roombapy-prime-tools @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a23#subdirectory=tools",
 ]
 
 [build-system]

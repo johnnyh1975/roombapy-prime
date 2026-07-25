@@ -142,10 +142,17 @@ class PrimeRobot:
         mqtt_client: PrimeMqttClient,
         rest_client: PrimeRestClient,
         relogin: Relogin | None = None,
+        robot_id: str | None = None,
         irbt_topic_prefix: str | None = None,
         deployment: dict[str, Any] | None = None,
     ) -> None:
         self.blid = blid
+        # The account-level identifier the LOGIN response gives for this
+        # BLID. NOT always the same string as the BLID itself -- see
+        # get_household_id()'s own docstring for the real account where
+        # they differ. Optional because older callers don't pass it;
+        # falls back to the BLID, which is correct wherever they match.
+        self.robot_id = robot_id or blid
         self._mqtt = mqtt_client
         self._rest = rest_client
         self._relogin = relogin
@@ -287,32 +294,9 @@ class PrimeRobot:
         exposed publicly so a currently-unconfirmed named shadow can be
         investigated without reaching into a private attribute.
 
-        WHY THIS MATTERS (context from that analysis): the real app
-        subscribes to a wildcard covering every named shadow
-        ("/things/{blid}/shadow/name/+/get/accepted" and the "update/
-        accepted" sibling), and five named shadows are known to exist
-        from that pattern -- but this library has only ever queried two
-        of them (classic + "rw-settings"). The other three --
-        "rw-constatus", "rw-schedule", "rw-software" -- have never been
-        queried. "rw-constatus" is a strong candidate for where
-        battery/charging status might live (plausibly short for
-        "connection status"), given RobotStatusV2's own confirmed value
-        is derived in the native app from FOUR combined streams
-        (MissionData/SettingsData/AssetNetworkData/OTAStatusData) via
-        rxcpp::combine_latest, not received as one ready-made field --
-        meaning it's very plausibly assembled from more shadows than
-        the two already queried. A specific EARLIER mistake, worth
-        remembering: "rw-constatus" was previously written off because
-        the app's own command config only lists a write-side
-        SetEchoCommand (read: false) for it -- but that config
-        describes COMMANDS, not SUBSCRIPTIONS; the wildcard subscribes
-        to a named shadow regardless of whether any explicit read
-        command exists for it. That distinction is exactly what this
-        method exists to let someone check.
-
-        Purely a read -- no different in risk from get_state()/
-        get_settings(), which already do the same underlying MQTT
-        request/response exchange against a different name."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotget_named_shadow
+    """
         return await asyncio.to_thread(self._mqtt.get_shadow, name, timeout)
 
     async def set_setting(self, key: str, value: object, timeout: float = 8.0) -> ShadowResponse:
@@ -338,7 +322,7 @@ class PrimeRobot:
         writing it actually changes the robot's real behavior, the way
         writing rw-constatus's "echo" field was confirmed to accept
         the write but NOT trigger the expected chime (see
-        trigger_echo_via_shadow()'s own docstring). A successful
+        trigger_echo_via_shadow()'s own entry in docs/internal/EVIDENCE_TRAIL.md). A successful
         ShadowResponse here confirms the WRITE itself worked, not that
         the underlying feature actually changed -- checking the real
         app's own settings screen (or observing the actual behavior)
@@ -351,40 +335,9 @@ class PrimeRobot:
         "find my robot" chime. Kept for what it does confirm (see
         below), not as a working locate mechanism.
 
-        Originally a hypothesis prompted by a real bug report: a field
-        tester found ha_roomba_plus's existing locate action --
-        poll_echo_value(), a REST POST to /v1/robots/{blid}/echo --
-        does NOT actually make the robot chime, even though the same
-        action works from the real app. ConnectionStatusShadow's
-        "echo" field was noted to plausibly correspond to the app's
-        own "SetEchoCommand" -- the exact command name the "find my
-        robot" feature is built on, per the app's command config --
-        making a shadow write, rather than a REST call, seem like a
-        promising alternative mechanism.
-
-        ACTUAL TEST RESULT: calling this with value=True produced a
-        genuine, accepted shadow write -- confirmed by a real
-        update/delta response (ShadowResponse with a real version
-        number, "state": {"echo": True}). The write mechanism itself
-        works correctly. But the robot did NOT chime, and "locate"
-        from the real app worked fine on the same device immediately
-        after -- confirming the ROBOT's own locate feature is not
-        broken, only this particular guess at how to trigger it
-        remotely. A delta response specifically (not just
-        update/accepted) means a listening device would normally see
-        this as "something changed that I should act on" -- yet
-        nothing observable happened, suggesting either the robot
-        doesn't actually watch this specific field for this purpose,
-        or "SetEchoCommand" refers to something else entirely (e.g. a
-        connectivity heartbeat/ping, consistent with rw-constatus
-        otherwise being about network connection status, not
-        chime-related at all).
-
-        STILL UNRESOLVED: the actual "find my robot" trigger mechanism
-        for Prime/V4 robots. Kept as a library method since the
-        underlying write mechanism (arbitrary rw-constatus field
-        writes) may still be useful for other, unrelated
-        investigation, not because this specific use case works."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robottrigger_echo_via_shadow
+    """
         return await asyncio.to_thread(self._mqtt.update_shadow, {"echo": value}, "rw-constatus", timeout)
 
     async def send_mission_command(self, command: RoutineCommand, timeout: float = 8.0) -> ShadowResponse:
@@ -395,35 +348,9 @@ class PrimeRobot:
         send_simple_command() instead -- see its docstring for the full
         story of why this method is now believed incorrect.
 
-        Originally CONFIRMED (session 15) via
-        base_roomba_config.json's "Control" commandId entry:
-
-            {"commandId": "Control", "topic": "cmd", "namedShadow": ""}
-
-        MISREADING CORRECTED (session 39): "namedShadow": "" was read
-        as "classic (unnamed) shadow, therefore send via
-        $aws/things/{blid}/shadow/update" -- but cross-referencing the
-        "topic" field across ALL 77 commandIds in the same file (not
-        just this one entry in isolation) shows "topic" is itself a
-        discriminator with (at least) three distinct categories:
-        "shadow" (2 commandIds, incl. GetThingShadow -- confirmed live
-        as get_state()'s classic shadow GET), "delta" (57 commandIds,
-        all settings/schedule-style writes -- confirmed live as
-        update_shadow()'s desired-state mechanism), and "cmd" (4
-        commandIds: Control, AssetControlCommand, ResetRobotCommand,
-        StartMatterCommissioning). "cmd" being its own category,
-        distinct from both "shadow" and "delta", was the clue that got
-        missed the first time -- mission commands were never meant to
-        go through the shadow /update mechanism at all. "namedShadow":
-        "" for a "cmd"-category entry doesn't mean "classic shadow";
-        it's presumably just not applicable to this category.
-
-        A live test (chairstacker, session 39) confirms this
-        practically: every attempt via this method (update_shadow())
-        timed out with ZERO response -- not even /rejected, which is
-        consistent with publishing to a topic the AWS IoT shadow
-        service doesn't recognize as a shadow topic at all, not a
-        payload or permission problem on an otherwise-valid one."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_mission_command
+    """
         return await asyncio.to_thread(
             self._mqtt.update_shadow, command.to_shadow_desired(), None, timeout
         )
@@ -437,70 +364,9 @@ class PrimeRobot:
         unaffiliated GitHub project that reports this exact path
         working against a real device).
 
-        `command` is a plain string, not MissionCommandType -- the
-        confirmed-LIVE verb set (start, pause, stop, resume, dock,
-        find) is narrower than this library's own 30-value enum (evac,
-        reset, StartOnDemandOta, and more) -- pass MissionCommandType
-        values for enum safety, or a plain string for anything not yet
-        in the enum.
-
-        CONFIRMED WORKING (jayjay, real device test): sending "find"
-        produced a genuine, audible chime with no robot movement --
-        exactly the expected find-my-robot behavior. This is the
-        RESOLUTION of this whole project's locate-mechanism search --
-        the two earlier attempts (a REST endpoint, a shadow write; see
-        trigger_echo_via_shadow()'s own docstring) were both tried
-        live and confirmed NOT working; this third, distinct transport
-        (send_simple_command's own cmd-topic channel, not another
-        shadow write) is the one that actually works.
-
-        A separate native-analysis track had already traced the real
-        app's locate button through
-        MissionUIServiceCommand.FindLocateRobotRunAction to a
-        CommandType enum value named FIND (Kotlin constant name,
-        uppercase, from liblegacyCore.so's own string table) --
-        MissionCommandType.FIND above IS this exact same enum
-        (com.irobot.data.missioncommand.datamodels.CommandType), and
-        its confirmed @SerialName wire value is the lowercase "find"
-        already listed -- that reasoning is what predicted this result
-        correctly, now confirmed live rather than just plausible.
-
-        A second candidate from that same analysis, "FBEEP" (also
-        found in liblegacyCore.so, right next to FIND) is NOT part of
-        this project's own confirmed CommandType enum at all --
-        "liblegacyCore" in its own filename raised a real question
-        about whether it even applies to Prime robots' command channel
-        the way FIND does -- moot now that FIND itself is confirmed
-        working, no fallback needed.
-
-        Needs irbt_topic_prefix (see __init__/auth.py's LoginResult),
-        same requirement as watch_live_map() -- raises RuntimeError
-        immediately if missing, rather than silently publishing to a
-        malformed topic.
-
-        NOT region-aware -- there is no known way to specify
-        rooms/zones/CommandParams through this simple payload shape.
-        For that, RoutineCommand/send_mission_command() may still be
-        the right (if unconfirmed) tool -- or an entirely different,
-        not-yet-discovered mechanism may be needed. Fire-and-forget, no
-        response wait -- see publish_cmd()'s docstring for why.
-
-        CONFIRMED STRUCTURAL LIMITATION (parallel native-analysis
-        track): the real app's own basic "Start" button does NOT send
-        a bare command the way this method does -- it explicitly
-        fetches the account's currently active cleaning preferences
-        (suction level, carpet boost mode, etc.) and sends a full
-        CommandParams built from them (see CommandParams's own
-        docstring for the confirmed evidence trail). This method's
-        payload shape structurally cannot carry any of that -- not a
-        missing optional field, a fundamentally simpler wire shape
-        than RoutineCommand. Whatever suction/carpet-boost setting the
-        robot ends up running a mission with, when started this way,
-        is decided entirely by the robot's own fallback, not by
-        mirroring the account's actual saved preferences -- a real
-        parity gap with the app's own behavior, worth knowing if a
-        mission behaves differently (e.g. runs at unexpectedly high
-        power) than starting the same robot from the real app would."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_simple_command
+    """
         if self._irbt_topic_prefix is None:
             raise RuntimeError(
                 "send_simple_command() needs irbt_topic_prefix (from LoginResult) -- "
@@ -511,111 +377,12 @@ class PrimeRobot:
     async def send_routine_command_via_cmd_topic(self, command: RoutineCommand) -> bool:
         """EXPERIMENTAL, UNCONFIRMED (session 46) -- a well-reasoned
         hypothesis for the region-aware case send_simple_command()
-        explicitly can't cover, NOT a confirmed working path. Read
-        this whole docstring before using it against a real device.
+        explicitly can't cover, NOT a confirmed working path. Read the
+        linked evidence trail before using it against a real device.
 
-        THE HYPOTHESIS: send_simple_command()'s confirmed-working
-        payload ({"command": str, "time": int, "initiator": str}) and
-        RoutineCommand.to_json()'s own, independently-confirmed field
-        mapping (see models/mission_control.py's RoutineCommand docstring, confirmed
-        via @SerialName annotations in the decompiled source) share
-        TWO exact key names: "command" (from RoutineCommand.type) and
-        "initiator" (RoutineCommand's own confirmed field). This is
-        not likely to be coincidence -- it suggests cmd_topic() may
-        accept RoutineCommand's fuller structure (region_id/params/
-        p2map_id/favorite_id and the rest), with "time" added on top,
-        rather than being a fundamentally different, unrelated schema
-        that happens to share two names.
-
-        WHAT THIS METHOD DOES: publishes `command.to_json()` merged
-        with a "time" field to cmd_topic(), via
-        mqtt_client.py's publish_cmd_payload(). Nothing more.
-
-        WHY THIS HAS NOT BEEN LIVE-TESTED: unlike the original
-        transport question (where a wrong guess just produced silence,
-        confirmed safe), a wrong guess HERE could mean a real device
-        accepts a malformed but plausible-looking command and behaves
-        unpredictably -- not zero risk, unlike the topic-discovery
-        problem this hypothesis descends from.
-
-        CORRECTED (this session, parallel native-analysis track,
-        directly reversing an earlier recommendation here): the
-        earlier advice was to favor a favorite_id-ONLY RoutineCommand
-        over hand-built regions, reasoning that referencing something
-        already app-defined would be safer. That's now known to be
-        WRONG -- traced directly through the real app's own
-        RoutineCommandBuilder: setFromFavorite(favoriteId, commandDefs)
-        stores BOTH the favorite_id AND the favorite's full, resolved
-        command definitions (regions/params/id_multipolys/map_id/
-        pmap_version_id), and build() sends ALL of it together, not
-        favorite_id alone. A favorite_id-only command is not a safer
-        subset of what the app does -- it's something the app itself
-
-        GAP CLOSED (roombapy-prime v0.1.11a21): this finding sat
-        documented but unimplemented for a while -- verify_region_
-        commands.py's own stages 1/1b/2 never actually added
-        favorite_id to the outgoing command, despite fetching the
-        favorite (and therefore knowing its real id) every time. Every
-        real field-test payload up to that point (chairstacker,
-        jayjay13011) was missing this field entirely. Now fixed via
-        _add_favorite_id_if_missing() -- see that function's own
-        docstring in verify_region_commands.py.
-        never actually sends, and deviating from confirmed real
-        behavior is the greater risk here, not the lesser one.
-
-        UPDATE (same track, follow-up): build() also computes a
-        routine_modified flag by comparing the command being built
-        against the ORIGINAL favorite (region count, region order/IDs,
-        and each region's user-modifiable params -- see CommandParams'
-        own docstring for the exact 7-field non-user-modifiable list).
-        This is a COMPUTED value, not something to set arbitrarily --
-        which means hand-constructing a "favorite_id + resolved
-        regions" command from scratch would ALSO need this comparison
-        done correctly to match real behavior.
-
-        UPDATE (same track, ad-hoc zones specifically): a hand-built
-        TID (ad-hoc/temporary zone) region is a further, separate risk
-        on top of the above -- its id must come from a reserved
-        160-199 range (a real device manages this via its own
-        adHocCounter, not something to invent), and its paired
-        CommandPolygon must share that exact same id, with metadata
-        referencing a real furniture id. RID/ZID (persistent rooms/
-        zones from actual map data) don't have this extra constraint.
-        See RegionType.TID's own docstring for the full mechanism.
-
-        THE ACTUAL SAFEST TEST, given all of this: don't hand-
-        construct anything, and avoid TID/ad-hoc regions entirely.
-        Fetch an existing favorite via get_favorites(), take one of
-        its own command_defs entries completely UNCHANGED (ideally
-        one using ordinary RID/ZID regions from real map data, not an
-        ad-hoc one), and send exactly that via this method. Since
-        nothing was modified relative to its own origin, whatever
-        routine_modified value it already carries (likely False/
-        absent, as an unmodified replay) should already be correct --
-        this sidesteps both the modified-flag computation question and
-        the ad-hoc-region-construction question entirely, rather than
-        needing to get either right from scratch.
-
-        Same requirements/behavior as send_simple_command(): needs
-        irbt_topic_prefix, fire-and-forget (no response wait, see
-        publish_cmd()'s docstring for why).
-
-        FIRST LIVE TEST RESULT (chairstacker, real device): the
-        actual safest test described above -- an existing favorite's
-        own command_def, resent completely unchanged -- produced NO
-        observable effect. The robot did not move, and nothing
-        appeared in the real app either. Cause not yet isolated
-        between two real possibilities: (a) the favorite's own map/
-        zone reference (p2map_id + user_p2mapv_id) may simply be
-        stale if the map has been rebuilt since the favorite was
-        created -- a robot-side rejection of an outdated reference
-        that would happen regardless of transport, or (b) the
-        transport hypothesis itself (this method existing at all) may
-        be wrong. Distinguishing test in progress: whether the exact
-        same favorite still works when run from the real app. Treat
-        this method as still fully unconfirmed either way -- this
-        result doesn't newly confirm OR rule out the hypothesis by
-        itself."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_routine_command_via_cmd_topic
+    """
         if self._irbt_topic_prefix is None:
             raise RuntimeError(
                 "send_routine_command_via_cmd_topic() needs irbt_topic_prefix (from LoginResult) "
@@ -626,79 +393,12 @@ class PrimeRobot:
     async def send_umi_get_request(self, args: list[str], request_id: int = 1) -> None:
         """EXPERIMENTAL, UNCONFIRMED (this session) -- a well-reasoned
         hypothesis found via native decompilation, NOT a confirmed
-        working path. Read this whole docstring before using it
+        working path. Read the linked evidence trail before using it
         against a real device.
 
-        UPDATE (this session, live wildcard capture, chairstacker): a
-        live mission was captured with THIS exact request sent, and
-        separately, "pos_update" messages containing what looks like
-        live position/path data were ALSO observed arriving on the
-        wildcard channel -- repeatedly, throughout the mission. CHECKED
-        DIRECTLY, not just assumed: the FIRST pos_update in that
-        capture (timestamp 1784491542) arrived 8 seconds BEFORE this
-        exact request was sent (its own echoed "time" field:
-        1784491550) -- pos_update was already flowing before the
-        request existed, which settles it: this is not a response to
-        this request, position data is simply pushed continuously
-        regardless (see mqtt_client.py's notes next to
-        rejected_report_topic() for the full pos_update finding).
-        UPDATED again (jayjay13011, v0.1.11a6): the exact topic is now
-        confirmed too (livemap_topic()), and watch_live_map() is the
-        proper, already-built, now-also-confirmed way to consume this
-        -- no request needed, and no need to fall back to a generic
-        wildcard capture either. Left in place since the request itself
-        was still a reasonable thing to have tried, and this doesn't
-        rule out this request mattering for some other purpose (args
-        other than "pose"?) --
-        but "pose" specifically no longer looks like it needs this path.
-
-        THE HYPOTHESIS: a request payload for the legacy "UMI" protocol
-        family was found as a literal string in libcorebase.so:
-        {"do": "get", "args": ["pose"], "id": <n>} -- alongside a
-        general write-side pattern {"do": "set", "args": [%s]}. This is
-        a generic do/args/id request protocol, not tied to a specific
-        topic path -- which also explains why no dedicated
-        "/things/%s/position"-style topic literal could be found at
-        all (see mqtt_client.py's notes next to rejected_report_topic()
-        for the full investigation trail): the intent lives in the
-        payload (args=["pose"]), not in the topic.
-
-        WHAT THIS METHOD DOES: publishes {"do": "get", "args": args,
-        "id": request_id} to cmd_topic() -- the SAME topic
-        send_simple_command() already uses, confirmed working for its
-        own (differently-shaped) payload. Nothing more; this does not
-        wait for or know where a response would arrive.
-
-        WHY THE RESPONSE SIDE IS ESPECIALLY UNCERTAIN: a separate
-        finding, core::RoombaSchemaField::kRobotPositionResponseTopic,
-        suggests the response topic may be specified BY the requester
-        inside the request payload itself, rather than being a fixed,
-        predictable path -- meaning even a successful request might
-        not have anywhere obvious to listen for the answer. A wildcard
-        subscription (see watch_raw_topic(), or
-        verify_mission_timeline.py's --watch-wildcard) is the practical
-        way to have any chance of catching a response, since its
-        destination can't be predicted in advance.
-
-        WHY THIS HAS NOT BEEN LIVE-TESTED, AND THE CAVEAT THAT MATTERS
-        MOST: this exact do/args/id literal was found associated with
-        the UMI/legacy protocol family, which a related investigation
-        confirmed has AT LEAST ONE transport variant that is local-
-        HTTPS-only, not cloud-reachable at all (see
-        GetAssetMissionStatusCommand's notes in mqtt_client.py). UMI
-        does have other, MQTT-capable variants too (confirmed by a
-        "Could not parse mqtt umi pose response" error string), so
-        this is not automatically a dead end -- but whether THIS
-        specific request, sent to THIS specific topic (cmd_topic, the
-        AWS IoT command channel), is one of the MQTT-capable variants
-        or the local-only kind is genuinely unknown. Same elevated-
-        risk caveat as send_routine_command_via_cmd_topic(): a wrong
-        guess here means a real device receiving a plausible-looking
-        but not-actually-matching request, not the safe silence a
-        topic-discovery mismatch would produce.
-
-        Same requirements as the other cmd_topic()-based methods: needs
-        irbt_topic_prefix, fire-and-forget."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_umi_get_request
+    """
         if self._irbt_topic_prefix is None:
             raise RuntimeError(
                 "send_umi_get_request() needs irbt_topic_prefix (from LoginResult) -- "
@@ -877,7 +577,29 @@ class PrimeRobot:
 
         Returns None if no household contains a robot matching this
         blid (including the case where the account genuinely has none) --
-        never raises for a simple "not found"."""
+        never raises for a simple "not found".
+
+        MATCHING WIDENED (this session, real field report): this used to
+        compare only `robot.robot_id == self.blid`, i.e. it silently
+        assumed those two identifiers are the same value. On one real
+        account they are not -- a 16-character BLID
+        ("3178480C91223620") alongside a 32-character robot_id
+        ("0B710054CA277C04B2700374A8349C9A"), with the robot's own map
+        id carrying the robot_id's prefix rather than the BLID's. On
+        another account they are identical, so the assumption held
+        everywhere it had been tested.
+
+        The consequence was not an error but a silent None, which then
+        made every household-scoped operation -- schedule writes above
+        all -- fail on that account for reasons that would have looked
+        like anything except an identifier mismatch.
+
+        Now matches against self.robot_id -- the value the LOGIN
+        response gives for this BLID -- falling back to the BLID itself.
+        A first attempt at this compared against a `blid` attribute on
+        the household robot entries; that was useless, because those
+        entries carry only robot_id and never had such a field. The
+        identifier we need was in the login response all along."""
         from .models import parse_user_households
 
         raw = await self.get_user_households()
@@ -889,7 +611,7 @@ class PrimeRobot:
             raw_list = []
 
         for household in parse_user_households(raw_list):
-            if any(r.robot_id == self.blid for r in household.household_robots):
+            if any(r.robot_id in (self.robot_id, self.blid) for r in household.household_robots):
                 return household.household_id
         return None
 
@@ -958,52 +680,9 @@ class PrimeRobot:
         the caller breaks the iteration (break/return from an
         `async for`, or .aclose()).
 
-        named=None -> classic shadow delta (works on both tiers tested
-        so far). named="rw-settings" -> named shadow delta, expected to
-        only work on SMART tier -- on EPHEMERAL, this iterator then
-        presumably never delivers anything (no error, just silence,
-        analogous to get_shadow()'s timeout behavior -- but there's no
-        timeout here, since "wait for the next change" is the whole
-        point).
-
-        IMPORTANT (this session): a live idle-vs-mid-mission diff of
-        get_state() (chairstacker) confirmed the classic shadow's
-        reported state is BYTE-IDENTICAL whether the robot is idle or
-        actively cleaning -- but that's a snapshot comparison (two
-        separate GET requests), not a test of this method itself.
-
-        CORRECTION (this session, parallel reverse-engineering track):
-        this docstring previously claimed live mission status "does NOT
-        flow through get_state()/watch_state() at all" -- the
-        watch_state() part of that claim was an unverified extension of
-        the get_state() snapshot-diff finding, never actually tested.
-        This method's own delta subscription has never been run live
-        during an active mission. It remains a real, concrete,
-        not-yet-run test: AWS IoT's standard shadow/update/delta
-        semantics push a message on every change, which a before/after
-        snapshot comparison could simply never surface even if changes
-        genuinely happen in between. Kept for whatever it DOES cover
-        (map/settings-adjacent changes) -- but "kept for" no longer
-        means "confirmed to be useless for mission/battery status
-        specifically"; that's now an open question again, not a closed
-        one.
-
-        queue_maxsize: bounds the internal buffer (see
-        DEFAULT_WATCH_QUEUE_MAXSIZE). When the buffer is full, the
-        OLDEST entry is dropped (not the newest) -- a lagging consumer
-        this way gets the most current state, not the longest queue.
-        Every drop is logged as a WARNING.
-
-        IMPORTANT: the delta topic itself (.../update/delta) is part of
-        AWS IoT's standard shadow behavior (delivers a message
-        immediately upon subscribing if desired/reported differ, then
-        on every subsequent change) -- this standard semantic is
-        assumed here, not specifically verified for Classic/Prime.
-
-        RECONNECTS TRANSPARENTLY, unbounded retries with exponential
-        backoff -- see _watch_topic()'s own docstring, which does the
-        actual work here; this method's only job is picking the topic.
-        """
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotwatch_state
+    """
         topic = self._mqtt.shadow_topic("update/delta", named=named)
         # contextlib.aclosing() (not a bare `async for`) is required here --
         # a bare `async for inner_gen(): yield ...` does NOT guarantee
@@ -1026,57 +705,9 @@ class PrimeRobot:
     ) -> AsyncIterator[ShadowResponse]:
         """NEW (this session) -- EXPLORATORY, not yet confirmed live.
 
-        Subscribes to {irbt_prefix}/things/{blid}/mission/timeline/report,
-        found via native decompilation (libcorebase.so's
-        core::protocol::AssetIotTopicFactory::createMissionTimelineTopic(),
-        prompted by a live finding: two separate get_state() snapshots
-        (idle vs. mid-mission) were byte-identical.
-
-        CORRECTION (this session, parallel reverse-engineering track):
-        the original framing here overreached. What was actually tested
-        is a snapshot DIFF of get_state() -- two point-in-time GET
-        requests, compared. watch_state()'s own delta subscription
-        (.../shadow/update/delta, AWS IoT's standard push-on-change
-        mechanism) has never actually been run live WHILE a mission was
-        active -- only assumed, by extension, to behave the same way.
-        That assumption was never tested and may be wrong: a delta
-        subscription could plausibly see intermediate changes a
-        before/after snapshot comparison would never surface. See
-        watch_state()'s own docstring for the correction there too.
-        This topic (mission/timeline/report) remains a solid, separately
-        justified finding either way -- it doesn't depend on the
-        watch_state() question.
-
-        WHAT'S CONFIRMED vs. NOT, precisely:
-        - The topic NAME and its existence: confirmed, from native
-          symbols (createMissionTimelineTopic, IotTopicType::kReport).
-        - The irbt_topic_prefix applying here the same way it does for
-          the already-live-confirmed command topic
-          (createCommandPublishTopic, same factory, same constructor):
-          now CONFIRMED (parallel APK-research chat, this session) via
-          decompiled call-site code for all three of
-          AssetIotTopicFactory's topic-building methods -- same stored
-          constructor value, same concatenation pattern, no structural
-          difference from the live-confirmed command topic.
-        - The payload SHAPE: genuinely unknown. RobotMissionStatusEventImpl's
-          decompiled constructor signature (AssetId, RobotMissionType,
-          string, RobotMissionPhase, string, short, short, int,
-          RobotReadinessState, short, vector<RobotReadinessState>,
-          vector<short>, short, int, long, long, long, string,
-          optional<int>) suggests real mission fields exist somewhere
-          in whatever arrives here, but there is no confirmed JSON
-          mapping for any of it -- this method exists to capture a live
-          sample, not to parse one. ShadowResponse.payload is whatever
-          JSON (or raw string, if not JSON) arrives, completely
-          unparsed/untyped.
-
-        Needs irbt_topic_prefix (see __init__/auth.py's LoginResult) --
-        raises ValueError immediately if not available, same as
-        send_simple_command()/watch_live_map().
-
-        Same reconnect-with-backoff behavior as watch_state() -- see
-        _watch_topic()'s docstring.
-        """
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotwatch_mission_timeline
+    """
         if self._irbt_topic_prefix is None:
             raise ValueError(
                 "watch_mission_timeline() needs irbt_topic_prefix (from LoginResult) -- "
@@ -1195,26 +826,9 @@ class PrimeRobot:
         this exact pattern (a "+" wildcard on the shadow-name segment
         of update/accepted) to monitor all its named shadows at once.
 
-        WHY update/accepted, not update/delta: delta only reflects
-        differences between desired and reported state -- fields that
-        are purely device-reported (never written as "desired", e.g.
-        a battery percentage) never appear in a delta message no
-        matter how often they change, confirmed directly from AWS's
-        own Device Shadow documentation. update/accepted fires on
-        every accepted shadow update regardless of desired/reported
-        matching, making it the correct channel for read-only,
-        report-only shadow content like ro-currentstate's battery/
-        dock/bin fields.
-
-        Each yielded ShadowResponse's own `.topic` tells you which
-        named shadow the update came from (the wildcard resolves to
-        the real shadow name in the actual message) -- parse the
-        segment between ".../shadow/name/" and "/update/accepted" if
-        you need to distinguish them.
-
-        NOT YET LIVE-TESTED as of this writing -- a reasoned, safety-
-        checked hypothesis (matching a confirmed real-app pattern),
-        not a confirmed-working mechanism yet."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotwatch_named_shadows_updates
+    """
         topic = f"$aws/things/{self.blid}/shadow/name/+/update/accepted"
         async with contextlib.aclosing(
             self._watch_topic(
@@ -1373,47 +987,9 @@ class PrimeRobot:
         the confirmed payload shapes (including operating_modes
         genuinely varying, not a fixed constant -- see that module).
 
-        CORRECTED (July 11, see
-        docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md point B1) -- an
-        earlier version called get_live_map_stream() and subscribed to
-        the topic returned in it. That was a misunderstanding: in the
-        real app (P2MapAPIFetching.observeLiveMap()), a FIXED topic is
-        subscribed to (see mqtt_client.py's livemap_topic()), and
-        get_live_map_stream() only keeps running as a periodic
-        keep-alive in the background, for as long as it's being
-        watched.
-
-        Needs irbt_topic_prefix (see __init__/auth.py's LoginResult)
-        -- if that's None (field name from the discovery response not
-        confirmed, see there), this method immediately raises a
-        RuntimeError, instead of silently waiting on an incorrectly
-        constructed topic.
-
-        keep_alive_interval: how often the keep-alive ping is sent
-        while watching. The real app uses a more complex scheme
-        (timer relative to an expiration/refreshWindowMillis, see
-        LiveMapKeepAlivePublisher) -- deliberately simplified here to
-        a fixed interval, since the original's exact lookup/trigger
-        logic wasn't fully reconstructed. If a single keep-alive ping
-        fails, this is logged as a WARNING, but watching continues (a
-        ping failure shouldn't abort the whole watcher).
-
-        queue_maxsize: see watch_state() -- same drop-oldest
-        backpressure policy. IMPORTANT LIMITATION here: errors (see
-        next paragraph) go through the same queue as normal messages
-        and are therefore NOT exempt from the drop-oldest policy -- an
-        error could theoretically be dropped if the queue happens to
-        be full when it arrives. An accepted limitation for this
-        draft, no special case built in for errors.
-
-        Messages of unknown shape (neither pos_update nor map_update,
-        see parse_livemap_message_data) are NOT silently skipped -- the
-        error propagates through the generator, the caller sees it on
-        the next `async for` step. This is a deliberate choice: an
-        unknown message format on a channel that's never been tested
-        live is something that should stand out, not something to
-        silently discard.
-        """
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#prime_robotwatch_live_map
+    """
         if self._irbt_topic_prefix is None:
             msg = (
                 "watch_live_map() needs irbt_topic_prefix (from LoginResult) -- "

@@ -429,30 +429,9 @@ class PolicyZoneFeature:
     typed lists from this single raw "policyZones" list) -- the
     complete, confirmed rule:
 
-        properties.zone_type == "KeepOutZone" + geometry is Polygon
-            -> a keep-out zone (-> VirtualWallRectangleV1 on the write side)
-        properties.zone_type == "KeepOutZone" + geometry is LineString
-            -> a virtual wall (-> VirtualWallLinearV1 on the write side)
-        properties.zone_type == "NoMopZone" (always Polygon)
-            -> a no-mop zone (-> VirtualWallNoMopZoneV1 on the write side)
-        properties.zone_type == "Threshold" (always Polygon)
-            -> a threshold, not part of the virtual-wall family at all
-
-    Each category's real code also skips a feature silently (no error)
-    if its id or geometry is missing/None -- not modeled here, callers
-    should expect from_json() to potentially need graceful handling of
-    genuinely incomplete features.
-
-    GEOMETRY CONFIRMED TO PASS THROUGH UNCHANGED at every later stage
-    -- reading this feature, converting it to a VirtualWallV1 subtype,
-    and sending it back via SetVirtualWalls all use the exact same
-    coordinate values, no transformation, no rescaling. This also
-    answers CommandPolygon.poly's own previously-unconfirmed
-    coordinate system: it's whatever this geometry's own coordinate
-    system already is (still not independently pinned to a specific
-    unit/origin, but confirmed to be a SINGLE, consistent system
-    throughout, not something CommandPolygon transforms into
-    separately)."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#map_bundlepolicyzonefeature
+    """
 
     feature_id: str
     geometry: Polygon | LineString

@@ -8,6 +8,96 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a23] - 2026-07-25
+
+### Fixed — URGENT, a22 is broken
+
+- **The experimental `User-Agent` header added in a22 has been removed.** It went in on a
+  third-party project's documented but untested claim that AWS IoT's authorizer inspects it. The
+  parallel APK research then examined the real app's own connection code and found it sends
+  exactly three headers, no fourth — the hypothesis is disproven.
+
+  Removed not because it was proven harmful, but because it shipped to every consumer of this
+  library, Home Assistant included, in the same release that broke Prime setup there. Whether it
+  contributed is unknown and now moot. The connection layer is back to its a19 behaviour, which
+  is the state a field tester confirmed working.
+
+- **A crash in a22's own SUBACK check killed the MQTT connection.** paho-mqtt 2.x passes
+  `ReasonCode` objects, not ints, and `int()` on one raises TypeError -- inside paho's own
+  network thread, which took the client down with it. Every shadow read then timed out and no
+  publish was ever confirmed.
+
+  **This affected far more than the diagnostic scripts.** `ha_roomba_plus` v4.0.0a7 pinned a22,
+  so Prime robots failed to initialise in Home Assistant entirely; a6 (pinned a19) was
+  unaffected. Anyone on a22 should update.
+
+  Worse than the crash itself: the missing publish confirmation was then reported to a field
+  tester as evidence of a server-side policy block. It was our bug producing a confident, wrong
+  diagnosis across three test stages.
+
+- **`primary_blid()` silently picked an arbitrary robot on multi-robot accounts.** It returned
+  the first key of a dict. A tester's entire region-command session went to the wrong robot,
+  while the Home Assistant integration -- which asks for a specific BLID -- was talking to the
+  right one. The two tools disagreed and nothing said so. Now raises, listing every robot with
+  the exact `--blid` value to pass.
+
+- **Household lookup assumed `robot_id == blid`.** On an account where they differ (a
+  16-character BLID alongside a 32-character robot_id, both real) it returned None silently,
+  which would have broken every household-scoped operation -- schedule writes above all. The
+  correct identifier was in the login response all along; it is now passed through.
+
+- **Two pre-flight checks had never done anything.** One searched for `command_defs`/`commandDefs`
+  when the confirmed wire key is `commanddefs`; the other used `getattr()` on regions that arrive
+  as plain dicts. Neither failed -- both politely reported there was nothing to see, on every run
+  they ever had.
+
+### Added
+
+- **Every script now lists the account's robots when there is more than one**, marking which is
+  targeted and showing each robot's own `robot_id` next to its BLID. The login response has always
+  carried this and no script had ever shown it.
+
+### Changed
+
+- **The diagnostic tooling is now a separate distribution.** `roombapy-prime` (the library) and
+  `roombapy-prime-tools` (the ten field-test scripts) ship from the same repository but install
+  independently. The driver is not disk space: the tools register **11 console scripts, several of
+  which move a real robot**, and those had no business on the PATH of every Home Assistant
+  installation that merely consumes the library. The core now registers **zero** console scripts.
+
+  **Nothing changes for testers** — installing the tools pulls the core in as a dependency, so it
+  is still one command:
+  ```bash
+  pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a23#subdirectory=tools"
+  ```
+
+  **Nothing changes for library consumers** either — `ha_roomba_plus` installs `roombapy-prime`
+  exactly as before, and simply no longer receives the tooling.
+
+- **Shared CLI scaffolding** (`roombapy_prime_tools/_cli.py`) replaces the account arguments, BLID
+  validation and credential prompting that had been copy-pasted into all ten scripts. That
+  duplication was not merely untidy — the copies had drifted, and the drift caused real bugs
+  (an undefined-name crash from a helper that existed under one name in one script and not at all
+  in another; three separate cases of a fix landing in a standalone script but not its
+  session-runner twin). It also surfaced a user-visible inconsistency: four scripts prompted
+  `"Password: "` while six prompted `"iRobot account password: "`. Now uniform.
+
+### Added
+
+- **`test_tools_boundary.py`** enforces the one-way dependency by AST analysis: no core module may
+  import the tooling, including imports nested inside functions (which this project uses
+  deliberately and a text search would miss). It also guards itself — one test asserts that core
+  files were actually found, so a future layout change cannot make every check pass vacuously.
+
+- **`scripts/check_version_pin.py`** verifies that the tools distribution pins exactly the core
+  version it ships alongside. This is the one real risk introduced by the split: the tools reach
+  deep into the library, so a mismatched pair fails as a confusing AttributeError in a field
+  tester's terminal rather than cleanly. It caught a genuine mismatch on its very first run.
+
+- **Tests for the shared scaffolding itself** — the duplicated copies never had any, and it is now
+  reached by all ten scripts, so a regression there would break every one of them at once.
+
+
 ## [0.1.11a22] - 2026-07-25
 
 ### Fixed

@@ -854,44 +854,46 @@ class TestPublishCmdPayloadPubackConfirmation:
         assert result is False
 
 
-class TestBuildClientUserAgentHeader:
-    """NEW (this session) -- the WebSocket upgrade previously sent NO
-    User-Agent header at all. See _TEST_CANDIDATE_USER_AGENT's own
-    docstring (mqtt_client.py) for why this specific value is a
-    reasonable but still-unconfirmed-for-Prime test candidate, copied
-    from a different (but related) project's own confirmed-working
-    code rather than invented."""
+class TestNoUserAgentHeaderIsSent:
+    """REVERSED (a23). a22 added a User-Agent header on a third-party
+    project's documented but untested claim that AWS IoT's authorizer
+    inspects it. The parallel APK research then examined the real app's
+    own connection code: exactly three headers, no fourth.
 
-    def test_ws_set_options_includes_user_agent(self):
-        from unittest.mock import patch
-        from roombapy_prime.mqtt_client import PrimeMqttClient, _TEST_CANDIDATE_USER_AGENT
+    Removed not because it was proven harmful, but because it shipped
+    to every consumer -- Home Assistant included -- in the same release
+    that broke Prime setup there. This test exists so it does not come
+    back without new evidence."""
 
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
+    def test_only_the_three_confirmed_headers_are_sent(self):
+        from unittest.mock import MagicMock, patch
 
-        with patch("paho.mqtt.client.Client.ws_set_options") as mock_ws_set_options:
-            client._build_client()
-
-        _args, kwargs = mock_ws_set_options.call_args
-        assert kwargs["headers"]["User-Agent"] == _TEST_CANDIDATE_USER_AGENT
-
-    def test_ws_set_options_still_includes_the_three_existing_auth_headers(self):
-        """Regression check -- the new header must be ADDED, not replace
-        the three already-confirmed-required ones."""
-        from unittest.mock import patch
         from roombapy_prime.mqtt_client import PrimeMqttClient
 
-        token = _dummy_token()
-        client = PrimeMqttClient(token=token, endpoint="fake.example.com", blid="BLID1")
-
-        with patch("paho.mqtt.client.Client.ws_set_options") as mock_ws_set_options:
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="e.example.com", blid="B")
+        fake = MagicMock()
+        with patch("paho.mqtt.client.Client", return_value=fake):
             client._build_client()
 
-        _args, kwargs = mock_ws_set_options.call_args
-        headers = kwargs["headers"]
-        assert headers["x-amz-customauthorizer-name"] == token.iot_authorizer_name
-        assert headers["x-amz-customauthorizer-signature"] == token.iot_signature
-        assert headers["x-irobot-auth"] == token.iot_token
+        headers = fake.ws_set_options.call_args.kwargs.get("headers", {})
+        assert set(headers) == {
+            "x-amz-customauthorizer-name",
+            "x-amz-customauthorizer-signature",
+            "x-irobot-auth",
+        }
 
+    def test_no_user_agent_key_under_any_casing(self):
+        from unittest.mock import MagicMock, patch
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="e.example.com", blid="B")
+        fake = MagicMock()
+        with patch("paho.mqtt.client.Client", return_value=fake):
+            client._build_client()
+
+        headers = fake.ws_set_options.call_args.kwargs.get("headers", {})
+        assert not any(k.lower() == "user-agent" for k in headers)
 
 class TestSubscribeAndWaitRejectionDetection:
     """REAL BUG FOUND AND FIXED (this session, prompted directly by a
@@ -957,3 +959,101 @@ class TestSubscribeAndWaitRejectionDetection:
 
         assert "bad/topic" in str(exc_info.value)
         assert "good/topic" not in str(exc_info.value)
+
+
+class TestSubackReasonCodeHandling:
+    """REAL FIELD CRASH (DaRealGuGu, v0.1.11a22). The first version of
+    the SUBACK check did int(rc) >= 0x80. paho-mqtt 2.x passes
+    ReasonCode OBJECTS, int() on one raises TypeError -- on paho's own
+    network thread, which killed the client and sent it into an endless
+    reconnect loop.
+
+    The knock-on damage mattered more than the crash: every subsequent
+    shadow read and PUBACK timed out, and the resulting "broker did NOT
+    confirm receipt" was reported to the tester as evidence of a
+    policy-level block. It was our bug. Three stages of a real test run
+    produced a confident, wrong diagnosis."""
+
+    class _ReasonCode:
+        """Stands in for paho 2.x's ReasonCode: has .value and
+        .is_failure, and deliberately raises on int() exactly as the
+        real one does."""
+
+        def __init__(self, value, is_failure):
+            self.value = value
+            self.is_failure = is_failure
+
+        def __int__(self):
+            raise TypeError("int() argument must be a string, a bytes-like object or a real number")
+
+    def test_paho2_reason_code_objects_do_not_raise(self):
+        from roombapy_prime.mqtt_client import _suback_is_failure
+
+        assert _suback_is_failure(self._ReasonCode(0, is_failure=False)) is False
+        assert _suback_is_failure(self._ReasonCode(0x80, is_failure=True)) is True
+
+    def test_plain_ints_still_work(self):
+        """paho 1.x, and v3 callbacks, pass ints."""
+        from roombapy_prime.mqtt_client import _suback_is_failure
+
+        assert _suback_is_failure(0) is False
+        assert _suback_is_failure(0x80) is True
+
+    def test_an_unrecognised_type_is_treated_as_not_a_failure(self):
+        """A missed rejection is a far smaller harm than crashing the
+        MQTT thread again."""
+        from roombapy_prime.mqtt_client import _suback_is_failure
+
+        assert _suback_is_failure(object()) is False
+
+    def test_the_callback_itself_never_raises(self):
+        """Whatever arrives, the network thread must survive it."""
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+
+        client._on_subscribe(client, None, 1, [self._ReasonCode(0x80, True)])
+        client._on_subscribe(client, None, 2, None)
+        client._on_subscribe(client, None, 3, [object()])
+        client._on_subscribe(client, None, 4, "not even iterable in a useful way")
+
+        assert 1 in client._confirmed_mids
+        assert 1 in client._subscribe_failures
+
+
+class TestAgainstRealPahoReasonCodes:
+    """The stub-based tests above mimic ReasonCode. This one uses the
+    real class, because the crash happened precisely at the boundary
+    between what we assumed the type was and what it actually is.
+
+    Constructing one is itself a trap: the packet type argument is
+    `SUBACK >> 4` (0x09), not SUBACK (0x90). Passing the latter raises
+    for every value, which is easy to mistake for "these codes don't
+    exist"."""
+
+    def _code(self, value):
+        from paho.mqtt.client import SUBACK
+        from paho.mqtt.reasoncodes import ReasonCode
+
+        return ReasonCode(SUBACK >> 4, identifier=value)
+
+    @pytest.mark.parametrize("value", [0x00, 0x01, 0x02])
+    def test_granted_qos_codes_are_not_failures(self, value):
+        from roombapy_prime.mqtt_client import _suback_is_failure
+
+        assert _suback_is_failure(self._code(value)) is False
+
+    @pytest.mark.parametrize("value", [0x80, 0x87, 0x8F, 0x9E, 0xA1])
+    def test_real_failure_codes_are_detected(self, value):
+        """0x87 is "Not authorized" -- the code an IoT policy refusal
+        would actually produce, and the whole reason this check exists."""
+        from roombapy_prime.mqtt_client import _suback_is_failure
+
+        assert _suback_is_failure(self._code(value)) is True
+
+    def test_our_verdict_matches_pahos_own_across_the_range(self):
+        from roombapy_prime.mqtt_client import _suback_is_failure
+
+        for value in (0x00, 0x01, 0x02, 0x80, 0x87, 0x8F, 0x9E, 0xA1):
+            code = self._code(value)
+            assert _suback_is_failure(code) is code.is_failure, f"disagreed on {value:#04x}"

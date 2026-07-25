@@ -814,72 +814,8 @@ class MissionTimelineReport:
     mission, via prime_robot.py's watch_mission_timeline()). The actual
     message shape arriving on mission/timeline/report.
 
-    A valuable cross-confirmation neither investigation alone
-    established: this wraps the SAME MissionTimelineEvent model already
-    confirmed (session 18/31, via androguard/jadx static analysis) for
-    get_mission_history()'s HISTORICAL timeline data -- the live push
-    channel and the historical pull endpoint evidently share one
-    underlying event schema. RoomEvent/TravelEvent/TentativeLocationEvent
-    (room/travel/reloc) all matched the live capture's fields exactly,
-    with zero corrections needed.
-
-    event: in every live message captured so far, ALWAYS exactly one
-    entry -- the newest/current event. fin_events: a growing list of
-    PAST events, each gaining an end_time (MissionTimelineEvent's own
-    "ets" field) once superseded by the next one -- effectively a
-    running history of the mission-so-far, resent in full on every
-    single update rather than delta-only.
-
-    command/initiator/command_time: NOT new data -- this is the SAME
-    payload send_simple_command() itself publishes (see
-    mqtt_client.py's publish_cmd()), echoed back here as context for
-    which command's mission this report belongs to.
-
-    n_missions ("nMssn" on the wire): meaning still not directly
-    confirmed (a lifetime mission counter remains the most plausible
-    guess), but one earlier hypothesis is now DISPROVEN: a second live
-    capture (chairstacker, same session as this class's original
-    confirmation) showed 256 where the first had shown 255 -- ruling
-    out "a saturating counter capped at the max value of an unsigned
-    8-bit integer" as an explanation, since 256 exceeds that range. A
-    genuine incrementing counter (whether lifetime missions or
-    something else that increments once per mission) is now the better-
-    supported reading.
-
-    timelineRequestId (optional, observed on some but not all live
-    report messages, chairstacker): appears tied to an explicit
-    client-side request for a fresh timeline update -- also observed as
-    its own bare {"timelineRequestId": N} message on the wildcard
-    channel, separate from any mission/timeline/report envelope.
-    Mechanism not further investigated; stored as an opaque int when
-    present.
-
-    mission_id ("01KXXQM8XZEDJ24701JF121CCH" observed): CONFIRMED as a
-    real ULID (Universally Unique Lexicographically Sortable
-    Identifier), not just a plausible shape match -- rigorously
-    verified against BOTH mission_ids seen across two live captures:
-    26 characters, every character in the Crockford base32 alphabet
-    (which deliberately excludes I/L/O/U -- neither mission_id
-    contains any of those four), first character in the valid 0-7
-    range a ULID's 48-bit millisecond timestamp requires. Beyond the
-    shape: the timestamp actually ENCODED in the first 10 characters
-    was decoded directly (standard ULID timestamp decoding, Crockford
-    base32) and compared against this same report's own cmd.time (the
-    real Unix timestamp of the "start" command that began the
-    mission) -- 0.0s and 3.6s apart on the two captures respectively.
-    This is not a coincidental format match; the ULID's own embedded
-    timestamp genuinely corresponds to when the mission it identifies
-    actually began.
-
-    map_version fields observed on nested events (RoomEvent.map_version
-    etc., e.g. "260719T174414.994"): decodes cleanly as YYMMDD"T"HHMMSS.mmm
-    -- confirmed against two independent real captures (this session's
-    "260719T174353.832" = 2026-07-19 17:43:53.832, matching the actual
-    capture date; and an existing test fixture's "260715T130113.944" =
-    2026-07-15 13:01:13.944). Each event in a single live capture had a
-    DIFFERENT map_version despite sharing the same map_id -- suggesting
-    this is a per-localization-update timestamp, not a "map was edited"
-    version the way the name might suggest.
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#mission_historymissiontimelinereport
     """
 
     command: str | None = None

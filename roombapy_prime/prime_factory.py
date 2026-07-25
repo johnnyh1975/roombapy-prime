@@ -97,6 +97,7 @@ class PrimeFactory:
 
         return PrimeRobot(
             blid=target_blid,
+            robot_id=getattr(login_result.robots.get(target_blid), "robot_id", None),
             mqtt_client=mqtt_client,
             rest_client=rest_client,
             relogin=relogin,

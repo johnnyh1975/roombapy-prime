@@ -670,7 +670,10 @@ async def test_login_discovery_ssl_error_gets_clear_message() -> None:
         await login(session, "user@example.com", "hunter2", "US")
 
     assert "certificate" in str(excinfo.value).lower()
-    assert "temporary" in str(excinfo.value).lower()
+    # The fixture says "certificate has expired" -- a genuinely
+    # SERVER-side cause, so the message must point there rather than
+    # sending the user hunting through their own setup.
+    assert "their end" in str(excinfo.value).lower()
     assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
 
 
@@ -797,3 +800,106 @@ async def test_login_irobot_timeout_error_gets_clear_message() -> None:
         await login(session, "user@example.com", "hunter2", "US")
 
     assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_ssl_error_with_missing_local_issuer_blames_the_local_trust_store() -> None:
+    """CORRECTED BEHAVIOUR (this session, real field report): the old
+    message asserted every certificate failure was "almost always a
+    temporary problem on iRobot's servers ... not something wrong with
+    your setup". A macOS tester hit this repeatedly across sessions and
+    versions, where the real cause is local -- Python from python.org
+    ships its own CA bundle that must be installed once. Telling them
+    to wait a few hours was actively unhelpful."""
+    session = _NetworkFailingSession(
+        fail_at_call=0,
+        exc=aiohttp.ClientSSLError(None, OSError("unable to get local issuer certificate")),
+        prior_responses=[],
+    )
+
+    with pytest.raises(AuthSSLError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    message = str(excinfo.value)
+    assert "LOCAL setup problem" in message
+    assert "waiting will not fix it" in message.lower()
+    assert "Install" in message and "Certificates.command" in message
+    assert "certifi" in message
+
+
+@pytest.mark.asyncio
+async def test_ssl_error_with_an_unrecognised_reason_offers_both_causes() -> None:
+    """When OpenSSL's reason doesn't match either known pattern, the
+    message must present both possibilities rather than picking one --
+    this error genuinely cannot distinguish them on its own."""
+    session = _NetworkFailingSession(
+        fail_at_call=0,
+        exc=aiohttp.ClientSSLError(None, OSError("some unfamiliar TLS failure")),
+        prior_responses=[],
+    )
+
+    with pytest.raises(AuthSSLError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    message = str(excinfo.value)
+    assert "trusted-root store" in message
+    assert "iRobot's servers" in message
+
+
+class TestPrimaryBlidRefusesToGuess:
+    """REAL FIELD CASE (DaRealGuGu): two robots on one account.
+
+    primary_blid() used to return the first key of a dict -- arbitrary,
+    silent. His region-command tests went to the wrong robot for an
+    entire session, while the Home Assistant integration (which asks
+    for a specific BLID) was talking to the right one all along. The
+    two tools disagreed about which robot was "the" robot, and nothing
+    said so.
+
+    A wrong-but-plausible default is worse than an error here: the
+    command still sends, the robot still does nothing, and the result
+    looks like a protocol mystery rather than a misconfiguration."""
+
+    def _result(self, **robots):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.auth import LoginResult
+
+        result = MagicMock(spec=LoginResult)
+        result.robots = {
+            blid: MagicMock(name_=name, sku="s", **{"name": name})
+            for blid, name in robots.items()
+        }
+        result.raw = {}
+        result.primary_blid = lambda: LoginResult.primary_blid(result)
+        return result
+
+    def test_a_single_robot_is_returned_as_before(self):
+        assert self._result(ONLYONE="Kitchen bot").primary_blid() == "ONLYONE"
+
+    def test_two_robots_raise_rather_than_pick_one(self):
+        from roombapy_prime.auth import AuthError
+
+        with pytest.raises(AuthError) as exc:
+            self._result(FIRST="Roomba 505", SECOND="Roomba 980").primary_blid()
+
+        message = str(exc.value)
+        assert "2 robots" in message
+        assert "FIRST" in message and "SECOND" in message
+
+    def test_the_error_tells_the_user_exactly_what_to_pass(self):
+        """A tester hitting this must not have to work out the fix."""
+        from roombapy_prime.auth import AuthError
+
+        with pytest.raises(AuthError) as exc:
+            self._result(A="one", B="two").primary_blid()
+
+        message = str(exc.value)
+        assert "--blid" in message
+        assert "ROOMBAPY_PRIME_BLID" in message
+
+    def test_no_robots_still_raises_its_own_error(self):
+        from roombapy_prime.auth import AuthError
+
+        with pytest.raises(AuthError, match="no robots"):
+            self._result().primary_blid()

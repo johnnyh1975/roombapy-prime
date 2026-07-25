@@ -347,30 +347,9 @@ async def _check_candidate_shadows(report: Report, robot: Any, raw_capture: dict
     SoftwareStatusShadow (models/robot_info.py) for the confirmed
     content of all three.
 
-    NEW CANDIDATES (this session, a separate native-analysis track):
-    MQTTTopics.java builds topics for FOUR MORE shadows this project
-    never knew existed -- "ro-currentstate", "ro-stats", "ro-services",
-    "ro-configinfo" (read-only, unlike the "rw-" ones above). These
-    never appeared in the app's own command config for an identifiable
-    reason: that config only lists commands, and nothing writes to a
-    read-only shadow -- the wildcard-based enumeration that found the
-    five "rw-"/classic shadows structurally could never have found
-    these. "ro-currentstate" is now the strongest lead this
-    investigation has had: the name itself describes exactly the kind
-    of data being searched for. NOT YET TESTED against a real device
-    as of this writing.
-
-    Purely a read, same risk profile as get_state()/get_settings() --
-    see get_named_shadow()'s own docstring for the specific earlier
-    mistake ("rw-constatus" was wrongly written off originally because
-    the app's command config lists only a write-side command for it --
-    that describes commands, not subscriptions) that led to checking
-    it at all; the same distinction (config lists commands, not
-    subscriptions) is exactly why the four new "ro-" candidates were
-    missed for as long as they were. Factored out as its own function
-    (rather than an inline loop in run()) specifically so it's
-    unit-testable on its own -- run() as a whole has no dedicated test
-    of its own, this way the new behavior still does."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#diagnostics_check_candidate_shadows
+    """
     for candidate_shadow in ("ro-currentstate", "ro-stats", "ro-services", "ro-configinfo"):
         await _try(
             report,

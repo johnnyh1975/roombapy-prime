@@ -1051,26 +1051,9 @@ class ConnectionStatusShadow:
     was originally (and, per this finding, correctly) associated with
     in the app's command config.
 
-    "echo" AS A CHIME TRIGGER -- ALSO DISPROVEN (chairstacker, real
-    device test): writing True to this field produced a genuine,
-    accepted shadow write (a real update/delta response came back),
-    but the robot did NOT chime -- and "locate" from the real app
-    worked fine on the same device immediately after. See
-    PrimeRobot.trigger_echo_via_shadow()'s own docstring for the full
-    result. What "echo" actually represents remains unresolved --
-    possibly a connectivity heartbeat/ping (consistent with the rest
-    of this shadow being about connection status), not necessarily
-    anything chime-related at all.
-
-    TYPES CONFIRMED (parallel native-analysis track, Ghidra
-    decompilation of the app's own constructor signatures, not
-    guessed): connected/connected_v2 are both plain booleans.
-    connected_v2's relationship to connected (newer replacement?
-    different granularity?) is still not confirmed. echo is
-    PROBABLY also a boolean (a packed flag in the decompiled
-    constructor, slightly less certain than the other two but not
-    contradicted by anything) -- kept as a plain bool here rather than
-    Any, consistent with how confident this specific finding is."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#robot_infoconnectionstatusshadow
+    """
 
     connected: bool | None = None
     connected_v2: bool | None = None
@@ -1272,36 +1255,9 @@ class DockState(IntEnum):
     DockStatus's own docstring), never actually implemented as a real
     enum until now.
 
-    Four functional-area bands, matching the numeric-range pattern
-    already observed in DockStatus's own real captured values (state/
-    pw_state/pd_state = 301/601/701): DOCK_* (general dock, 300s, plus
-    two low outliers at 0-3 shared with the pad-wash/pad-dry bands --
-    see the duplicate-value note below), FLUID_REPLENISHMENT_* (400s),
-    PAD_WASH_* (600s), PAD_DRY_* (700s).
-
-    CONFIRMS DockStatus's own real captured values directly:
-    state=301 -> DOCK_READY, pw_state=601 -> PAD_WASH_OKAY,
-    pd_state=701 -> PAD_DRY_OKAY -- chairstacker's device was
-    dock-ready with both pad subsystems in their own "okay" (idle,
-    no error) state at capture time. What was previously only an
-    "OBSERVATION, NOT A CONFIRMED MAPPING" (see DockStatus's own
-    docstring) about which numeric band belongs to which category is
-    now a directly confirmed, named value for each of the three
-    fields captured live.
-
-    DUPLICATE VALUES, CONFIRMED PRESENT IN THE REAL ENUM ITSELF (NOT A
-    TRANSCRIPTION ERROR): 2 is shared by PAD_DRY_UNHEATED_AIR and
-    PAD_WASH_NORMAL_HEATED_WATER; 3 is shared by PAD_DRY_HEATED_AIR and
-    PAD_WASH_MAX_HEATED_WATER. Plausibly context-dependent (meaningful
-    only within whichever specific field/subsystem reports it, not
-    globally unique) -- not independently confirmed which
-    interpretation is correct, only that the duplication itself is
-    real. Python's own IntEnum aliasing applies here: both names for
-    each duplicated value remain accessible as class attributes, but
-    DockState(2)/DockState(3) themselves resolve to whichever name is
-    listed first below (the PAD_DRY_* one, alphabetically/positionally
-    earlier here) -- an artifact of Python enum mechanics, not
-    evidence that one name is somehow more "correct" than the other."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#robot_infodockstate
+    """
 
     DOCK_NO_COMMON_ERROR = 0
     PAD_WASH_UNHEATED_WATER = 1
@@ -2028,136 +1984,9 @@ class RobotStatusV2:
     to be part of get_state()'s response -- treat any successful parse
     as a data point to report back, not an assumption to build on.
 
-    UPDATE (session 49): the four list/dict-typed fields' own element
-    types are now ALSO confirmed (DockControl/RobotStatusButton/
-    RobotStatusError, see their own docstrings) -- previously left as
-    list[Any], now properly typed.
-
-    STRONGER NEGATIVE EVIDENCE (this session, jayjay13011, roombapy-prime
-    v0.1.11a6): a live capture with fully topic-tracked wildcard coverage
-    (7 distinct topics identified: mission/timeline/report, livemap/update,
-    livemap/cmd, filexfer_req, filexfer_resp, cmd, service_event) watched
-    for 300 seconds after stop+dock were sent -- specifically to give the
-    robot time to physically reach its dock -- and NONE of these 7 topics
-    carried anything battery/charging-related. This doesn't prove
-    RobotStatusV2 is unreachable via MQTT (it could still live on a topic
-    this particular wildcard scope doesn't cover, e.g. outside
-    "things/{blid}/"), but it does rule out "we just weren't watching
-    long enough" and "it's mixed in with one of these other message
-    types but we didn't notice" as explanations. The most likely
-    remaining possibilities: it's shadow/get_state()-only (never pushed),
-    or it lives under a topic root this wildcard didn't reach.
-
-    NAMED-SHADOW HYPOTHESIS DISPROVEN (this session, chairstacker, all
-    five known named shadows checked in one pass via
-    get_named_shadow()): "rw-constatus" was the leading candidate,
-    reasoned from a native-app symbol trace showing RobotStatusV2's
-    value assembled from four combined data streams rather than one
-    ready-made field. Live content: {"connected", "connectedv2",
-    "echo", "svcEndpoints"} -- this is MQTT/AWS-IoT CONNECTION status
-    (is the device currently connected to the broker), not battery or
-    charging status. The name's surface resemblance to "connection
-    status" was accurate, but pointed at the wrong KIND of
-    "connection" -- network connectivity, not power/charging state.
-    The other two candidates also confirmed content, neither
-    battery-related either: "rw-schedule" is just {"cleanSchedule2",
-    "nsmip", "svcEndpoints"} (the cleaning schedule -- now modeled as
-    ScheduleShadow, alongside ConnectionStatusShadow/SoftwareStatusShadow
-    for the other two), "rw-software" is {"deploymentId",
-    "deploymentMpkg", "deploymentState", "imuRecal", "lastCommand",
-    "lastSwUpdate", "nsmip", "softwareVer", "subModSwVer",
-    "svcEndpoints"} (OTA/firmware update status). All five named
-    shadows this wildcard-subscription pattern covers are now fully
-    enumerated -- none contain battery/charging/dock data. Whatever
-    "AssetNetworkData"/"OTAStatusData" (from the same native trace)
-    actually resolve to in the real app, they evidently aren't
-    equivalent to "rw-constatus"/"rw-software" the way this hypothesis
-    assumed, at least not for the battery-relevant portion of
-    RobotStatusV2 specifically.
-
-    ARCHITECTURE, CORRECTED (this session, parallel reverse-engineering
-    track -- two earlier claims from that same track's own prior notes
-    were explicitly retracted, not carried forward here: a "batPct"/
-    "NetworkType.CLOUD" finding that turned out to belong to the
-    Classic-layer RobotV1/RobotV2 classes, unrelated to Prime; and an
-    unsupported "battery isn't available via the cloud at all" claim --
-    logically untenable, since the app itself displays battery remotely,
-    so SOME cloud channel must carry it). The actual, better-supported
-    finding: the data lives in core::MissionData, a JNI proxy class
-    (getBatteryLevelPercentage/getIsCharging/getIsFullyCharged/
-    getTankLevel/getDockState/getResolvedMissionStatus/
-    getCommandReadinessMap, plus dock descriptors) that itself must be
-    FED from outside the native core -- a proxy doesn't invent values.
-    Combined with SettingsData/AssetNetworkData/OTAStatusData via
-    rxcpp::combine_latest into StatusReducerData -> this class -> UI.
-    Structurally notable: this class has no $$serializer despite
-    @SerialName-annotated fields -- those annotations describe the
-    native-to-Kotlin handoff format (via ObservableUseCaseJsonCallback),
-    NOT necessarily the cloud wire format directly.
-
-    EXPANDED FIELD LIST (this session, from RobotStatusV2Constants.java
-    directly -- meaningfully larger than the 11 fields modeled below,
-    which predate this finding): battery_level, allowed_modes, buttons,
-    conditional_errors, dock_controls, dock_info, command_readiness,
-    cycle, asset_connection_state (a composite: robot_connected_to_iot,
-    aws_network_state, app_to_robot_local, is_asset_missing_detected,
-    status_error_code), dock_state_* (dock_id, evac_state,
-    firmware_version, fluid_replenishment_state, capabilities, error).
-    Not yet added as dataclass fields here -- documented so a future
-    capture that DOES find this structure somewhere is recognized
-    against the fuller list, not just the 11 already modeled.
-
-    THE ACTUAL UNTESTED GAP (this session): every wildcard capture so
-    far has only covered "{irbt_topic_prefix}/things/{blid}/#" -- the
-    entire "$aws/" tree (where get_state()/get_settings() already build
-    their OWN topics, under "$aws/things/{blid}/shadow", see
-    _shadow_base() above) has never been wildcard-captured, and
-    watch_state()'s update/delta push subscription has never been run
-    LIVE during an active mission (see its own docstring's correction).
-    One real device (chairstacker) showed a shadow version of 5324 --
-    over five thousand updates, hard to explain for purely static
-    configuration. verify_mission_timeline.py's --watch-shadow-delta
-    and --watch-aws-tree flags exist to actually test this now.
-
-    FOUND (this session, chairstacker, live -- the actual resolution
-    of the search this whole docstring documents): the named shadow
-    "ro-currentstate" (one of four previously-unknown read-only
-    shadows found via MQTTTopics.java, see verify_named_shadows.py's
-    own module docstring for that discovery) reports these keys:
-    "batPct", "bin", "cleanMissionStatus", "detectedPad", "dock",
-    "lastDisconnect", "p2maps", "regDate", "runtimeStats",
-    "svcEndpoints", "tankPresent", "tz". "batPct" -- battery
-    percentage -- is exactly what this entire investigation was
-    searching for, and "dock"/"cleanMissionStatus" plausibly cover
-    charging/docked state and live mission status respectively.
-    "cleanMissionStatus" specifically matches the exact event name
-    this project's own native decompilation found on
-    AssetIotTopicFactory months earlier (session covering
-    mission/timeline/report's own discovery) -- two independent
-    findings now pointing at the same underlying concept from
-    different angles.
-
-    A NOTE ON THE EARLIER RETRACTION ABOVE: this session's own
-    "ARCHITECTURE, CORRECTED" paragraph above retracted an earlier
-    parallel-track claim that a "batPct" finding belonged to the
-    Classic-layer RobotV1/RobotV2 classes, unrelated to Prime. That
-    retraction concerned a SPECIFIC claim about WHERE a particular
-    piece of decompiled code lived (Classic-only source), not a
-    claim that the field NAME "batPct" could never appear on a Prime
-    device's own cloud data -- iRobot plausibly reuses the same field
-    vocabulary across Classic and Prime cloud infrastructure even
-    where the underlying delivery mechanism differs. This live
-    "ro-currentstate" result is a directly-observed key on a real
-    Prime device's own named shadow, independent of and not
-    contradicted by that earlier retraction.
-
-    STILL UNCONFIRMED: only the KEY NAMES are known so far (from
-    get_named_shadow()'s reported-keys summary) -- the actual VALUES
-    (is batPct 0-100? an int or a string? does "dock" mean boolean
-    docked-or-not, or something richer?) have not yet been seen. A
-    follow-up request for the full reported payload (not just the key
-    list) is the natural next step before modeling this shadow's
-    content as a proper dataclass."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#robot_inforobotstatusv2
+    """
 
     robot_state: int | None = None
     battery_level: int | None = None

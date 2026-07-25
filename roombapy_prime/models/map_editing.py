@@ -602,38 +602,9 @@ class SetRoomMetadataV1:
     anymore; this specific structure has now been observed to actually
     work against a real robot, both directions (rename and revert).
 
-    CONFIRMED (live APK decompilation, this session, down to the
-    actual P2MapRoomMetadata$Serializer.serialize() call): params are
-    {"room_id": ..., "room_metadata": {...}} under command
-    "set_room_metadata" -- room_id sits alongside room_metadata, NOT
-    nested inside it (the serializer reads value.getMetadata().getId()
-    separately for the outer room_id). room_metadata itself has
-    EXACTLY two possible keys, both written only when not None:
-    "name" (str) and "type" (RoomCategory, see enums_common.py).
-    Nothing else -- no id, no other fields -- goes into room_metadata.
-
-    THE CURRENT APP'S ACTUAL ROOM-EDIT PATH: both room renaming AND
-    room-category changes go through SetRoomMetadata now, not
-    RenameRoomV1/SetRoomTypeV1 (see those classes' own docstrings for
-    the deprecation finding -- SetRoomMetadata replaces BOTH of them).
-
-    CONFIRMED CONSTRAINT: the underlying constructor requires at least
-    one of name/type to be set (both individually may be None, but not
-    both at once) -- enforced here too via __post_init__, so a caller
-    gets a clear, immediate ValueError instead of a request the server
-    would have to reject. A None field is OMITTED from room_metadata
-    entirely (not sent as JSON null) -- this is a genuine partial-
-    update: you can change just the name, just the category, or both,
-    but never explicitly clear one back to empty this way.
-
-    `type` uses RoomCategory (enums_common.py), NOT the RoomType used
-    by SetRoomTypeV1 -- these are two unrelated enums for the same
-    real-world concept, with different wire representations (int codes
-    vs. snake_case strings). See RoomCategory's own docstring for why
-    that distinction matters and the specific mistake it guards against
-    (an earlier draft of this class conflated RoomType with the
-    similarly-named-but-unrelated RegionType, caught before shipping --
-    see CHANGELOG)."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#map_editingsetroommetadatav1
+    """
 
     room_id: str
     name: str | None = None

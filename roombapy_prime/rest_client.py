@@ -223,29 +223,9 @@ class PrimeRestClient:
         too early, a broader source-code search for "/versions/" found
         P2MapGeoJSONRequest.java directly):
 
-            GET /v1/p2maps/{map_id}/versions/{map_version}/geojson
-                ?response_type=link
-
-        Confirmed from P2MapGeoJSONRequest.java: `response_type` is an
-        enum with @SerialName("link")/@SerialName("binary") -- "link"
-        (the default in the original) requests a presigned download URL
-        (Accept: application/json, which happens to match the default
-        header already set anyway). "binary" (direct gzip, Accept:
-        application/gzip,application/json) is NOT supported here --
-        would need a parametrizable Accept header, which aws_sigv4.py
-        doesn't currently offer.
-
-        CORRECTED (session 48): the response shape (which JSON key
-        carries the actual URL) is now confirmed via
-        P2MapURL$$serializer's <clinit> -- the key is `map_url`.
-        Previously marked entirely unconfirmed ("no dedicated response
-        class found") -- that class does exist
-        (com.irobot.irobotdata.maps.internal.p2maps.editing.common.
-        responses.P2MapURL), it just wasn't found in the earlier
-        source-code search. Still returned as raw JSON here (not worth
-        a dedicated dataclass for a single field), but callers can now
-        reliably do `result["map_url"]` instead of guessing among
-        candidate keys."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#rest_clientget_map_geojson_link
+    """
         url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(map_id)}/versions/{_path_segment(map_version)}/geojson"
         return await self._request("GET", url, query={"response_type": "link"})
 
@@ -832,6 +812,10 @@ class PrimeRestClient:
                     clean_all=bool(c.get("select_all", False)),
                     spot_geometry=c.get("geom"),
                     favorite_id=c.get("favorite_id"),
+                    # Passthrough only -- see RoutineCommand.command_id's
+                    # own comment. Preserving what the server sent beats
+                    # dropping it, even while its meaning is unknown.
+                    command_id=c.get("id"),
                 )
                 for c in command_defs_raw
             ],

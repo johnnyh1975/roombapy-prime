@@ -234,7 +234,7 @@ class HouseholdSchedule:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HouseholdSchedule:
-        """NEW -- see ScheduleOptions.from_json()'s own docstring for
+        """NEW -- see ScheduleOptions.from_json()'s own entry in docs/internal/EVIDENCE_TRAIL.md for
         why commands/end_commands round-trip as raw dicts rather than
         parsed RoutineCommand objects."""
         return cls(

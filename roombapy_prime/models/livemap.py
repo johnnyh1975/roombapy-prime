@@ -49,53 +49,9 @@ class PositionUpdateMessage:
     def from_json(cls, data: dict[str, Any]) -> PositionUpdateMessage:
         """data is the "pos_update" envelope including cur_path.
 
-        cur_path length must be (2 + 4*n) for n position points --
-        exactly as checked in PositionUpdatesSerializer.deserialize().
-        Orientation is shifted by +pi, same as in the original -- the
-        reason for this convention wasn't further investigated.
-
-        CONFIRMED LIVE (this session, jayjay13011, roombapy-prime
-        v0.1.11a6 -- the first capture with topic tracking, so the
-        exact topic this arrives on is now also settled, see
-        livemap_topic()/watch_live_map()). This directly resolves the
-        TENSION noted below in favor of option (a): the flat cur_path
-        array genuinely IS the wire format, not a misreading -- a real
-        capture confirms it exactly, including operating_modes
-        actually varying (not a fixed constant): 0 for the first ~5
-        seconds of cleaning (still settling in after travel/reloc),
-        then switching to 5 for the rest of the observed cleaning
-        period. The switch happens a few seconds AFTER
-        mission/timeline/report's own "room" event fires, not
-        precisely at that boundary -- plausibly a finer-grained
-        sub-state (e.g. "orienting" vs "actively cleaning") than what
-        the mission-timeline channel exposes, but this is not
-        confirmed, just a reasonable reading of the timing.
-
-        IMPORTANT TENSION, discovered but NOT resolved (session 48):
-        a systematic `$$serializer` scan found
-        `PositionUpdates$PositionUpdate$$serializer` -- an
-        AUTO-GENERATED serializer (unlike the CUSTOM
-        `PositionUpdatesSerializer` this method's cur_path-flat-array
-        parsing was originally based on) -- with confirmed fields
-        `point`/`orientation`/`operatingModes`. This is suspiciously
-        close to this library's OWN `PositionSample` dataclass (point/
-        orientation/operating_modes), which was built to match the
-        cur_path-derived values, not copied from this serializer.
-        Two real possibilities, neither confirmed: (a) the actual wire
-        format for each position update is a structured JSON object
-        matching PositionUpdate's confirmed fields directly, and the
-        flat "cur_path" array parsing here is based on an earlier,
-        possibly mistaken reading of the custom serializer's logic;
-        or (b) both genuinely coexist -- the custom
-        `PositionUpdatesSerializer` might pack/unpack a LIST of these
-        structured PositionUpdate objects specifically into the flat
-        "cur_path" wire array as an optimization, with PositionUpdate
-        only ever existing as the in-memory Kotlin representation, not
-        a JSON shape of its own. The live capture above settles which
-        of these is right for the WIRE FORMAT (flat array, confirmed);
-        it doesn't settle whether PositionUpdate the class still
-        exists internally in the app for the same data.
-        """
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#livemapfrom_json
+    """
         cur_path = data["cur_path"]
         if (len(cur_path) - 2) % 4 != 0:
             msg = f"cur_path unexpected size: {len(cur_path)}"
@@ -130,84 +86,9 @@ class MapUpdateMessage:
     map_update.livemap_url -- exactly matching the nesting already
     used here.
 
-    CONFIRMED LIVE (this session, jayjay13011, roombapy-prime v0.1.11a6):
-    real messages also carry an outer "timestamp" and a sibling
-    "livemap_url_raw" alongside "livemap_url" -- both added here, not
-    previously modeled. livemap_url is a presigned S3 URL ending in
-    "p2mapv_geojson.tgz" -- the EXACT SAME format
-    download_map_bundle()/parse_map_bundle() already handle for
-    REST-fetched bundles; no new download/parsing code is needed to
-    consume this live feed. livemap_url_raw points to a sibling
-    "rawmap" path. Both URLs' paths are fixed/generic per robot
-    (".../dload_livemap/{blid}/..."), not versioned per-update -- only
-    the query-string signing differs between messages, confirmed by
-    direct comparison, not assumed.
-
-    "rawmap" FORMAT, FULLY DECODED (this session, chairstacker, from a
-    hexdump of a file saved during an earlier run -- the actual map
-    content was never shared, only structural bytes/strings). This is
-    a Protocol Buffers message, not a raw occupancy grid directly (the
-    earlier "raw grid, one byte per file" hypothesis was wrong about
-    the FILE as a whole, but right about what's embedded inside it).
-    Confirmed structure, hand-decoded against the real hexdump and
-    verified with a synthetic reconstruction matching it exactly:
-
-        field 2 -> nested message: two Unix timestamps (map created/
-                   updated), and a sub-message (field 7) containing
-                   the map_id as a 32-char hex string
-        field 3 -> nested message: a plain-int map_id-suffix
-                   timestamp, then width and height as plain varints
-                   (440 x 400 in the one real example), then five
-                   float32 fields -- almost certainly origin_x,
-                   origin_y, and other bounds/rotation values, with
-                   the smallest positive one (0.05) being the
-                   resolution in metres/cell -- a completely standard
-                   SLAM occupancy-grid value (5cm/cell)
-        field 4 -> wraps exactly one bytes field (field 1): the
-                   occupancy grid itself, width*height bytes, one byte
-                   per cell -- 176000 bytes in the real example,
-                   EXACTLY matching 440*400, confirmed directly rather
-                   than assumed
-
-    "Clean Kitchen" (a room name) and "Map1"/"Map2" also appeared as
-    plain strings elsewhere in the file (via `strings`) -- not yet
-    located precisely in the field layout above, presumably a sibling
-    field carrying room-name/multi-map metadata this session didn't
-    reach. `models/livemap.py` doesn't yet parse this structure into a
-    dataclass -- `decode_rawmap.py` (a standalone script, not part of
-    the library) exists to extract and render the grid for
-    confirmation first, before committing to field names here.
-
-    VISUALLY CONFIRMED (this session, chairstacker): the rendered PNG
-    (width x height orientation, not the swapped one) IS a recognizable
-    floor plan matching their real home -- the strongest possible
-    confirmation of the whole structure above. One correction found in
-    the process: the raw byte order renders vertically flipped
-    relative to the app's own map view (row 0 at the top in image
-    convention vs. row 0 at the bottom in the occupancy grid's own
-    convention, a common mismatch) -- decode_rawmap.py now flips the
-    image before saving so its output matches the app's orientation
-    directly. Also reported: rougher edges and a few unexplained white
-    streaks in areas with no carpets/furniture, compared to the app's
-    own cleaner rendering -- plausibly SLAM sensor noise (reflective
-    surfaces, specular floor reflections) or an unknown/low-confidence
-    occupancy value rendering as a distinct shade rather than a
-    rendering bug, consistent with the byte histogram showing far more
-    than just two values (a simple free/occupied grid would show only
-    two, not a whole distribution) -- not confirmed further, no reason
-    yet to think the decode itself is wrong given the floor plan itself
-    is unmistakably recognizable.
-
-    NOT YET USED for anything beyond this model -- no entity in
-    ha_roomba_plus consumes it yet. A concrete next step this makes
-    possible: a live-updating map/camera entity, refreshed from
-    whatever the most recent MapUpdateMessage delivered, using
-    download_map_bundle()/parse_map_bundle() directly against
-    livemap_url -- no new download or parsing code needed. Now that
-    rawmap's structure is understood AND visually confirmed, an
-    occupancy-grid-based rendering (or a room-outline overlay combining
-    both this and the GeoJSON bundle) becomes a real, evidenced option
-    -- not yet designed or built."""
+    Full evidence trail, correction history and open questions:
+    docs/internal/EVIDENCE_TRAIL.md#livemapmapupdatemessage
+    """
 
     livemap_url: str
     livemap_url_raw: str | None = None

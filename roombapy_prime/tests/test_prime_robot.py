@@ -1418,3 +1418,69 @@ class TestGetHouseholdId:
         result = await robot.get_household_id()
 
         assert result is None
+
+
+class TestHouseholdLookupWithMismatchedIdentifiers:
+    """REAL FIELD CASE (DaRealGuGu): a 16-character BLID
+    "3178480C91223620" alongside a 32-character robot_id
+    "0B710054CA277C04B2700374A8349C9A".
+
+    The household lookup used to compare only robot_id == blid, so on
+    that account it returned None -- silently, with no error. Every
+    household-scoped operation, schedule writes above all, would have
+    failed there for reasons that would have looked like anything
+    except an identifier mismatch.
+
+    A first attempt to fix this matched against a `blid` attribute on
+    the household robot entries. Those entries carry only robot_id and
+    never had such a field, so it changed nothing. The identifier we
+    actually needed was in the login response all along."""
+
+    def _robot(self, blid, robot_id=None):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        return PrimeRobot(
+            blid=blid, mqtt_client=MagicMock(), rest_client=MagicMock(),
+            irbt_topic_prefix="v005-irbthbu", robot_id=robot_id,
+        )
+
+    def test_robot_id_defaults_to_blid_when_not_supplied(self):
+        """Correct wherever the two match, which is every account this
+        project had seen before."""
+        assert self._robot("SAME123").robot_id == "SAME123"
+
+    def test_a_supplied_robot_id_is_kept_distinct_from_the_blid(self):
+        robot = self._robot("3178480C91223620", "0B710054CA277C04B2700374A8349C9A")
+
+        assert robot.blid == "3178480C91223620"
+        assert robot.robot_id == "0B710054CA277C04B2700374A8349C9A"
+
+    @pytest.mark.asyncio
+    async def test_household_is_found_via_robot_id_not_blid(self):
+        """The actual regression: the household lists the robot under
+        its robot_id, and we know that value only from the login."""
+        from unittest.mock import AsyncMock
+
+        robot = self._robot("3178480C91223620", "0B710054CA277C04B2700374A8349C9A")
+        robot.get_user_households = AsyncMock(return_value={
+            "household_id": "HH-1",
+            "household_robots": [{"robot_id": "0B710054CA277C04B2700374A8349C9A"}],
+        })
+
+        assert await robot.get_household_id() == "HH-1"
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_absent_robot_still_returns_none(self):
+        """Widening the match must not turn 'not found' into a false
+        positive."""
+        from unittest.mock import AsyncMock
+
+        robot = self._robot("BLID-A", "ROBOT-A")
+        robot.get_user_households = AsyncMock(return_value={
+            "household_id": "HH-1",
+            "household_robots": [{"robot_id": "SOMEONE-ELSE"}],
+        })
+
+        assert await robot.get_household_id() is None
