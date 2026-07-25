@@ -262,3 +262,65 @@ class TestAddTopicGroupedViews:
         redacted = {"Discovery deployment object (for irbt_topic_prefix)": {"some": "dict"}}
         _add_topic_grouped_views(redacted)
         assert len(redacted) == 1
+
+
+class TestTaskExceptionSurfacing:
+    """REAL BUG FOUND AND FIXED (this session): run()'s own
+    asyncio.gather(*tasks, return_exceptions=True) call captured every
+    watch task's exceptions into its return value, but that return
+    value was never inspected or assigned anywhere -- any real failure
+    in a watch task (a subscription rejected by the broker, a dropped
+    connection, anything) vanished with zero visible trace: no print,
+    no report entry. A real failure and a genuinely quiet topic looked
+    completely identical. This test exercises the exact pattern
+    (gather with return_exceptions=True, then check each result) that
+    fixed it, since fully exercising the real run() end-to-end would
+    need mocking its entire robot/connection dependency chain for
+    something this narrow."""
+
+    @pytest.mark.asyncio
+    async def test_a_real_exception_in_one_task_is_correctly_identified_alongside_a_success(self):
+        from roombapy_prime.mqtt_client import SubscriptionRejectedError
+
+        async def failing_watch():
+            raise SubscriptionRejectedError("Broker REJECTED subscription for: {'some/topic': [128]}")
+
+        async def succeeding_watch():
+            return None
+
+        watch_specs = [(None, "good/topic"), (None, "bad/topic")]
+        tasks = [asyncio.create_task(succeeding_watch()), asyncio.create_task(failing_watch())]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        failures = [
+            (label, result)
+            for (_factory, label), result in zip(watch_specs, results, strict=True)
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
+        ]
+
+        assert len(failures) == 1
+        label, exc = failures[0]
+        assert label == "bad/topic"
+        assert isinstance(exc, SubscriptionRejectedError)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_is_not_treated_as_a_failure(self):
+        """CancelledError is the NORMAL way a watch task ends (the
+        duration timeout cancelling it) -- must not be reported as a
+        failure alongside genuine exceptions."""
+        async def cancelled_watch():
+            raise asyncio.CancelledError()
+
+        watch_specs = [(None, "some/topic")]
+        tasks = [asyncio.create_task(cancelled_watch())]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        failures = [
+            (label, result)
+            for (_factory, label), result in zip(watch_specs, results, strict=True)
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
+        ]
+
+        assert failures == []

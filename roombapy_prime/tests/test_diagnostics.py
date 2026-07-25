@@ -566,3 +566,51 @@ def test_extract_first_id_finds_confirmed_household_id_field() -> None:
     result = _extract_first_id(real_households, ["household_id", "householdId", "id"])
 
     assert result == "c4714a01-f6ad-4ace-b111-d326d83867a5"
+
+
+class TestPrintFinalSummary:
+    """NEW (this session, prompted by real field friction): every
+    script already printed each result line as it was added, but in a
+    long run those end up scattered across the whole terminal output,
+    with only a bare count ("3 OK, 0 failed, 0 skipped") at the very
+    end -- no indication of WHICH checks those were. See
+    print_final_summary()'s own docstring for the full reasoning."""
+
+    def test_prints_every_result_again_at_the_end(self, capsys) -> None:
+        report = Report()
+        report.add("Login", "OK", "BLID=TESTBLID")
+        report.add("Watch wildcard", "FAILED", "SubscriptionRejectedError: broker denied it")
+        report.add("Something skipped", "SKIPPED", "not confirmed by user")
+        capsys.readouterr()  # discard the per-add() lines, only test the final block
+
+        report.print_final_summary()
+
+        out = capsys.readouterr().out
+        assert "FINAL REPORT" in out
+        assert "Login" in out
+        assert "BLID=TESTBLID" in out
+        assert "Watch wildcard" in out
+        assert "SubscriptionRejectedError" in out
+        assert "Something skipped" in out
+
+    def test_includes_the_counts(self, capsys) -> None:
+        report = Report()
+        report.add("A", "OK")
+        report.add("B", "FAILED", "x")
+        report.add("C", "SKIPPED", "y")
+        capsys.readouterr()
+
+        report.print_final_summary()
+
+        assert "1 OK, 1 failed, 1 skipped" in capsys.readouterr().out
+
+    def test_handles_an_empty_report_without_crashing(self, capsys) -> None:
+        """A run that aborts before any check completes must still end
+        with a readable block, not a traceback."""
+        report = Report()
+
+        report.print_final_summary()
+
+        out = capsys.readouterr().out
+        assert "FINAL REPORT" in out
+        assert "0 OK, 0 failed, 0 skipped" in out

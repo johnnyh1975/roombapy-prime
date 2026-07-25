@@ -3165,3 +3165,89 @@ def test_parse_robot_status_v2_returns_object_when_present() -> None:
     assert isinstance(result, RobotStatusV2)
     assert result.robot_state == 1
     assert result.is_charging is True
+
+
+def test_point_clean_command_type_exists():
+    """The one CommandType genuinely missing from our enum (the other
+    reported candidates already existed -- verified against the full
+    member list, which is how that duplicate got caught)."""
+    from roombapy_prime.models.mission_control import MissionCommandType
+
+    assert MissionCommandType.POINT_CLEAN.value == "point_clean"
+
+
+def test_raas_and_odoa_lite_parse_when_present():
+    """Both confirmed to exist with their own deserializers, but absent
+    from every capture this project has -- so which shadow carries them
+    is a best guess. Parsing is harmless if the guess is wrong."""
+    from roombapy_prime.models import CurrentStateShadow
+
+    state = CurrentStateShadow.from_json({
+        "raas": {"enabled": True, "exp": 1784831254},
+        "odoaLite": {"enabled": False},
+    })
+
+    assert state.raas.enabled is True
+    assert state.raas.exp == 1784831254
+    assert state.odoa_lite.enabled is False
+
+
+def test_raas_and_odoa_lite_are_none_when_absent():
+    """The normal case for every real capture so far."""
+    from roombapy_prime.models import CurrentStateShadow
+
+    state = CurrentStateShadow.from_json({"batPct": 100})
+
+    assert state.raas is None
+    assert state.odoa_lite is None
+
+
+class TestPolicyZoneCategory:
+    """NEW (this session): makes PolicyZoneFeature's already-confirmed
+    categorization rule applicable instead of leaving it in prose. One
+    branch is genuinely counter-intuitive -- a virtual wall is NOT its
+    own zone_type, it's a "KeepOutZone" whose geometry is a LineString."""
+
+    POLYGON = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}
+    LINESTRING = {"type": "LineString", "coordinates": [[0, 0], [1, 1]]}
+
+    def _feature(self, geometry, zone_type, threshold_type=None):
+        from roombapy_prime.models import PolicyZoneFeature
+
+        props = {"type": zone_type}
+        if threshold_type is not None:
+            props["threshold_type"] = threshold_type
+        return PolicyZoneFeature.from_json(
+            {"id": "z1", "geometry": geometry, "properties": props}
+        )
+
+    def test_keep_out_zone_polygon(self):
+        from roombapy_prime.models import PolicyZoneCategory
+
+        assert self._feature(self.POLYGON, "KeepOutZone").category is PolicyZoneCategory.KEEP_OUT_ZONE
+
+    def test_virtual_wall_is_a_keep_out_zone_with_linestring_geometry(self):
+        """THE non-obvious branch -- same zone_type as a keep-out zone,
+        distinguished only by geometry shape."""
+        from roombapy_prime.models import PolicyZoneCategory
+
+        assert self._feature(self.LINESTRING, "KeepOutZone").category is PolicyZoneCategory.VIRTUAL_WALL
+
+    def test_no_mop_zone(self):
+        from roombapy_prime.models import PolicyZoneCategory
+
+        assert self._feature(self.POLYGON, "NoMopZone").category is PolicyZoneCategory.NO_MOP_ZONE
+
+    def test_threshold(self):
+        from roombapy_prime.models import PolicyZoneCategory
+
+        feature = self._feature(self.POLYGON, "Threshold", threshold_type="DETECTED")
+        assert feature.category is PolicyZoneCategory.THRESHOLD
+        assert feature.properties.threshold_type == "DETECTED"
+
+    def test_unknown_zone_type_is_not_guessed(self):
+        """The real app skips unrecognized features silently, so this
+        is a normal condition rather than an error."""
+        from roombapy_prime.models import PolicyZoneCategory
+
+        assert self._feature(self.POLYGON, "SomethingNewFromFirmware").category is PolicyZoneCategory.UNKNOWN

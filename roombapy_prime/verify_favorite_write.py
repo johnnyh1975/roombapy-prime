@@ -164,8 +164,7 @@ async def send_update_unchanged(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 def _build_recolored_favorite(favorite, new_color: str):
@@ -205,8 +204,7 @@ async def send_update_color(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 async def delete_by_id(username: str, password: str, country_code: str, blid: str, favorite_id: str) -> None:
@@ -236,8 +234,7 @@ async def delete_by_id(username: str, password: str, country_code: str, blid: st
             report.add("delete_favorite()", "FAILED", f"{type(exc).__name__}: {exc}")
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 async def create_and_delete_test(username: str, password: str, country_code: str, blid: str) -> None:
@@ -286,8 +283,7 @@ async def create_and_delete_test(username: str, password: str, country_code: str
                 "was actually created."
             )
             report.redact(username, password)
-            ok, failed, skipped = report.summary()
-            print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+            report.print_final_summary()
             return
 
         print(f"\nCreated with favorite_id={created_id!r}.")
@@ -304,8 +300,7 @@ async def create_and_delete_test(username: str, password: str, country_code: str
             report.add("delete_favorite()", "OK", f"response: {delete_result!r}")
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 def main() -> None:

@@ -400,6 +400,26 @@ def _policy_zone_geometry_from_geojson(data: dict[str, Any]) -> Polygon | LineSt
     return _polygon_from_geojson(data)
 
 
+class PolicyZoneCategory(StrEnum):
+    """NEW (this session): makes PolicyZoneFeature's already-CONFIRMED
+    categorization rule actually APPLICABLE, instead of leaving every
+    consumer to re-derive it from prose.
+
+    The rule was fully documented on PolicyZoneFeature but never
+    implemented anywhere, and one branch of it is genuinely
+    counter-intuitive: a VIRTUAL WALL is not its own zone_type. It is a
+    "KeepOutZone"-typed feature whose GEOMETRY happens to be a
+    LineString rather than a Polygon. Anyone implementing this from the
+    field names alone would almost certainly miss that and silently
+    treat virtual walls as keep-out zones."""
+
+    KEEP_OUT_ZONE = "keep_out_zone"
+    VIRTUAL_WALL = "virtual_wall"
+    NO_MOP_ZONE = "no_mop_zone"
+    THRESHOLD = "threshold"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class PolicyZoneFeature:
     """CONFIRMED via PolicyZoneFeature$$serializer/
@@ -447,6 +467,27 @@ class PolicyZoneFeature:
             properties=PolicyZoneFeatureProperties.from_json(data.get("properties") or {}),
             feature_type=data.get("type", "Feature"),
         )
+
+    @property
+    def category(self) -> PolicyZoneCategory:
+        """Applies the confirmed categorization rule -- see
+        PolicyZoneCategory's own docstring for why the virtual-wall
+        branch in particular is worth having in code rather than in
+        prose. Returns UNKNOWN rather than guessing for anything the
+        confirmed rule doesn't cover; the real app skips such features
+        silently too, so an unrecognized value is a normal condition,
+        not an error."""
+        zone_type = self.properties.zone_type
+        if zone_type == "Threshold":
+            return PolicyZoneCategory.THRESHOLD
+        if zone_type == "NoMopZone":
+            return PolicyZoneCategory.NO_MOP_ZONE
+        if zone_type == "KeepOutZone":
+            # THE non-obvious branch: geometry shape, not type string.
+            if isinstance(self.geometry, LineString):
+                return PolicyZoneCategory.VIRTUAL_WALL
+            return PolicyZoneCategory.KEEP_OUT_ZONE
+        return PolicyZoneCategory.UNKNOWN
 
 
 @dataclass(frozen=True)

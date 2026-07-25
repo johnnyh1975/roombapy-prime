@@ -398,6 +398,20 @@ class PrimeRestClient:
         raw_list = data if isinstance(data, list) else []
         return [self._favorite_from_json(item) for item in raw_list]
 
+    async def get_favorites_raw(self) -> list[dict[str, Any]]:
+        """Same endpoint as get_favorites(), but returns the UNPARSED
+        response. Added (this session) for a round-trip fidelity check:
+        if a stored favorite carries fields our own models don't know
+        about, parsing and re-serializing it would silently DROP them,
+        and we would resend a command that is subtly less complete than
+        what the app itself sends -- a failure mode that looks exactly
+        like this project's central symptom (structurally valid,
+        no effect, no error). Diagnostic use only; nothing in the
+        library's normal path should need this."""
+        url = f"{self._http_base_auth}/v1/user/favorites"
+        data = await self._request("GET", url, query=self._FAVORITES_QUERY)
+        return data if isinstance(data, list) else []
+
     async def create_favorite(self, favorite: FavoriteV1) -> dict[str, Any]:
         """POST /v1/user/favorites?app_edition=1 -- CONFIRMED (eighth
         session: CreateFavoriteRequest.<init> sets httpMethod = "POST"

@@ -137,8 +137,7 @@ async def send_update_unchanged(
         except Exception as exc:  # noqa: BLE001
             report.add("Reading current policy zones", "FAILED", f"{type(exc).__name__}: {exc}")
             report.redact(username, password)
-            ok, failed, skipped = report.summary()
-            print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+            report.print_final_summary()
             return
         report.add("Reading current policy zones", "OK", f"{len(features)} feature(s), {len(walls)} wall(s)")
 
@@ -159,8 +158,7 @@ async def send_update_unchanged(
             report.add("edit_map() -- SetVirtualWallsV1", "FAILED", f"{type(exc).__name__}: {exc}")
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 def main() -> None:

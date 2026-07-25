@@ -45,6 +45,24 @@ class _FakeMsg:
         self.payload = payload
 
 
+class _FakeMessageInfo:
+    """Stand-in for paho.mqtt.client.MQTTMessageInfo -- just enough of
+    the real interface (wait_for_publish()/is_published()) for
+    publish_cmd_payload()'s new PUBACK-confirmation logic to exercise
+    against. Defaults to "successfully published" -- tests that need
+    to simulate a broker-level failure/no-confirmation pass
+    published=False explicitly."""
+
+    def __init__(self, published: bool = True) -> None:
+        self._published = published
+
+    def wait_for_publish(self, timeout: float | None = None) -> None:
+        pass
+
+    def is_published(self) -> bool:
+        return self._published
+
+
 class _FakeMqttClient:
     """Stand-in for paho.mqtt.client.Client. No sockets involved."""
 
@@ -53,6 +71,7 @@ class _FakeMqttClient:
         self.unsubscribed: list[str] = []
         self.published: list[tuple[str, object]] = []
         self.on_publish_react: Callable[[str, object], None] | None = None
+        self.publish_confirmed: bool = True
         self._on_subscribe = on_subscribe
         self._next_mid = 1
 
@@ -70,10 +89,11 @@ class _FakeMqttClient:
     def unsubscribe(self, topic: str) -> None:
         self.unsubscribed.append(topic)
 
-    def publish(self, topic: str, payload: object = None, qos: int = 0) -> None:
+    def publish(self, topic: str, payload: object = None, qos: int = 0) -> _FakeMessageInfo:
         self.published.append((topic, payload))
         if self.on_publish_react is not None:
             self.on_publish_react(topic, payload)
+        return _FakeMessageInfo(published=self.publish_confirmed)
 
 
 def _dummy_token() -> ConnectionToken:
@@ -776,3 +796,164 @@ def test_connect_connection_error_gets_clear_message(monkeypatch) -> None:
 
     assert "connect" in str(excinfo.value).lower()
     assert isinstance(excinfo.value.__cause__, OSError)
+
+
+class TestPublishCmdPayloadPubackConfirmation:
+    """NEW (this session, per the parallel APK-research chat's own
+    finding): QoS=1 was already set, but nothing previously checked
+    whether the broker actually confirmed the publish (PUBACK) at the
+    MQTT protocol level -- "fire-and-forget" conflated "no
+    application-level ack topic" (still true) with "no protocol-level
+    ack either" (false). This matters because rejected/report is
+    published BY THE ROBOT -- a command the broker silently drops
+    never reaches the robot to be rejected, so "no rejection" was
+    never actually proof of delivery."""
+
+    def test_returns_true_when_broker_confirms_publish(self):
+        client, fake = _connected_client(blid="BLID1")
+        fake.publish_confirmed = True
+
+        result = client.publish_cmd_payload("irbt-prefix", {"command": "start"})
+
+        assert result is True
+
+    def test_returns_false_when_broker_does_not_confirm_publish(self):
+        client, fake = _connected_client(blid="BLID1")
+        fake.publish_confirmed = False
+
+        result = client.publish_cmd_payload("irbt-prefix", {"command": "start"})
+
+        assert result is False
+
+    def test_publish_cmd_also_returns_the_confirmation(self):
+        """publish_cmd() (simple commands) delegates to
+        publish_cmd_payload() -- must propagate the same signal."""
+        client, fake = _connected_client(blid="BLID1")
+        fake.publish_confirmed = False
+
+        result = client.publish_cmd("irbt-prefix", "start")
+
+        assert result is False
+
+    def test_a_publish_failure_returns_false_not_an_exception(self):
+        """wait_for_publish()/is_published() can raise RuntimeError/
+        ValueError for real protocol-level failures (queue full,
+        publish failed) -- callers should get a clean False, not an
+        unhandled exception, since this runs inside asyncio.to_thread()
+        in the real call path."""
+        client, fake = _connected_client(blid="BLID1")
+
+        class _FailingMessageInfo:
+            def wait_for_publish(self, timeout=None):
+                raise RuntimeError("simulated: publish failed")
+
+        fake.publish = lambda topic, payload=None, qos=0: _FailingMessageInfo()
+
+        result = client.publish_cmd_payload("irbt-prefix", {"command": "start"})
+
+        assert result is False
+
+
+class TestBuildClientUserAgentHeader:
+    """NEW (this session) -- the WebSocket upgrade previously sent NO
+    User-Agent header at all. See _TEST_CANDIDATE_USER_AGENT's own
+    docstring (mqtt_client.py) for why this specific value is a
+    reasonable but still-unconfirmed-for-Prime test candidate, copied
+    from a different (but related) project's own confirmed-working
+    code rather than invented."""
+
+    def test_ws_set_options_includes_user_agent(self):
+        from unittest.mock import patch
+        from roombapy_prime.mqtt_client import PrimeMqttClient, _TEST_CANDIDATE_USER_AGENT
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
+
+        with patch("paho.mqtt.client.Client.ws_set_options") as mock_ws_set_options:
+            client._build_client()
+
+        _args, kwargs = mock_ws_set_options.call_args
+        assert kwargs["headers"]["User-Agent"] == _TEST_CANDIDATE_USER_AGENT
+
+    def test_ws_set_options_still_includes_the_three_existing_auth_headers(self):
+        """Regression check -- the new header must be ADDED, not replace
+        the three already-confirmed-required ones."""
+        from unittest.mock import patch
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        token = _dummy_token()
+        client = PrimeMqttClient(token=token, endpoint="fake.example.com", blid="BLID1")
+
+        with patch("paho.mqtt.client.Client.ws_set_options") as mock_ws_set_options:
+            client._build_client()
+
+        _args, kwargs = mock_ws_set_options.call_args
+        headers = kwargs["headers"]
+        assert headers["x-amz-customauthorizer-name"] == token.iot_authorizer_name
+        assert headers["x-amz-customauthorizer-signature"] == token.iot_signature
+        assert headers["x-irobot-auth"] == token.iot_token
+
+
+class TestSubscribeAndWaitRejectionDetection:
+    """REAL BUG FOUND AND FIXED (this session, prompted directly by a
+    field result: chairstacker triggered a favorite AND a room clean
+    from the real app -- the robot genuinely reacted to both within 20
+    seconds -- while our own --watch-wildcard subscription saw NOTHING
+    during that exact window). _on_subscribe() received the broker's
+    SUBACK reason code for every subscribe() call ever made by this
+    library, but never checked it -- a REJECTED subscription (MQTT's
+    own 0x80 failure code) was recorded identically to a successful
+    one. See SubscriptionRejectedError's own docstring for the full
+    finding."""
+
+    def test_successful_suback_does_not_raise(self):
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
+        fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, [1]))
+        client._client = fake
+        client._connected = True
+
+        client.subscribe("some/topic", lambda msg: None)  # must not raise
+
+        assert "some/topic" in fake.subscribed
+
+    def test_rejected_suback_raises_subscription_rejected_error(self):
+        from roombapy_prime.mqtt_client import PrimeMqttClient, SubscriptionRejectedError
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
+        fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, [0x80]))
+        client._client = fake
+        client._connected = True
+
+        with pytest.raises(SubscriptionRejectedError) as exc_info:
+            client.subscribe("restricted/topic", lambda msg: None)
+
+        assert "restricted/topic" in str(exc_info.value)
+
+    def test_mixed_success_and_rejection_across_multiple_topics_reports_only_the_rejected_one(self):
+        """_subscribe_and_wait() takes a list of topics -- confirms the
+        error message identifies WHICH topic failed, not just that
+        something somewhere did, when multiple topics are subscribed
+        to in the same call."""
+        from roombapy_prime.mqtt_client import PrimeMqttClient, SubscriptionRejectedError
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
+        codes_by_topic = {"good/topic": [1], "bad/topic": [0x80]}
+        subscribed_order: list[str] = []
+
+        def fake_subscribe(topic, qos=1):
+            subscribed_order.append(topic)
+            mid = len(subscribed_order)
+            client._on_subscribe(client, None, mid, codes_by_topic[topic])
+            return (0, mid)
+
+        fake = _FakeMqttClient()
+        fake.subscribe = fake_subscribe
+        client._client = fake
+        client._connected = True
+
+        with pytest.raises(SubscriptionRejectedError) as exc_info:
+            client._subscribe_and_wait(["good/topic", "bad/topic"])
+
+        assert "bad/topic" in str(exc_info.value)
+        assert "good/topic" not in str(exc_info.value)

@@ -428,7 +428,7 @@ class PrimeRobot:
             self._mqtt.update_shadow, command.to_shadow_desired(), None, timeout
         )
 
-    async def send_simple_command(self, command: str, initiator: str = "localApp") -> None:
+    async def send_simple_command(self, command: str, initiator: str = "localApp") -> bool:
         """NEW (session 39) -- the corrected mission-control path,
         replacing send_mission_command() for basic commands. See
         mqtt_client.py's cmd_topic()/publish_cmd() docstrings for the
@@ -506,9 +506,9 @@ class PrimeRobot:
                 "send_simple_command() needs irbt_topic_prefix (from LoginResult) -- "
                 "missing here, so the correct topic can't be built."
             )
-        await asyncio.to_thread(self._mqtt.publish_cmd, self._irbt_topic_prefix, command, initiator)
+        return await asyncio.to_thread(self._mqtt.publish_cmd, self._irbt_topic_prefix, command, initiator)
 
-    async def send_routine_command_via_cmd_topic(self, command: RoutineCommand) -> None:
+    async def send_routine_command_via_cmd_topic(self, command: RoutineCommand) -> bool:
         """EXPERIMENTAL, UNCONFIRMED (session 46) -- a well-reasoned
         hypothesis for the region-aware case send_simple_command()
         explicitly can't cover, NOT a confirmed working path. Read
@@ -621,7 +621,7 @@ class PrimeRobot:
                 "send_routine_command_via_cmd_topic() needs irbt_topic_prefix (from LoginResult) "
                 "-- missing here, so the correct topic can't be built."
             )
-        await asyncio.to_thread(self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, command.to_json())
+        return await asyncio.to_thread(self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, command.to_json())
 
     async def send_umi_get_request(self, args: list[str], request_id: int = 1) -> None:
         """EXPERIMENTAL, UNCONFIRMED (this session) -- a well-reasoned
@@ -782,6 +782,11 @@ class PrimeRobot:
         five favorite endpoints whose HTTP method AND response shape
         are both fully confirmed."""
         return await self._rest.get_favorites()
+
+    async def get_favorites_raw(self) -> list[dict]:
+        """See rest_client.py::get_favorites_raw() -- diagnostic
+        round-trip fidelity check, not part of the normal path."""
+        return await self._rest.get_favorites_raw()
 
     async def create_favorite(self, favorite: FavoriteV1) -> dict:
         """See rest_client.py::create_favorite() -- HTTP method
@@ -1048,9 +1053,11 @@ class PrimeRobot:
         - The irbt_topic_prefix applying here the same way it does for
           the already-live-confirmed command topic
           (createCommandPublishTopic, same factory, same constructor):
-          a strong, well-reasoned inference (same factory instance,
-          same ServiceDiscoveryData source), NOT independently
-          live-confirmed for THIS specific topic.
+          now CONFIRMED (parallel APK-research chat, this session) via
+          decompiled call-site code for all three of
+          AssetIotTopicFactory's topic-building methods -- same stored
+          constructor value, same concatenation pattern, no structural
+          difference from the live-confirmed command topic.
         - The payload SHAPE: genuinely unknown. RobotMissionStatusEventImpl's
           decompiled constructor signature (AssetId, RobotMissionType,
           string, RobotMissionPhase, string, short, short, int,

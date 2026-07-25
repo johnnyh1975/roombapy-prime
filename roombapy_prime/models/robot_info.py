@@ -1489,6 +1489,33 @@ class P2MapRef:
 
 
 @dataclass(frozen=True)
+class RaasStatus:
+    """Two fields confirmed by their own deserializer (parallel
+    native-analysis track): enabled + exp. "raas" most plausibly
+    stands for Robot-as-a-Service; exp is likely an expiry, but that
+    is a reading of the name, not something confirmed."""
+
+    enabled: bool | None = None
+    exp: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> RaasStatus:
+        return cls(enabled=data.get("enabled"), exp=data.get("exp"))
+
+
+@dataclass(frozen=True)
+class OdoaLiteStatus:
+    """Single confirmed field (enabled), same source. "odoa" is most
+    plausibly Obstacle Detection and Avoidance."""
+
+    enabled: bool | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> OdoaLiteStatus:
+        return cls(enabled=data.get("enabled"))
+
+
+@dataclass(frozen=True)
 class CurrentStateShadow:
     """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (chairstacker) -- the
     actual resolution of this whole project's battery-status search.
@@ -1524,6 +1551,16 @@ class CurrentStateShadow:
     bin: BinStatus | None = None
     clean_mission_status: CleanMissionStatus | None = None
     detected_pad: str | None = None
+    # PLACEMENT UNCONFIRMED (this session): both fields are confirmed to
+    # EXIST with their own deserializers, but no capture this project
+    # has contains either, so which shadow actually carries them is a
+    # best guess -- ro-currentstate is the most plausible home for
+    # runtime feature flags, but rw-settings and ro-services are
+    # equally defensible candidates. Parsing here is harmless if wrong
+    # (the field simply stays None) and moving it later is trivial once
+    # a real capture settles it.
+    raas: RaasStatus | None = None
+    odoa_lite: OdoaLiteStatus | None = None
     dock: DockStatus | None = None
     last_disconnect: int | None = None
     p2maps: list[P2MapRef] = field(default_factory=list)
@@ -1544,6 +1581,11 @@ class CurrentStateShadow:
             bin=BinStatus.from_json(bin_data) if bin_data else None,
             clean_mission_status=CleanMissionStatus.from_json(mission_data) if mission_data else None,
             detected_pad=data.get("detectedPad"),
+            raas=RaasStatus.from_json(data["raas"]) if isinstance(data.get("raas"), dict) else None,
+            odoa_lite=(
+                OdoaLiteStatus.from_json(data["odoaLite"])
+                if isinstance(data.get("odoaLite"), dict) else None
+            ),
             dock=DockStatus.from_json(dock_data) if dock_data else None,
             last_disconnect=data.get("lastDisconnect"),
             p2maps=[P2MapRef.from_json(m) for m in (data.get("p2maps") or [])],

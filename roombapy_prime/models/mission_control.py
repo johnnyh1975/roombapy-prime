@@ -45,6 +45,13 @@ class MissionCommandType(StrEnum):
     SKIP = "skip"
     FLREFILL = "flrefill"
     WASHPAD = "washpad"
+    # ADDED (parallel native-analysis track): the one value from the
+    # complete 30-entry CommandType enum genuinely missing here. The
+    # other candidates that report listed (flushsluice/drypad/
+    # stoppaddry) turned out to already exist further down this enum --
+    # checked against the full member list rather than trusting the
+    # report, which is also how this duplicate was caught.
+    POINT_CLEAN = "point_clean"
     DRYPAD = "drypad"
     STOPPADDRY = "stoppaddry"
     FLUSHSLUICE = "flushsluice"
@@ -173,7 +180,17 @@ class RegionType(StrEnum):
     real device (only RID and ZID have been)."""
 
     RID = "rid"
-    TID = "tid"
+    # CORRECTED (parallel native-analysis track, later session): the
+    # actual @SerialName is "furniture", NOT "tid". The earlier "tid"
+    # was an INFERENCE from the confirmed rid/zid lowercasing pattern,
+    # never observed in real data -- no TID region has ever appeared in
+    # any capture this project has (every real one is rid or zid).
+    # "furniture" is also semantically coherent for an ad-hoc region
+    # placed around an object. Practical blast radius was small:
+    # _is_safe_command_def() REJECTS TID regions outright, so only
+    # stage 4 (--send-adhoc, never yet run by anyone) could have sent
+    # the wrong value.
+    TID = "furniture"
     ZID = "zid"
 
 
@@ -388,6 +405,80 @@ class OperatingModeBitmask(IntFlag):
     MOWING = 128
     MOPPING = 256
     VAC_THEN_MOP = 512
+
+
+class PadCategory(StrEnum):
+    """CONFIRMED @SerialName wire values (parallel native-analysis
+    track) for the REST/mission-history pad field.
+
+    IMPORTANT SCOPE LIMIT, from this project's own real captures: these
+    are NOT confirmed to be the values ro-currentstate.detectedPad
+    uses. Real Classic data shows that field carrying simpler values
+    ("reusable", "wet"), and no Prime capture has pinned its value set
+    down yet. Treat this enum as the REST-side vocabulary, and compare
+    against detectedPad only as a hint, never as a strict match.
+
+    Also worth recording: the same research suggested detectedPad might
+    be an OBJECT mapping pad categories to ints (mirroring the
+    confirmed {disposable, padPlate, reusable} three-int structure).
+    This project's own real payload contradicts that for
+    ro-currentstate specifically -- detected_pad is a plain scalar
+    string there (see CurrentStateShadow's own docstring). The
+    object-shaped form may well exist elsewhere; it just isn't this
+    field."""
+
+    DISP_DRY = "dispDry"
+    DISP_WET = "dispWet"
+    REUSABLE_DRY = "reusableDry"
+    REUSABLE_WET = "reusableWet"
+    PAD_PLATE = "padPlate"
+    NO_PAD = "noPad"
+    INVALID = "invalid"
+
+
+class RobotReadinessState(IntEnum):
+    """CONFIRMED (parallel native-analysis track): the values carried by
+    cleanMissionStatus.not_ready and .cond_not_ready -- i.e. WHY a robot
+    refused to start, which the app surfaces through
+    handleConditionalStartRefuseReason(vector<RobotReadinessState>)
+    rather than through any error field or rejected/report topic.
+
+    DELIBERATELY PARTIAL: the source enum has 80 values (0 "None"
+    through 79 "DockUpdate"), but only the ones actually named in the
+    research report are listed here. Inventing plausible names for the
+    other 68 would be exactly the kind of guess this project avoids --
+    an unknown value simply stays an int, which name_for() below
+    reports honestly as unknown rather than mislabelling it.
+
+    The refusal reasons most relevant to region-based cleaning (the
+    project's central open blocker) are MAP_VERSION_MISMATCH (a
+    favorite pointing at a stale map version) and the pad/mode pair
+    NO_VAC_WITH_PAD / NO_MOP_WITHOUT_PAD (the mounted pad not matching
+    the requested operating mode)."""
+
+    NONE = 0
+    MISCONFIGURED = 9
+    INVALID_COMMAND = 11
+    INVALID_PAD = 17
+    MAP_VERSION_MISMATCH = 22
+    TANK_LOW = 23
+    NO_PAD = 24
+    PRECHECK_REFUSED = 50
+    UNUSABLE_MAP = 72
+    NO_VAC_WITH_PAD = 75
+    NO_MOP_WITHOUT_PAD = 76
+    DOCK_UPDATE = 79
+
+    @classmethod
+    def name_for(cls, value: int | None) -> str:
+        """Human-readable name for a raw wire value, or an explicit
+        "unknown" marker -- never a guessed label."""
+        if value is None:
+            return "None"
+        try:
+            return cls(value).name
+        except ValueError:
+            return f"UNKNOWN_{value}"
 
 
 class RoutineTypeParam(StrEnum):

@@ -1,6 +1,6 @@
 # roombapy-prime — Write-Path Test Status (systematisch)
 
-> Stand: v0.1.11a21 / Roomba+ v4.0.0a6. Konsolidiert aus allen bisherigen Feldtests,
+> Stand: v0.1.11a22 / Roomba+ v4.0.0a6. Konsolidiert aus allen bisherigen Feldtests,
 > damit nichts doppelt gefragt oder übersehen wird.
 
 ## Legende
@@ -58,6 +58,8 @@
 **Zwei reale Codelücken in dieser Session gefunden, beide behoben:**
 - **a20**: Stufe 2/3 haben `initiator` nie gesetzt (nur Stufe 1b) — jeder bisherige Stufe-2/3-Test hat die eigentliche Hypothese nie geprüft
 - **a21, größerer Fund**: **`favorite_id` wurde in keiner Stufe (1/1b/2) je gesetzt**, obwohl die eigene Recherche (`send_routine_command_via_cmd_topic()`s Docstring) längst bestätigt, dass die echte App es beim Wiederholen eines Favoriten immer mitschickt. Betrifft **rückwirkend alle bisherigen negativen Ergebnisse** — keiner der bisherigen Tests hat je ein wirklich app-äquivalentes Kommando gesendet.
+
+**Geklärte Nebenfrage (parallele APK-Recherche, Aufrufcode-Ebene, nicht nur String-Suche):** `irbt_topic_prefix` wird bei `cmd`, `mission/timeline/report` **und** `rejected/report` nachweislich aus **demselben** gespeicherten Konstruktor-Wert (Offset `0x191` in `AssetIotTopicFactory`) verkettet — kein struktureller Unterschied zwischen dem bestätigt funktionierenden und den unsicheren Pfaden. Die Präfix-Hypothese als Erklärung für Stille auf den Beobachtungskanälen ist damit **widerlegt**, nicht nur unbestätigt.
 
 **Der Engpass bleibt Stufe 1b/2 mit dem jetzt vollständigen Payload** (a21) — noch nicht erneut getestet. Alles bisher Beobachtete (inkl. jayjays Stufe 1b auf a19) ist damit vorläufig überholt, sobald jemand auf a21 aktualisiert.
 

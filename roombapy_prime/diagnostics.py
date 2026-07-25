@@ -140,6 +140,42 @@ class Report:
                 if secret in result.detail:
                     result.detail = result.detail.replace(secret, "[REDACTED]")
 
+    def print_final_summary(self) -> None:
+        """NEW (this session, prompted by real field friction): every
+        script using this class already prints each result line the
+        moment it's added (see add() above) -- but in a long run those
+        lines end up scattered across the whole terminal output,
+        between login messages, subscribe notices, message dumps and
+        explanatory text. What arrived at the end was just a bare
+        count ("3 OK, 0 failed, 0 skipped"), with no indication of
+        WHICH checks those were. A tester whose run genuinely found
+        nothing would see an apparently empty terminal and one number,
+        with the actual finding ("no messages arrived during the watch
+        window") buried somewhere far above. Worse, a real failure
+        printed at the very end would immediately be followed by that
+        same bare count, pushing the important line out of focus.
+
+        Prints the full result list again as a compact block at the
+        very end, so one run without any extra flags (the normal case
+        for a field tester) ends with a complete, self-contained
+        picture rather than something to reconstruct by scrolling.
+        Deliberately reuses the same markers as add() rather than
+        to_markdown()'s emoji, since this goes to a terminal, not a
+        file or a GitHub issue."""
+        ok, failed, skipped = self.summary()
+        print("\n" + "=" * 60)
+        print("FINAL REPORT -- everything this run checked")
+        print("=" * 60)
+        for r in self.results:
+            marker = {"OK": "✓", "FAILED": "✗", "SKIPPED": "–"}[r.status]
+            line = f"  [{marker}] {r.name}"
+            if r.detail:
+                line += f" — {r.detail}"
+            print(line)
+        print("-" * 60)
+        print(f"  {ok} OK, {failed} failed, {skipped} skipped")
+        print("=" * 60)
+
     def to_markdown(self) -> str:
         import platform
 
@@ -899,8 +935,8 @@ def main() -> None:
     report = asyncio.run(run(username, password, args.country_code, args.blid, args.allow_writes, raw_capture))
     report.redact(username, password)
 
-    ok, failed, skipped = report.summary()
-    print(f"\n== Summary: {ok} OK, {failed} failed, {skipped} skipped ==")
+    report.print_final_summary()
+    _ok, failed, _skipped = report.summary()
 
     if failed > 0 and not args.dump_config:
         print(

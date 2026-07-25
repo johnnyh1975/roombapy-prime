@@ -8,6 +8,106 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a22] - 2026-07-25
+
+### Fixed
+
+- **Region-command tests displayed a payload that was NOT the payload actually sent.**
+  `command.to_json()` was printed, but `publish_cmd_payload()` adds a `time` field just before
+  publishing. The gap produced a confident wrong conclusion from an otherwise careful analysis
+  pass (comparing a field tester's printed payload against the app's own builder, finding no
+  `time`, and reasonably concluding it was missing — when it was on the wire all along). The
+  preview now mirrors what publish actually sends.
+
+- **`RegionType.TID` used the wrong wire value** (`"tid"` instead of the confirmed `"furniture"`).
+  The old value was an inference from the confirmed `rid`/`zid` lowercasing pattern, never seen in
+  any real capture. Blast radius was small — `_is_safe_command_def()` rejects TID regions outright,
+  so only stage 4 (never yet run by anyone) could have sent it.
+
+### Added
+
+- **Mission-status readout around every region command send.** The app's own
+  `applyConditionalChecks()` runs a readiness check whose refusal surfaces as a
+  `ResolvedMissionStatus` value with reasons in a `vector<RobotReadinessState>` — i.e. in the
+  MISSION STATUS, not on `rejected/report`, and not in any error field. That would explain a
+  command producing neither effect nor error. We already modelled the two wire fields that carry
+  it (`cleanMissionStatus.not_ready` / `.cond_not_ready`) but never read them during a test. Now
+  snapshotted before and ~3s after each send (deliberately before the long watch window, since a
+  readiness refusal is a near-instant local check), with codes named via a new partial
+  `RobotReadinessState` enum — unknown values stay honestly `UNKNOWN_<n>` rather than getting a
+  guessed label. Also reads `regions_left`, the single most on-point field for whether a
+  region-based mission actually started.
+
+- **Two pre-flight checks that need no robot movement at all**, both acting on confirmed research
+  hypotheses: a stale map version in a stored favorite (`MAP_VERSION_MISMATCH`), and a mopping
+  mode requested with no pad fitted (`NO_MOP_WITHOUT_PAD`). The latter deliberately reports both
+  inputs rather than reproducing the rule — that check runs robot-side and cannot be replicated,
+  and the exact `detectedPad` value set is unconfirmed for Prime.
+
+- **A round-trip fidelity check.** We parse a stored favorite into typed models, then re-serialize
+  it to send — so any field the favorite carries that our models don't know is silently DROPPED,
+  producing a command subtly less complete than the app's. That failure mode looks exactly like
+  this project's central symptom. Compares raw vs. re-serialized keys at command and region level;
+  added fields (`initiator`, `favorite_id`) are correctly ignored, only dropped ones flagged.
+  Needs `get_favorites_raw()`, also new.
+
+- **`PolicyZoneFeature.category`** — makes the already-confirmed categorization rule applicable
+  instead of leaving it in prose. One branch is genuinely counter-intuitive: a virtual wall is not
+  its own zone type, it is a `"KeepOutZone"` whose geometry is a `LineString` rather than a
+  `Polygon`. Anyone implementing from field names alone would almost certainly miss that.
+
+- **Model additions:** `PadCategory` (confirmed REST-side wire values, with an explicit note that
+  these are NOT confirmed to match `ro-currentstate.detectedPad`), `MissionCommandType.POINT_CLEAN`,
+  and `raas`/`odoaLite` (confirmed to exist, but absent from every capture we have, so which
+  shadow carries them is documented as a best guess).
+
+- **Stage 1c (`--send-enveloped`)** — sends the command wrapped in a `cmd`/`cmdJson` envelope
+  instead of flattened. HYPOTHESIS SUBSEQUENTLY DISPROVEN (the envelope rule belongs to the
+  schedule deserializer, and `buildJsonCommon()` puts `initiator`/`favorite_id` at top level
+  exactly as we do), so it is deliberately NOT part of the automatic session runner and cannot
+  consume robot-moving test runs. Kept reachable, with the disproof documented.
+
+### Fixed
+
+- **Real bug found and fixed, prompted directly by a field result** (chairstacker triggered a
+  favorite AND a room clean from the real app — the robot genuinely reacted to both within 20
+  seconds — while `--watch-wildcard` saw nothing at all during that exact window): two separate,
+  compounding issues.
+  1. `_on_subscribe()` received the broker's SUBACK reason code for every single `subscribe()`
+     call this library has ever made, but never checked it — a subscription actively REJECTED by
+     the broker's IoT policy (MQTT's own 0x80 failure code) was recorded identically to a
+     successful one. `subscribe()` now raises a new `SubscriptionRejectedError` when this happens,
+     naming the specific topic that was denied.
+  2. `verify_mission_timeline.py`'s `run()` collected every watch task's result via
+     `asyncio.gather(*tasks, return_exceptions=True)` but never inspected the return value — ANY
+     exception in ANY watch task (a rejected subscription, a dropped connection, anything) vanished
+     with zero visible trace: no print, no report entry, nothing. A real failure and a genuinely
+     quiet topic looked completely identical. Now checks each task's result and reports real
+     failures clearly, associated with the specific topic that raised them.
+
+### Added
+
+- **Every diagnostic script now ends with a complete final report**, not just a bare count.
+  Each result line was already printed the moment it was added, but in a long run those end up
+  scattered across the whole terminal output — between login messages, subscribe notices, message
+  dumps and explanatory text — with only "3 OK, 0 failed, 0 skipped" at the very end, giving no
+  indication of WHICH checks those were. A tester whose run genuinely found nothing saw an
+  apparently empty terminal and one number, with the actual finding ("no messages arrived during
+  the watch window") buried far above; worse, a real failure printed at the end was immediately
+  followed by that same bare count. New `Report.print_final_summary()` reprints everything as a
+  self-contained block at the end, applied across all 10 diagnostic scripts (20 call sites).
+
+- **The MQTT WebSocket connection now sends a `User-Agent` header** ("?SDK=Android&Version=2.17.1")
+  — previously sent none at all. EXPERIMENTAL, unconfirmed for this specific app: an independent
+  project reverse-engineering a related (but different) iRobot app documented that AWS IoT's
+  custom Lambda authorizer inspects this exact header and grants a more restricted IoT policy
+  when it's absent — though that specific claim isn't backed by any reproducible test tool in
+  their own repository, so treat the underlying reasoning as unconfirmed too. The value itself is
+  real, working code in that other project, not just documentation; its `?SDK=<platform>&Version=
+  <version>` format looks SDK-generated rather than app-customized, making it a more defensible
+  test candidate than copying an app-specific identifier would be. Still needs a real field test
+  (and ideally an APK-confirmed value for Prime specifically) to know whether it changes anything.
+
 ## [0.1.11a21] - 2026-07-24
 
 ### Fixed

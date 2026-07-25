@@ -188,8 +188,7 @@ async def send_update_unchanged(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 def _build_disabled_schedules(schedules: list, schedule_index: int):
@@ -248,8 +247,7 @@ async def send_disable(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 def main() -> None:

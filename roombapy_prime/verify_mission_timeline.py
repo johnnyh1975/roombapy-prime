@@ -15,8 +15,9 @@ found a distinct topic pair believed to carry this instead:
 "request" counterpart) -- see mqtt_client.py's mission_timeline_topic()
 and prime_robot.py's watch_mission_timeline() for the full evidence
 trail and exact confidence level (topic existence: confirmed from
-native symbols; irbt_topic_prefix applying here: a strong inference,
-not independently live-confirmed; payload shape: completely unknown).
+native symbols; irbt_topic_prefix applying here: CONFIRMED, not just
+inferred -- see mqtt_client.py's own note on AssetIotTopicFactory's
+call-site decompilation; payload shape: completely unknown).
 
 Also watches "{irbt_topic_prefix}/things/{blid}/rejected/report" at the
 same time -- a sibling topic found in the same decompilation pass,
@@ -415,7 +416,20 @@ async def run(
         for t in tasks:
             if not t.done():
                 t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # REAL BUG FOUND AND FIXED (this session): return_exceptions=True
+        # was already here, but the return value was never inspected --
+        # ANY exception in ANY watch task (a subscription rejected by
+        # the broker, a dropped connection, anything) was captured and
+        # then silently discarded, with zero visible trace: no print,
+        # no report entry, nothing. A real failure and a genuinely quiet
+        # topic looked completely identical to whoever ran this. Now
+        # checks each result and reports real exceptions clearly,
+        # associated with the specific watch label that raised them.
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for (_factory, label), result in zip(watch_specs, results, strict=True):
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                print(f"\n** Watch {label!r} FAILED: {type(result).__name__}: {result} **")
+                report.add(f"Watch {label}", "FAILED", f"{type(result).__name__}: {result}")
 
         await robot.disconnect()
 
@@ -572,8 +586,7 @@ def main() -> None:
     )
     report.redact(username, password)
 
-    ok, failed, skipped = report.summary()
-    print(f"\n== Summary: {ok} OK, {failed} failed, {skipped} skipped ==")
+    report.print_final_summary()
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:

@@ -200,8 +200,7 @@ async def send_toggle(username: str, password: str, country_code: str, blid: str
                 )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
     print(
         "\nIMPORTANT: this confirms the write was accepted and, per the read-back above, "
         "whether it stuck in rw-settings -- it does NOT confirm the robot's actual physical "

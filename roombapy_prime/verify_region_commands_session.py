@@ -44,6 +44,7 @@ import aiohttp
 from .diagnostics import Report
 from .verify_region_commands import (
     _add_favorite_id_if_missing,
+    _preflight_roundtrip_fidelity_check,
     _add_initiator_if_missing,
     _build_modified_command,
     _confirm,
@@ -128,7 +129,12 @@ async def run_session(
                 return
 
         original = favorite.command_defs[command_index]
-        favorite_id = favorite.favorite_id  # normalize: always the real id from here on,
+        favorite_id = favorite.favorite_id
+        # Runs ONCE per session -- the favorite doesn't change between
+        # stages, so re-checking before every send would just be noise.
+        await _preflight_roundtrip_fidelity_check(
+            robot, original, favorite_id, command_index, report
+        )  # normalize: always the real id from here on,
         # whether it came from --favorite-id or the interactive picker below.
 
         if not _is_safe_command_def(original):
@@ -189,6 +195,7 @@ async def run_session(
                 disconnect_after=False,
             )
         all_results.append(("Stage 1b (+initiator)", events_1b, rejected_1b))
+
         if not _confirm(f"\nContinue to stage 2 (changes suction level to {suction_level})?"):
             await robot.disconnect()
             _print_final_summary(all_results)

@@ -87,6 +87,7 @@ import json
 import logging
 import os
 import sys
+import time
 from typing import Any
 
 import aiohttp
@@ -149,6 +150,365 @@ async def _login_and_connect(session: aiohttp.ClientSession, username: str, pass
     return robot
 
 
+class _EnvelopedCommand:
+    """Stage 1c: sends the SAME CommandDef, but WRAPPED in an envelope
+    instead of flattened across the MQTT message's top level.
+
+    HYPOTHESIS DISPROVEN (parallel native-analysis track, shortly after
+    this was built) -- kept as a documented dead end rather than
+    deleted, and deliberately REMOVED from the automatic session
+    runner so it can no longer consume robot-moving test runs. It
+    remains reachable via --send-enveloped for anyone who wants to
+    confirm the negative themselves.
+
+    What settled it: buildJsonCommon() adds initiator and favorite_id
+    at the TOP LEVEL -- exactly the flat shape we already send. And the
+    "cmd vs cmdJson, exactly one not both" rule turned out to belong to
+    RoombaCleanScheduleMultipleMappingDeserializer, i.e. it is the
+    SCHEDULE entry envelope (matching cleanSchedule2's own cmdStr
+    field), not an envelope for immediate commands. buildString() also
+    turned out to simply call buildJson() -- same content, string vs.
+    object, no structural difference.
+
+    The original reasoning, left intact below because the evidence
+    behind it was sound and only the conclusion was wrong:
+
+    WHY THIS IS WORTH A STAGE OF ITS OWN. Everything we send today puts
+    the CommandDef fields directly at the top level
+    ({"command": "start", "regions": [...], ...}). Three independent
+    signals suggest the real wire form nests it instead:
+
+      1. MissionCommandBuilder has TWO serializers, buildJson() AND
+         buildString() -- two output forms for one object only makes
+         sense if there are two target formats.
+      2. A previously confirmed "cmd vs cmdJson" dual-field rule
+         ("must have exactly one, not both") maps exactly onto those
+         two: buildString() -> "cmd" (a string), buildJson() ->
+         "cmdJson" (an object).
+      3. Strongest, and from REAL data rather than decompilation:
+         chairstacker's own cleanSchedule2 entry stores its command in
+         a field literally named "cmdStr" -- a STRING, not a nested
+         object. A stored schedule keeping the command in string form
+         is a strong hint that it travels that way too.
+
+    Our simple commands work flat ({command, time, initiator}) -- but
+    that may simply be a narrow shape the firmware handles directly,
+    while a full CommandDef needs the envelope.
+
+    Implemented as a thin wrapper rather than a new PrimeRobot method
+    on purpose: to_json() is the only thing the whole existing send
+    path actually calls, and __getattr__ delegation keeps the
+    pre-flight checks (which read .regions/.pmap_version_id) working
+    unchanged against the real command underneath."""
+
+    def __init__(self, inner: Any, style: str) -> None:
+        if style not in ("cmd", "cmdJson"):
+            raise ValueError(f"envelope style must be 'cmd' or 'cmdJson', got {style!r}")
+        self._inner = inner
+        self._style = style
+
+    def to_json(self) -> dict[str, Any]:
+        body = self._inner.to_json()
+        if self._style == "cmd":
+            # buildString()-equivalent: the whole CommandDef as a JSON
+            # STRING inside one field.
+            return {"cmd": json.dumps(body, ensure_ascii=False)}
+        # buildJson()-equivalent: nested object.
+        return {"cmdJson": body}
+
+    def __getattr__(self, name: str) -> Any:
+        # Everything except to_json() falls through to the real command,
+        # so the pre-flight checks see the genuine regions/map version.
+        return getattr(self._inner, name)
+
+
+async def _preflight_roundtrip_fidelity_check(
+    robot, command, favorite_id: str, command_index: int, report: Report,
+) -> None:
+    """THE most direct test of the newest lead (parallel research):
+    the app has TWO command formats -- buildJsonFromCommandDef
+    ("modern") and buildJsonLegacy, the latter reading several fields
+    our payloads have never contained (map_components,
+    linked_mission_id, multi_polygons, smart_clean_id). Which one gets
+    built is decided by a bool whose origin could not be resolved
+    statically.
+
+    We cannot see that decision. But we CAN check something adjacent
+    and arguably more useful: does OUR round-trip lose anything? We
+    fetch a favorite, parse it into typed models, then re-serialize it
+    to send. Any field the stored favorite carries that our models
+    don't know about is silently DROPPED in that round-trip -- and we
+    would then resend a command subtly less complete than what the app
+    sends. That failure mode looks exactly like this project's central
+    symptom: structurally valid, no effect, no error.
+
+    Compares raw vs. re-serialized keys at both the command_def level
+    and inside each region. Reports FACTS -- added keys (initiator,
+    favorite_id) are expected and ignored; only DROPPED keys matter."""
+    try:
+        raw_favorites = await robot.get_favorites_raw()
+    except Exception as exc:  # noqa: BLE001
+        report.add("Pre-flight: round-trip fidelity", "SKIPPED", f"raw favorites unavailable: {exc}")
+        return
+
+    raw_fav = next(
+        (f for f in raw_favorites if f.get("favorite_id") == favorite_id or f.get("id") == favorite_id),
+        None,
+    )
+    if raw_fav is None:
+        report.add("Pre-flight: round-trip fidelity", "SKIPPED", "favorite not found in raw response")
+        return
+
+    raw_defs = raw_fav.get("command_defs") or raw_fav.get("commandDefs") or []
+    if command_index >= len(raw_defs):
+        report.add("Pre-flight: round-trip fidelity", "SKIPPED", "raw command_def not found")
+        return
+    raw_def = raw_defs[command_index]
+    ours = command.to_json()
+
+    dropped_top = sorted(set(raw_def) - set(ours))
+
+    dropped_region: set[str] = set()
+    raw_regions = raw_def.get("regions") or []
+    our_regions = ours.get("regions") or []
+    for raw_region, our_region in zip(raw_regions, our_regions, strict=False):
+        if isinstance(raw_region, dict) and isinstance(our_region, dict):
+            dropped_region |= set(raw_region) - set(our_region)
+
+    if dropped_top or dropped_region:
+        report.add(
+            "Pre-flight: round-trip fidelity", "FAILED",
+            f"our re-serialized command DROPS fields the stored favorite actually has -- "
+            f"command_def level: {dropped_top or 'none'}, region level: {sorted(dropped_region) or 'none'}. "
+            "These are fields our models don't know about, so they vanish on the way out. "
+            "Strongly worth reporting -- this is exactly how a structurally-valid-but-ineffective "
+            "command could arise.",
+        )
+    else:
+        report.add(
+            "Pre-flight: round-trip fidelity", "OK",
+            "re-serialized command preserves every field the stored favorite carries",
+        )
+
+
+async def _preflight_map_version_check(robot, command, report: Report) -> None:
+    """HYPOTHESIS A from the parallel APK research, made checkable
+    without moving the robot at all: RobotReadinessState 22 is
+    MAP_VERSION_MISMATCH. A stored favorite carries the map version
+    that was current WHEN IT WAS SAVED (user_p2mapv_id), but the robot
+    re-maps and re-versions over time. If the favorite now points at a
+    superseded version, applyConditionalChecks() would refuse the
+    command -- silently, exactly matching this project's symptom (no
+    effect, no error anywhere we look).
+
+    Compares the outgoing command's user_p2mapv_id against
+    active_p2mapv_id from get_active_map_versions() (a confirmed
+    P2MapData field). Reports FACTS only -- a mismatch is a strong
+    lead, not proof, and this deliberately does NOT auto-correct the
+    value: silently sending something different from what the user
+    asked to send would undermine the whole point of a staged,
+    show-the-exact-payload test script."""
+    stored_version = getattr(command, "pmap_version_id", None)
+    if not stored_version:
+        report.add("Pre-flight: map version", "SKIPPED", "command carries no user_p2mapv_id")
+        return
+    try:
+        versions = await robot.get_active_map_versions()
+    except Exception as exc:  # noqa: BLE001
+        report.add("Pre-flight: map version", "SKIPPED", f"could not fetch active versions: {exc}")
+        return
+
+    active = {
+        getattr(v, "active_p2mapv_id", None)
+        for v in (versions or [])
+        if getattr(v, "active_p2mapv_id", None)
+    }
+    if not active:
+        report.add("Pre-flight: map version", "SKIPPED", "no active_p2mapv_id reported")
+    elif stored_version in active:
+        report.add(
+            "Pre-flight: map version", "OK",
+            f"favorite's user_p2mapv_id {stored_version!r} matches a currently active version",
+        )
+    else:
+        report.add(
+            "Pre-flight: map version", "FAILED",
+            f"favorite carries user_p2mapv_id {stored_version!r}, but the currently active "
+            f"version(s) are {sorted(active)!r} -- a MAP_VERSION_MISMATCH "
+            "(RobotReadinessState 22) is a strong candidate for why this command has no effect. "
+            "Re-saving the favorite in the real app would refresh it.",
+        )
+
+
+async def _preflight_pad_vs_mode_check(robot, command, report: Report) -> None:
+    """HYPOTHESIS B from the parallel APK research: RobotReadinessState
+    75 (NO_VAC_WITH_PAD) and 76 (NO_MOP_WITHOUT_PAD) suggest the robot
+    refuses a command whose operating mode doesn't match the physically
+    attached pad. jayjay13011's favorites all requested operatingMode
+    32 (VAC_MOP_COMBO_ONLY) -- a mopping mode -- so running that with
+    no pad fitted would be refused, silently, matching this project's
+    symptom exactly.
+
+    DELIBERATELY REPORTS, DOES NOT JUDGE, except in one unambiguous
+    case. The same research established that this check runs
+    ROBOT-side, not app-side (the app only ever PARSES an incoming
+    readiness value -- see RoombaMissionStatusDeserializer's
+    "UNEXPECTED READINESS STATE: (%d)"), so we cannot reproduce the
+    rule, only observe its inputs. And the exact value set of
+    ro-currentstate.detectedPad is NOT confirmed for Prime: real
+    Classic data shows simpler values ("reusable", "wet") than the
+    REST-side PadCategory vocabulary, so a strict comparison would
+    risk confident false alarms. Showing the operator both inputs
+    side by side is honest and useful; pretending to know the rule
+    would not be."""
+    from roombapy_prime.models import OperatingModeBitmask
+
+    modes: set[int] = set()
+    for region in (getattr(command, "regions", None) or []):
+        params = getattr(region, "params", None)
+        mode = (
+            params.get("operatingMode") if isinstance(params, dict)
+            else getattr(params, "operating_mode", None)
+        )
+        if mode:
+            modes.add(int(mode))
+
+    if not modes:
+        report.add("Pre-flight: pad vs. operating mode", "SKIPPED", "no operatingMode in regions")
+        return
+
+    try:
+        response = await robot.get_named_shadow("ro-currentstate")
+        reported = (response.payload or {}).get("state", {}).get("reported", {})
+        detected_pad = reported.get("detectedPad")
+    except Exception as exc:  # noqa: BLE001
+        report.add("Pre-flight: pad vs. operating mode", "SKIPPED", f"could not read detectedPad: {exc}")
+        return
+
+    decoded = {m: str(OperatingModeBitmask(m)) for m in sorted(modes)}
+    mop_involving = {
+        OperatingModeBitmask.MOP_ONLY, OperatingModeBitmask.VAC_MOP_COMBO_ONLY,
+        OperatingModeBitmask.SCRUBBING, OperatingModeBitmask.MOPPING,
+        OperatingModeBitmask.VAC_THEN_MOP,
+    }
+    wants_mopping = any(OperatingModeBitmask(m) & mode for m in modes for mode in mop_involving)
+
+    pad_clearly_absent = str(detected_pad or "").lower() in ("nopad", "none", "invalid", "")
+
+    if wants_mopping and pad_clearly_absent:
+        report.add(
+            "Pre-flight: pad vs. operating mode", "FAILED",
+            f"regions request a mopping mode ({decoded}) but detectedPad={detected_pad!r} "
+            "indicates no pad fitted -- NO_MOP_WITHOUT_PAD (RobotReadinessState 76) is a strong "
+            "candidate for a silent robot-side refusal. Fitting a pad and retrying would test it.",
+        )
+    else:
+        report.add(
+            "Pre-flight: pad vs. operating mode", "OK",
+            f"requested mode(s) {decoded}, detectedPad={detected_pad!r} -- reported for context; "
+            "the actual compatibility rule lives robot-side and cannot be checked here.",
+        )
+
+
+async def _snapshot_mission_status(robot) -> dict | None:
+    """NEW (this session, directly acting on the parallel APK-research
+    chat's strongest finding): the app's own
+    CloudCapableMissionUIService::applyConditionalChecks() runs a
+    READINESS check over a CommandDef's regions before the command
+    takes effect, and a refusal surfaces as a ResolvedMissionStatus
+    value (7/8/12/13 = the various *_START_REFUSE states) with
+    reasons in a vector<RobotReadinessState> -- i.e. in the MISSION
+    STATUS, not on rejected/report.
+
+    That would explain this project's central open mystery exactly:
+    a region command that produces neither an effect NOR any error
+    anywhere we've been looking. We already model the two wire fields
+    that would carry it (CleanMissionStatus.not_ready and
+    .cond_not_ready) -- we simply never read them during a test.
+
+    Returns the handful of cleanMissionStatus fields worth comparing
+    before/after a send, or None if the shadow can't be fetched (never
+    fatal -- this is diagnostics on top of the actual test, and must
+    not be able to break it)."""
+    from roombapy_prime.models import CurrentStateShadow
+
+    try:
+        response = await robot.get_named_shadow("ro-currentstate")
+        reported = (response.payload or {}).get("state", {}).get("reported", {})
+        status = CurrentStateShadow.from_json(reported).clean_mission_status
+        if status is None:
+            return None
+        return {
+            # NEW (parallel research): regions_left would directly show
+            # whether a REGION-based mission actually started -- the
+            # single most on-point field for this project's core open
+            # question. Read straight from the raw payload, since it is
+            # not modelled on CleanMissionStatus yet (no capture has
+            # contained it, so there is nothing to model it from).
+            "regions_left": (reported.get("cleanMissionStatus") or {}).get("regions_left"),
+            "phase": status.phase,
+            "cycle": status.cycle,
+            "error": status.error,
+            "not_ready": status.not_ready,
+            "cond_not_ready": status.cond_not_ready,
+            "mission_id": status.mission_id,
+            "initiator": status.initiator,
+        }
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("roombapy-prime: could not snapshot mission status: %s", exc)
+        return None
+
+
+def _report_mission_status(report: Report, before: dict | None, after: dict | None) -> None:
+    """Prints/records the before/after mission status around a send.
+    Deliberately reports FACTS, not a verdict -- see
+    _snapshot_mission_status()'s docstring for what a refusal would
+    look like, but whether a given not_ready value IS a refusal is
+    still a judgment for whoever reads it, not something this asserts."""
+    if before is None and after is None:
+        report.add("Mission status", "SKIPPED", "ro-currentstate not readable this run")
+        return
+
+    print("\n== Mission status around the send ==")
+    for label, snap in (("before", before), ("after", after)):
+        print(f"  {label:>6}: {snap}")
+
+    after = after or {}
+    not_ready = after.get("not_ready")
+    cond_not_ready = after.get("cond_not_ready") or []
+
+    if not_ready or cond_not_ready:
+        from roombapy_prime.models import RobotReadinessState
+
+        # NEW (this session): name the codes instead of printing raw
+        # ints. RobotReadinessState is deliberately partial (only the
+        # values actually confirmed by the research are listed), so an
+        # unrecognized value comes back as UNKNOWN_<n> rather than a
+        # guessed label -- see that enum's own docstring.
+        named = RobotReadinessState.name_for(not_ready)
+        named_conds = [
+            RobotReadinessState.name_for(c) if isinstance(c, int) else c
+            for c in cond_not_ready
+        ]
+        report.add(
+            "Mission status after send", "FAILED",
+            f"not_ready={not_ready!r} ({named}), cond_not_ready={named_conds!r} -- this is EXACTLY "
+            "the shape a readiness-based start refusal would take (see the parallel APK research: "
+            "applyConditionalChecks/ResolvedMissionStatus 7/8/12/13). Strongly worth reporting.",
+        )
+    elif before != after:
+        report.add(
+            "Mission status after send", "OK",
+            f"changed: {before!r} -> {after!r} -- the command reached something that reacted",
+        )
+    else:
+        report.add(
+            "Mission status after send", "OK",
+            "unchanged, and no readiness refusal reported -- consistent with the command being "
+            "accepted-and-ignored, or never reaching the mission layer at all",
+        )
+
+
 async def _confirm_show_send_watch(
     robot, command, report: Report, watch_seconds: int, description: str,
     disconnect_after: bool = True,
@@ -191,8 +551,24 @@ async def _confirm_show_send_watch(
     subscriptions to actually establish with the broker, THEN sends,
     THEN lets the same tasks keep running for watch_seconds."""
     payload = command.to_json()
+    # REAL DISPLAY BUG FOUND AND FIXED (this session): what we printed
+    # was command.to_json() -- but publish_cmd_payload() then adds a
+    # "time" field (setdefault, mqtt_client.py) just before publishing.
+    # The displayed payload was therefore NOT the payload that actually
+    # went out. That is exactly the kind of gap that produces confident
+    # wrong conclusions from otherwise careful analysis: a parallel
+    # research pass compared a field tester's printed payload against
+    # the app's own builder, found no "time", and reasonably concluded
+    # it was missing -- when it was there on the wire all along, just
+    # never shown. Display now mirrors what publish actually sends.
+    display_payload = {**payload}
+    display_payload.setdefault("time", int(time.time()))
     print(f"\n{description}")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print(json.dumps(display_payload, indent=2, ensure_ascii=False))
+    print(
+        "  (\"time\" is stamped by publish_cmd_payload() at send; the exact value will be "
+        "the moment of sending, a second or two after this preview)"
+    )
 
     if not _confirm("\nSend this EXACT payload now? This will move the robot."):
         print("Aborted by user -- nothing sent.")
@@ -227,9 +603,35 @@ async def _confirm_show_send_watch(
         # period is the safest available option.
         await asyncio.sleep(1.0)
 
+    await _preflight_map_version_check(robot, command, report)
+    await _preflight_pad_vs_mode_check(robot, command, report)
+    status_before = await _snapshot_mission_status(robot)
+
     print("\n== Sending ==")
-    await robot.send_routine_command_via_cmd_topic(command)
-    report.add("send_routine_command_via_cmd_topic()", "OK", "payload sent, fire-and-forget (no response wait)")
+    broker_confirmed = await robot.send_routine_command_via_cmd_topic(command)
+    if broker_confirmed:
+        report.add(
+            "send_routine_command_via_cmd_topic()", "OK",
+            "broker confirmed receipt (PUBACK) -- see mqtt_client.py's publish_cmd_payload() "
+            "docstring for why this matters: it rules out a silent broker-level drop, leaving "
+            "only 'robot received it but ignored it' as the remaining explanation if nothing "
+            "else happens below",
+        )
+    else:
+        report.add(
+            "send_routine_command_via_cmd_topic()", "FAILED",
+            "broker did NOT confirm receipt (no PUBACK within the timeout) -- this points at a "
+            "policy/ACL-level block rather than the robot ignoring a valid payload. See the "
+            "parallel APK-research chat's own IoT-policy investigation.",
+        )
+
+    # Snapshot the mission status shortly after sending -- deliberately
+    # BEFORE the long watch window, since a readiness refusal is
+    # expected to be near-instant (a local check, not a mission), and
+    # could well have cleared again by the time a 60s window ends.
+    await asyncio.sleep(3.0)
+    status_after = await _snapshot_mission_status(robot)
+    _report_mission_status(report, status_before, status_after)
 
     if watch_seconds > 0:
         print(f"\n== Watching for {watch_seconds}s (already subscribed since before sending) ==")
@@ -259,10 +661,30 @@ async def _confirm_show_send_watch(
                 "region-command test has ever watched this channel. =="
             )
         else:
-            print(
-                "\nNo rejection received on rejected/report either -- consistent with "
-                "\"silently ignored\", not \"actively rejected with a reason\"."
-            )
+            # CORRECTED (this session, per the parallel APK-research
+            # chat's own finding): rejected/report is published BY THE
+            # ROBOT when it receives and rejects a command. If the
+            # broker's IoT policy silently dropped the publish before
+            # it ever reached the robot, the robot never saw it and
+            # therefore couldn't reject it either -- "no rejection"
+            # was previously worded as if it meant "silently ignored
+            # by the robot", but it's equally consistent with "never
+            # delivered at all". The PUBACK result above is what
+            # actually distinguishes these two.
+            if broker_confirmed:
+                print(
+                    "\nNo rejection received on rejected/report -- and the broker DID confirm "
+                    "delivery (PUBACK), so this is NOT explained by a silent policy-level drop. "
+                    "Most likely explanation now: the robot received the command but didn't "
+                    "act on it (or acted in a way that doesn't reach rejected/report)."
+                )
+            else:
+                print(
+                    "\nNo rejection received on rejected/report -- but the broker did NOT "
+                    "confirm delivery (PUBACK) either. This is consistent with the publish "
+                    "never reaching the robot at all (a policy/ACL-level block) -- 'no "
+                    "rejection' here does NOT mean 'silently ignored by the robot'."
+                )
 
     if disconnect_after:
         await robot.disconnect()
@@ -417,8 +839,7 @@ async def send_stage_one(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
 
 
 def _add_favorite_id_if_missing(original, favorite_id: str) -> object | None:
@@ -538,6 +959,10 @@ async def send_stage_one_with_initiator(
             )
             return
 
+        await _preflight_roundtrip_fidelity_check(
+            robot, original, favorite_id, command_index, report
+        )
+
         command = _add_initiator_if_missing(original)
         if command is None:
             print(
@@ -563,8 +988,7 @@ async def send_stage_one_with_initiator(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -613,6 +1037,52 @@ def _build_modified_command(original, suction_level: int):
         new_params = CommandParams(suction_level=suction_level, routine_modified=True)
     modified = dataclasses.replace(original, params=new_params)
     return modified, original_level
+
+
+async def send_stage_one_c(
+    username: str, password: str, country_code: str, blid: str,
+    favorite_id: str, command_index: int, envelope_style: str, watch_seconds: int,
+) -> None:
+    """Stage 1c: identical to stage 1b in every way (same favorite,
+    same initiator, same favorite_id), except the CommandDef is WRAPPED
+    in a cmd/cmdJson envelope rather than flattened at the top level --
+    see _EnvelopedCommand's own docstring for the three signals that
+    make this worth testing separately."""
+    report = Report()
+    async with aiohttp.ClientSession() as session:
+        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+
+        print("\n== Fetching favorites ==")
+        favorites = await robot.get_favorites()
+        favorite = next((f for f in favorites if f.favorite_id == favorite_id), None)
+        if favorite is None:
+            print(f"ERROR: no favorite with favorite_id={favorite_id!r} found on this account.")
+            return
+        if not favorite.command_defs or command_index >= len(favorite.command_defs):
+            print(f"ERROR: favorite {favorite_id!r} has no command_defs[{command_index}].")
+            return
+        original = favorite.command_defs[command_index]
+
+        if not _is_safe_command_def(original):
+            print(
+                "ABORTED: this command_def contains a TID (ad-hoc/temporary) region. "
+                "Stage 1c only re-wraps RID/ZID-only command_defs."
+            )
+            return
+
+        command = _add_initiator_if_missing(original) or original
+        command = _add_favorite_id_if_missing(command, favorite_id) or command
+        enveloped = _EnvelopedCommand(command, envelope_style)
+
+        await _confirm_show_send_watch(
+            robot, enveloped, report, watch_seconds,
+            f"Favorite: {favorite.name!r} (favorite_id={favorite_id!r})\n"
+            f"command_defs[{command_index}] with initiator + favorite_id, WRAPPED in a "
+            f"{envelope_style!r} envelope instead of flattened at the top level:",
+        )
+
+    report.redact(username, password)
+    report.print_final_summary()
 
 
 async def send_stage_two(
@@ -698,8 +1168,7 @@ async def send_stage_two(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -785,8 +1254,7 @@ async def send_stage_three(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -872,8 +1340,7 @@ async def send_stage_four(
         )
 
     report.redact(username, password)
-    ok, failed, skipped = report.summary()
-    print(f"\nSummary: {ok} OK, {failed} failed, {skipped} skipped")
+    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -915,6 +1382,17 @@ def main() -> None:
         help="Stage 1b: identical to --send, but adds initiator=\"rmtApp\" if the stored "
         "command_def has none set. Purely additive -- see send_stage_one_with_initiator()'s "
         "own docstring for why this is worth testing specifically.",
+    )
+    parser.add_argument(
+        "--send-enveloped", metavar="FAVORITE_ID", default=None,
+        help="Stage 1c: identical to stage 1b, but wraps the CommandDef in a cmd/cmdJson "
+        "envelope instead of flattening it at the top level. See _EnvelopedCommand's own "
+        "docstring for why this is worth testing separately.",
+    )
+    parser.add_argument(
+        "--envelope-style", choices=("cmd", "cmdJson"), default="cmd",
+        help="Which envelope stage 1c uses: 'cmd' (the CommandDef as a JSON string, mirroring "
+        "buildString()) or 'cmdJson' (nested object, mirroring buildJson()). Default: cmd.",
     )
     parser.add_argument(
         "--send-modified", metavar="FAVORITE_ID", default=None,
@@ -996,6 +1474,7 @@ def main() -> None:
     # only THEN explain what went wrong.
     if not (
         args.list_favorites or args.list_rooms or args.send or args.send_with_initiator
+        or args.send_enveloped
         or args.send_modified or args.send_region or args.send_adhoc
     ):
         print(
@@ -1010,6 +1489,9 @@ def main() -> None:
 
     if args.send and not _require_send_gates():
         sys.exit(1)
+
+    if args.send_enveloped and not _require_send_gates():
+        return
 
     if args.send_with_initiator and not _require_send_gates():
         sys.exit(1)
@@ -1072,6 +1554,15 @@ def main() -> None:
             send_stage_one_with_initiator(
                 username, password, args.country_code, args.blid,
                 args.send_with_initiator, args.command_index, args.watch_seconds,
+            )
+        )
+        return
+
+    if args.send_enveloped:
+        asyncio.run(
+            send_stage_one_c(
+                username, password, args.country_code, args.blid,
+                args.send_enveloped, args.command_index, args.envelope_style, args.watch_seconds,
             )
         )
         return

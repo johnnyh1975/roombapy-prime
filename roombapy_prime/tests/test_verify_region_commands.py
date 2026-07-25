@@ -8,6 +8,8 @@ docstring."""
 
 from __future__ import annotations
 
+import json
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -563,3 +565,419 @@ class TestStagesOneOneBTwoNowIncludeFavoriteId:
 
         assert captured["command"].favorite_id == "fav1"
         assert captured["command"].initiator == "rmtApp"
+
+
+class TestReportMissionStatus:
+    """NEW (this session, acting on the parallel APK research's
+    strongest finding): the app's own applyConditionalChecks() runs a
+    readiness check whose refusal surfaces in the MISSION STATUS
+    (ResolvedMissionStatus 7/8/12/13, reasons in a
+    vector<RobotReadinessState>) -- not on rejected/report. We already
+    modelled the two wire fields that would carry it
+    (cleanMissionStatus.not_ready / .cond_not_ready) but never read
+    them during a test. This is what reading them looks like."""
+
+    def _report(self):
+        from roombapy_prime.diagnostics import Report
+        return Report()
+
+    def test_not_ready_set_is_flagged_as_a_probable_refusal(self):
+        from roombapy_prime.verify_region_commands import _report_mission_status
+
+        report = self._report()
+        _report_mission_status(report, {"not_ready": 0}, {"not_ready": 8})
+
+        entry = report.results[-1]
+        assert entry.status == "FAILED"
+        assert "not_ready=8" in entry.detail
+
+    def test_cond_not_ready_reasons_are_flagged_even_when_not_ready_is_zero(self):
+        """cond_not_ready carries the vector<RobotReadinessState>
+        reasons -- meaningful on its own."""
+        from roombapy_prime.verify_region_commands import _report_mission_status
+
+        report = self._report()
+        _report_mission_status(report, {}, {"not_ready": 0, "cond_not_ready": ["binFull"]})
+
+        entry = report.results[-1]
+        assert entry.status == "FAILED"
+        assert "binFull" in entry.detail
+
+    def test_unchanged_status_is_reported_as_such(self):
+        from roombapy_prime.verify_region_commands import _report_mission_status
+
+        report = self._report()
+        same = {"phase": "charge", "not_ready": 0, "cond_not_ready": []}
+        _report_mission_status(report, same, dict(same))
+
+        entry = report.results[-1]
+        assert entry.status == "OK"
+        assert "unchanged" in entry.detail
+
+    def test_a_real_change_is_reported_as_the_command_having_reached_something(self):
+        from roombapy_prime.verify_region_commands import _report_mission_status
+
+        report = self._report()
+        _report_mission_status(
+            report,
+            {"phase": "charge", "not_ready": 0, "cond_not_ready": []},
+            {"phase": "run", "not_ready": 0, "cond_not_ready": []},
+        )
+
+        entry = report.results[-1]
+        assert entry.status == "OK"
+        assert "changed" in entry.detail
+
+    def test_unreadable_shadow_is_skipped_not_failed(self):
+        """Diagnostics on top of the actual test must never be able to
+        make the test itself look failed."""
+        from roombapy_prime.verify_region_commands import _report_mission_status
+
+        report = self._report()
+        _report_mission_status(report, None, None)
+
+        assert report.results[-1].status == "SKIPPED"
+
+
+class TestRobotReadinessStateNaming:
+    """NEW (this session, from the parallel APK research): the values
+    carried by cleanMissionStatus.not_ready / .cond_not_ready. The
+    enum is deliberately PARTIAL -- only values actually confirmed by
+    the research are listed, so unknown ones must stay honestly
+    unknown rather than getting a guessed label."""
+
+    def test_names_the_confirmed_refusal_reasons(self):
+        from roombapy_prime.models import RobotReadinessState
+
+        assert RobotReadinessState.name_for(22) == "MAP_VERSION_MISMATCH"
+        assert RobotReadinessState.name_for(75) == "NO_VAC_WITH_PAD"
+        assert RobotReadinessState.name_for(76) == "NO_MOP_WITHOUT_PAD"
+
+    def test_unknown_value_is_reported_as_unknown_not_guessed(self):
+        from roombapy_prime.models import RobotReadinessState
+
+        assert RobotReadinessState.name_for(43) == "UNKNOWN_43"
+
+    def test_none_is_handled(self):
+        from roombapy_prime.models import RobotReadinessState
+
+        assert RobotReadinessState.name_for(None) == "None"
+
+    def test_report_names_the_code_in_its_detail_text(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _report_mission_status
+
+        report = Report()
+        _report_mission_status(report, {}, {"not_ready": 22, "cond_not_ready": [75]})
+
+        detail = report.results[-1].detail
+        assert "MAP_VERSION_MISMATCH" in detail
+        assert "NO_VAC_WITH_PAD" in detail
+
+
+class TestPreflightMapVersionCheck:
+    """HYPOTHESIS A made checkable without moving the robot: a stored
+    favorite carries the map version current when it was SAVED, but
+    the robot re-versions its map over time."""
+
+    def _command(self, version):
+        cmd = MagicMock()
+        cmd.pmap_version_id = version
+        return cmd
+
+    def _robot(self, active_versions):
+        robot = AsyncMock()
+        robot.get_active_map_versions.return_value = [
+            MagicMock(active_p2mapv_id=v) for v in active_versions
+        ]
+        return robot
+
+    @pytest.mark.asyncio
+    async def test_matching_version_reports_ok(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_map_version_check
+
+        report = Report()
+        await _preflight_map_version_check(
+            self._robot(["260716T183242.325"]), self._command("260716T183242.325"), report
+        )
+
+        assert report.results[-1].status == "OK"
+
+    @pytest.mark.asyncio
+    async def test_stale_version_is_flagged_as_the_prime_suspect(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_map_version_check
+
+        report = Report()
+        await _preflight_map_version_check(
+            self._robot(["260901T090000.000"]), self._command("260716T183242.325"), report
+        )
+
+        entry = report.results[-1]
+        assert entry.status == "FAILED"
+        assert "MAP_VERSION_MISMATCH" in entry.detail
+
+    @pytest.mark.asyncio
+    async def test_a_fetch_failure_is_skipped_not_failed(self):
+        """Diagnostics must never make the actual test look failed."""
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_map_version_check
+
+        robot = AsyncMock()
+        robot.get_active_map_versions.side_effect = RuntimeError("simulated")
+        report = Report()
+
+        await _preflight_map_version_check(robot, self._command("x"), report)
+
+        assert report.results[-1].status == "SKIPPED"
+
+
+class TestPreflightPadVsModeCheck:
+    """HYPOTHESIS B: RobotReadinessState 75/76 suggest the robot
+    refuses a command whose operating mode doesn't match the fitted
+    pad. The rule itself lives ROBOT-side (the app only parses an
+    incoming readiness value), so this reports both inputs rather than
+    reproducing the rule -- flagging only the one unambiguous case."""
+
+    def _command(self, mode):
+        region = MagicMock()
+        region.params = {"operatingMode": mode} if mode is not None else {}
+        cmd = MagicMock()
+        cmd.regions = [region]
+        return cmd
+
+    def _robot(self, detected_pad):
+        robot = AsyncMock()
+        robot.get_named_shadow.return_value = MagicMock(
+            payload={"state": {"reported": {"detectedPad": detected_pad}}}
+        )
+        return robot
+
+    @pytest.mark.asyncio
+    async def test_mopping_mode_with_no_pad_is_flagged(self):
+        """jayjay13011's exact case: operatingMode 32
+        (VAC_MOP_COMBO_ONLY) with no pad fitted."""
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_pad_vs_mode_check
+
+        report = Report()
+        await _preflight_pad_vs_mode_check(self._robot("noPad"), self._command(32), report)
+
+        entry = report.results[-1]
+        assert entry.status == "FAILED"
+        assert "NO_MOP_WITHOUT_PAD" in entry.detail
+
+    @pytest.mark.asyncio
+    async def test_mopping_mode_with_a_pad_fitted_is_only_reported(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_pad_vs_mode_check
+
+        report = Report()
+        await _preflight_pad_vs_mode_check(self._robot("reusableWet"), self._command(32), report)
+
+        assert report.results[-1].status == "OK"
+
+    @pytest.mark.asyncio
+    async def test_vacuum_only_mode_with_no_pad_is_not_flagged(self):
+        """Vacuuming without a pad is perfectly normal -- must not
+        produce a false alarm."""
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_pad_vs_mode_check
+
+        report = Report()
+        await _preflight_pad_vs_mode_check(self._robot("noPad"), self._command(2), report)
+
+        assert report.results[-1].status == "OK"
+
+    @pytest.mark.asyncio
+    async def test_missing_operating_mode_is_skipped(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_pad_vs_mode_check
+
+        report = Report()
+        await _preflight_pad_vs_mode_check(self._robot("noPad"), self._command(None), report)
+
+        assert report.results[-1].status == "SKIPPED"
+
+
+def test_region_type_tid_uses_the_confirmed_furniture_wire_value():
+    """CORRECTED silent bug (parallel native-analysis track): the wire
+    value is "furniture", not "tid". The old value was an inference
+    from the confirmed rid/zid lowercasing pattern, never observed in
+    any real capture."""
+    from roombapy_prime.models.mission_control import RegionType
+
+    assert RegionType.TID.value == "furniture"
+    assert RegionType.RID.value == "rid"
+    assert RegionType.ZID.value == "zid"
+
+
+class TestEnvelopedCommand:
+    """STAGE 1c: the same CommandDef WRAPPED rather than flattened.
+    Three signals point at this being the real wire form -- see
+    _EnvelopedCommand's own docstring, the strongest being real data:
+    chairstacker's cleanSchedule2 stores its command in a field
+    literally named "cmdStr", a STRING rather than a nested object."""
+
+    class _Fake:
+        regions = ["region-marker"]
+        pmap_version_id = "version-marker"
+
+        def to_json(self):
+            return {"command": "start", "regions": [{"region_id": "1"}]}
+
+    def test_cmd_style_serializes_the_command_as_a_json_string(self):
+        from roombapy_prime.verify_region_commands import _EnvelopedCommand
+
+        payload = _EnvelopedCommand(self._Fake(), "cmd").to_json()
+
+        assert set(payload) == {"cmd"}
+        assert isinstance(payload["cmd"], str)
+        assert json.loads(payload["cmd"]) == {"command": "start", "regions": [{"region_id": "1"}]}
+
+    def test_cmd_json_style_nests_the_command_as_an_object(self):
+        from roombapy_prime.verify_region_commands import _EnvelopedCommand
+
+        payload = _EnvelopedCommand(self._Fake(), "cmdJson").to_json()
+
+        assert set(payload) == {"cmdJson"}
+        assert payload["cmdJson"] == {"command": "start", "regions": [{"region_id": "1"}]}
+
+    def test_exactly_one_envelope_field_is_present_never_both(self):
+        """The confirmed rule is 'exactly one, not both' -- a payload
+        carrying both would be invalid by that rule."""
+        from roombapy_prime.verify_region_commands import _EnvelopedCommand
+
+        for style in ("cmd", "cmdJson"):
+            payload = _EnvelopedCommand(self._Fake(), style).to_json()
+            assert len(payload) == 1
+
+    def test_other_attributes_delegate_to_the_real_command(self):
+        """The pre-flight checks read .regions/.pmap_version_id -- they
+        must see the genuine command underneath, not the wrapper."""
+        from roombapy_prime.verify_region_commands import _EnvelopedCommand
+
+        wrapped = _EnvelopedCommand(self._Fake(), "cmd")
+
+        assert wrapped.regions == ["region-marker"]
+        assert wrapped.pmap_version_id == "version-marker"
+
+    def test_an_invalid_style_is_rejected_immediately(self):
+        from roombapy_prime.verify_region_commands import _EnvelopedCommand
+
+        with pytest.raises(ValueError):
+            _EnvelopedCommand(self._Fake(), "somethingElse")
+
+
+class TestRoundtripFidelityCheck:
+    """THE most direct test of the newest lead: the app has two command
+    formats, the legacy one reading fields our payloads never contained
+    (map_components, linked_mission_id, multi_polygons, smart_clean_id).
+    We can't see which the app picks -- but we CAN check whether OUR
+    own parse-then-reserialize round-trip silently drops fields the
+    stored favorite actually carries."""
+
+    def _robot(self, raw_command_def):
+        robot = AsyncMock()
+        robot.get_favorites_raw.return_value = [
+            {"favorite_id": "fav1", "command_defs": [raw_command_def]}
+        ]
+        return robot
+
+    def _command(self, our_json):
+        cmd = MagicMock()
+        cmd.to_json.return_value = our_json
+        return cmd
+
+    @pytest.mark.asyncio
+    async def test_flags_a_dropped_top_level_field(self):
+        """e.g. a legacy-format field our models don't know."""
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_roundtrip_fidelity_check
+
+        report = Report()
+        await _preflight_roundtrip_fidelity_check(
+            self._robot({"command": "start", "map_components": [{"x": 1}]}),
+            self._command({"command": "start"}),
+            "fav1", 0, report,
+        )
+
+        entry = report.results[-1]
+        assert entry.status == "FAILED"
+        assert "map_components" in entry.detail
+
+    @pytest.mark.asyncio
+    async def test_flags_a_dropped_region_level_field(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_roundtrip_fidelity_check
+
+        report = Report()
+        await _preflight_roundtrip_fidelity_check(
+            self._robot({"regions": [{"region_id": "1", "some_unknown_key": 7}]}),
+            self._command({"regions": [{"region_id": "1"}]}),
+            "fav1", 0, report,
+        )
+
+        entry = report.results[-1]
+        assert entry.status == "FAILED"
+        assert "some_unknown_key" in entry.detail
+
+    @pytest.mark.asyncio
+    async def test_added_fields_are_not_treated_as_a_problem(self):
+        """initiator/favorite_id are deliberately ADDED by us -- only
+        DROPPED fields matter."""
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_roundtrip_fidelity_check
+
+        report = Report()
+        await _preflight_roundtrip_fidelity_check(
+            self._robot({"command": "start"}),
+            self._command({"command": "start", "initiator": "rmtApp", "favorite_id": "fav1"}),
+            "fav1", 0, report,
+        )
+
+        assert report.results[-1].status == "OK"
+
+    @pytest.mark.asyncio
+    async def test_unavailable_raw_favorites_is_skipped_not_failed(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime.verify_region_commands import _preflight_roundtrip_fidelity_check
+
+        robot = AsyncMock()
+        robot.get_favorites_raw.side_effect = RuntimeError("simulated")
+        report = Report()
+
+        await _preflight_roundtrip_fidelity_check(robot, self._command({}), "fav1", 0, report)
+
+        assert report.results[-1].status == "SKIPPED"
+
+
+class TestDisplayedPayloadMatchesWhatIsSent:
+    """REAL DISPLAY BUG FIXED: the script printed command.to_json(),
+    but publish_cmd_payload() adds "time" just before publishing -- so
+    the shown payload was NOT the payload that went out. A parallel
+    research pass compared a field tester's printed payload against the
+    app's own builder, found no "time", and reasonably concluded it was
+    missing. It was on the wire the whole time, just never displayed."""
+
+    @pytest.mark.asyncio
+    async def test_displayed_payload_includes_the_time_field(self, capsys):
+        from roombapy_prime.verify_region_commands import _confirm_show_send_watch
+
+        robot = AsyncMock()
+        robot.send_routine_command_via_cmd_topic.return_value = True
+        command = MagicMock()
+        command.to_json.return_value = {"command": "start", "regions": []}
+
+        with patch("roombapy_prime.verify_region_commands._confirm", return_value=False):
+            await _confirm_show_send_watch(robot, command, MagicMock(), 0, "test")
+
+        out = capsys.readouterr().out
+        assert '"time"' in out, "the displayed payload must show the time field publish adds"
+
+    def test_publish_adds_time_when_absent(self):
+        """Confirms the underlying behaviour the display now mirrors."""
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        assert hasattr(PrimeMqttClient, "publish_cmd_payload")

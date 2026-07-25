@@ -561,8 +561,7 @@ def main() -> None:
         report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid))
     report.redact(username, password)
 
-    ok, failed, skipped = report.summary()
-    print(f"\n== Summary: {ok} OK, {failed} failed, {skipped} skipped ==")
+    report.print_final_summary()
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
