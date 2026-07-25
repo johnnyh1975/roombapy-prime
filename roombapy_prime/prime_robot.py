@@ -328,6 +328,29 @@ class PrimeRobot:
         SMART tier -- on EPHEMERAL, presumably the same timeout as
         get_settings(), never tested.
 
+        CONFIRMED WORKING END TO END for childLock (DaRealGuGu, real
+        device): write accepted, read-back confirmed, the change showed
+        up in the iRobot app, and the robot made an audible
+        announcement. That is the first setting whose PHYSICAL effect
+        is confirmed rather than only its acceptance. ecoCharge,
+        noAutoPasses and vacHigh were also written and read back
+        successfully; their real-world effect is untested because none
+        is readily observable.
+
+        KNOWN EXCEPTION -- schedHold: the write is accepted and the
+        read-back confirms it, but the schedule STAYS ACTIVE in the
+        app. Writing schedHold here is evidently not the mechanism the
+        app itself uses to pause a schedule.
+
+        Worth knowing how that was caught: this project's own
+        cross-check against the classic/unnamed shadow's schedHold
+        FLAGGED the mismatch (rw-settings said True while classic still
+        said False) BEFORE the tester looked in the app -- and the app
+        then confirmed it. Two sources disagreeing turned out to mean
+        "the write did not really take", which makes that cross-check a
+        genuine signal rather than a curiosity. Disabling moved both
+        sources in step, so the divergence is specific to enabling.
+
         Uses the same generic shadow-write mechanism
         trigger_echo_via_shadow() already confirmed works at the
         transport level (a real, accepted update/delta response, not

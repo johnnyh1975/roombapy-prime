@@ -8,6 +8,73 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a26] - 2026-07-25
+
+### Confirmed by field testing
+
+- **Robot settings writes work.** All five (`childLock`, `ecoCharge`, `schedHold`,
+  `noAutoPasses`, `vacHigh`) were written and read back successfully on a real device
+  (DaRealGuGu). `childLock` is confirmed **end to end**: the change appeared in the iRobot app and
+  the robot announced it audibly -- the first setting whose physical effect is confirmed rather
+  than only its acceptance.
+
+- **`schedHold` is accepted but ineffective.** Write accepted, read-back confirmed, and the
+  schedule stayed active in the app. Writing it to `rw-settings` is evidently not the mechanism
+  the app uses to pause a schedule.
+
+  Worth recording how that was caught: this project's own cross-check against the classic/unnamed
+  shadow FLAGGED the divergence -- `rw-settings` said True while classic still said False --
+  **before** the tester looked in the app, and the app then confirmed it. Two sources disagreeing
+  turned out to mean "the write did not really take", which makes that cross-check a real signal.
+  Disabling moved both sources in step, so the divergence is specific to enabling.
+
+  `verify-settings-write` now warns before toggling it, because otherwise a tester sees five green
+  checkmarks and reasonably concludes it worked.
+
+### Fixed
+
+- **A regression introduced in a25, caught in the field on the very next run.** Turning
+  `rejected/report` off left `rejected_task` as None while `asyncio.gather()` still received it
+  unconditionally, which raises `TypeError` immediately. The watch window therefore died on
+  arrival, and every stage printed "NO events observed" -- including one whose mission status
+  visibly changed from `charge`/`none` to `run`/`clean`.
+
+  That is exactly the damage the a25 change existed to stop: a real success reported as nothing.
+  The robot's own mission counter settled it -- `nMssn` jumped 35 to 37, and the missing 36 was
+  the stage this bug had hidden.
+
+- **`publish_cmd_payload()` published into dead connections without noticing.** `get_shadow()` has
+  always revived a dead connection before using it; publish only ever checked whether a client
+  object existed at all. Publishing into a dead connection is the worst failure available here: no
+  error, no PUBACK, and the calling script then reports the missing confirmation as though it said
+  something about the payload.
+
+  Field evidence across three consecutive sessions: the FIRST send of every session got no PUBACK
+  while later sends succeeded. The ordering in those logs identified the cause -- the shadow GET
+  timed out BEFORE the publish, so the connection was already dead rather than killed by sending.
+  What kills it is the interactive pause: the tool prints a large payload and waits for a human to
+  read it and type y.
+
+- **`_subscribe_and_wait()` and `subscribe()` had the same gap**, and it was the more damaging one:
+  subscribing to a dead connection fails SILENTLY, so the watcher observes nothing and a real robot
+  reaction is reported as "nothing happened". One field log showed all three symptoms of a single
+  dead connection together -- failed subscribe, timed-out shadow GET, missing PUBACK -- with only
+  the middle one surfacing as an error.
+
+  Every operation in the MQTT client now verifies the connection is alive before using it.
+  Previously two of seven did.
+
+- **`keepalive` lowered from 300 to 60 seconds** (paho's own default). MQTT declares a connection
+  dead after 1.5x the keepalive interval, so 300 meant a broken connection went unnoticed for up to
+  **450 seconds** -- and during that window `publish()` succeeds locally while nothing reaches the
+  broker.
+
+- **Four remaining bare `assert self._client is not None` statements replaced**, each according to
+  its purpose: reconnect where the operation needs a live connection, quiet return on the teardown
+  path, and a real exception where reconnect already guarantees a client. A guard test now checks
+  the pattern cannot return -- it found all four on its first run, after manual review had found
+  none.
+
 ## [0.1.11a25] - 2026-07-25
 
 ### Fixed

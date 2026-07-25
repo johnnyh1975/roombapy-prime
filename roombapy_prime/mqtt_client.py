@@ -357,8 +357,24 @@ class PrimeMqttClient:
         NOW RAISES SubscriptionRejectedError on a REJECTED subscription
         (this session) -- see _on_subscribe()'s own docstring for the
         full finding. Previously proceeded identically whether the
-        broker granted or actively denied the subscription."""
-        assert self._client is not None
+        broker granted or actively denied the subscription.
+
+        NOW ALSO REVIVES A DEAD CONNECTION FIRST (this session), the
+        same way get_shadow() and publish_cmd_payload() do. This was
+        the last operation in the module still using the client without
+        checking it was alive -- and the most damaging one to get
+        wrong, because subscribing to a dead connection fails silently:
+        the watcher then observes nothing at all, and a real robot
+        reaction gets reported as "nothing happened".
+
+        Field logs showed exactly this ordering: subscribe, then a
+        shadow GET timing out, then a publish with no PUBACK -- three
+        symptoms of one dead connection, of which only the middle one
+        was visible as an error."""
+        if self._client is None or not self._connected:
+            # Was a bare assert -- see reconnect()'s own note on why
+            # that is the wrong tool here.
+            self.reconnect(timeout=timeout)
         mids = []
         for topic in topics:
             result, mid = self._client.subscribe(topic, qos=1)
@@ -384,7 +400,18 @@ class PrimeMqttClient:
     def connect(self, timeout: float = 10.0) -> None:
         self._client = self._build_client()
         try:
-            self._client.connect(self._endpoint, port=443, keepalive=300)
+            # keepalive=60 (paho's own default), LOWERED FROM 300 this
+            # session. MQTT declares a connection dead after 1.5x the
+            # keepalive interval, so 300 meant a broken connection went
+            # unnoticed for up to 450 SECONDS -- and during that window
+            # publish() succeeds locally while nothing reaches the
+            # broker, which is exactly the "no PUBACK, no error" state
+            # three field sessions kept producing.
+            #
+            # 60 costs one small PINGREQ per minute and cuts that blind
+            # window to about 90 seconds. AWS IoT accepts anything from
+            # 30 upward, so this stays well inside spec.
+            self._client.connect(self._endpoint, port=443, keepalive=60)
         except ssl.SSLError as exc:
             _raise_clear_ssl_error(exc)
         except OSError as exc:
@@ -791,6 +818,35 @@ class PrimeMqttClient:
                 "-- commands go over MQTT. If you are running a diagnostic script, this is a "
                 "bug in the script rather than anything you did."
             )
+        # Revive a dead connection before publishing, exactly as
+        # get_shadow() already does.
+        #
+        # FIELD EVIDENCE (DaRealGuGu, three consecutive sessions): the
+        # FIRST send of every session got no PUBACK, while later sends
+        # in the same session succeeded. The give-away is the ordering
+        # in his logs -- the ro-currentstate GET times out FIRST, then
+        # the publish gets no PUBACK, and only afterwards does paho
+        # report the drops. In other words the connection was already
+        # dead before the send, not killed by it.
+        #
+        # What kills it is the interactive pause: this tool prints a
+        # large payload and waits for a human to read it and type y.
+        # The connection sits idle through that, and with keepalive=300
+        # a dead one is not noticed for up to 450 seconds. get_shadow()
+        # survived this because it reconnects; publish did not, because
+        # it only ever checked whether a client object existed at all.
+        #
+        # Publishing into a dead connection is the worst possible
+        # failure here: it returns without error, produces no PUBACK,
+        # and the script then reports "no delivery confirmation" as
+        # though it were a finding about the payload.
+        with self._client_lock:
+            if not self._connected:
+                _LOGGER.info(
+                    "roombapy-prime: connection was not alive before publish -- reconnecting"
+                )
+                self.reconnect(timeout=confirm_timeout)
+
         topic = self.cmd_topic(irbt_topic_prefix)
         full_payload = {**payload}
         full_payload.setdefault("time", int(time.time()))
@@ -810,8 +866,14 @@ class PrimeMqttClient:
 
         Multiple callbacks on the same topic coexist fine (each gets
         every message) -- the broker-level subscribe only happens once,
-        the first time this topic is used."""
-        assert self._client is not None, "call connect() first"
+        the first time this topic is used.
+
+        Revives a dead connection first, like every other operation in
+        this module -- a silently-failed subscribe means the caller
+        watches nothing and reports a real robot reaction as
+        "nothing happened"."""
+        if self._client is None or not self._connected:
+            self.reconnect()
         is_new_topic = topic not in self._persistent
         self._persistent.setdefault(topic, []).append(callback)
         if is_new_topic:
@@ -836,7 +898,13 @@ class PrimeMqttClient:
             callbacks.remove(callback)
         if not callbacks:
             self._persistent.pop(topic, None)
-            assert self._client is not None, "call connect() first"
+            if self._client is None:
+                # Teardown path: with no client there is nothing to
+                # unsubscribe from. Deliberately NOT a reconnect --
+                # rebuilding a connection purely to tear it down again
+                # would be absurd, and this runs from finally-blocks
+                # where raising would mask the original error.
+                return
             self._client.unsubscribe(topic)
 
     def get_shadow(self, named: str | None = None, timeout: float = 8.0) -> ShadowResponse:
@@ -860,7 +928,8 @@ class PrimeMqttClient:
             def _capture(resp: ShadowResponse) -> None:
                 result.append(resp)
 
-            assert self._client is not None, "call connect() first"
+            if self._client is None:  # pragma: no cover - reconnect() guarantees this
+                raise ShadowError("Connection unavailable after reconnect")
             topics = []
             for suffix in ("get/accepted", "get/rejected"):
                 topic = f"{base}/{suffix}"
@@ -904,7 +973,8 @@ class PrimeMqttClient:
             def _capture(resp: ShadowResponse) -> None:
                 result.append(resp)
 
-            assert self._client is not None, "call connect() first"
+            if self._client is None:  # pragma: no cover - reconnect() guarantees this
+                raise ShadowError("Connection unavailable after reconnect")
             topics = []
             for suffix in ("update/accepted", "update/rejected", "update/delta"):
                 topic = f"{base}/{suffix}"

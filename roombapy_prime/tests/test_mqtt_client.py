@@ -1072,3 +1072,132 @@ class TestAgainstRealPahoReasonCodes:
         for value in (0x00, 0x01, 0x02, 0x80, 0x87, 0x8F, 0x9E, 0xA1):
             code = self._code(value)
             assert _suback_is_failure(code) is code.is_failure, f"disagreed on {value:#04x}"
+
+
+class TestPublishRevivesADeadConnection:
+    """FIELD EVIDENCE (DaRealGuGu, three consecutive sessions): the
+    FIRST send of every session got no PUBACK, while later sends in the
+    same session succeeded.
+
+    The ordering in his logs is what identified it: the ro-currentstate
+    GET timed out FIRST, then the publish got no PUBACK, and only
+    afterwards did paho report drops. The connection was already dead
+    before the send.
+
+    What kills it is the interactive pause -- the tool prints a large
+    payload and waits for a human to read it and type y. get_shadow()
+    survived that because it reconnects; publish_cmd_payload() did not,
+    because it only checked whether a client object existed.
+
+    Publishing into a dead connection is the worst failure mode
+    available here: no error, no PUBACK, and the script then reports
+    the missing confirmation as though it said something about the
+    payload."""
+
+    def _client(self, *, connected: bool):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+        client._client = MagicMock()
+        client._connected = connected
+        client.reconnect = MagicMock(
+            side_effect=lambda **_kw: setattr(client, "_connected", True)
+        )
+        return client
+
+    def test_a_dead_connection_is_reconnected_before_publishing(self):
+        client = self._client(connected=False)
+
+        client.publish_cmd_payload("v005-irbthbu", {"command": "start"})
+
+        client.reconnect.assert_called_once()
+
+    def test_a_live_connection_is_not_needlessly_reconnected(self):
+        """Reconnecting a healthy connection would drop subscriptions
+        that watchers depend on."""
+        client = self._client(connected=True)
+
+        client.publish_cmd_payload("v005-irbthbu", {"command": "start"})
+
+        client.reconnect.assert_not_called()
+
+    def test_the_publish_still_happens_after_the_reconnect(self):
+        client = self._client(connected=False)
+
+        client.publish_cmd_payload("v005-irbthbu", {"command": "start"})
+
+        client._client.publish.assert_called_once()
+
+
+def test_keepalive_is_short_enough_to_notice_a_dead_connection() -> None:
+    """MQTT declares a connection dead after 1.5x keepalive. At the
+    previous 300s that was a 450-SECOND blind window, during which
+    publish() succeeds locally while nothing reaches the broker.
+
+    If this ever gets raised again, the question to ask is what it buys
+    that is worth being unable to detect a broken connection for
+    minutes at a time."""
+    import inspect
+
+    from roombapy_prime.mqtt_client import PrimeMqttClient
+
+    source = inspect.getsource(PrimeMqttClient.connect)
+
+    assert "keepalive=60" in source
+    assert "keepalive=300" not in source
+
+
+class TestSubscribeAlsoRevivesADeadConnection:
+    """The last operation in this module that still used the client
+    without checking it was alive -- and the most damaging one to get
+    wrong.
+
+    Subscribing to a dead connection fails SILENTLY: the watcher then
+    observes nothing at all, and a real robot reaction gets reported as
+    "nothing happened". Field logs showed the full pattern in one
+    place: subscribe, then a shadow GET timing out, then a publish with
+    no PUBACK -- three symptoms of a single dead connection, of which
+    only the middle one surfaced as an error."""
+
+    def _client(self, *, connected: bool):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+        client._client = MagicMock()
+        client._client.subscribe.return_value = (0, 1)
+        client._connected = connected
+        client.reconnect = MagicMock(
+            side_effect=lambda **_kw: setattr(client, "_connected", True)
+        )
+        return client
+
+    def test_a_dead_connection_is_reconnected_before_subscribing(self):
+        client = self._client(connected=False)
+
+        client._subscribe_and_wait(["some/topic"], timeout=0.01)
+
+        client.reconnect.assert_called_once()
+
+    def test_a_live_connection_subscribes_without_reconnecting(self):
+        client = self._client(connected=True)
+
+        client._subscribe_and_wait(["some/topic"], timeout=0.01)
+
+        client.reconnect.assert_not_called()
+        client._client.subscribe.assert_called_once()
+
+    def test_no_bare_assert_remains_in_the_module(self):
+        """Three separate field reports surfaced a developer-facing
+        assert to someone running a diagnostic script. This checks the
+        pattern is gone rather than trusting that it is."""
+        import inspect
+
+        from roombapy_prime import mqtt_client
+
+        source = inspect.getsource(mqtt_client)
+
+        assert 'assert self._client is not None' not in source
