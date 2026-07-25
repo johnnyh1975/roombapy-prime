@@ -6,6 +6,8 @@ picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
+import zlib
+
 import json
 from dataclasses import dataclass
 from datetime import datetime, UTC
@@ -169,6 +171,39 @@ def _parse_top_level(buf: bytes) -> dict[int, list[tuple[int, object]]]:
     return fields
 
 
+def _maybe_decompress(rawmap_bytes: bytes) -> bytes:
+    """Transparently unwraps a zlib-compressed live map.
+
+    CONFIRMED FROM A REAL FIELD CAPTURE (DaRealGuGu, and almost
+    certainly the same cause as chairstacker's long-standing blank live
+    map). The payload starts `78 9c` -- a zlib header with default
+    compression -- and the protobuf parser was being handed those bytes
+    directly. It failed at offset 7 with "unsupported wire type 4",
+    which reads like a protocol mismatch and is really just compressed
+    data.
+
+    Worth noting how this was found: the decoder used to fail silently,
+    so the symptom was a permanently blank map image and nothing else.
+    The diagnostic logging added for exactly this purpose printed the
+    first 32 bytes, and the answer was in the first two.
+
+    Kept tolerant on purpose: if the payload is not compressed, it is
+    passed through untouched, since it is not established that every
+    firmware compresses. And a decompression failure re-raises with the
+    header bytes named, rather than letting the protobuf parser produce
+    a misleading offset error further down."""
+    if not rawmap_bytes[:1] == b"\x78":
+        return rawmap_bytes
+    try:
+        return zlib.decompress(rawmap_bytes)
+    except zlib.error as exc:
+        msg = (
+            f"live map payload starts with a zlib header "
+            f"({rawmap_bytes[:2].hex()}) but could not be decompressed: {exc}"
+        )
+        raise ValueError(msg) from exc
+
+
 def decode_rawmap_to_png(rawmap_bytes: bytes) -> bytes:
     """CONFIRMED STRUCTURE (chairstacker, visually verified against
     the real app's own map view) -- promoted here from a standalone
@@ -204,6 +239,7 @@ def decode_rawmap_to_png(rawmap_bytes: bytes) -> bytes:
         msg = "decode_rawmap_to_png() needs Pillow -- pip install Pillow"
         raise ImportError(msg) from exc
 
+    rawmap_bytes = _maybe_decompress(rawmap_bytes)
     top = _parse_top_level(rawmap_bytes)
 
     width = height = None

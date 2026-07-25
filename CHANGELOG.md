@@ -8,6 +8,31 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a25] - 2026-07-25
+
+### Fixed
+
+- **The connection instability behind every unexplained "nothing happened" result was our own
+  diagnostic subscription.** `rejected/report` is an EXPLORATORY topic that has never been
+  confirmed live, and this project's own module header already warned that subscribing to an
+  unconfirmed topic causes immediate "Unspecified error" disconnects. It was subscribed
+  unconditionally in both `verify_region_commands.py` and `verify_mission_timeline.py`.
+
+  A field log (DaRealGuGu, a24) made the mechanism unmistakable: across three stages sent in one
+  session, every stage that received a PUBACK started a mission, and every stage that did not got
+  nothing -- regardless of payload differences that had previously looked significant. The
+  connection is shared between watchers, so one unconfirmed subscription tearing itself down took
+  the whole thing with it, including the publish a real command needed.
+
+  **`rejected/report` is now off by default in both scripts.** Across five real runs by three
+  testers it has produced zero messages, so there was nothing to lose by turning it off and
+  everything to gain if it was the cause. `--watch-rejected` restores it for anyone who wants to
+  test the channel itself.
+
+  This also retroactively explains earlier "nothing happened" results from other testers that had
+  no PUBACK either -- they were very likely never delivered, independent of anything about the
+  region-command payload.
+
 ## [0.1.11a24] - 2026-07-25
 
 ### Fixed

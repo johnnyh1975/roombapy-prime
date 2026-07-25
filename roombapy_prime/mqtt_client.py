@@ -740,12 +740,22 @@ class PrimeMqttClient:
         evidence trail. Payload shape {"command": str, "time": int,
         "initiator": str} matches the third-party project's
         documented, reportedly-working format exactly -- "time" is a
-        Unix timestamp in SECONDS (not millis), "initiator" defaults
-        to "localApp" (their literal, observed value) as opposed to
-        the "cloud"/"rmtApp" values seen in this library's own
-        confirmed mission HISTORY data (session 25) -- those are
-        presumably what gets RECORDED afterward, not necessarily what
-        the app itself sends when initiating live.
+        Unix timestamp in SECONDS (not millis).
+
+        CORRECTED (this session): this docstring used to say "initiator"
+        defaults to "localApp" here. It does not -- this method adds
+        only "time". Callers that want an initiator must put it in the
+        payload themselves, and send_simple_command() does. Region
+        commands built from a stored favorite do NOT, because a stored
+        favorite carries no initiator.
+
+        That distinction may matter a great deal. A field run on a24
+        (DaRealGuGu) had stage 1 -- an unchanged favorite, no initiator
+        -- do nothing, while stage 1b -- the identical command with
+        initiator="rmtApp" added -- started a mission. The APK research
+        independently found that the real app's buildJsonCommon() always
+        writes initiator. Awaiting his full log to check whether stage 1
+        was actually delivered before treating this as settled.
 
         NOW RETURNS whether the broker confirmed PUBACK receipt (this
         session) -- see publish_cmd_payload()'s own entry in docs/internal/EVIDENCE_TRAIL.md for the
@@ -772,7 +782,15 @@ class PrimeMqttClient:
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#mqtt_clientpublish_cmd_payload
     """
-        assert self._client is not None, "call connect() first"
+        if self._client is None:
+            # Same class of problem as reconnect()'s old assertion: a
+            # message for whoever wrote the calling code, surfacing to
+            # whoever ran a diagnostic script.
+            raise ShadowError(
+                "Not connected. connect() must have been called before publishing a command "
+                "-- commands go over MQTT. If you are running a diagnostic script, this is a "
+                "bug in the script rather than anything you did."
+            )
         topic = self.cmd_topic(irbt_topic_prefix)
         full_payload = {**payload}
         full_payload.setdefault("time", int(time.time()))
