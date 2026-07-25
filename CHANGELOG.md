@@ -8,6 +8,41 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a24] - 2026-07-25
+
+### Fixed
+
+- **Multi-robot accounts sent commands to whichever robot came first.** A field run made this
+  concrete: an account holding a Roomba 980 (classic protocol) and a Prime robot had its entire
+  region-command session delivered to the 980. The proof was in the same log -- that robot's
+  `ro-currentstate` shadow returned 404, a shadow every V4 device has and no classic one does.
+  Nothing could have worked, and every result from that session was noise.
+
+  Three layers now prevent it:
+  - `primary_blid()` raises instead of picking one, listing each robot with the exact `--blid`
+    to pass.
+  - The tools prompt interactively, marking which robots this library can actually talk to and
+    offering the single Prime one as the default.
+  - If a favorite belongs to a different robot than the command targets, the send is **blocked**,
+    not merely warned about, and names the correct BLID.
+
+- **Household lookup assumed `robot_id == blid`.** Where they differ it silently returned None,
+  which would have broken every household-scoped operation -- schedule writes above all. The
+  correct identifier was in the login response all along and is now passed through.
+
+### Added
+
+- **`is_prime_sku()`**, moved in from ha_roomba_plus so there is one copy rather than two. This is
+  protocol knowledge and the tools need it as much as the integration does. The three-character
+  prefix check is load-bearing rather than fussy: R28 is Prime and R98 is Classic, and that exact
+  pair sits on one tester's account -- a single-letter check would have called his Roomba 980 a
+  Prime robot.
+
+  Returns False for anything unrecognised on purpose. The table is explicitly incomplete for
+  platforms nobody has field-tested, so False means "not known to be Prime", never "confirmed
+  Classic" -- which is also why the tools mark and suggest rather than choosing silently.
+
+
 ## [0.1.11a23] - 2026-07-25
 
 ### Fixed — URGENT, a22 is broken
@@ -52,6 +87,21 @@ This file only tracks what changed from a user's point of view.
   they ever had.
 
 ### Added
+
+- **Multi-robot accounts are now handled properly, and the tools help you pick.** A field run
+  settled why this matters: an account with a Roomba 980 (classic protocol) and a Prime robot had
+  its entire region-command session sent to the 980, because the library picked whichever robot
+  came first in a dictionary. The 980 cannot speak this protocol at all -- the same log showed its
+  `ro-currentstate` shadow returning 404, which a V4 device always has.
+
+  Now: `primary_blid()` refuses to guess and lists your options; the tools prompt interactively,
+  marking which robots this library can actually talk to and offering the Prime one as the
+  default; and if a favorite belongs to a different robot than the command is being sent to, the
+  send is **blocked** rather than warned about, naming the exact `--blid` to use instead.
+
+- **`is_prime_sku()` moved into the library** from ha_roomba_plus. It is protocol knowledge, the
+  tools need it too, and two copies would drift. The three-character prefix check is load-bearing:
+  R28 is Prime and R98 is Classic, and that exact pair sits on one tester's account.
 
 - **Every script now lists the account's robots when there is more than one**, marking which is
   targeted and showing each robot's own `robot_id` next to its BLID. The login response has always

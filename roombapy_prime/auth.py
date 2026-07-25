@@ -420,6 +420,41 @@ class RobotDigitalCapabilities:
         return cls(smart_clean=data.get("smartClean"))
 
 
+# Which SKU prefixes identify a V4/Prime-generation robot.
+#
+# MOVED HERE FROM ha_roomba_plus (this session). This is protocol
+# knowledge, not integration knowledge -- the diagnostic tools need it
+# just as much, and two copies would drift. ha_roomba_plus imports it
+# from here now.
+#
+# THREE characters, not one, and that distinction is load-bearing:
+# SkuUtils.java's own platform table shows "R" and "Q" are each used by
+# BOTH generations -- R285020 (Prime) vs. R980020 (Classic, a real test
+# unit in this project) and R111840 (Classic); Q352020 (Prime) vs. "q"
+# as a known Classic prefix. A single-letter check would eventually
+# classify a real Classic robot as Prime, which is the worse failure:
+# it would silently set a local-capable device up as cloud-only rather
+# than failing loudly.
+#
+# Field-confirmed by a real device: G18 (chairstacker, jadestar1864),
+# N18 (DaRealGuGu -- whose account also holds an R98 classic Roomba 980,
+# exactly the pair this check has to tell apart). The rest come from
+# SkuUtils.java's table directly and have not been seen in the field.
+PRIME_SKU_PREFIXES: frozenset[str] = frozenset(
+    "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 X18 X28 F15".split()
+)
+
+
+def is_prime_sku(sku: str | None) -> bool:
+    """True for V4/Prime-generation SKUs.
+
+    Returns False for anything unrecognised, deliberately: an unknown
+    SKU is not evidence of Prime, and the table above is explicitly
+    incomplete for platforms nobody has field-tested. Callers should
+    read False as "not known to be Prime", not "confirmed Classic"."""
+    return bool(sku) and sku[:3].upper() in PRIME_SKU_PREFIXES
+
+
 @dataclass(frozen=True)
 class RobotLoginEntry:
     """NEW (session 52) -- REPLACES the previous completely-unmodeled

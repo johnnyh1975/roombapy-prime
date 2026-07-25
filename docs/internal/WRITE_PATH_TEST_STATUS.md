@@ -1,6 +1,6 @@
 # roombapy-prime — Write-Path Test Status (systematisch)
 
-> Stand: v0.1.11a23 / Roomba+ v4.0.0a6. Konsolidiert aus allen bisherigen Feldtests,
+> Stand: v0.1.11a24 / Roomba+ v4.0.0a6. Konsolidiert aus allen bisherigen Feldtests,
 > damit nichts doppelt gefragt oder übersehen wird.
 
 ## Legende

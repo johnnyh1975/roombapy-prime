@@ -903,3 +903,42 @@ class TestPrimaryBlidRefusesToGuess:
 
         with pytest.raises(AuthError, match="no robots"):
             self._result().primary_blid()
+
+
+class TestPrimeSkuDetection:
+    """Moved here from ha_roomba_plus so there is one copy, not two.
+
+    The three-character prefix is load-bearing, not fussiness: R28 is
+    Prime and R98 is Classic, and DaRealGuGu's account holds exactly
+    that pair. A single-letter check would have called his Roomba 980 a
+    Prime robot -- and the tools would then have aimed a region command
+    at a robot that cannot speak the protocol at all."""
+
+    def test_the_two_robots_on_one_real_account_are_told_apart(self):
+        from roombapy_prime.auth import is_prime_sku
+
+        assert is_prime_sku("N185240") is True    # Roomba Plus 505 Combo
+        assert is_prime_sku("R980040") is False   # Roomba 980, classic
+
+    def test_the_r_prefix_collision_is_handled(self):
+        """R28 (Prime) and R98 (Classic) share a first letter. This is
+        the case that forced a three-character check."""
+        from roombapy_prime.auth import is_prime_sku
+
+        assert is_prime_sku("R285020") is True
+        assert is_prime_sku("R980020") is False
+        assert is_prime_sku("R111840") is False
+
+    def test_an_unknown_sku_is_not_treated_as_prime(self):
+        """The table is explicitly incomplete for untested platforms, so
+        False means 'not known to be Prime', never 'confirmed Classic'."""
+        from roombapy_prime.auth import is_prime_sku
+
+        assert is_prime_sku("ZZ99999") is False
+        assert is_prime_sku(None) is False
+        assert is_prime_sku("") is False
+
+    def test_matching_is_case_insensitive(self):
+        from roombapy_prime.auth import is_prime_sku
+
+        assert is_prime_sku("n185240") is True
