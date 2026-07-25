@@ -68,6 +68,12 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+class _AlreadyReconnected(Exception):
+    """Internal signal: another watcher rebuilt the shared connection
+    while this one was waiting for the reconnect lock, so there is
+    nothing left to do but resume."""
+
 Relogin = Callable[[], Awaitable[LoginResult]]
 
 DEFAULT_WATCH_QUEUE_MAXSIZE = 100
@@ -154,6 +160,24 @@ class PrimeRobot:
         # falls back to the BLID, which is correct wherever they match.
         self.robot_id = robot_id or blid
         self._mqtt = mqtt_client
+        # Serialises reconnects across concurrent watch tasks.
+        #
+        # REAL BUG FOUND IN THE FIELD (DaRealGuGu): every watcher had its
+        # own reconnect loop, but they all share ONE mqtt client. When
+        # two topics are watched at once -- which the region-command
+        # session always does, mission/timeline plus rejected/report --
+        # a reconnect by task A tears down and rebuilds the shared
+        # connection, which task B observes as a drop. B then reconnects,
+        # which A observes as a drop. The log shows exactly that: dozens
+        # of immediate drops with no failed attempts in between, because
+        # every reconnect SUCCEEDED and then got torn down by the other
+        # task.
+        #
+        # It cost two of three test stages their result: the publish
+        # went out during a torn-down connection and never got a PUBACK,
+        # which the script then reported as a possible policy block.
+        self._reconnect_lock: asyncio.Lock | None = None
+        self._reconnect_generation = 0
         self._rest = rest_client
         self._relogin = relogin
         self._irbt_topic_prefix = irbt_topic_prefix
@@ -904,7 +928,22 @@ class PrimeRobot:
                     "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
                     reason, topic,
                 )
+                if self._reconnect_lock is None:
+                    self._reconnect_lock = asyncio.Lock()
+                generation_seen = self._reconnect_generation
+
                 while True:
+                    # If another watcher already rebuilt the shared
+                    # connection while we were noticing the drop, resume on
+                    # theirs instead of tearing it down again -- that is
+                    # exactly the ping-pong this guards against.
+                    if self._reconnect_generation != generation_seen:
+                        _LOGGER.info(
+                            "roombapy-prime: another watcher already reconnected -- "
+                            "resuming %s without a second reconnect", topic,
+                        )
+                        backoff = 1.0
+                        break
                     try:
                         # CORRECTED (this session, prompted by a real field
                         # report: an integration stuck permanently
@@ -956,7 +995,19 @@ class PrimeRobot:
                             new_token = login_result.token_for_blid(self.blid)
                             await asyncio.to_thread(self._mqtt.replace_token, new_token)
                         else:
-                            await asyncio.to_thread(self._mqtt.reconnect)
+                            async with self._reconnect_lock:
+                                # Second check under the lock: another
+                                # watcher may have finished reconnecting
+                                # while we waited for it.
+                                if self._reconnect_generation != generation_seen:
+                                    raise _AlreadyReconnected
+                                await asyncio.to_thread(self._mqtt.reconnect)
+                    except _AlreadyReconnected:
+                        _LOGGER.info(
+                            "roombapy-prime: another watcher reconnected first -- resuming %s", topic
+                        )
+                        backoff = 1.0
+                        break
                     except Exception as exc:  # noqa: BLE001
                         _LOGGER.warning(
                             "roombapy-prime: MQTT reconnect attempt failed (%s) -- retrying in %.0fs",
@@ -965,6 +1016,10 @@ class PrimeRobot:
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 2, max_reconnect_backoff)
                     else:
+                        # Announce the new connection so any other watcher
+                        # that noticed the same drop resumes on it rather
+                        # than tearing it down to build its own.
+                        self._reconnect_generation += 1
                         _LOGGER.info("roombapy-prime: MQTT reconnected, watch resumed for %s", topic)
                         backoff = 1.0
                         break

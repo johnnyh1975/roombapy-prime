@@ -242,9 +242,14 @@ def test_update_shadow_accepted(fixtures_dir: Path) -> None:
 
 # --- calling before connect() -------------------------------------------
 
-def test_get_shadow_before_connect_raises() -> None:
+def test_get_shadow_before_connect_raises_a_readable_error() -> None:
+    """This is the exact path a field tester hit: a diagnostic script
+    asked for a named shadow without ever opening the connection. The
+    script was at fault, but the error blamed nobody legibly -- it just
+    asserted, four frames down."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="x")
-    with pytest.raises(AssertionError):
+
+    with pytest.raises(ShadowError, match="Not connected"):
         client.get_shadow(timeout=0.1)
 
 
@@ -543,7 +548,7 @@ def test_replace_token_before_connect_raises() -> None:
         client_id="new", iot_token="t2", iot_signature="s2",
         iot_authorizer_name="a2", expires=None, devices=[],
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(ShadowError):
         client.replace_token(new_token)
 
 
@@ -584,10 +589,20 @@ def test_reconnect_reconnects_and_restores_subscriptions() -> None:
     assert set(new_fake.subscribed) == {"topic/a", "topic/b"}
 
 
-def test_reconnect_before_connect_raises() -> None:
+def test_reconnect_before_connect_raises_a_readable_error() -> None:
+    """Was an AssertionError. A field tester hit it through
+    get_shadow()'s lazy-reconnect path and got a bare traceback ending
+    in "call connect() first" -- a message written for whoever wrote the
+    calling code, not for the person running a diagnostic script, and
+    several frames removed from the actual cause."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
-    with pytest.raises(AssertionError):
+
+    with pytest.raises(ShadowError) as exc:
         client.reconnect()
+
+    message = str(exc.value)
+    assert "Not connected" in message
+    assert "MQTT, not REST" in message, "must say why a shadow read needs a connection"
 
 
 def test_on_disconnect_sets_connected_false_and_stores_reason() -> None:

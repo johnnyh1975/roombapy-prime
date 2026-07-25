@@ -12,6 +12,49 @@ This file only tracks what changed from a user's point of view.
 
 ### Fixed
 
+- **`getattr()` on data that came off the wire, in three separate places.** Some REST wrappers
+  return plain `list[dict]` and others return parsed models; `getattr()` on a dict quietly returns
+  the default. None of these raised -- each produced a report full of `None` that reads as "the
+  robot had nothing to say" rather than "we asked wrongly", which sends an investigation looking
+  at the robot instead of at us:
+  - the pad pre-flight reporting "no operatingMode in regions" for a payload that visibly carried
+    one on *every* region
+  - `--list-maps` printing `name='(unnamed)'  --p2map-id None` for a map that certainly has both
+  - the map-version pre-flight reporting "no active_p2mapv_id reported"
+
+  A `field()` helper now reads both shapes, 25 call sites use it, and an AST-based guard rejects
+  `getattr()` on wire data. The guard found more occurrences on its first run than manual review
+  had.
+
+- **Four scripts read named shadows without opening an MQTT connection.** Named shadows travel
+  over MQTT, not REST, and `connected_robot()` only opens a connection when asked. The failure
+  landed on a tester as a bare `AssertionError` four frames from the cause, on the very first run
+  anyone had given that script. `verify_settings_write`, `verify_named_shadows`,
+  `verify_mission_commands` and `verify_mission_timeline` now connect, a guard test checks that
+  any script calling an MQTT-backed method asks for one, and the assertion became an error that
+  explains itself.
+
+- **Concurrent watchers fought each other over the shared connection.** Every watcher had its own
+  reconnect loop, but they all use ONE mqtt client. The region-command session always watches two
+  topics at once (mission/timeline plus rejected/report), so a reconnect by one tore down the
+  shared connection, the other saw that as a drop and rebuilt it, and the first then saw *that* as
+  a drop -- indefinitely.
+
+  A field log showed the signature plainly: dozens of immediate drops with almost no failed
+  attempts between them, because every reconnect succeeded and was then torn down by the other
+  watcher. It cost two of three test stages their result -- the publish went out over a
+  torn-down connection, never received a PUBACK, and the script reported that as a possible
+  policy-level block. Another self-inflicted wrong diagnosis.
+
+  Reconnects are now serialised behind a shared lock with a generation counter: the first watcher
+  rebuilds the connection, the others resume on it instead of tearing it down again.
+
+- **The event summary printed `[None]` for every event.** It was written against a parsed
+  `MissionTimelineEvent` model, but what arrives is a raw `ShadowResponse` whose content sits in a
+  payload dict, so every attribute lookup returned None. Harmless for months because every run saw
+  zero events -- and then useless on the very first run where a robot genuinely started a mission.
+  It now reads the real shape, including which regions the robot echoed back.
+
 - **Multi-robot accounts sent commands to whichever robot came first.** A field run made this
   concrete: an account holding a Roomba 980 (classic protocol) and a Prime robot had its entire
   region-command session delivered to the 980. The proof was in the same log -- that robot's

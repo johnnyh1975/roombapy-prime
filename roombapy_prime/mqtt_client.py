@@ -462,7 +462,20 @@ class PrimeMqttClient:
         protection (replace_token()) take it themselves before calling
         this; watch_state()'s reconnect loop deliberately does NOT hold
         it for the length of a potentially-long backoff wait."""
-        assert self._client is not None, "call connect() first"
+        if self._client is None:
+            # Was an assert, which surfaced to a field tester as a bare
+            # AssertionError traceback ending in "call connect() first" --
+            # a message written for whoever wrote the calling code, not
+            # for the person running a diagnostic script. It also fired
+            # from get_shadow()'s lazy-reconnect path, so the visible
+            # failure was several frames away from the actual cause.
+            raise ShadowError(
+                "Not connected. This client needs connect() to have been called at least "
+                "once before any shadow read -- named shadows travel over MQTT, not REST. "
+                "If you are running one of the diagnostic scripts, this is a bug in the "
+                "script rather than anything you did: it asked for shadow data without "
+                "opening the connection first."
+            )
         _LOGGER.info(
             "roombapy-prime MQTT: reconnecting (%d persistent subscription(s) to restore)",
             len(self._persistent),

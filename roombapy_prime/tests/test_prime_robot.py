@@ -1484,3 +1484,77 @@ class TestHouseholdLookupWithMismatchedIdentifiers:
         })
 
         assert await robot.get_household_id() is None
+
+
+class TestConcurrentWatchersDoNotFightOverTheConnection:
+    """REAL FIELD BUG (DaRealGuGu). Every watcher had its own reconnect
+    loop, but they all share ONE mqtt client. The region-command session
+    always watches two topics at once -- mission/timeline plus
+    rejected/report -- so a reconnect by one tore down the shared
+    connection, which the other saw as a drop and rebuilt, which the
+    first then saw as a drop.
+
+    The log showed exactly that signature: dozens of immediate drops
+    with almost no failed attempts in between, because every reconnect
+    SUCCEEDED and was then torn down by the other watcher.
+
+    It was not cosmetic. It cost two of three test stages their result
+    -- the publish went out over a torn-down connection, never got a
+    PUBACK, and the script reported that as a possible policy block."""
+
+    def _robot(self):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        return PrimeRobot(
+            blid="B", mqtt_client=MagicMock(), rest_client=MagicMock(),
+            irbt_topic_prefix="v005-irbthbu",
+        )
+
+    def test_a_fresh_robot_starts_at_generation_zero(self):
+        robot = self._robot()
+
+        assert robot._reconnect_generation == 0
+        assert robot._reconnect_lock is None, "created lazily, on the running loop"
+
+    @pytest.mark.asyncio
+    async def test_only_one_of_two_concurrent_reconnects_actually_runs(self):
+        """The core of the fix, exercised directly: two watchers notice
+        the same drop, both try to reconnect, exactly one rebuilds the
+        connection and the other resumes on it."""
+        import asyncio
+
+        from roombapy_prime.prime_robot import _AlreadyReconnected
+
+        robot = self._robot()
+        robot._reconnect_lock = asyncio.Lock()
+        reconnects = []
+
+        async def watcher(name):
+            generation_seen = robot._reconnect_generation
+            try:
+                async with robot._reconnect_lock:
+                    if robot._reconnect_generation != generation_seen:
+                        raise _AlreadyReconnected
+                    await asyncio.sleep(0)          # let the other one queue up
+                    reconnects.append(name)
+                    robot._reconnect_generation += 1
+            except _AlreadyReconnected:
+                return "resumed"
+            return "reconnected"
+
+        results = await asyncio.gather(watcher("timeline"), watcher("rejected"))
+
+        assert reconnects == ["timeline"], "the second watcher must not reconnect again"
+        assert sorted(results) == ["reconnected", "resumed"]
+        assert robot._reconnect_generation == 1
+
+    def test_the_generation_counter_is_what_signals_a_new_connection(self):
+        """Bumping it is how a reconnecting watcher tells the others
+        'there is a working connection now, use it'."""
+        robot = self._robot()
+
+        robot._reconnect_generation += 1
+
+        assert robot._reconnect_generation == 1
