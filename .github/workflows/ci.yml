@@ -15,21 +15,25 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package + test dependencies
-        run: pip install -e ".[test]"
+        run: |
+          pip install -e ".[test,map]"
+          pip install -e ./tools --no-deps
 
       - name: Compile check (all modules)
         run: python -m compileall roombapy_prime
 
       - name: Run test suite with coverage
-        run: pytest roombapy_prime/tests/ -v --cov=roombapy_prime --cov-report=term-missing --cov-report=html
+        run: |
+          pytest roombapy_prime/tests/ -v --cov=roombapy_prime --cov-report=term-missing --cov-report=html
+          pytest tools/tests/ -v
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -47,10 +51,10 @@ jobs:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -58,7 +62,7 @@ jobs:
         run: pip install ruff
 
       - name: Ruff check
-        run: ruff check roombapy_prime examples scripts --output-format=github
+        run: ruff check roombapy_prime tools examples scripts --output-format=github
         # KEIN continue-on-error mehr (zwoelfte Sitzung): ruff ist seit
         # mehreren Sitzungen durchgehend sauber -- ein echtes Gate ist
         # jetzt aussagekraeftig statt nur informativ.
@@ -70,27 +74,32 @@ jobs:
     name: README version/test-count check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install package + test dependencies
-        run: pip install -e ".[test]"
+        run: |
+          pip install -e ".[test,map]"
+          pip install -e ./tools --no-deps
 
       - name: Check README version badge + test count against actual state
         run: python scripts/check_version_badge.py
+
+      - name: Check tools/core version pin
+        run: python scripts/check_version_pin.py
 
   build:
     name: Build package (sdist + wheel)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 

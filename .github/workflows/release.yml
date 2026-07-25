@@ -29,7 +29,7 @@ jobs:
       # selected in the "Run workflow" dropdown (normally main) -- and
       # THAT commit is what gets tagged below, if the tag doesn't
       # already exist.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -62,36 +62,69 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install package + test dependencies
-        run: pip install -e ".[test]"
+        run: |
+          pip install -e ".[test,map]"
+          # --no-deps: the tools distribution pins the core by git tag, and
+          # that tag does not exist until this very workflow creates it.
+          # Without this, pip would fetch a second, unrelated core from
+          # GitHub and shadow the editable one being released.
+          pip install -e ./tools --no-deps
 
       - name: Run test suite (never release on red)
-        run: pytest roombapy_prime/tests/ -v
+        run: |
+          pytest roombapy_prime/tests/ -v
+          pytest tools/tests/ -v
 
       - name: Check README version badge + test count against actual state (never release on stale docs)
         run: python scripts/check_version_badge.py
+
+      - name: Check tools/core version pin (never release a mismatched pair)
+        run: python scripts/check_version_pin.py
 
       - name: Install ruff
         run: pip install ruff
 
       - name: Ruff check (never release on red)
-        run: ruff check roombapy_prime examples scripts --output-format=github
+        run: ruff check roombapy_prime tools examples scripts --output-format=github
 
       - name: Install build tooling
         run: pip install build
 
-      - name: Build sdist + wheel
+      - name: Build sdist + wheel (core)
         run: python -m build
 
-      - name: Verify wheel installs cleanly in an isolated venv
+      - name: Build sdist + wheel (tools)
+        run: python -m build ./tools --outdir dist-tools
+
+      - name: Verify the core wheel installs cleanly in an isolated venv
         run: |
           python -m venv /tmp/install-check
           /tmp/install-check/bin/pip install dist/*.whl
           /tmp/install-check/bin/python -c "import roombapy_prime; print(roombapy_prime.__version__)"
+
+      - name: Verify the core wheel registers NO console scripts
+        run: |
+          # The whole point of the split: a consumer installing only the
+          # library must not get robot-moving commands on their PATH.
+          if ls /tmp/install-check/bin/roombapy-prime-* >/dev/null 2>&1; then
+            echo "::error::The core wheel installed console scripts -- they belong in tools/ only."
+            ls /tmp/install-check/bin/roombapy-prime-*
+            exit 1
+          fi
+
+      - name: Verify the tools wheel installs and provides its commands
+        run: |
+          python -m venv /tmp/install-check-tools
+          # --no-deps again: the core is installed from the local wheel
+          # rather than the not-yet-existing git tag.
+          /tmp/install-check-tools/bin/pip install dist/*.whl
+          /tmp/install-check-tools/bin/pip install dist-tools/*.whl --no-deps
+          /tmp/install-check-tools/bin/roombapy-prime-verify-region-commands --help > /dev/null
 
       - name: Check for a matching release-notes file
         run: |
@@ -117,3 +150,5 @@ jobs:
           files: |
             dist/*.whl
             dist/*.tar.gz
+            dist-tools/*.whl
+            dist-tools/*.tar.gz
