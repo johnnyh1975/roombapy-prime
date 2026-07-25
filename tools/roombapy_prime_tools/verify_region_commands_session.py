@@ -38,7 +38,7 @@ import asyncio
 import sys
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
 from .verify_region_commands import (
     run_session_preflight_checks,
     build_stage_one_b_command,
@@ -76,7 +76,7 @@ def _pick_favorite_interactively(favorites: list) -> tuple[object, int] | None:
             print("  (no command_defs)")
             continue
         for i, command in enumerate(favorite.command_defs):
-            region_types = _region_types(getattr(command, "regions", None))
+            region_types = _region_types(field(command, "regions", None))
             if _is_safe_command_def(command):
                 eligible.append((favorite, i))
                 print(f"  [{len(eligible)}] {favorite.name!r} command_defs[{i}] regions={region_types or '(none)'}")
@@ -97,6 +97,7 @@ def _pick_favorite_interactively(favorites: list) -> tuple[object, int] | None:
 async def run_session(
     username: str, password: str, country_code: str, blid: str,
     favorite_id: str | None, command_index: int | None, suction_level: int, watch_seconds: int,
+    allow_robot_id_mismatch: bool = False,
 ) -> None:
     all_results: list[tuple[str, list, list]] = []
 
@@ -127,9 +128,16 @@ async def run_session(
         favorite_id = favorite.favorite_id
         # Runs ONCE per session -- the favorite doesn't change between
         # stages, so re-checking before every send would just be noise.
-        await run_session_preflight_checks(
+        ok_target = await run_session_preflight_checks(
             robot, original, favorite_id, command_index, report
-        )  # normalize: always the real id from here on,
+        )
+        if not ok_target and not allow_robot_id_mismatch:
+            print(
+                "\nAborted: the favorite belongs to a different robot than this command "
+                "would be sent to. See the check above for the exact --blid to use.\n"
+                "Nothing was sent."
+            )
+            return  # normalize: always the real id from here on,
         # whether it came from --favorite-id or the interactive picker below.
 
         if not _is_safe_command_def(original):

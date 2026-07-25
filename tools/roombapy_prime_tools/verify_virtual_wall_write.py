@@ -55,7 +55,7 @@ import json
 import sys
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
 
 
 
@@ -107,10 +107,10 @@ async def list_maps(username: str, password: str, country_code: str, blid: str) 
     else:
         print(f"\n{len(maps)} map(s) found:\n")
         for m in maps:
-            name = getattr(m, "name", None) or "(unnamed)"
+            name = field(m, "name") or "(unnamed)"
             print(f"  name={name!r}")
-            print(f"    --p2map-id  {getattr(m, 'p2map_id', None)}")
-            print(f"    --p2mapv-id {getattr(m, 'active_p2mapv_id', None)}")
+            print(f"    --p2map-id  {field(m, 'p2map_id')}")
+            print(f"    --p2mapv-id {field(m, 'active_p2mapv_id')}")
         report.add("List maps", "OK", f"{len(maps)} map(s)")
         print(
             "\nCopy the two IDs of the map you want into:\n"

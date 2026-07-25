@@ -239,7 +239,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
     raw_capture: dict[str, Any] = {}
 
     async with connected_robot(
-        username, password, country_code, blid
+        username, password, country_code, blid, connect_mqtt=True
     ) as (robot, report):
         await robot.connect()
         report.add("MQTT connection", "OK")

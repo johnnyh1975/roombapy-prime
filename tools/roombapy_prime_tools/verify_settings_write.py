@@ -97,7 +97,7 @@ async def list_settings(username: str, password: str, country_code: str, blid: s
     from roombapy_prime.models import ClassicShadowState, RobotSettings
 
     async with connected_robot(
-        username, password, country_code, blid
+        username, password, country_code, blid, connect_mqtt=True
     ) as (robot, report):
 
         print("\n== rw-settings (the five target settings) ==")

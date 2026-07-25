@@ -89,7 +89,7 @@ import time
 from typing import Any
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
 from roombapy_prime.diagnostics import Report
 from roombapy_prime.models.mission_control import Region, RegionType
 
@@ -141,7 +141,7 @@ def _is_safe_command_def(command) -> bool:
     command_def from stage 1 entirely -- see RegionType.TID's own
     docstring for why ad-hoc regions carry extra, unconfirmed
     construction requirements this script deliberately avoids."""
-    regions = getattr(command, "regions", None)
+    regions = field(command, "regions", None)
     for region_type in _region_types(regions):
         if region_type.lower() == str(RegionType.TID).lower():
             return False
@@ -299,7 +299,7 @@ async def _preflight_roundtrip_fidelity_check(
         )
 
 
-def preflight_target_robot_check(command, blid: str, report: Report) -> None:
+def preflight_target_robot_check(command, blid: str, report: Report) -> bool:
     """Checks that the favorite we are about to resend actually belongs
     to the robot we are sending it to.
 
@@ -316,34 +316,48 @@ def preflight_target_robot_check(command, blid: str, report: Report) -> None:
     has never heard of that map or those regions, and "no reaction" is
     the only possible outcome. No protocol mystery required.
 
-    Reports rather than blocks: the two identifiers may simply live in
-    different namespaces on some device generations (jayjay13011's
-    account has them identical, so at least sometimes they are the same
-    thing). Stating the mismatch plainly lets a human judge it; refusing
-    to send would be presumptuous on evidence this thin."""
-    robot_id = getattr(command, "asset_id", None)
+    NOW BLOCKS RATHER THAN WARNS (this session). The first version only
+    reported, on the reasoning that the two identifiers might live in
+    different namespaces on some device generations. A field run settled
+    that: DaRealGuGu's account has a Roomba 980 (sku R980040, a CLASSIC
+    protocol robot) and a Prime robot, and the command was going to the
+    980. The proof was in the same log -- ro-currentstate came back 404
+    "No shadow exists with name", which a V4 device always has and a
+    classic one never does.
+
+    So a mismatch is not an interesting curiosity. It means the command
+    is going somewhere it cannot possibly work, and every result from
+    that run is noise. Returning False stops the send; --i-know-the-
+    robot-id-differs overrides it for anyone who wants to confirm the
+    negative deliberately."""
+    robot_id = field(command, "asset_id", None)
     if not robot_id:
         report.add("Pre-flight: target robot", "SKIPPED", "command carries no robot_id")
-        return
+        return True
     if robot_id == blid:
         report.add(
             "Pre-flight: target robot", "OK",
             f"favorite's robot_id matches the BLID being published to ({blid})",
         )
-        return
+        return True
     report.add(
         "Pre-flight: target robot", "FAILED",
         f"the favorite says robot_id={robot_id!r}, but this command is being published to "
-        f"BLID={blid!r} -- these are NOT the same identifier. If your account has more than "
-        "one robot, the command may be going to a different one than the favorite was made "
-        "for, which would explain no reaction entirely. Worth reporting either way: it is "
-        "not yet known whether these two are always meant to match.",
+        f"BLID={blid!r} -- these are NOT the same identifier, so this command is being sent "
+        "to a DIFFERENT robot than the favorite belongs to. A field run confirmed exactly "
+        "this: the command went to a Roomba 980 (a classic-protocol robot) while the "
+        "favorite belonged to the Prime robot on the same account. Nothing can work that "
+        "way, and every result from such a run is noise.\n\n"
+        f"Re-run with:  --blid {robot_id}\n"
+        "(or set ROOMBAPY_PRIME_BLID to that value)\n\n"
+        "If you genuinely want to send it anyway, pass --i-know-the-robot-id-differs.",
     )
+    return False
 
 
 async def run_session_preflight_checks(
     robot, command, favorite_id: str, command_index: int, report: Report,
-) -> None:
+) -> bool:
     """The two pre-flight checks whose inputs do NOT change between
     stages of one session: the favorite's map version, and whether our
     own round-trip drops fields the stored favorite carries.
@@ -357,12 +371,20 @@ async def run_session_preflight_checks(
     stages, and the mission status is the whole point of a before/after
     comparison.
 
-    Call once, after picking the favorite and before the first send."""
-    preflight_target_robot_check(command, getattr(robot, "blid", "") or "", report)
+    Call once, after picking the favorite and before the first send.
+    Returns False if the favorite belongs to a different robot than the
+    one being targeted -- in which case the caller must not send, since
+    every result from such a run is noise (see
+    preflight_target_robot_check for the field case that established
+    this)."""
+    targets_right_robot = preflight_target_robot_check(
+        command, getattr(robot, "blid", "") or "", report
+    )
     await _preflight_map_version_check(robot, command, report)
     await _preflight_roundtrip_fidelity_check(
         robot, command, favorite_id, command_index, report
     )
+    return targets_right_robot
 
 
 async def _preflight_map_version_check(robot, command, report: Report) -> None:
@@ -382,7 +404,7 @@ async def _preflight_map_version_check(robot, command, report: Report) -> None:
     value: silently sending something different from what the user
     asked to send would undermine the whole point of a staged,
     show-the-exact-payload test script."""
-    stored_version = getattr(command, "pmap_version_id", None)
+    stored_version = field(command, "pmap_version_id", None)
     if not stored_version:
         report.add("Pre-flight: map version", "SKIPPED", "command carries no user_p2mapv_id")
         return
@@ -393,9 +415,9 @@ async def _preflight_map_version_check(robot, command, report: Report) -> None:
         return
 
     active = {
-        getattr(v, "active_p2mapv_id", None)
+        field(v, "active_p2mapv_id")
         for v in (versions or [])
-        if getattr(v, "active_p2mapv_id", None)
+        if field(v, "active_p2mapv_id")
     }
     if not active:
         report.add("Pre-flight: map version", "SKIPPED", "no active_p2mapv_id reported")
@@ -438,13 +460,13 @@ def preflight_pad_vs_mode_check(command, reported: dict | None, report: Report) 
     from roombapy_prime.models import OperatingModeBitmask
 
     modes: set[int] = set()
-    for region in (getattr(command, "regions", None) or []):
+    for region in (field(command, "regions", None) or []):
         # Regions arriving from a stored favorite are raw dicts, not
         # typed objects -- getattr() on a dict silently returns the
         # default, which is why this reported "no operatingMode in
         # regions" for a payload that visibly contained one on every
         # region (DaRealGuGu, v0.1.11a22).
-        params = region.get("params") if isinstance(region, dict) else getattr(region, "params", None)
+        params = region.get("params") if isinstance(region, dict) else field(region, "params", None)
         mode = (
             params.get("operatingMode") if isinstance(params, dict)
             else getattr(params, "operating_mode", None)
@@ -823,33 +845,85 @@ def _summarize_events(events: list) -> str:
 
     lines = [f"\n== Summary: {len(events)} event(s) observed =="]
     for event in events:
-        event_type = getattr(event, "event_type", None)
-        parts = [f"  [{event_type}]"]
-        command_ev = getattr(event, "command", None)
-        if command_ev is not None:
-            parts.append(
-                f"command={getattr(command_ev, 'command', None)!r} "
-                f"initiator={getattr(command_ev, 'initiator', None)!r}"
-            )
-        room_ev = getattr(event, "room", None)
-        if room_ev is not None:
-            parts.append(
-                f"region_id={getattr(room_ev, 'region_id', None)!r} "
-                f"area={getattr(room_ev, 'area', None)!r} "
-                f"total_area={getattr(room_ev, 'total_area', None)!r}"
-            )
-        zone_ev = getattr(event, "zone", None)
-        if zone_ev is not None:
-            parts.append(
-                f"zone_id={getattr(zone_ev, 'zone_id', None)!r} "
-                f"area={getattr(zone_ev, 'area', None)!r} "
-                f"total_area={getattr(zone_ev, 'total_area', None)!r}"
-            )
-        error_ev = getattr(event, "error", None)
-        if error_ev is not None:
-            parts.append(f"** ERROR value={getattr(error_ev, 'value', None)!r} **")
-        lines.append(" ".join(parts))
+        lines.extend(_describe_event(event))
     return "\n".join(lines)
+
+
+def _describe_event(event) -> list[str]:
+    """Renders one timeline event.
+
+    REAL BUG FOUND AND FIXED, and it could hardly have picked a worse
+    moment: this summariser was written against a parsed
+    MissionTimelineEvent model, but what actually arrives on the wire is
+    a raw ShadowResponse whose useful content sits in a payload DICT.
+    Every getattr() therefore returned None, and the summary printed
+    "[None]" for each event.
+
+    That held for months without consequence, because until now every
+    run observed zero events. It surfaced on the very first run where
+    the robot genuinely started a mission (DaRealGuGu) -- the one moment
+    the summary had to be readable, it said nothing.
+
+    Reads the real shape and keeps the typed path as a fallback, since
+    an unparsed dict is what we get today but not necessarily forever."""
+    payload = field(event, "payload", None)
+    if not isinstance(payload, dict):
+        return [_describe_typed_event(event)]
+
+    out: list[str] = []
+    mission_id = payload.get("mission_id")
+    n_mssn = payload.get("nMssn")
+    header = "  mission"
+    if mission_id:
+        header += f" {mission_id}"
+    if n_mssn is not None:
+        header += f"  (#{n_mssn} on this robot)"
+    out.append(header)
+
+    for label, key in (("event", "event"), ("finished", "finEvents")):
+        for entry in payload.get(key) or []:
+            if isinstance(entry, dict):
+                out.append(f"    [{label}] type={entry.get('type')!r} ts={entry.get('ts')!r}")
+            else:
+                out.append(f"    [{label}] {entry!r}")
+
+    # The robot echoes the command back. Worth surfacing which regions it
+    # actually accepted -- that is the whole question these tests exist for.
+    cmd = payload.get("cmd")
+    if isinstance(cmd, dict):
+        regions = cmd.get("regions") or []
+        region_ids = [r.get("region_id") for r in regions if isinstance(r, dict)]
+        out.append(
+            f"    [echoed back] command={cmd.get('command')!r} "
+            f"initiator={cmd.get('initiator')!r} regions={region_ids or '(none)'}"
+        )
+    return out
+
+
+def _describe_typed_event(event) -> str:
+    """Fallback for a parsed MissionTimelineEvent, kept in case the
+    watch path ever returns parsed models rather than raw responses."""
+    parts = [f"  [{field(event, 'event_type', None)}]"]
+    command_ev = field(event, "command", None)
+    if command_ev is not None:
+        parts.append(
+            f"command={field(command_ev, 'command', None)!r} "
+            f"initiator={field(command_ev, 'initiator', None)!r}"
+        )
+    room_ev = field(event, "room", None)
+    if room_ev is not None:
+        parts.append(
+            f"region_id={field(room_ev, 'region_id', None)!r} "
+            f"area={field(room_ev, 'area', None)!r} "
+            f"total_area={field(room_ev, 'total_area', None)!r}"
+        )
+    zone_ev = field(event, "zone", None)
+    if zone_ev is not None:
+        parts.append(f"zone_id={field(zone_ev, 'zone_id', None)!r}")
+    error_ev = field(event, "error", None)
+    if error_ev is not None:
+        parts.append(f"** ERROR value={field(error_ev, 'value', None)!r} **")
+    return " ".join(parts)
 
 
 async def list_favorites(username: str, password: str, country_code: str, blid: str) -> None:
@@ -874,10 +948,10 @@ async def list_favorites(username: str, password: str, country_code: str, blid: 
             print("  (no command_defs)")
             continue
         for i, command in enumerate(favorite.command_defs):
-            region_types = _region_types(getattr(command, "regions", None))
+            region_types = _region_types(field(command, "regions", None))
             eligible = _is_safe_command_def(command)
             tag = "STAGE-1 ELIGIBLE" if eligible else "CONTAINS TID -- NOT eligible for stage 1/2"
-            print(f"  [{i}] command_type={getattr(command, 'command_type', '?')!r} regions={region_types or '(none)'} -- {tag}")
+            print(f"  [{i}] command_type={field(command, 'command_type', '?')!r} regions={region_types or '(none)'} -- {tag}")
     print(
         "\nTo test one: roombapy-prime-verify-region-commands --send FAVORITE_ID "
         "--command-index N --i-understand-this-will-move-my-robot "
@@ -1101,9 +1175,16 @@ async def send_stage_one_with_initiator(
             )
             return
 
-        await run_session_preflight_checks(
+        ok_target = await run_session_preflight_checks(
             robot, original, favorite_id, command_index, report
         )
+        if not ok_target:
+            print(
+                "\nAborted: the favorite belongs to a different robot than this command "
+                "would be sent to. See the check above for the exact --blid to use.\n"
+                "Nothing was sent."
+            )
+            return
 
         command = build_stage_one_b_command(original, favorite_id)
         if command is None:
@@ -1156,7 +1237,7 @@ def _build_modified_command(original, suction_level: int):
 
     from roombapy_prime.models.mission_control import CommandParams
 
-    original_params = getattr(original, "params", None)
+    original_params = field(original, "params", None)
     if isinstance(original_params, dict):
         original_level = original_params.get("suctionLevel")
         new_params: CommandParams | dict = {

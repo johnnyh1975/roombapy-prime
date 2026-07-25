@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 import aiohttp
 
 from roombapy_prime.diagnostics import Report
-from roombapy_prime.auth import login
+from roombapy_prime.auth import is_prime_sku, login
 from roombapy_prime.prime_factory import PrimeFactory
 
 
@@ -63,6 +63,94 @@ def add_account_arguments(parser: argparse.ArgumentParser) -> None:
         help="The exact target device -- never 'first device found'. Falls back to "
         "ROOMBAPY_PRIME_BLID.",
     )
+
+
+def field(obj, name: str, default=None):
+    """Reads a field whether the object is a dict or a typed model.
+
+    THIRD OCCURRENCE OF THE SAME BUG (this session). Several REST
+    wrappers return plain `list[dict]` -- get_active_map_versions()
+    among them -- while others return parsed models, and the call sites
+    could not tell which. getattr() on a dict silently returns the
+    default, so the failure is never an error: it is a report full of
+    `None` that looks like the robot had nothing to say.
+
+    Field cases it produced, all reported as puzzling results rather
+    than crashes:
+      - the pad check reporting "no operatingMode in regions" for a
+        payload that visibly carried one on every region
+      - --list-maps printing "name='(unnamed)'  --p2map-id None" for a
+        map that certainly has both
+      - the map-version pre-flight reporting "no active_p2mapv_id"
+
+    Use this instead of getattr() for anything that crossed a REST or
+    MQTT boundary."""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def pick_robot_interactively(login_result, target_blid: str | None) -> str | None:
+    """Lets the user choose which robot to target when the account has
+    more than one and none was named.
+
+    Uses is_prime_sku() to mark which robots this library can actually
+    talk to, and offers the single Prime one as the default -- but does
+    NOT choose silently. The SKU table is explicitly incomplete for
+    platforms nobody has field-tested, so an unrecognised SKU means
+    "unknown", not "classic". Marking what we know while leaving the
+    choice with the person is honest about that gap; auto-selecting
+    would put a partly-guessed table in the path of a command that
+    moves someone's robot.
+
+    Returns None if the user declines or input is unavailable, in which
+    case the caller should abort rather than pick something.
+
+    Why this matters concretely: a field run sent an entire
+    region-command session to a Roomba 980 because the library picked
+    whichever robot came first in a dictionary. The 980 cannot speak
+    this protocol at all -- the same log showed its ro-currentstate
+    shadow returning 404, which a V4 device always has."""
+    robots = getattr(login_result, "robots", None) or {}
+    if target_blid or len(robots) <= 1:
+        return target_blid or (next(iter(robots), None) if robots else None)
+
+    print(f"\n== This account has {len(robots)} robots ==")
+    entries = list(robots.items())
+    prime_indexes = []
+    for i, (blid, entry) in enumerate(entries, start=1):
+        name = field(entry, "name", None) or "(unnamed)"
+        sku = field(entry, "sku", None) or "?"
+        if is_prime_sku(sku):
+            prime_indexes.append(i)
+            marker = "Prime/V4 -- this library can talk to it"
+        else:
+            marker = "not a known Prime SKU -- this library probably cannot talk to it"
+        print(f"  [{i}] {name!r}  sku={sku}  blid={blid}")
+        print(f"      {marker}")
+
+    default = prime_indexes[0] if len(prime_indexes) == 1 else None
+    if default is not None:
+        prompt = f"Pick one [1-{len(entries)}], or Enter for [{default}]: "
+    else:
+        prompt = f"Pick one [1-{len(entries)}], or anything else to abort: "
+    print("\nThe names shown are the ones you gave the robots in the iRobot app.")
+
+    try:
+        choice = input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not choice and default is not None:
+        choice = str(default)
+    if not choice.isdigit() or not (1 <= int(choice) <= len(entries)):
+        return None
+
+    chosen = entries[int(choice) - 1][0]
+    print(
+        f"\nUsing {chosen}. To skip this prompt next time:\n"
+        f"  export ROOMBAPY_PRIME_BLID={chosen}\n"
+    )
+    return chosen
 
 
 def require_blid(args: argparse.Namespace) -> None:
@@ -148,6 +236,13 @@ async def connected_robot(
             # before anything else happens, then hand the result to the
             # factory so this is still exactly one login.
             login_result = await login(session, username, password, country_code)
+            chosen = pick_robot_interactively(login_result, blid)
+            if chosen is None:
+                raise RuntimeError(
+                    "No robot chosen -- aborting rather than picking one. Pass --blid or set "
+                    "ROOMBAPY_PRIME_BLID."
+                )
+            blid = chosen
             _report_account_robots(login_result, blid, report)
             robot = await PrimeFactory.create_prime_robot(
                 session, username, password, country_code, blid,
@@ -191,9 +286,9 @@ def _report_account_robots(login_result, target_blid: str, report: Report) -> No
     print(f"\n== {len(robots)} robots on this account ==")
     for entry_blid, entry in robots.items():
         marker = "->" if entry_blid == target_blid else "  "
-        name = getattr(entry, "name", None) or "(unnamed)"
-        sku = getattr(entry, "sku", None) or "?"
-        robot_id = getattr(entry, "robot_id", None)
+        name = field(entry, "name", None) or "(unnamed)"
+        sku = field(entry, "sku", None) or "?"
+        robot_id = field(entry, "robot_id", None)
         print(f"  {marker} {name!r}  sku={sku}  blid={entry_blid}")
         if robot_id and robot_id != entry_blid:
             print(f"       robot_id={robot_id}  (differs from blid)")

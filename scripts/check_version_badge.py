@@ -59,13 +59,41 @@ def get_readme_version_badge() -> str:
 
 
 def get_actual_test_count() -> int:
+    """Counts the core suite's tests via pytest's own collection.
+
+    NOTE ON ERROR REPORTING (this session): this used check=True, so a
+    collection failure surfaced as a bare CalledProcessError traceback
+    with pytest's actual output thrown away. In CI that produced a
+    failure that said only "returned non-zero exit status 2" -- the one
+    line that explains nothing -- while pytest had printed the real
+    reason and had it discarded.
+
+    Exit status 2 from collection almost always means a test module
+    could not be imported. On this repository the most likely cause is
+    stale files: extracting a release over an existing checkout leaves
+    deleted modules behind, and old test files that import modules
+    which have since moved will fail exactly this way."""
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "roombapy_prime/tests/", "--collect-only", "-q"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if result.returncode != 0:
+        print(f"pytest could not collect the test suite (exit {result.returncode}).\n")
+        print("--- pytest stdout ---")
+        print(result.stdout.strip() or "(empty)")
+        if result.stderr.strip():
+            print("--- pytest stderr ---")
+            print(result.stderr.strip())
+        print(
+            "\nIf this mentions an import error for a module that no longer exists, "
+            "the checkout probably has stale files -- extracting a release over an "
+            "existing tree does not remove files that were deleted upstream."
+        )
+        sys.exit(1)
+
     match = re.search(r"(\d+) tests? collected", result.stdout)
     if not match:
         raise ValueError(f"Could not parse test count from pytest --collect-only output:\n{result.stdout}")

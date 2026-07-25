@@ -431,6 +431,7 @@ class TestStageTwoAndThreeNowIncludeInitiator:
         )
         favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
         robot = AsyncMock()
+        robot.blid = "BLID"   # a real PrimeRobot has this; the target-robot check reads it
         robot.get_favorites.return_value = [favorite]
         captured = {}
 
@@ -532,6 +533,7 @@ class TestStagesOneOneBTwoNowIncludeFavoriteId:
         original = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID", favorite_id=None)
         favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
         robot = AsyncMock()
+        robot.blid = "BLID"   # a real PrimeRobot has this; the target-robot check reads it
         robot.get_favorites.return_value = [favorite]
         captured = {}
 
@@ -559,6 +561,7 @@ class TestStagesOneOneBTwoNowIncludeFavoriteId:
         )
         favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
         robot = AsyncMock()
+        robot.blid = "BLID"   # a real PrimeRobot has this; the target-robot check reads it
         robot.get_favorites.return_value = [favorite]
         captured = {}
 
@@ -588,6 +591,7 @@ class TestStagesOneOneBTwoNowIncludeFavoriteId:
         )
         favorite = MagicMock(favorite_id="fav1", name="Test", command_defs=[original])
         robot = AsyncMock()
+        robot.blid = "BLID"   # a real PrimeRobot has this; the target-robot check reads it
         robot.get_favorites.return_value = [favorite]
         captured = {}
 
@@ -1075,7 +1079,6 @@ class TestStageBuildersAreTheSingleSourceOfTruth:
         """The actual regression guard: if either side ever goes back to
         composing by hand, this catches it. Both modules must reference
         the shared builders and nothing else."""
-        import inspect
 
         from roombapy_prime_tools import verify_region_commands, verify_region_commands_session
 
@@ -1128,7 +1131,6 @@ class TestShadowFetchesAreBundled:
         """Both consumers of the shared fetch must take DATA, not a
         robot -- otherwise the next one added would quietly fetch its
         own again."""
-        import inspect
 
         from roombapy_prime_tools.verify_region_commands import (
             mission_status_from, preflight_pad_vs_mode_check,
@@ -1228,15 +1230,97 @@ class TestPreflightTargetRobotCheck:
         assert "0B710054CA277C04B2700374A8349C9A" in entry.detail
         assert "3178480C91223620" in entry.detail
 
-    def test_it_reports_rather_than_blocks(self):
-        """The two identifiers may legitimately live in different
-        namespaces on some device generations -- refusing to send on
-        evidence this thin would be presumptuous."""
-        from roombapy_prime_tools import verify_region_commands
+    def test_it_now_blocks_and_names_the_correct_blid(self):
+        """REVERSED after a field run. The first version only warned, on
+        the reasoning that the identifiers might legitimately differ.
+        DaRealGuGu's account settled it: the command was going to a
+        Roomba 980 (classic protocol) while the favorite belonged to the
+        Prime robot. A mismatch means the run is noise, so it stops --
+        and tells you the exact --blid to use instead."""
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime_tools.verify_region_commands import preflight_target_robot_check
 
-        assert not inspect.iscoroutinefunction(verify_region_commands.preflight_target_robot_check)
-        entry = self._check("A" * 32, "B" * 16)
-        assert "not yet known" in entry.detail
+        report = Report()
+        result = preflight_target_robot_check(self._command("A" * 32), "B" * 16, report)
+
+        assert result is False
+        detail = report.results[-1].detail
+        assert f"--blid {'A' * 32}" in detail, "must name the BLID to use instead"
+        assert "--i-know-the-robot-id-differs" in detail, "must offer the deliberate override"
+
+    def test_a_matching_pair_returns_true_so_the_send_proceeds(self):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime_tools.verify_region_commands import preflight_target_robot_check
+
+        same = "0ECDE8AF7343838938E479DAFECD831B"
+
+        assert preflight_target_robot_check(self._command(same), same, Report()) is True
 
     def test_a_command_without_a_robot_id_is_skipped(self):
         assert self._check(None, "BLID").status == "SKIPPED"
+
+
+class TestEventSummaryReadsTheRealWireShape:
+    """REAL BUG, found at the worst possible moment. The summariser was
+    written against a parsed MissionTimelineEvent model, but what
+    arrives is a raw ShadowResponse whose content sits in a payload
+    DICT. Every getattr() returned None, so the summary printed
+    "[None]" per event.
+
+    It went unnoticed for months because every run until now observed
+    zero events. It surfaced on the first run where a robot genuinely
+    started a mission -- the one moment the summary had to be readable,
+    it said nothing at all."""
+
+    def _response(self, **payload):
+        return MagicMock(payload=payload)
+
+    def test_the_real_payload_shape_is_rendered(self):
+        """Fields taken verbatim from DaRealGuGu's successful run."""
+        from roombapy_prime_tools.verify_region_commands import _summarize_events
+
+        out = _summarize_events([self._response(
+            cmd={"command": "start", "initiator": "rmtApp",
+                 "regions": [{"region_id": "10"}, {"region_id": "11"}]},
+            event=[{"ts": 1784984724, "type": "start"}],
+            finEvents=[],
+            mission_id="01KYCP2SAQB1GHKJD76MHK239F",
+            nMssn=34,
+        )])
+
+        assert "01KYCP2SAQB1GHKJD76MHK239F" in out
+        assert "type='start'" in out
+        assert "None" not in out.replace("(none)", "")
+
+    def test_finished_events_are_labelled_separately_from_current_ones(self):
+        """finEvents and event mean different things -- a mission that
+        has started versus one that has completed a phase."""
+        from roombapy_prime_tools.verify_region_commands import _summarize_events
+
+        out = _summarize_events([self._response(
+            event=[{"ts": 2, "type": "padWash"}],
+            finEvents=[{"ts": 1, "type": "start"}],
+            mission_id="M1",
+        )])
+
+        assert "[event] type='padWash'" in out
+        assert "[finished] type='start'" in out
+
+    def test_the_echoed_command_shows_which_regions_the_robot_accepted(self):
+        """The robot echoes our command back. Which regions it carries
+        is the entire question these tests exist to answer."""
+        from roombapy_prime_tools.verify_region_commands import _summarize_events
+
+        out = _summarize_events([self._response(
+            cmd={"command": "start", "initiator": "rmtApp",
+                 "regions": [{"region_id": "13", "type": "rid"}]},
+            mission_id="M1",
+        )])
+
+        assert "echoed back" in out
+        assert "'13'" in out
+
+    def test_no_events_still_says_so_clearly(self):
+        from roombapy_prime_tools.verify_region_commands import _summarize_events
+
+        assert "NO events observed" in _summarize_events([])

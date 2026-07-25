@@ -105,7 +105,7 @@ import webbrowser
 from typing import Any
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
 from roombapy_prime.diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
 from roombapy_prime.models import (
     P2MapVersion,
@@ -161,8 +161,8 @@ async def _fetch_bundle_rooms(robot: Any, typed_versions: list[P2MapVersion]) ->
     more personal than most other data" rule."""
     rooms: list[tuple[str, RoomFeature]] = []
     for version in typed_versions:
-        p2map_id = getattr(version, "p2map_id", None)
-        p2mapv_id = getattr(version, "active_p2mapv_id", None)
+        p2map_id = field(version, "p2map_id", None)
+        p2mapv_id = field(version, "active_p2mapv_id", None)
         if not (p2map_id and p2mapv_id):
             continue
         try:
@@ -229,7 +229,13 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             await robot.disconnect()
             return report, raw_capture
         report.add("Fetching active map versions", "OK", f"{len(map_versions)} map version(s) found")
-        raw_capture["Active map versions"] = [getattr(v, "__dict__", str(v)) for v in map_versions]
+        # A dict has no __dict__, so the old fallback stored str(v) --
+        # turning structured capture data into a flat string exactly
+        # where the structure is the point.
+        raw_capture["Active map versions"] = [
+            v if isinstance(v, dict) else getattr(v, "__dict__", str(v))
+            for v in map_versions
+        ]
 
         typed_versions = parse_active_map_versions(map_versions)
 
