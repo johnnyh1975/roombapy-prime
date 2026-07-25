@@ -56,6 +56,8 @@ interactive prompt, never as a command-line argument.
 """
 from __future__ import annotations
 
+import sys
+
 import argparse
 import asyncio
 import json
@@ -63,7 +65,7 @@ import webbrowser
 from typing import Any
 
 
-from ._cli import add_account_arguments, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, connected_robot, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report, _redact_raw_capture, build_issue_url, redact_aws_url_secrets
 
 # The five shadows already confirmed queryable (content known, none
@@ -188,7 +190,7 @@ def main() -> None:
     print(f"\nTARGET DEVICE: {args.blid}")
     print("This run only reads shadows -- it never sends commands to this device.")
 
-    report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid, args.delay_seconds))
+    report, raw_capture = sys.exit(run_script(run(username, password, args.country_code, args.blid, args.delay_seconds)))
     report.redact(username, password)
 
     report.print_final_summary()

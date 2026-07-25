@@ -34,11 +34,10 @@ closing message for exact next-step instructions if stage 2 succeeds.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
 from .verify_region_commands import (
     run_session_preflight_checks,
     build_stage_one_b_command,
@@ -281,12 +280,12 @@ def main() -> None:
 
     username, password = resolve_credentials(args)
 
-    asyncio.run(
+    sys.exit(run_script(
         run_session(
             username, password, args.country_code, args.blid,
             args.favorite_id, args.command_index, args.suction_level, args.watch_seconds,
         )
-    )
+    ))
 
 
 if __name__ == "__main__":

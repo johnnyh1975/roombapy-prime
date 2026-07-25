@@ -89,7 +89,7 @@ import time
 from typing import Any
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report
 from roombapy_prime.models.mission_control import Region, RegionType
 
@@ -634,7 +634,7 @@ def _report_mission_status(report: Report, before: dict | None, after: dict | No
 
 async def _confirm_show_send_watch(
     robot, command, report: Report, watch_seconds: int, description: str,
-    disconnect_after: bool = True,
+    disconnect_after: bool = True, watch_rejected: bool = False,
 ) -> tuple[list, list]:
     """Shared final step for every stage: show the exact payload,
     require interactive confirmation, subscribe to mission/timeline/
@@ -713,13 +713,37 @@ async def _confirm_show_send_watch(
     timeline_task: asyncio.Task | None = None
     rejected_task: asyncio.Task | None = None
     if watch_seconds > 0:
+        topics = "mission/timeline/report"
+        if watch_rejected:
+            topics += " and rejected/report"
         print(
-            "\n== Subscribing to mission/timeline/report and rejected/report BEFORE "
-            "sending (a fast response, especially a rejection, could otherwise arrive "
-            "before we're listening) =="
+            f"\n== Subscribing to {topics} BEFORE sending (a fast response, especially "
+            "a rejection, could otherwise arrive before we're listening) =="
         )
         timeline_task = asyncio.create_task(_watch_timeline())
-        rejected_task = asyncio.create_task(_watch_rejected())
+        # rejected/report is OFF BY DEFAULT (this session) -- see
+        # watch_rejected_commands()'s own docstring: it is EXPLORATORY,
+        # never confirmed live, and this module's header warns in as many
+        # words that subscribing to an unconfirmed topic causes immediate
+        # "Unspecified error" disconnects.
+        #
+        # A field log (DaRealGuGu, a24) is full of exactly that error.
+        # And the correlation there is total: every stage that got a
+        # PUBACK started a mission, every stage that did not got nothing
+        # -- the payload never mattered. So the most likely story is that
+        # our own diagnostic subscription was poisoning the connection
+        # the command needed.
+        #
+        # The topic named in a drop message only says which watcher
+        # NOTICED, not what caused it: the connection is shared, so one
+        # bad subscription takes both down.
+        #
+        # Cost of turning it off: across five real runs by three testers,
+        # this channel has produced exactly zero messages. Losing nothing
+        # to possibly stop losing everything is an easy trade. --watch-
+        # rejected brings it back for anyone testing the channel itself.
+        if watch_rejected:
+            rejected_task = asyncio.create_task(_watch_rejected())
         # Give the subscribe() calls a moment to actually reach the
         # broker before sending -- there's no "subscription confirmed"
         # signal to await precisely here, so a short, fixed settle
@@ -933,8 +957,7 @@ async def list_favorites(username: str, password: str, country_code: str, blid: 
     aren't, so a tester can pick a safe target before touching --send
     at all."""
     async with connected_robot(
-        username, password, country_code, blid
-    ) as (robot, report):
+        username, password, country_code, blid, connect_mqtt=True) as (robot, report):
         favorites = await robot.get_favorites()
 
     if not favorites:
@@ -1249,8 +1272,49 @@ def _build_modified_command(original, suction_level: int):
     else:
         original_level = None
         new_params = CommandParams(suction_level=suction_level, routine_modified=True)
-    modified = dataclasses.replace(original, params=new_params)
+    # ALSO change it where the real app actually keeps it.
+    #
+    # EVIDENCE, from a field capture of an app-created favorite
+    # (DaRealGuGu): the stored favorite's top-level params were exactly
+    # {"routine_type", "profile"} -- no suctionLevel at all -- while
+    # EVERY region carried its own {"suctionLevel": 1, ...}. So the app
+    # stores suction per region and does not use a top-level field for
+    # it.
+    #
+    # This function only ever wrote the top level, leaving each region's
+    # real value untouched. The result was a payload asking for level 2
+    # in a place the app never uses while still saying level 1 in the
+    # place it does -- and nobody could say which one the robot honours.
+    # The robot accepted it and ran, so it was never fatal, just
+    # uninterpretable.
+    #
+    # The top-level write is KEPT rather than replaced: it is where
+    # routineModified goes, and dropping it would change two things at
+    # once in a test whose whole point is changing one.
+    new_regions = _with_region_suction_level(field(original, "regions", None), suction_level)
+    modified = dataclasses.replace(original, params=new_params, regions=new_regions)
     return modified, original_level
+
+
+def _with_region_suction_level(regions, suction_level: int):
+    """Returns the region list with each region's own suctionLevel set.
+
+    Leaves anything it does not recognise alone -- a region that is
+    neither a dict nor carries params is passed through untouched
+    rather than reshaped on a guess."""
+    if not regions:
+        return regions
+    out = []
+    for region in regions:
+        if not isinstance(region, dict):
+            out.append(region)
+            continue
+        params = region.get("params")
+        if not isinstance(params, dict):
+            out.append(region)
+            continue
+        out.append({**region, "params": {**params, "suctionLevel": suction_level}})
+    return out
 
 
 async def send_stage_one_c(
@@ -1381,8 +1445,7 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
     get_map_metadata()'s own rooms_metadata, so a tester can pick a
     REAL room rather than guessing at an id."""
     async with connected_robot(
-        username, password, country_code, blid
-    ) as (robot, report):
+        username, password, country_code, blid, connect_mqtt=True) as (robot, report):
         map_data = await robot.get_map_metadata(p2map_id)
 
     if not map_data.rooms_metadata:
@@ -1725,65 +1788,65 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_favorites:
-        asyncio.run(list_favorites(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_favorites(username, password, args.country_code, args.blid)))
         return
 
     if args.list_rooms:
-        asyncio.run(list_rooms(username, password, args.country_code, args.blid, args.p2map_id))
+        sys.exit(run_script(list_rooms(username, password, args.country_code, args.blid, args.p2map_id)))
         return
 
     if args.send:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_one(
                 username, password, args.country_code, args.blid,
                 args.send, args.command_index, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_with_initiator:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_one_with_initiator(
                 username, password, args.country_code, args.blid,
                 args.send_with_initiator, args.command_index, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_enveloped:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_one_c(
                 username, password, args.country_code, args.blid,
                 args.send_enveloped, args.command_index, args.envelope_style, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_modified:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_two(
                 username, password, args.country_code, args.blid,
                 args.send_modified, args.command_index, args.suction_level, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_region:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_three(
                 username, password, args.country_code, args.blid,
                 args.p2map_id, args.room_id, args.region_type, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_adhoc:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_four(
                 username, password, args.country_code, args.blid,
                 args.p2map_id, args.furniture_id, parsed_polygon_points, args.watch_seconds,
             )
-        )
+        ))
         return
 
 

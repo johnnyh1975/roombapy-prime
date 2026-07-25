@@ -70,12 +70,11 @@ needed on top of the change-acknowledgment one):
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 
 
-from ._cli import add_account_arguments, connected_robot, confirm, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 
 # wire key <-> RobotSettings/ClassicShadowState attribute name, for the
 # five settings this script can toggle. Kept as a single source of
@@ -107,14 +106,42 @@ async def list_settings(username: str, password: str, country_code: str, blid: s
             print(f"  {attr_name} ({wire_key}): {getattr(settings, attr_name)!r}")
 
         print("\n== classic/unnamed shadow's OWN schedHold (cross-check) ==")
-        state_response = await robot.get_state()
-        classic_state = ClassicShadowState.from_json(state_response.payload["state"]["reported"])
-        print(f"  classic/unnamed.sched_hold: {classic_state.sched_hold!r}")
-        if classic_state.sched_hold != settings.sched_hold:
+        # This reads the UNNAMED shadow, which not every robot has.
+        # A field run (DaRealGuGu, a Roomba Plus 505) timed out here
+        # after the five settings had already printed perfectly -- the
+        # whole run then died on a traceback, throwing away the useful
+        # part of its own output.
+        #
+        # The cross-check is a nice-to-have: it exists only to see
+        # whether two sources of schedHold disagree. Losing it must not
+        # cost the tester the primary result, so a failure is reported
+        # and the run continues.
+        try:
+            state_response = await robot.get_state()
+        except Exception as exc:  # noqa: BLE001
+            print(f"  not available on this robot ({type(exc).__name__}: {exc})")
             print(
-                "  NOTE: these two values DIFFER right now -- confirmed possible "
-                "(this session, real capture): the two sources update independently."
+                "  This is a cross-check only -- the five values above are the actual "
+                "result and are unaffected."
             )
+            report.add(
+                "Cross-check against unnamed shadow", "SKIPPED",
+                f"{type(exc).__name__}: {exc}",
+            )
+        else:
+            classic_state = ClassicShadowState.from_json(
+                state_response.payload["state"]["reported"]
+            )
+            print(f"  classic/unnamed.sched_hold: {classic_state.sched_hold!r}")
+            report.add(
+                "Cross-check against unnamed shadow", "OK",
+                f"sched_hold={classic_state.sched_hold!r}",
+            )
+            if classic_state.sched_hold != settings.sched_hold:
+                print(
+                    "  NOTE: these two values DIFFER right now -- confirmed possible "
+                    "(this session, real capture): the two sources update independently."
+                )
 
     print(
         "\nTo test a toggle: roombapy-prime-verify-settings-write --toggle KEY "
@@ -134,7 +161,7 @@ async def send_toggle(username: str, password: str, country_code: str, blid: str
         return
     wire_key = _TARGET_SETTINGS[key]
 
-    async with connected_robot(username, password, country_code, blid) as (robot, report):
+    async with connected_robot(username, password, country_code, blid, connect_mqtt=True) as (robot, report):
 
         print("\n== Fetching current value ==")
         settings_response = await robot.get_settings()
@@ -228,11 +255,11 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_settings:
-        asyncio.run(list_settings(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_settings(username, password, args.country_code, args.blid)))
         return
 
     if args.toggle:
-        asyncio.run(send_toggle(username, password, args.country_code, args.blid, args.toggle))
+        sys.exit(run_script(send_toggle(username, password, args.country_code, args.blid, args.toggle)))
         return
 
 

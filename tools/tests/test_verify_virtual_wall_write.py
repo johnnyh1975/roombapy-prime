@@ -7,6 +7,8 @@ approach described in its own module docstring."""
 
 from __future__ import annotations
 
+import asyncio
+
 import io
 import json
 import tarfile
@@ -82,3 +84,70 @@ async def test_fetch_current_walls_returns_empty_when_no_policy_zones_in_bundle(
 
     assert features == []
     assert walls == []
+
+
+class TestStaleMapVersionIsDetected:
+    """FIELD CASE (DaRealGuGu). He restarted his robot between tests,
+    which re-versioned the map, then ran with the older version id and
+    got "No policyZones.geojson data found".
+
+    That result is ambiguous in the worst way: it reads as "you have no
+    keep-out zones" when it might equally mean "we looked in a version
+    that no longer exists". Neither he nor we could tell which, and the
+    script said nothing about the difference.
+
+    Map re-versioning on restart is confirmed behaviour now, not a
+    theory -- his observation is what confirmed it."""
+
+    def _robot(self, active_version):
+        robot = AsyncMock()
+        robot.get_active_map_versions.return_value = [{
+            "p2map_id": "MAP1",
+            "active_p2mapv_id": active_version,
+        }]
+        return robot
+
+    def _check(self, robot, passed_version):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime_tools.verify_virtual_wall_write import warn_if_map_version_is_stale
+
+        report = Report()
+        fresh = asyncio.run(warn_if_map_version_is_stale(robot, "MAP1", passed_version, report))
+        return fresh, report.results[-1]
+
+    def test_a_current_version_passes(self):
+        fresh, entry = self._check(self._robot("260725T140000.000"), "260725T140000.000")
+
+        assert fresh is True
+        assert entry.status == "OK"
+
+    def test_a_stale_version_is_flagged_with_the_correct_one(self):
+        """His real values: the id he passed, and a newer one after the
+        restart."""
+        fresh, entry = self._check(self._robot("260725T180000.000"), "260725T101729.167")
+
+        assert fresh is False
+        assert entry.status == "FAILED"
+        assert "260725T180000.000" in entry.detail, "must name the version to use instead"
+
+    def test_an_unreadable_map_list_does_not_block_the_run(self):
+        """This is a warning, not a gate -- failing to check must not
+        cost the tester their actual test."""
+        robot = AsyncMock()
+        robot.get_active_map_versions.side_effect = RuntimeError("network")
+
+        fresh, entry = self._check(robot, "anything")
+
+        assert fresh is True
+        assert entry.status == "SKIPPED"
+
+    def test_a_map_the_robot_does_not_list_is_skipped_rather_than_failed(self):
+        fresh, entry = self._check(self._robot("V1"), "V1")
+        assert fresh is True
+
+        robot = AsyncMock()
+        robot.get_active_map_versions.return_value = [{"p2map_id": "OTHER", "active_p2mapv_id": "V9"}]
+        fresh, entry = self._check(robot, "V1")
+
+        assert fresh is True
+        assert entry.status == "SKIPPED"

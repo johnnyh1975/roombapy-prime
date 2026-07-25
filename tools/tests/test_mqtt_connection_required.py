@@ -40,21 +40,43 @@ def _scripts() -> list[Path]:
 
 
 @pytest.mark.parametrize("script", _scripts(), ids=lambda p: p.name)
-def test_scripts_using_mqtt_methods_request_an_mqtt_connection(script: Path) -> None:
+def test_every_connection_site_asks_for_mqtt_when_the_script_needs_it(script: Path) -> None:
+    """Checks EVERY connected_robot() call, not just whether the file
+    mentions connect_mqtt somewhere.
+
+    The first version of this test did the latter, and it gave false
+    confidence: verify_settings_write has two connection sites, one was
+    fixed, and the whole file passed. The unfixed one -- written on a
+    single line rather than across three, which is also why a
+    text-pattern fix missed it -- then failed for a tester on the very
+    next run, with the shiny new error message I had just written for
+    exactly that case.
+
+    A guard that passes when the bug is still present is worse than no
+    guard, because it stops you looking."""
     source = script.read_text(encoding="utf-8")
+    tree = ast.parse(source)
 
     called = {
         node.func.attr
-        for node in ast.walk(ast.parse(source))
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     mqtt_calls = sorted(called & _MQTT_METHODS)
     if not mqtt_calls:
         return
 
-    assert "connect_mqtt=True" in source, (
-        f"{script.name} calls MQTT-backed method(s) {mqtt_calls} but never asks "
-        "connected_robot() for an MQTT connection. Without it the call fails at "
-        "runtime -- and only against a real robot, which is the worst place to "
-        "find out."
+    missing = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "connected_robot"
+        and not any(kw.arg == "connect_mqtt" for kw in node.keywords)
+    ]
+
+    assert not missing, (
+        f"{script.name} calls MQTT-backed method(s) {mqtt_calls}, but the "
+        f"connected_robot() call(s) on line(s) {missing} do not pass connect_mqtt=True. "
+        "Every connection site needs it -- one fixed site does not cover the others, and "
+        "the failure only shows up against a real robot."
     )

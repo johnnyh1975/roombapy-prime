@@ -99,8 +99,14 @@ def test_with_the_gate_flag_it_actually_dispatches(name, _no_action, action, gat
 
     with patch("sys.argv", [name, *action, gate]), \
          patch.object(module, "resolve_credentials", return_value=("u", "p")), \
-         patch("asyncio.run", side_effect=lambda coro: ran.append(coro) or coro.close()):
+         patch.object(module, "run_script",
+                      side_effect=lambda coro: ran.append(coro) or coro.close() or 0), \
+         pytest.raises(SystemExit) as exc:
         module.main()
+
+    # main() now exits with run_script()'s return code, which is correct
+    # CLI behaviour -- a successful dispatch means exit 0.
+    assert exc.value.code == 0
 
     assert len(ran) == 1
 
@@ -154,7 +160,7 @@ class TestMapEditAndTimelineGates:
         with patch("sys.argv", ["verify_map_edit", "--blid", "B"]), \
              patch.object(module, "resolve_credentials",
                           side_effect=AssertionError("asked before validating")), \
-             patch("asyncio.run", side_effect=AssertionError("must not run")), \
+             patch.object(module, "run_script", side_effect=AssertionError("must not run")), \
              pytest.raises(SystemExit) as exc:
             module.main()
 
@@ -169,7 +175,7 @@ class TestMapEditAndTimelineGates:
                                 "--i-understand-this-will-edit-my-map"]), \
              patch.object(module, "resolve_credentials", return_value=("u", "p")), \
              patch.object(module, "confirm", return_value=False), \
-             patch("asyncio.run", side_effect=AssertionError("must not run")), \
+             patch.object(module, "run_script", side_effect=AssertionError("must not run")), \
              pytest.raises(SystemExit) as exc:
             module.main()
 
@@ -183,7 +189,8 @@ class TestMapEditAndTimelineGates:
 
         with patch("sys.argv", ["verify_mission_timeline", "--blid", "B", "--duration", "1"]), \
              patch.object(module, "resolve_credentials", return_value=("u", "p")), \
-             patch("asyncio.run", side_effect=_fake_run(ran)):
+             patch.object(module, "run_script", side_effect=_fake_run(ran)), \
+             pytest.raises(SystemExit):
             module.main()
 
         assert len(ran) == 1
@@ -194,8 +201,68 @@ class TestMapEditAndTimelineGates:
         with patch("sys.argv", ["verify_mission_timeline", "--blid", "B", "--start-mission"]), \
              patch.object(module, "resolve_credentials",
                           side_effect=AssertionError("asked before validating")), \
-             patch("asyncio.run", side_effect=AssertionError("must not run")), \
+             patch.object(module, "run_script", side_effect=AssertionError("must not run")), \
              pytest.raises(SystemExit) as exc:
             module.main()
 
         assert exc.value.code == 1
+
+
+class TestRunScriptFramesFailuresLegibly:
+    """A field tester saw all five settings print correctly, saw the
+    final report print correctly, and then got a raw traceback because
+    an optional cross-check afterwards timed out. He read it right
+    ("stage 0 shows properly the current state") -- but that is asking
+    a lot: the output looked like total failure and was a complete
+    success followed by an unrelated hiccup.
+
+    The traceback stays, because it is what makes a report actionable.
+    What was wrong was presenting it unframed, with nothing telling the
+    tester whether the part they came for had worked."""
+
+    async def _fails(self):
+        raise RuntimeError("something timed out")
+
+    async def _succeeds(self):
+        return None
+
+    def test_success_returns_zero(self):
+        from roombapy_prime_tools._cli import run_script
+
+        assert run_script(self._succeeds()) == 0
+
+    def test_failure_returns_one_rather_than_propagating(self):
+        from roombapy_prime_tools._cli import run_script
+
+        assert run_script(self._fails()) == 1
+
+    def test_the_banner_says_earlier_output_still_counts(self, capsys):
+        from roombapy_prime_tools._cli import run_script
+
+        run_script(self._fails())
+
+        out = capsys.readouterr()
+        combined = out.out + out.err
+        assert "THE RUN ENDED WITH AN ERROR" in combined
+        assert "still counts" in combined
+        assert "WHOLE output" in combined, "must ask for everything, not just the traceback"
+
+    def test_the_traceback_is_kept(self, capsys):
+        """Removing it would make reports unactionable -- the framing is
+        the fix, not suppression."""
+        from roombapy_prime_tools._cli import run_script
+
+        run_script(self._fails())
+
+        combined = capsys.readouterr()
+        assert "something timed out" in combined.out + combined.err
+
+    def test_a_keyboard_interrupt_is_not_treated_as_a_crash(self):
+        """Stopping a watch early is normal and expected -- the scripts
+        even tell people to do it."""
+        from roombapy_prime_tools._cli import run_script
+
+        async def interrupted():
+            raise KeyboardInterrupt
+
+        assert run_script(interrupted()) == 130

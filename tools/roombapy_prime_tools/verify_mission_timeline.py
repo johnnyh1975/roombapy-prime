@@ -124,7 +124,7 @@ from collections.abc import Callable
 from typing import Any
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url, redact_aws_url_secrets
 
 
@@ -193,7 +193,8 @@ async def _watch_one(
 
 
 def _build_watch_specs(
-    robot: Any, watch_wildcard: bool, watch_shadow_delta: bool, watch_rrtp_candidate: bool = False
+    robot: Any, watch_wildcard: bool, watch_shadow_delta: bool, watch_rrtp_candidate: bool = False,
+    watch_rejected: bool = False,
 ) -> list[tuple[Callable[[], Any], str]]:
     """Factored out of run() specifically so it's unit-testable on its
     own -- run() as a whole has no dedicated test (needs a full
@@ -242,8 +243,23 @@ def _build_watch_specs(
     mission/timeline/report itself."""
     watch_specs: list[tuple[Callable[[], Any], str]] = [
         (robot.watch_mission_timeline, "mission/timeline/report"),
-        (robot.watch_rejected_commands, "rejected/report"),
     ]
+    if watch_rejected:
+        # OFF BY DEFAULT (this session). rejected/report is EXPLORATORY,
+        # never confirmed live -- see watch_rejected_commands()'s own
+        # docstring -- and this module's own header above warns that an
+        # unconfirmed subscription causes immediate "Unspecified error"
+        # disconnects. A field log (DaRealGuGu, a24) was full of exactly
+        # that, on the shared connection a real command needed, while
+        # every stage that DID get a PUBACK started a mission regardless
+        # of payload differences. The most likely story: this
+        # diagnostic subscription was poisoning the connection.
+        #
+        # Across five real runs by three testers, this channel has
+        # produced zero messages. Losing nothing to possibly stop
+        # losing everything is an easy trade; --watch-rejected restores
+        # it for anyone testing the channel itself.
+        watch_specs.append((robot.watch_rejected_commands, "rejected/report"))
     if watch_wildcard:
         wildcard_topic = f"{robot._irbt_topic_prefix}/things/{robot.blid}/#"
         watch_specs.append((lambda: robot.watch_raw_topic(wildcard_topic), wildcard_topic))
@@ -259,6 +275,7 @@ async def run(
     username: str, password: str, country_code: str, blid: str,
     duration: float, watch_wildcard: bool, start_mission: bool, try_pose_request: bool,
     post_dock_watch: float, watch_shadow_delta: bool = False, watch_rrtp_candidate: bool = False,
+    watch_rejected: bool = False,
 ) -> tuple[Report, dict[str, Any]]:
     raw_capture: dict[str, Any] = {}
 
@@ -280,7 +297,9 @@ async def run(
             await robot.disconnect()
             return report, raw_capture
 
-        watch_specs = _build_watch_specs(robot, watch_wildcard, watch_shadow_delta, watch_rrtp_candidate)
+        watch_specs = _build_watch_specs(
+            robot, watch_wildcard, watch_shadow_delta, watch_rrtp_candidate, watch_rejected
+        )
 
         print(f"\n== Watching for up to {duration:.0f}s ==")
         for _factory, label in watch_specs:
@@ -489,6 +508,15 @@ def main() -> None:
         "_build_watch_specs() for why that distinction matters).",
     )
     parser.add_argument(
+        "--watch-rejected", action="store_true",
+        help="Also subscribe to rejected/report. OFF by default since a24: this is an "
+        "EXPLORATORY, never-confirmed-live topic, and this module's own header warns that "
+        "subscribing to an unconfirmed topic causes immediate 'Unspecified error' "
+        "disconnects -- exactly what field logs showed, on the connection a real command "
+        "needed. Across five real runs by three testers, this channel has produced zero "
+        "messages. Turn it on only if you specifically want to test the channel itself.",
+    )
+    parser.add_argument(
         "--watch-rrtp-candidate", action="store_true",
         help='NEW: subscribes to one SPECIFIC candidate topic for live position/pose data -- '
         '"{irbt_topic_prefix}/things/{blid}/mission/rrtp/report/update", found via native '
@@ -561,13 +589,14 @@ def main() -> None:
     else:
         print("This run only listens -- it never sends commands to this device.")
 
-    report, raw_capture = asyncio.run(
+    report, raw_capture = sys.exit(run_script(
         run(
             username, password, args.country_code, args.blid, args.duration,
             args.watch_wildcard, args.start_mission, args.try_pose_request,
             args.post_dock_watch_seconds, args.watch_shadow_delta, args.watch_rrtp_candidate,
+            args.watch_rejected,
         )
-    )
+    ))
     report.redact(username, password)
 
     report.print_final_summary()

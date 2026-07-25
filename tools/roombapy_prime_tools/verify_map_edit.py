@@ -99,13 +99,12 @@ or interactive prompt, never as a command-line argument.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 import webbrowser
 from typing import Any
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
 from roombapy_prime.models import (
     P2MapVersion,
@@ -544,9 +543,9 @@ def main() -> None:
         sys.exit(0)
 
     if args.test_category:
-        report, raw_capture = asyncio.run(run_category_test(username, password, args.country_code, args.blid))
+        report, raw_capture = sys.exit(run_script(run_category_test(username, password, args.country_code, args.blid)))
     else:
-        report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid))
+        report, raw_capture = sys.exit(run_script(run(username, password, args.country_code, args.blid)))
     report.redact(username, password)
 
     report.print_final_summary()

@@ -79,13 +79,12 @@ immediate one-time action a command like "stop" could interrupt.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import dataclasses
 import json
 import sys
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report
 
 
@@ -338,27 +337,27 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_favorites:
-        asyncio.run(list_favorites(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_favorites(username, password, args.country_code, args.blid)))
         return
 
     if args.update_unchanged:
-        asyncio.run(
+        sys.exit(run_script(
             send_update_unchanged(username, password, args.country_code, args.blid, args.update_unchanged)
-        )
+        ))
         return
 
     if args.update_color:
-        asyncio.run(
+        sys.exit(run_script(
             send_update_color(username, password, args.country_code, args.blid, args.update_color, args.color)
-        )
+        ))
         return
 
     if args.create_and_delete_test:
-        asyncio.run(create_and_delete_test(username, password, args.country_code, args.blid))
+        sys.exit(run_script(create_and_delete_test(username, password, args.country_code, args.blid)))
         return
 
     if args.delete:
-        asyncio.run(delete_by_id(username, password, args.country_code, args.blid, args.delete))
+        sys.exit(run_script(delete_by_id(username, password, args.country_code, args.blid, args.delete)))
         return
 
 

@@ -50,12 +50,11 @@ itself is what you're worried about) state fresh.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
 
 
 
@@ -120,15 +119,72 @@ async def list_maps(username: str, password: str, country_code: str, blid: str) 
 
 
 
+async def warn_if_map_version_is_stale(robot, p2map_id: str, p2mapv_id: str, report) -> bool:
+    """Warns when the caller passed a map version the robot has moved on
+    from. Returns True if the version is current (or unknowable).
+
+    FOUND IN THE FIELD (DaRealGuGu). He restarted his robot between
+    tests, which re-versioned the map, then ran with the older version
+    id -- and got "No policyZones.geojson data found". That result is
+    ambiguous in the worst way: it reads as "you have no keep-out
+    zones" when it might equally mean "we looked in a version that no
+    longer exists".
+
+    Neither he nor we could tell which, and the script said nothing
+    about the difference. Since map re-versioning on restart is now
+    confirmed behaviour rather than a theory, an unnoticed stale id is
+    a realistic way to produce a confidently wrong empty result."""
+    try:
+        maps = await robot.get_active_map_versions()
+    except Exception as exc:  # noqa: BLE001
+        report.add("Map version freshness", "SKIPPED", f"{type(exc).__name__}: {exc}")
+        return True
+
+    for entry in maps or []:
+        if field(entry, "p2map_id") != p2map_id:
+            continue
+        active = field(entry, "active_p2mapv_id")
+        if not active:
+            report.add("Map version freshness", "SKIPPED", "robot reported no active version")
+            return True
+        if active == p2mapv_id:
+            report.add("Map version freshness", "OK", f"--p2mapv-id matches the active {active!r}")
+            return True
+        report.add(
+            "Map version freshness", "FAILED",
+            f"you passed --p2mapv-id {p2mapv_id!r} but the robot's active version is "
+            f"{active!r}. Map versions change when the robot re-maps or is restarted, so an "
+            "empty result here would be ambiguous: it could mean you have no zones, or that "
+            f"we looked in a version that no longer exists. Re-run with --p2mapv-id {active}",
+        )
+        return False
+
+    report.add("Map version freshness", "SKIPPED", f"map {p2map_id!r} not in the active list")
+    return True
+
+
 async def list_walls(username: str, password: str, country_code: str, blid: str, p2map_id: str, p2mapv_id: str) -> None:
     """Stage 0 -- pure reconnaissance, sends nothing."""
     async with connected_robot(
         username, password, country_code, blid
     ) as (robot, report):
+        fresh = await warn_if_map_version_is_stale(robot, p2map_id, p2mapv_id, report)
         features, walls = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
 
     if not features:
         print("No policyZones.geojson data found for this map (or the map bundle had none).")
+        if not fresh:
+            print(
+                "\nTREAT THIS RESULT AS INCONCLUSIVE: the map version you passed is not the\n"
+                "robot's current one (see the report above). An empty result may simply mean\n"
+                "we looked in a version that no longer exists. Re-run with the active version."
+            )
+        else:
+            print(
+                "\nThe map version you passed IS the robot's current one, so this is a real\n"
+                "result: this map genuinely has no keep-out zones or virtual walls. That is\n"
+                "still worth reporting."
+            )
         return
 
     print(f"\n{len(features)} raw policyZones feature(s), {len(walls)} converted to VirtualWallV1:\n")
@@ -231,17 +287,17 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_maps:
-        asyncio.run(list_maps(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_maps(username, password, args.country_code, args.blid)))
         return
 
     if args.list_walls:
-        asyncio.run(list_walls(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id))
+        sys.exit(run_script(list_walls(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id)))
         return
 
     if args.update_unchanged:
-        asyncio.run(
+        sys.exit(run_script(
             send_update_unchanged(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id)
-        )
+        ))
         return
 
 

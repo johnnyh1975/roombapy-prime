@@ -95,7 +95,10 @@ def test_build_modified_command_actually_executes_without_crashing():
     assert original_level == 1
     assert modified.params.suction_level == 3
     assert modified.params.routine_modified is True
-    # regions must be untouched -- stage 2 only changes params, nothing else.
+    # Typed Region objects carry no params dict, so there is no
+    # per-region suctionLevel to update -- they pass through untouched.
+    # Real favorites deliver raw dicts instead; see the dict-based test
+    # below, where the level DOES change per region.
     assert modified.regions == original.regions
 
 
@@ -139,7 +142,16 @@ def test_build_modified_command_handles_real_favorite_raw_dict_params():
     assert original_level is None  # "profile" dict has no suctionLevel key to begin with
     assert modified.params == {"profile": "light", "suctionLevel": 3, "routineModified": True}
     # regions must be untouched -- stage 2 only changes the top-level params.
-    assert modified.regions == original.regions
+    # REVERSED (this session). This used to assert regions were left
+    # untouched. A field capture of an app-created favorite showed the
+    # app keeps suctionLevel PER REGION and never at the top level, so
+    # writing only the top level produced a payload asking for one
+    # level where the app does not look, while still saying the old
+    # one where it does.
+    assert [r["params"]["suctionLevel"] for r in modified.regions] == [3]
+    assert [r["region_id"] for r in modified.regions] == ["100"], (
+        "only the level changes -- the regions themselves stay as they were"
+    )
 
 
 def test_add_initiator_if_missing_adds_rmt_app_when_unset():
@@ -337,7 +349,14 @@ class TestConfirmShowSendWatchDisconnectAfter:
 
     @pytest.mark.asyncio
     async def test_captures_a_real_rejection_if_one_arrives(self):
-        """NEW (this session) -- watch_rejected_commands() is now
+        """Now has to ask for the channel explicitly: rejected/report is
+        OFF by default since a24, because it is an unconfirmed topic and
+        this module's own header warns that subscribing to one causes
+        the "Unspecified error" disconnects that field logs are full of.
+
+        This test still covers the channel itself -- someone has to,
+        and --watch-rejected is how a tester turns it back on.
+        NEW (this session) -- watch_rejected_commands() is now
         watched concurrently with watch_mission_timeline(), genuinely
         for the first time in this project's region-command testing.
         See _confirm_show_send_watch()'s own docstring for why this
@@ -369,7 +388,8 @@ class TestConfirmShowSendWatchDisconnectAfter:
 
         with patch("roombapy_prime_tools.verify_region_commands.confirm", return_value=True):
             events, rejected = await _confirm_show_send_watch(
-                robot, command, report, watch_seconds=1, description="test", disconnect_after=False,
+                robot, command, report, watch_seconds=1, description="test",
+                disconnect_after=False, watch_rejected=True,
             )
 
         assert events == []
@@ -1324,3 +1344,141 @@ class TestEventSummaryReadsTheRealWireShape:
         from roombapy_prime_tools.verify_region_commands import _summarize_events
 
         assert "NO events observed" in _summarize_events([])
+
+
+class TestStageTwoNoLongerContradictsItself:
+    """Stage 2 used to ask for one suction level in a place the real app
+    never uses, while leaving the level the app DOES use untouched.
+
+    EVIDENCE for where that is, from a field capture of an app-created
+    favorite (DaRealGuGu): its top-level params were exactly
+    {"routine_type", "profile"} -- no suctionLevel -- while every region
+    carried its own {"suctionLevel": 1, ...}.
+
+    The robot accepted the contradictory payload and ran, so this was
+    never fatal. It was worse than fatal in one narrow sense: the run
+    produced a result nobody could interpret, because no one could say
+    which of the two values the robot honoured."""
+
+    def _favorite_command(self):
+        from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+
+        return RoutineCommand(
+            command_type=MissionCommandType.START, asset_id="BLID",
+            # Shapes taken verbatim from the field capture.
+            params={"routine_type": "CLEAN_ALL", "profile": "smart"},
+            regions=[
+                {"region_id": "10", "type": "rid",
+                 "params": {"suctionLevel": 1, "operatingMode": 32, "swScrub": 0, "twoPass": False}},
+                {"region_id": "11", "type": "rid",
+                 "params": {"suctionLevel": 1, "operatingMode": 32, "swScrub": 0, "twoPass": False}},
+            ],
+        )
+
+    def test_every_region_gets_the_requested_level(self):
+        from roombapy_prime_tools.verify_region_commands import build_stage_two_command
+
+        command, _original = build_stage_two_command(self._favorite_command(), "fav1", 2)
+
+        assert [r["params"]["suctionLevel"] for r in command.regions] == [2, 2]
+
+    def test_no_region_still_carries_the_old_level(self):
+        """The actual bug: the old value survived where it mattered."""
+        from roombapy_prime_tools.verify_region_commands import build_stage_two_command
+
+        command, _original = build_stage_two_command(self._favorite_command(), "fav1", 2)
+
+        assert all(r["params"]["suctionLevel"] != 1 for r in command.regions)
+
+    def test_other_region_params_are_left_alone(self):
+        """Changing one thing must change one thing -- operatingMode in
+        particular is load-bearing for pad compatibility."""
+        from roombapy_prime_tools.verify_region_commands import build_stage_two_command
+
+        command, _original = build_stage_two_command(self._favorite_command(), "fav1", 2)
+
+        first = command.regions[0]["params"]
+        assert first["operatingMode"] == 32
+        assert first["swScrub"] == 0
+        assert first["twoPass"] is False
+
+    def test_unrecognised_regions_are_passed_through_untouched(self):
+        from roombapy_prime_tools.verify_region_commands import _with_region_suction_level
+
+        odd = [object(), {"region_id": "9"}, {"region_id": "8", "params": "not a dict"}]
+
+        assert _with_region_suction_level(odd, 2) == odd
+
+    def test_an_empty_region_list_is_survivable(self):
+        from roombapy_prime_tools.verify_region_commands import _with_region_suction_level
+
+        assert _with_region_suction_level([], 2) == []
+        assert _with_region_suction_level(None, 2) is None
+
+
+class TestStageOneAndOneBDifferByExactlyOneField:
+    """The single most important property of this test pair, and the
+    reason a result from it can mean something.
+
+    FIELD OBSERVATION (DaRealGuGu, a24, second run): stage 1 did
+    nothing; stage 1b started a mission. If both were delivered -- which
+    the reconnect fix in a24 should now ensure -- then `initiator` is
+    not decoration but a required field, and a stored favorite never
+    carries one.
+
+    That is consistent with the APK research, which found the real
+    app's buildJsonCommon() always writes it.
+
+    NOT yet treated as settled: his first run had stage 1b fail too, and
+    that turned out to be a delivery artefact rather than a payload
+    finding. The full log will show whether stage 1 got a PUBACK this
+    time.
+
+    These tests exist so the experiment cannot be quietly invalidated by
+    someone later making initiator automatic -- which would be a
+    reasonable-looking change that destroys the only way to answer the
+    question."""
+
+    def _favorite_command(self):
+        from roombapy_prime.models.mission_control import MissionCommandType, RoutineCommand
+
+        return RoutineCommand(
+            command_type=MissionCommandType.START, asset_id="BLID",
+            initiator=None,   # exactly as a stored favorite arrives
+            regions=[{"region_id": "10", "type": "rid", "params": {"suctionLevel": 1}}],
+        )
+
+    def test_stage_one_sends_no_initiator(self):
+        """If this ever starts passing an initiator, stage 1 and stage 1b
+        become the same test and the comparison is worthless."""
+        from roombapy_prime_tools.verify_region_commands import build_stage_one_command
+
+        command = build_stage_one_command(self._favorite_command(), "fav1")
+
+        assert command.to_json().get("initiator") is None
+
+    def test_stage_one_b_sends_rmtApp(self):
+        from roombapy_prime_tools.verify_region_commands import build_stage_one_b_command
+
+        command = build_stage_one_b_command(self._favorite_command(), "fav1")
+
+        assert command.to_json()["initiator"] == "rmtApp"
+
+    def test_nothing_else_differs_between_them(self):
+        """The whole experiment rests on this. If any other field varies,
+        a difference in outcome tells us nothing about initiator."""
+        from roombapy_prime_tools.verify_region_commands import (
+            build_stage_one_b_command,
+            build_stage_one_command,
+        )
+
+        original = self._favorite_command()
+        one = build_stage_one_command(original, "fav1").to_json()
+        one_b = build_stage_one_b_command(original, "fav1").to_json()
+
+        differing = {
+            key for key in set(one) | set(one_b)
+            if one.get(key) != one_b.get(key)
+        }
+
+        assert differing == {"initiator"}, f"stages differ in more than initiator: {differing}"

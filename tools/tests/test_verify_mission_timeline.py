@@ -35,7 +35,10 @@ def test_build_watch_specs_defaults_to_the_two_base_topics() -> None:
     specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False)
 
     labels = [label for _factory, label in specs]
-    assert labels == ["mission/timeline/report", "rejected/report"]
+    # REVERSED (this session): rejected/report is now OFF by default --
+    # it is an unconfirmed topic, and subscribing to it has been linked
+    # to the "Unspecified error" disconnects seen in real field logs.
+    assert labels == ["mission/timeline/report"]
 
 
 def test_build_watch_specs_adds_irbt_wildcard_when_requested() -> None:
@@ -108,9 +111,9 @@ def test_build_watch_specs_remaining_flags_combine_without_interfering() -> None
     specs = _build_watch_specs(robot, watch_wildcard=True, watch_shadow_delta=True)
 
     labels = [label for _factory, label in specs]
+    # rejected/report no longer appears unless explicitly requested.
     assert labels == [
         "mission/timeline/report",
-        "rejected/report",
         "v011-irbthbu/things/BLID123/#",
         "$aws/things/{blid}/shadow/update/delta",
     ]
@@ -324,3 +327,38 @@ class TestTaskExceptionSurfacing:
         ]
 
         assert failures == []
+
+
+class TestRejectedReportIsOptedIn:
+    """FIELD FINDING (DaRealGuGu, a24): every stage that got a PUBACK
+    started a mission; every stage that didn't got nothing -- the
+    payload never mattered. The log was full of "Unspecified error"
+    disconnects, and this module's own header already warned that
+    subscribing to an unconfirmed topic causes exactly that.
+
+    watch_rejected_commands() is EXPLORATORY, never confirmed live, and
+    across five real runs by three testers has produced zero messages.
+    So it moved behind its own flag here too, matching the same fix in
+    verify_region_commands.py."""
+
+    def test_default_omits_the_unconfirmed_channel(self):
+        from roombapy_prime_tools.verify_mission_timeline import _build_watch_specs
+
+        robot = _fake_robot()
+
+        specs = _build_watch_specs(robot, watch_wildcard=False, watch_shadow_delta=False)
+
+        assert "rejected/report" not in [label for _factory, label in specs]
+
+    def test_explicitly_requesting_it_adds_it_back(self):
+        """The flag has to actually do something -- otherwise it's not a
+        fix, just a quieter-looking bug."""
+        from roombapy_prime_tools.verify_mission_timeline import _build_watch_specs
+
+        robot = _fake_robot()
+
+        specs = _build_watch_specs(
+            robot, watch_wildcard=False, watch_shadow_delta=False, watch_rejected=True
+        )
+
+        assert "rejected/report" in [label for _factory, label in specs]

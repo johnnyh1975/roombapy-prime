@@ -73,13 +73,12 @@ consequence of this write's own delayed-effect nature described above.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from typing import Any
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report, _extract_first_id, _try_silent
 
 
@@ -274,21 +273,21 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_schedules:
-        asyncio.run(list_schedules(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_schedules(username, password, args.country_code, args.blid)))
         return
 
     if args.update_unchanged:
-        asyncio.run(
+        sys.exit(run_script(
             send_update_unchanged(username, password, args.country_code, args.blid, args.update_unchanged)
-        )
+        ))
         return
 
     if args.disable:
-        asyncio.run(
+        sys.exit(run_script(
             send_disable(
                 username, password, args.country_code, args.blid, args.disable, args.schedule_index,
             )
-        )
+        ))
         return
 
 

@@ -23,6 +23,8 @@ three, one, or none.
 
 from __future__ import annotations
 
+import asyncio
+
 import argparse
 import getpass
 import os
@@ -88,6 +90,48 @@ def field(obj, name: str, default=None):
     if isinstance(obj, dict):
         return obj.get(name, default)
     return getattr(obj, name, default)
+
+
+def run_script(coro):
+    """Runs a script's async entry point and fails legibly.
+
+    WHY THIS EXISTS. A field tester ran the settings test, got all five
+    values printed correctly, got the final report printed correctly --
+    and then a raw Python traceback, because an optional cross-check
+    afterwards timed out. He read it correctly ("stage 0 shows properly
+    the current state"), but that is asking a lot: the output looked
+    like a total failure and was in fact a complete success followed by
+    an unrelated hiccup.
+
+    A traceback is the right thing to keep -- it is what makes a report
+    actionable for us. What is wrong is presenting it *unframed*, with
+    nothing saying whether the part the tester came for actually
+    worked. So: an explicit banner, then the traceback, then a plain
+    request to paste everything.
+
+    Returns the process exit code, so call sites can `sys.exit(...)`
+    it."""
+    import traceback
+
+    try:
+        asyncio.run(coro)
+    except KeyboardInterrupt:
+        print("\nInterrupted. Anything already reported above still stands.")
+        return 130
+    except Exception:  # noqa: BLE001
+        print("\n" + "=" * 60)
+        print("THE RUN ENDED WITH AN ERROR")
+        print("=" * 60)
+        print(
+            "Everything printed ABOVE this line still counts -- including the final\n"
+            "report, if you can see one. A failure here does not invalidate results\n"
+            "that were already produced.\n\n"
+            "The technical detail below is what makes this fixable, so please paste\n"
+            "the WHOLE output rather than just this part.\n"
+        )
+        traceback.print_exc()
+        return 1
+    return 0
 
 
 def pick_robot_interactively(login_result, target_blid: str | None) -> str | None:

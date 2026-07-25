@@ -5,6 +5,9 @@ reasoning as this project's other verify_*_write.py test files."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from roombapy_prime_tools import _cli
@@ -147,3 +150,68 @@ class TestSendToggleBehaviour:
             await verify_settings_write.send_toggle("u", "p", "US", "BLID", "child_lock")
 
         robot.set_setting.assert_awaited_once_with("childLock", True)
+
+
+class TestCrossCheckFailureDoesNotDestroyTheRun:
+    """FIELD CASE (DaRealGuGu, Roomba Plus 505): the five settings
+    printed perfectly, and then the optional cross-check against the
+    UNNAMED shadow timed out -- taking the whole run down with a
+    traceback and throwing away its own useful output.
+
+    Not every robot has an unnamed shadow. The cross-check exists only
+    to spot two sources of schedHold disagreeing; losing it must not
+    cost the tester the result they actually came for."""
+
+    @contextlib.asynccontextmanager
+    async def _connection(self, robot, report):
+        yield robot, report
+
+    def _robot(self, state_error=None):
+        robot = AsyncMock()
+        robot.get_settings.return_value = MagicMock(
+            payload={"state": {"reported": {
+                "childLock": False, "ecoCharge": False, "schedHold": False,
+                "noAutoPasses": False, "vacHigh": False,
+            }}}
+        )
+        if state_error:
+            robot.get_state.side_effect = state_error
+        else:
+            robot.get_state.return_value = MagicMock(
+                payload={"state": {"reported": {"schedHold": True}}}
+            )
+        return robot
+
+    def _run(self, robot):
+        from roombapy_prime.diagnostics import Report
+        from roombapy_prime_tools import verify_settings_write as mod
+
+        report = Report()
+        with patch.object(mod, "connected_robot",
+                          lambda *a, **k: self._connection(robot, report)):
+            asyncio.run(mod.list_settings("u", "p", "US", "BLID"))
+        return report
+
+    def test_a_failing_cross_check_is_recorded_not_raised(self):
+        from roombapy_prime.mqtt_client import ShadowError
+
+        report = self._run(self._robot(state_error=ShadowError("No response to GET")))
+
+        entry = next(r for r in report.results if "Cross-check" in r.name)
+        assert entry.status == "SKIPPED"
+
+    def test_the_five_settings_are_still_read_when_the_cross_check_fails(self):
+        """The point of the fix: the primary result survives."""
+        from roombapy_prime.mqtt_client import ShadowError
+
+        robot = self._robot(state_error=ShadowError("No response to GET"))
+
+        self._run(robot)
+
+        robot.get_settings.assert_awaited_once()
+
+    def test_a_working_cross_check_is_still_reported(self):
+        report = self._run(self._robot())
+
+        entry = next(r for r in report.results if "Cross-check" in r.name)
+        assert entry.status == "OK"
