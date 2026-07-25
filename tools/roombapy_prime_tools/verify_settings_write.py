@@ -150,6 +150,21 @@ async def list_settings(username: str, password: str, country_code: str, blid: s
     print(f"Valid KEYs: {', '.join(_TARGET_SETTINGS)}")
 
 
+
+
+# Settings whose write is accepted and reads back correctly, but which
+# do not actually change the robot's behaviour.
+#
+# schedHold: confirmed by a field test (DaRealGuGu) -- write accepted,
+# read-back confirmed, and the schedule remained active in the app.
+# Notably this project's own cross-check against the classic/unnamed
+# shadow FLAGGED the divergence before the app was even checked, which
+# is what makes it a signal rather than noise: rw-settings said True
+# while classic still said False. Disabling moved both in step, so the
+# divergence is specific to enabling.
+_WRITES_ACCEPTED_BUT_INEFFECTIVE: frozenset[str] = frozenset({"sched_hold"})
+
+
 async def send_toggle(username: str, password: str, country_code: str, blid: str, key: str) -> None:
     """Stage 1 -- flips one setting to its opposite value. See this
     module's own docstring for the full staged-risk explanation and
@@ -160,6 +175,15 @@ async def send_toggle(username: str, password: str, country_code: str, blid: str
         print(f"ERROR: unknown key {key!r}. Valid keys: {', '.join(_TARGET_SETTINGS)}")
         return
     wire_key = _TARGET_SETTINGS[key]
+
+    if key in _WRITES_ACCEPTED_BUT_INEFFECTIVE:
+        print(
+            f"\nNOTE: {key} is known to be accepted and read back correctly while having NO\n"
+            "real effect -- a field test confirmed the schedule stays active in the app\n"
+            "afterwards. Writing it here is evidently not the mechanism the app uses.\n"
+            "Still worth running if you want to check whether that holds on your robot too;\n"
+            "the point is that a green result below does NOT mean it worked."
+        )
 
     async with connected_robot(username, password, country_code, blid, connect_mqtt=True) as (robot, report):
 

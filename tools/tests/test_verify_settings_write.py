@@ -215,3 +215,44 @@ class TestCrossCheckFailureDoesNotDestroyTheRun:
 
         entry = next(r for r in report.results if "Cross-check" in r.name)
         assert entry.status == "OK"
+
+
+class TestKnownIneffectiveWritesAreFlagged:
+    """FIELD RESULT (DaRealGuGu, a25): all five settings wrote and read
+    back successfully, but schedHold's schedule stayed active in the
+    app afterwards -- the write is accepted and simply does not do
+    anything.
+
+    What makes that worth encoding rather than just noting: this
+    project's own cross-check against the classic/unnamed shadow
+    FLAGGED the divergence (rw-settings True, classic still False)
+    BEFORE the app was checked, and the app then confirmed it. Two
+    sources disagreeing meant "the write did not really take".
+
+    Without a warning, a tester sees five green checkmarks and
+    reasonably concludes it worked."""
+
+    def test_sched_hold_is_marked_ineffective(self):
+        from roombapy_prime_tools.verify_settings_write import (
+            _WRITES_ACCEPTED_BUT_INEFFECTIVE,
+        )
+
+        assert "sched_hold" in _WRITES_ACCEPTED_BUT_INEFFECTIVE
+
+    def test_the_confirmed_working_settings_are_not_marked(self):
+        """child_lock is confirmed end to end -- app showed it and the
+        robot announced it audibly. Marking it would be actively wrong."""
+        from roombapy_prime_tools.verify_settings_write import (
+            _WRITES_ACCEPTED_BUT_INEFFECTIVE,
+        )
+
+        assert "child_lock" not in _WRITES_ACCEPTED_BUT_INEFFECTIVE
+
+    def test_every_marked_key_is_a_real_setting(self):
+        """A typo here would silently warn about nothing."""
+        from roombapy_prime_tools.verify_settings_write import (
+            _TARGET_SETTINGS,
+            _WRITES_ACCEPTED_BUT_INEFFECTIVE,
+        )
+
+        assert _WRITES_ACCEPTED_BUT_INEFFECTIVE <= set(_TARGET_SETTINGS)

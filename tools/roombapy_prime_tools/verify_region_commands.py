@@ -790,8 +790,21 @@ async def _confirm_show_send_watch(
         print(f"\n== Watching for {watch_seconds}s (already subscribed since before sending) ==")
         print("(Ctrl+C to stop watching early -- the command has already been sent either way)")
         try:
+            # BUG INTRODUCED IN a25 AND CAUGHT IN THE FIELD IMMEDIATELY
+            # (DaRealGuGu). Making rejected_task conditional left this
+            # gather() passing None, which raises TypeError instantly --
+            # so the watch window died on arrival and every stage
+            # reported "NO events observed" even when the robot had
+            # visibly started a mission.
+            #
+            # That is the same class of damage the bug it replaced did:
+            # a real success reported as nothing. Filtering here rather
+            # than reconstructing the task list at each call site,
+            # because there is exactly one place that can get this
+            # wrong and it should be this one.
+            watch_tasks = [t for t in (timeline_task, rejected_task) if t is not None]
             async with asyncio.timeout(watch_seconds):
-                await asyncio.gather(timeline_task, rejected_task)
+                await asyncio.gather(*watch_tasks)
         except TimeoutError:
             pass
         except KeyboardInterrupt:

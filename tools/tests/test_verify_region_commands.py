@@ -1482,3 +1482,70 @@ class TestStageOneAndOneBDifferByExactlyOneField:
         }
 
         assert differing == {"initiator"}, f"stages differ in more than initiator: {differing}"
+
+
+class TestWatchWindowSurvivesWithoutTheRejectedWatcher:
+    """REGRESSION INTRODUCED IN a25 AND CAUGHT IN THE FIELD ON THE VERY
+    NEXT RUN (DaRealGuGu).
+
+    Turning rejected/report off left `rejected_task` as None while
+    asyncio.gather() still received it unconditionally. gather() raises
+    TypeError on None immediately, so the watch window died on arrival
+    and every stage printed "NO events observed" -- including a stage
+    whose mission status visibly changed from charge/none to run/clean.
+
+    That is precisely the damage the a25 change was meant to stop: a
+    real success reported as nothing. Fixing one instance of that
+    failure mode while introducing another is the specific mistake
+    these tests exist to prevent."""
+
+    @pytest.mark.asyncio
+    async def test_gather_runs_with_only_the_timeline_watcher(self):
+        """The default configuration since a25 -- one watcher, not two."""
+        import asyncio
+
+        done = []
+
+        async def _timeline():
+            done.append("timeline")
+
+        timeline_task = asyncio.create_task(_timeline())
+        rejected_task = None
+
+        watch_tasks = [t for t in (timeline_task, rejected_task) if t is not None]
+        await asyncio.gather(*watch_tasks)
+
+        assert done == ["timeline"]
+
+    @pytest.mark.asyncio
+    async def test_gather_still_runs_both_when_rejected_is_enabled(self):
+        import asyncio
+
+        done = []
+
+        async def _one():
+            done.append("timeline")
+
+        async def _two():
+            done.append("rejected")
+
+        tasks = [asyncio.create_task(_one()), asyncio.create_task(_two())]
+
+        watch_tasks = [t for t in tasks if t is not None]
+        await asyncio.gather(*watch_tasks)
+
+        assert sorted(done) == ["rejected", "timeline"]
+
+    def test_the_source_filters_none_before_gathering(self):
+        """Reads the actual source: the filter has to be there, not just
+        work in an isolated reproduction of it."""
+        from pathlib import Path
+
+        import roombapy_prime_tools.verify_region_commands as mod
+
+        source = Path(mod.__file__).read_text(encoding="utf-8")
+
+        assert "if t is not None]" in source
+        assert "await asyncio.gather(timeline_task, rejected_task)" not in source, (
+            "the unguarded gather must not come back -- it silently kills the watch window"
+        )
