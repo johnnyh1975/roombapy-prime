@@ -769,7 +769,19 @@ class TestPreflightMapVersionCheck:
         assert report.results[-1].status == "OK"
 
     @pytest.mark.asyncio
-    async def test_stale_version_is_flagged_as_the_prime_suspect(self):
+    async def test_a_stale_version_is_noted_but_not_treated_as_a_failure(self):
+        """DOWNGRADED, settled by field data.
+
+        The robot re-versions its map every few seconds while cleaning:
+        one tester's own mission events show five different p2mapvId
+        values inside 37 seconds. A stored favorite is therefore stale
+        within a minute of being saved -- always, for everyone.
+
+        And two confirmed-working region commands both carried a map
+        version hours out of date and started missions regardless. A
+        check firing on every run for something demonstrably harmless
+        is not a signal; worse, noise sitting beside genuine failures
+        makes those easier to skip past."""
         from roombapy_prime.diagnostics import Report
         from roombapy_prime_tools.verify_region_commands import _preflight_map_version_check
 
@@ -779,8 +791,8 @@ class TestPreflightMapVersionCheck:
         )
 
         entry = report.results[-1]
-        assert entry.status == "FAILED"
-        assert "MAP_VERSION_MISMATCH" in entry.detail
+        assert entry.status == "SKIPPED", "expected behaviour, not a failure"
+        assert "never blocked anything" in entry.detail
 
     @pytest.mark.asyncio
     async def test_a_fetch_failure_is_skipped_not_failed(self):

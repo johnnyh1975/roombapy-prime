@@ -428,11 +428,27 @@ async def _preflight_map_version_check(robot, command, report: Report) -> None:
         )
     else:
         report.add(
-            "Pre-flight: map version", "FAILED",
+            # DOWNGRADED FROM "FAILED" (this session, settled by field
+            # data). The robot re-versions its map CONSTANTLY -- one
+            # tester's own mission events show five different
+            # p2mapvId values inside 37 seconds of cleaning. A stored
+            # favorite is therefore stale within a minute of being
+            # saved, always, for everyone.
+            #
+            # More decisively: two confirmed-working region commands
+            # both carried a map version hours out of date and started
+            # missions regardless. A check that fires on every single
+            # run for something demonstrably harmless is not a signal,
+            # it is noise -- and noise next to genuine failures makes
+            # the genuine ones easier to skip past.
+            "Pre-flight: map version", "SKIPPED",
             f"favorite carries user_p2mapv_id {stored_version!r}, but the currently active "
-            f"version(s) are {sorted(active)!r} -- a MAP_VERSION_MISMATCH "
-            "(RobotReadinessState 22) is a strong candidate for why this command has no effect. "
-            "Re-saving the favorite in the real app would refresh it.",
+            f"version(s) are {sorted(active)!r} -- but this is EXPECTED and has "
+            "never blocked anything. The robot re-versions its map every few seconds while "
+            "cleaning (five values inside 37 seconds in one real capture), so a stored "
+            "favorite is stale within a minute of being saved. Two confirmed-working region "
+            "commands both carried a version hours out of date. Noted only in case it ever "
+            "turns out to matter for WHICH rooms get cleaned.",
         )
 
 
@@ -1516,7 +1532,16 @@ async def send_stage_three(
     ) as (robot, report):
 
         command = RoutineCommand(
-            command_type=MissionCommandType.CLEAN,
+            # "start", NOT "clean" (this session, settled by field data).
+            #
+            # Stage 3 was written when nothing worked at all, and its
+            # command verb was never revisited afterwards. Both
+            # confirmed-working region commands use "start" -- the robot
+            # echoed them back that way in its own mission timeline.
+            # Stage 3 kept sending "clean", was delivered with a PUBACK,
+            # and did nothing: same robot, same map, same room, minutes
+            # after "start" had worked twice.
+            command_type=MissionCommandType.START,
             asset_id=blid,
             map_id=p2map_id,
             regions=[Region(region_id=room_id, region_type=RegionType(region_type.lower()))],
@@ -1601,7 +1626,16 @@ async def send_stage_four(
     ) as (robot, report):
 
         command = RoutineCommand(
-            command_type=MissionCommandType.CLEAN,
+            # "start", NOT "clean" (this session, settled by field data).
+            #
+            # Stage 3 was written when nothing worked at all, and its
+            # command verb was never revisited afterwards. Both
+            # confirmed-working region commands use "start" -- the robot
+            # echoed them back that way in its own mission timeline.
+            # Stage 3 kept sending "clean", was delivered with a PUBACK,
+            # and did nothing: same robot, same map, same room, minutes
+            # after "start" had worked twice.
+            command_type=MissionCommandType.START,
             asset_id=blid,
             map_id=p2map_id,
             regions=[region],
