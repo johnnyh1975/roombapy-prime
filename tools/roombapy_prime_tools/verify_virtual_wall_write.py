@@ -226,12 +226,52 @@ async def send_update_unchanged(
             print("Aborted by user -- nothing sent.")
             return
 
-        print("\n== Sending ==")
-        try:
-            result = await robot.edit_map(p2map_id, command)
-            report.add("edit_map() -- SetVirtualWallsV1", "OK", f"response: {result!r}")
-        except Exception as exc:  # noqa: BLE001
-            report.add("edit_map() -- SetVirtualWallsV1", "FAILED", f"{type(exc).__name__}: {exc}")
+        # TRIES SEVERAL ENVELOPES IN ONE RUN (this session).
+        #
+        # Two field runs resent two untouched zones and got HTTP 500
+        # both times -- once with a payload carrying a genuine extra
+        # point, and again after that was corrected. So the extra point
+        # was a real deviation from the documented format but not the
+        # cause, and testing one guess per round is too slow when each
+        # round costs a tester their evening.
+        #
+        # `response_type` is the least-verified part of this request:
+        # "link" asks the server for a presigned DOWNLOAD url, which is
+        # confirmed for FETCHING a map and may be meaningless on an
+        # EDIT. This module's own docstring has said as much all along.
+        #
+        # The variants stop at the first success, so a working one ends
+        # the run rather than sending the same edit repeatedly.
+        variants: list[tuple[str, str | None]] = [
+            ("response_type omitted entirely", None),
+            ('response_type="link" (the previous default)', "link"),
+            ('response_type="binary"', "binary"),
+        ]
+
+        print(f"\n== Sending -- trying {len(variants)} request shapes, stopping at the first success ==")
+        for label, response_type in variants:
+            print(f"\n-- {label} --")
+            try:
+                result = await robot.edit_map(p2map_id, command, response_type=response_type)
+            except Exception as exc:  # noqa: BLE001
+                report.add(
+                    f"edit_map() -- {label}", "FAILED", f"{type(exc).__name__}: {exc}",
+                )
+                print(f"   failed: {type(exc).__name__}: {exc}")
+                continue
+
+            report.add(f"edit_map() -- {label}", "OK", f"response: {result!r}")
+            print(f"   ACCEPTED: {result!r}")
+            print(
+                "\nThis shape worked. Please check the iRobot app: the zones should look\n"
+                "exactly as they did before, since this resent them unchanged."
+            )
+            return
+
+        print(
+            "\nAll shapes failed. That rules out response_type as the cause, which is\n"
+            "worth knowing -- it was the least-verified part of the request."
+        )
 
 
 
