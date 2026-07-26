@@ -1010,7 +1010,12 @@ def test_region_to_json() -> None:
     region = Region(region_id="r1", region_type=RegionType.RID, name="Kitchen", params=CommandParams(speed=2))
     body = region.to_json()
 
-    assert body == {"id": "r1", "type": "rid", "name": "Kitchen", "params": {"speed": 2}}
+    # "region_id", SETTLED BY FIELD DATA (a26): two confirmed-working
+    # region commands both carried it, and the robot echoed them back
+    # unchanged. The from-scratch command that still sent "id" was
+    # delivered with a PUBACK and did nothing -- same robot, same room,
+    # minutes apart.
+    assert body == {"region_id": "r1", "type": "rid", "name": "Kitchen", "params": {"speed": 2}}
 
 
 def test_command_polygon_to_json() -> None:
@@ -1040,7 +1045,7 @@ def test_routine_command_with_typed_regions_and_params() -> None:
     )
     body = cmd.to_json()
 
-    assert body["regions"] == [{"id": "r1", "type": "rid"}]
+    assert body["regions"] == [{"region_id": "r1", "type": "rid"}]
     assert body["params"] == {"suctionLevel": 2}
 
 

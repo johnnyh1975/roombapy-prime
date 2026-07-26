@@ -263,7 +263,28 @@ def _flatten_ring(polygon: Polygon) -> list[float]:
     used; V1's array-based geometry has no concept of holes the way
     GeoJSON polygons do, so any additional rings are silently dropped
     here rather than guessing how (or whether) they'd be represented."""
-    ring = polygon.coordinates[0] if polygon.coordinates else []
+    ring = list(polygon.coordinates[0]) if polygon.coordinates else []
+
+    # DROP GeoJSON'S CLOSING POINT (this session, real field failure).
+    #
+    # A GeoJSON LinearRing repeats its first coordinate as its last, so
+    # a rectangle read from policyZones.geojson arrives as FIVE points.
+    # The V1 wire format is [id, type, x1,y1, x2,y2, x3,y3, x4,y4] --
+    # four points, confirmed by APK decompilation and written in
+    # VirtualWallRectangleV1's own docstring right here in this file.
+    #
+    # We were passing the ring through unchanged, so every rectangle
+    # went out with a duplicated fifth point. A real resend of two
+    # untouched zones (DaRealGuGu) came back HTTP 500 -- a server
+    # error rather than a 400, which fits a payload that parses but
+    # then breaks something downstream.
+    #
+    # Only the CLOSING duplicate is removed, and only when the ring is
+    # genuinely closed: a legitimately repeated point elsewhere in a
+    # polygon stays untouched.
+    if len(ring) > 1 and tuple(ring[0]) == tuple(ring[-1]):
+        ring = ring[:-1]
+
     flat: list[float] = []
     for x, y in ring:
         flat.extend((x, y))

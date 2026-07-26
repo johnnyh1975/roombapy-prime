@@ -8,6 +8,55 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a27] - 2026-07-25
+
+### Confirmed by field testing
+
+- **`initiator` is REQUIRED for region commands.** Settled at last, by the first run where all
+  three stages got a delivery confirmation (DaRealGuGu, a26): stage 1 without it left the robot on
+  `charge`/`none`; stage 1b, identical but for that one field, started a mission. A stored
+  favorite does not carry an initiator -- the app adds it when sending.
+
+  Two earlier runs had appeared to refute this. Both were confounded by undelivered sends, which is
+  exactly why the connection work in a26 had to come first.
+
+### Fixed
+
+- **Stage 3 (the from-scratch region command) differed from the confirmed-working shape in three
+  ways** and had never been reconciled with it -- it was written when nothing worked at all:
+
+  | | working | stage 3 |
+  |---|---|---|
+  | command | `start` | `clean` |
+  | region key | `region_id` | `id` |
+  | `user_p2mapv_id` | present | absent |
+
+  The first two are fixed. `Region.to_json()` now emits `region_id`, which its own docstring had
+  flagged as an open question ("reads show region_id, writes assumed id") -- two confirmed-working
+  commands both carried `region_id`, and the robot echoed them back unchanged.
+
+- **The map-version pre-flight was noise.** Real mission events show the robot re-versioning its
+  map **five times inside 37 seconds** of cleaning, so every stored favorite is stale within a
+  minute of being saved. Two confirmed-working region commands carried versions hours out of date
+  and started missions regardless.
+
+  Downgraded from FAILED to SKIPPED. A check that fires on every run for something demonstrably
+  harmless is not a signal -- and noise sitting beside genuine failures makes those easier to skip
+  past.
+
+- **Virtual-wall writes sent one point too many.** A GeoJSON ring repeats its first coordinate as
+  its last, so a rectangle read from the map bundle arrives with five points; the V1 wire format
+  takes four. Real resends of two untouched zones returned HTTP 500 -- a server error rather than a
+  400, consistent with a payload that parses and then breaks something downstream.
+
+  The correct format was already written down in this file's own `VirtualWallRectangleV1`
+  docstring, from APK decompilation, directly above the function that got it wrong.
+
+### Confirmed along the way
+
+- **Zone types, against real data rather than decompilation alone**: `1 = KeepOutZone`,
+  `6 = NoMopZone`. The first real keep-out zone data this project has seen.
+
 ## [0.1.11a26] - 2026-07-25
 
 ### Confirmed by field testing

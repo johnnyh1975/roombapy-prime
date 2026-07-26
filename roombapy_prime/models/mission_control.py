@@ -818,7 +818,18 @@ class Region:
     params: CommandParams | None = None
 
     def to_json(self) -> dict[str, Any]:
-        body: dict[str, Any] = {"id": self.region_id, "type": self.region_type.value}
+        # "region_id", SETTLED BY FIELD DATA (DaRealGuGu, a26).
+        #
+        # This used to emit "id", and the docstring above recorded the
+        # open question honestly: reads showed "region_id", writes were
+        # assumed to want "id". Two confirmed-working region commands
+        # settle it -- both carried "region_id", and the robot echoed
+        # them back unchanged in its own mission timeline.
+        #
+        # The from-scratch command (stage 3), which still emitted "id",
+        # was delivered with a PUBACK and did nothing at all. Same
+        # robot, same map, same room, minutes apart.
+        body: dict[str, Any] = {"region_id": self.region_id, "type": self.region_type.value}
         if self.name is not None:
             body["name"] = self.name
         if self.params is not None:
