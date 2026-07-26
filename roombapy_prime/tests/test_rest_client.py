@@ -1074,3 +1074,82 @@ async def test_download_map_bundle_timeout_error_gets_clear_message() -> None:
         await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
 
     assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)
+
+
+class TestEditMapResponseType:
+    """`response_type` is the least-verified part of the map-edit
+    request, and a real edit keeps failing with HTTP 500.
+
+    Two field runs (DaRealGuGu) resent two untouched zones and got a
+    500 both times -- once with a payload carrying a genuine extra
+    coordinate, and again after that was corrected. So the extra point
+    was a real deviation from the documented format but demonstrably
+    not the cause.
+
+    "link" asks the server for a presigned DOWNLOAD url. That is
+    confirmed for FETCHING a map; on an EDIT it may be meaningless.
+    This module's own docstring flagged it as unverified from the
+    start, which is why it became a parameter rather than a silently
+    changed default -- swapping one unverified guess for another would
+    leave us equally uninformed."""
+
+    def _client(self):
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        client = object.__new__(PrimeRestClient)
+        client._http_base_auth = "https://auth.example"
+        client._request = AsyncMock(return_value={"ok": True})
+        return client
+
+    def _command(self):
+        from unittest.mock import MagicMock
+
+        command = MagicMock()
+        command.to_v1_command_body.return_value = {"command": "set_virtual_wall", "params": {}}
+        return command
+
+    def _body(self, client):
+        return client._request.call_args.kwargs["body"]
+
+    @pytest.mark.asyncio
+    async def test_the_default_still_sends_link(self):
+        """Unchanged behaviour for existing callers -- this is a new
+        option, not a new default."""
+        client = self._client()
+
+        await client.edit_map("MAP1", self._command())
+
+        assert self._body(client)["response_type"] == "link"
+
+    @pytest.mark.asyncio
+    async def test_none_omits_the_key_entirely(self):
+        """Not an empty string, not null -- the key must be absent, so
+        the server sees a request that never mentions it."""
+        client = self._client()
+
+        await client.edit_map("MAP1", self._command(), response_type=None)
+
+        assert "response_type" not in self._body(client)
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_value_is_passed_through(self):
+        client = self._client()
+
+        await client.edit_map("MAP1", self._command(), response_type="binary")
+
+        assert self._body(client)["response_type"] == "binary"
+
+    @pytest.mark.asyncio
+    async def test_the_command_body_is_unaffected_by_the_variant(self):
+        """The point of varying only the envelope: if a variant works,
+        it has to be the envelope that mattered, not the command."""
+        client = self._client()
+
+        bodies = []
+        for response_type in (None, "link", "binary"):
+            await client.edit_map("MAP1", self._command(), response_type=response_type)
+            bodies.append(self._body(client)["edit_cmd"])
+
+        assert bodies[0] == bodies[1] == bodies[2]

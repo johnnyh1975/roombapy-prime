@@ -398,6 +398,29 @@ class PrimeMqttClient:
             )
 
     def connect(self, timeout: float = 10.0) -> None:
+        # Logged because a same-client_id collision is invisible
+        # otherwise, and its symptoms look like anything but what they
+        # are.
+        #
+        # AWS IoT disconnects the OLDER connection when a second one
+        # arrives using the same client_id. If two consumers of this
+        # library talk to one robot at once -- a Home Assistant
+        # integration and a diagnostic script, say -- and the server
+        # hands out the same client_id to both, they take turns
+        # evicting each other indefinitely. From each side that looks
+        # like an unexplained drop, not like a conflict.
+        #
+        # SUSPECTED, NOT CONFIRMED (this session): a tester's Home
+        # Assistant sensors froze across two separate coordinators at
+        # once, during a period when he was running command-line tests
+        # against the same robot. Two independent data paths stopping
+        # together points at the connection rather than at either
+        # sensor. Whether this server issues a stable client_id per
+        # account is not established -- hence logging it rather than
+        # asserting anything.
+        _LOGGER.debug(
+            "roombapy-prime: connecting blid=%s with client_id=%s", self._blid, self._token.client_id
+        )
         self._client = self._build_client()
         try:
             # keepalive=60 (paho's own default), LOWERED FROM 300 this

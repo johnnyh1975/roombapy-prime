@@ -8,6 +8,45 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a28] - 2026-07-26
+
+### Changed
+
+- **`edit_map()` takes a `response_type` parameter**, and the virtual-wall script now tries three
+  request shapes in one run rather than one guess per round trip.
+
+  Context: a27 fixed a genuine format deviation -- a GeoJSON ring's duplicated closing coordinate
+  was being sent as a fifth point where the wire format takes four. A field retest (DaRealGuGu)
+  confirmed the payload is now correct **and still returns HTTP 500**. So that deviation was real
+  but demonstrably not the cause.
+
+  The next suspect was already documented as unverified in this method's own docstring:
+  `response_type: "link"` asks the server for a presigned DOWNLOAD url. That value is confirmed for
+  FETCHING a map; on an EDIT it may be meaningless, which fits a body that parses and then cannot
+  be honoured.
+
+  Deliberately a parameter rather than a changed default -- nothing has confirmed the right value,
+  and quietly swapping one unverified guess for another would leave us equally uninformed. The
+  script tries omitting the key, then `"link"`, then `"binary"`, stopping at the first success.
+  The command body is identical across all three, so a variant that works implicates the envelope
+  and nothing else.
+
+  If all three fail, that is also a result: it rules out `response_type` and moves the suspicion to
+  the discriminator inside `edit_cmd`, the other item the same docstring flags as unconfirmed.
+
+### Confirmed by field testing
+
+- **SKU prefix `Y41`** seen on real hardware for the first time (arielgr, `Y414040`). Three of the
+  fifteen prefixes in the table are now field-confirmed rather than decompilation-only.
+
+- **Five capability flags were being silently dropped**: `cmds`, `eCmd`, `mopLift`, `odoa` and
+  `p2maps_editv2_feats` all appear in a real `cap` object and were not modelled, so `from_json()`
+  discarded them without error.
+
+  That object is the only place describing what a *specific* device can do, and it is what feature
+  gating reads -- a capability we never see is a feature we can never offer. A guard test now names
+  any capability present in a real capture that the model does not declare.
+
 ## [0.1.11a27] - 2026-07-25
 
 ### Confirmed by field testing

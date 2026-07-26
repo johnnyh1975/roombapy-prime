@@ -327,7 +327,10 @@ class PrimeRestClient:
         url = f"{self._http_base_auth}/v2/p2maps/{_path_segment(p2map_id)}/versions"
         return await self._request("POST", url, body=command.to_command_body())
 
-    async def edit_map(self, p2map_id: str, command: MapEditCommandV1) -> dict[str, Any]:
+    async def edit_map(
+        self, p2map_id: str, command: MapEditCommandV1,
+        response_type: str | None = "link",
+    ) -> dict[str, Any]:
         """POST /v1/p2maps/{p2mapId}/versions -- NEW (July 11, fourth
         session), the ACTUALLY ACTIVE edit path (see models/map_editing.py's V1
         section and PRIME_APP_GAP_ANALYSIS): every single edit
@@ -348,9 +351,32 @@ class PrimeRestClient:
         "link"/"binary" values for FETCHING a map) is not confirmed --
         left as a simple default here, honestly not verified.
 
-        Response shape not modeled -- raw JSON."""
+        Response shape not modeled -- raw JSON.
+
+        RESPONSE_TYPE IS NOW A PARAMETER (this session), because it is
+        the least-verified part of this request and a real edit keeps
+        failing with HTTP 500.
+
+        Two field runs (DaRealGuGu) resent two untouched zones and got
+        a 500 both times -- once with a payload that had a genuine
+        extra point, and again after that was fixed. So the extra point
+        was a real deviation from the documented format but not the
+        cause.
+
+        "link" asks the server for a presigned download URL. That is
+        the confirmed value for FETCHING a map; for an EDIT it may well
+        be meaningless or actively wrong, which would fit a 500 (the
+        body parses, then something downstream cannot honour it).
+        Passing None omits the key entirely.
+
+        This is deliberately a parameter rather than a changed default:
+        nothing has confirmed what the right value is, and quietly
+        swapping one unverified guess for another would leave us
+        exactly as uninformed."""
         url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(p2map_id)}/versions"
-        body = {"edit_cmd": command.to_v1_command_body(), "response_type": "link"}
+        body: dict[str, Any] = {"edit_cmd": command.to_v1_command_body()}
+        if response_type is not None:
+            body["response_type"] = response_type
         return await self._request("POST", url, body=body)
 
     async def get_live_map_stream(self, blid: str) -> LiveMapStreamInit:

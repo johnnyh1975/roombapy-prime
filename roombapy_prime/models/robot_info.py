@@ -881,6 +881,30 @@ class CapabilityFlags:
     all -- built without knowing this data existed."""
 
     wifi_5ghz: int | None = None
+
+    # ADDED FROM A REAL CAPTURE (arielgr, sku Y414040). These five were
+    # present in that robot's cap object and were being silently
+    # DROPPED -- from_json() only reads the fields declared here, so an
+    # unmodelled capability vanishes without any error.
+    #
+    # That matters more than it looks: this cap object is the only
+    # place that describes what a SPECIFIC device can do, and it is
+    # what feature gating reads. A capability we never see is a feature
+    # we can never offer, and nothing would ever have told us.
+    #
+    # Meanings are inferred from their names and NOT confirmed:
+    #   cmds                 -- observed 1
+    #   e_cmd                -- observed 0
+    #   mop_lift             -- observed 0; presumably a liftable mop pad
+    #   odoa                 -- observed 0; obstacle detection/avoidance
+    #   p2maps_editv2_feats  -- observed 3423, clearly a bitfield rather
+    #                           than a level, so do NOT compare it as one
+    cmds: int | None = None
+    e_cmd: int | None = None
+    mop_lift: int | None = None
+    odoa: int | None = None
+    p2maps_editv2_feats: int | None = None
+
     area: int | None = None
     autoevac: int | None = None
     bin_full_detect: int | None = None
@@ -921,6 +945,11 @@ class CapabilityFlags:
     def from_json(cls, data: dict[str, Any]) -> CapabilityFlags:
         return cls(
             wifi_5ghz=data.get("5ghz"),
+            cmds=data.get("cmds"),
+            e_cmd=data.get("eCmd"),
+            mop_lift=data.get("mopLift"),
+            odoa=data.get("odoa"),
+            p2maps_editv2_feats=data.get("p2maps_editv2_feats"),
             area=data.get("area"),
             autoevac=data.get("autoevac"),
             bin_full_detect=data.get("binFullDetect"),
@@ -1695,11 +1724,26 @@ class BbRstInfoStats:
 
 @dataclass(frozen=True)
 class BbSysStats:
-    """CONFIRMED, REAL VALUES (this session, chairstacker): hours=7354,
-    minutes=0. Plausible as total system uptime: device registered
-    2025-09-19, capture taken 2026-07-23 -- roughly 307 days elapsed,
-    307*24=7368 hours, close enough to 7354 to be a believable "hours
-    since registration/total uptime" counter, not an arbitrary number."""
+    """CONFIRMED, REAL VALUES (chairstacker): hours=7354, minutes=0.
+
+    Device registered 2025-09-19, capture taken 2026-07-23: 307 days
+    elapsed, so 7368 hours of wall-clock time against 7354 reported.
+
+    THE 14-HOUR GAP IS PROBABLY NOT NOISE. An earlier version of this
+    note treated "close enough" as the end of the analysis. The tester
+    then suggested this counts POWERED-ON time rather than time since
+    registration -- i.e. periods with the robot switched off or the
+    dock unplugged are simply not counted.
+
+    That fits the residual well: 14 hours of downtime spread across ten
+    months is entirely ordinary (a couple of power cuts, a dock moved,
+    a holiday). It explains the difference instead of rounding it away.
+
+    NOT CONFIRMED -- he could not test it, because his robot was rarely
+    off. What would settle it: a robot with a KNOWN extended
+    powered-off period. If the gap grows by roughly that period, the
+    hypothesis holds; if it tracks wall-clock time regardless, it does
+    not."""
 
     hours: int | None = None
     minutes: int | None = None

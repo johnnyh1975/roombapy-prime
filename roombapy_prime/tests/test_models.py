@@ -3309,3 +3309,81 @@ def test_region_type_has_exactly_the_three_resolvable_values():
 
     assert {m.value for m in RegionType} == {"rid", "zid", "furniture"}
     assert "kZoneTypeWId" in RegionType.__doc__, "the fourth type must stay documented"
+
+
+class TestCapabilityFlagsFromRealCaptures:
+    """`cap` is the only place that says what a SPECIFIC device can do,
+    and it is what feature gating reads.
+
+    from_json() only reads the fields declared on the dataclass, so an
+    unmodelled capability vanishes silently -- no error, no warning. A
+    capability we never see is a feature we can never offer, and
+    nothing would ever have told us. Five were being dropped until a
+    new tester's validation run happened to print the raw object.
+
+    The captures below are verbatim from real devices. Adding one here
+    when a new robot appears is the cheapest way to keep this honest."""
+
+    # arielgr, sku Y414040
+    _ARIELGR = {
+        "5ghz": 0, "area": 1, "autoevac": 0, "binFullDetect": 0, "bleLog": 1,
+        "carpetBoost": 0, "dPause": 1, "dSpot": 1, "dnd": 0, "dockComm": 0,
+        "eCmd": 0, "expectingUserConf": 2, "floorTypeDetect": 2, "idl": 1,
+        "lang": 2, "langOta": 2, "lmap": 1, "log": 2, "mapMax": 3, "maps": 6,
+        "matter": 0, "mc": 3, "multiPass": 1, "ns": 1, "oMode": 38, "odoa": 0,
+        "ota": 3, "p2maps": 5, "p2maps_editv2_feats": 3423, "ppWetLvl": 0,
+        "prov": 3, "pw": 0, "saSku": 1, "sched": 4, "scrub": 3, "suctionLvl": 4,
+        "svcConf": 1, "tLine": 2, "cmds": 1, "mopLift": 0,
+    }
+
+    def test_no_capability_from_a_real_capture_is_dropped(self):
+        """The actual guard. If a future capture adds a key we do not
+        model, this fails and names it -- instead of the value quietly
+        disappearing."""
+        import dataclasses
+        import re
+
+        from roombapy_prime.models.robot_info import CapabilityFlags
+
+        modelled = {f.name for f in dataclasses.fields(CapabilityFlags)}
+
+        def snake(key: str) -> str:
+            if key == "5ghz":
+                return "wifi_5ghz"
+            return re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
+
+        dropped = sorted(k for k in self._ARIELGR if snake(k) not in modelled)
+
+        assert not dropped, (
+            f"capabilities present in a real capture but not modelled: {dropped}. "
+            "from_json() reads only declared fields, so these vanish silently."
+        )
+
+    def test_the_five_previously_dropped_ones_now_arrive(self):
+        from roombapy_prime.models.robot_info import CapabilityFlags
+
+        caps = CapabilityFlags.from_json(self._ARIELGR)
+
+        assert caps.cmds == 1
+        assert caps.e_cmd == 0
+        assert caps.mop_lift == 0
+        assert caps.odoa == 0
+        assert caps.p2maps_editv2_feats == 3423
+
+    def test_a_zero_is_kept_rather_than_treated_as_absent(self):
+        """Zero is a confirmed negative -- "this device cannot do X" --
+        and must not collapse into None, which means "we do not know"."""
+        from roombapy_prime.models.robot_info import CapabilityFlags
+
+        caps = CapabilityFlags.from_json(self._ARIELGR)
+
+        assert caps.mop_lift == 0
+        assert caps.mop_lift is not None
+
+    def test_an_absent_capability_stays_none(self):
+        from roombapy_prime.models.robot_info import CapabilityFlags
+
+        caps = CapabilityFlags.from_json({"scrub": 3})
+
+        assert caps.scrub == 3
+        assert caps.mop_lift is None

@@ -49,7 +49,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a27"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -60,7 +60,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a27#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28#subdirectory=tools"
 ```
 
 See [`tools/README.md`](tools/README.md) for what they do and how to use
@@ -145,7 +145,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a27#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its

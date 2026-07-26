@@ -438,8 +438,9 @@ class RobotDigitalCapabilities:
 #
 # Field-confirmed by a real device: G18 (chairstacker, jadestar1864),
 # N18 (DaRealGuGu -- whose account also holds an R98 classic Roomba 980,
-# exactly the pair this check has to tell apart). The rest come from
-# SkuUtils.java's table directly and have not been seen in the field.
+# exactly the pair this check has to tell apart), Y41 (arielgr, sku
+# Y414040). The rest come from SkuUtils.java's table directly and have
+# not been seen in the field.
 PRIME_SKU_PREFIXES: frozenset[str] = frozenset(
     "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 X18 X28 F15".split()
 )
