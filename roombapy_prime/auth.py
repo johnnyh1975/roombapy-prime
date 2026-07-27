@@ -427,7 +427,28 @@ class RobotDigitalCapabilities:
 # just as much, and two copies would drift. ha_roomba_plus imports it
 # from here now.
 #
-# THREE characters, not one, and that distinction is load-bearing:
+# TWO characters, and both the lower and upper bound matter.
+#
+# One is too few: SkuUtils.java's table uses "R" for BOTH generations --
+# R285020 (Prime) against R980020 and R111840 (Classic). That pair sits
+# on a real tester's account, so a single-letter check would eventually
+# set up a local-capable robot as cloud-only.
+#
+# Three is too many, and this is the part that took field data to see.
+# The APK table lists ONE default SKU per platform, not the variants
+# actually sold. At three characters, four of this project's five
+# Classic field robots fall outside it:
+#
+#     i755840 (i7+) -> i75, table has i71
+#     i355640 (i3+) -> i35, table has i31
+#     S955840 (s9+) -> S95, table has s91
+#     m613840 (m6)  -> m61, matches
+#
+# At two characters all four match, and the Prime and Classic sets stay
+# disjoint -- verified, no collisions in either direction.
+#
+# Original three-character reasoning, kept because it is still why one
+# character is wrong:
 # SkuUtils.java's own platform table shows "R" and "Q" are each used by
 # BOTH generations -- R285020 (Prime) vs. R980020 (Classic, a real test
 # unit in this project) and R111840 (Classic); Q352020 (Prime) vs. "q"
@@ -442,8 +463,99 @@ class RobotDigitalCapabilities:
 # Y414040). The rest come from SkuUtils.java's table directly and have
 # not been seen in the field.
 PRIME_SKU_PREFIXES: frozenset[str] = frozenset(
-    "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 X18 X28 F15".split()
+    "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 W15 X18 X28 F15".split()
 )
+
+
+# The Classic side of the same table, for the question is_prime_sku()
+# cannot answer.
+#
+# WHY BOTH ARE NEEDED. is_prime_sku() returning False means "not known
+# to be Prime" -- never "confirmed Classic". Anything treating that as a
+# Classic confirmation misreads it, and a caller filtering with
+# `not is_prime_sku(...)` silently routes an unrecognised Prime robot
+# down the local path.
+#
+# A single-letter check cannot close that gap either: SkuUtils.java's
+# table uses "R" for BOTH generations -- R285020 (Prime, EnhancedCombo-
+# NextPlus) against R980020 and R111840 (Classic). That is precisely
+# the pair a real tester's account contains.
+#
+# Platform names in comments are SkuUtils.java's own. The Classic/Prime
+# split is NOT explicit in the decompiled source: it is read off the
+# naming scheme, where the Essential/Enhanced/Max/Combo families are
+# the Prime generation. Solid, but an inference rather than a fact.
+CLASSIC_SKU_PREFIXES: frozenset[str] = frozenset(
+    (
+        "R98 "   # DEFAULT_SKU fallback (R980020); also the real 980 test unit
+        "R11 "   # Atlantis
+        "i11 "   # Eva
+        "i31 "   # Daredevil
+        "i71 "   # Lewis
+        "j71 "   # Sapphire
+        "j91 "   # Ruby
+        "m61 "   # SanMarino
+        "s91 "   # Soho
+        "x01 "   # Stingray
+        "a21 "   # AirbenderLite
+        "p11 "   # AirbenderPro
+        #
+        # BELOW THIS LINE: product families NOT in SkuUtils.java, added
+        # from the shipped product range. The APK lists one default SKU
+        # per internal platform, and iRobot sold considerably more
+        # variants than that -- i8 was already confirmed missing by a
+        # real device (veronoicc, i857640) before this list was widened.
+        #
+        # Safe to be generous here for two reasons. Classic is a closed
+        # generation: iRobot has moved to the Prime line, so this set
+        # will not grow further. And every entry below was checked
+        # against PRIME_SKU_PREFIXES first -- "q0" was a candidate and
+        # was DROPPED, because Prime's CongoVacuum (Q012020) claims it.
+        # That collision is exactly the kind this list must not create.
+        "i45 "   # i4/i4+ (retail variant)
+        "i55 "   # i5/i5+ Combo
+        "i65 "   # i6+ (Amazon exclusive)
+        "i85 "   # i8/i8+ — confirmed by a real device (veronoicc, i857640)
+        "j55 "   # j5/j5+ Combo
+        "j65 "   # j6/j6+
+        "e51 "   # e5
+        "e61"    # e6 (retail variant)
+    ).split()
+)
+
+# INCOMPLETE BY CONSTRUCTION, and callers must treat it that way.
+# SkuUtils.java lists ONE default SKU per platform, not the variants
+# actually sold. Every Classic robot in this project's own field-test
+# fleet except one falls outside it:
+#
+#     i755840, i755640  (i7+)     -> i75, table has i71
+#     i857640           (i8+)     -> i85, no entry at all
+#     i355640           (i3+)     -> i35, table has i31
+#     R980040           (980)     -> R98, matches
+#
+# So "not in this table" is NOT evidence of Prime. The table is useful
+# for the opposite direction only: a match is a reliable Classic
+# confirmation. Anything filtering on it must let unknown SKUs through,
+# or four out of five real testers would have been locked out.
+#
+# Docks, neither Classic nor Prime robots. Listed so an accessory SKU is
+# never mistaken for a robot of unknown generation.
+DOCK_SKU_PREFIXES: frozenset[str] = frozenset("481 482 483".split())
+
+
+# Matching happens on two characters; the tables above stay three so the
+# platform each entry came from remains identifiable. Derived here rather
+# than written out twice, because two hand-maintained copies of the same
+# list is how they drift apart.
+_PRIME_PREFIXES_2: frozenset[str] = frozenset(p[:2].upper() for p in PRIME_SKU_PREFIXES)
+_CLASSIC_PREFIXES_2: frozenset[str] = frozenset(c[:2].upper() for c in CLASSIC_SKU_PREFIXES)
+
+if _PRIME_PREFIXES_2 & _CLASSIC_PREFIXES_2:  # pragma: no cover - guarded by a test
+    raise AssertionError(
+        "Prime and Classic two-character prefixes overlap: "
+        f"{sorted(_PRIME_PREFIXES_2 & _CLASSIC_PREFIXES_2)}. Two characters is no longer "
+        "enough to tell the generations apart."
+    )
 
 
 def is_prime_sku(sku: str | None) -> bool:
@@ -453,7 +565,47 @@ def is_prime_sku(sku: str | None) -> bool:
     SKU is not evidence of Prime, and the table above is explicitly
     incomplete for platforms nobody has field-tested. Callers should
     read False as "not known to be Prime", not "confirmed Classic"."""
-    return bool(sku) and sku[:3].upper() in PRIME_SKU_PREFIXES
+    return bool(sku) and sku[:2].upper() in _PRIME_PREFIXES_2
+
+
+def is_classic_sku(sku: str | None) -> bool:
+    """True for Classic-generation SKUs, from SkuUtils.java's table.
+
+    The counterpart to is_prime_sku(), and NOT its inverse -- there are
+    three answers here, not two:
+
+        is_prime_sku()    True  -> Prime
+        is_classic_sku()  True  -> Classic
+        both False              -> UNKNOWN, and that is a real answer
+
+    Unknown is the one worth handling deliberately. A caller that
+    filters with `not is_prime_sku(...)` treats unknown as Classic, and
+    will quietly route a Prime robot from a model nobody has catalogued
+    down the local-MQTT path -- which cannot work, and fails in a place
+    far from the cause.
+
+    Prefix matching is three characters because a single letter is
+    genuinely ambiguous: "R" is Prime in R285020 and Classic in
+    R980020.
+    """
+    return bool(sku) and sku[:2].upper() in _CLASSIC_PREFIXES_2
+
+
+def sku_generation(sku: str | None) -> str:
+    """"prime", "classic", "dock", or "unknown".
+
+    Exists so callers stop having to combine two booleans and get the
+    unknown case right by accident. Prefer this in new code."""
+    if not sku:
+        return "unknown"
+    prefix = sku[:2].upper()
+    if prefix in _PRIME_PREFIXES_2:
+        return "prime"
+    if prefix in _CLASSIC_PREFIXES_2:
+        return "classic"
+    if sku[:3] in DOCK_SKU_PREFIXES:
+        return "dock"
+    return "unknown"
 
 
 @dataclass(frozen=True)

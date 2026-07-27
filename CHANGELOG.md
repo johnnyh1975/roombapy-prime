@@ -8,6 +8,37 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a29] - 2026-07-26
+
+### Fixed — a28 was broken
+
+- **`PrimeRobot.edit_map()` did not accept the `response_type` parameter a28 added to the REST
+  client.** All three variants of the virtual-wall experiment died with `TypeError` before a single
+  request left the machine.
+
+  The damage went further than a wasted run: the script then printed *"All shapes failed. That
+  rules out response_type as the cause"* -- which was false, because nothing had been tested. A
+  tester's entire evening produced one confidently wrong conclusion.
+
+  Reporting a local crash as a server result is the same failure mode as the PUBACK false signal
+  earlier in this project's history. The script now distinguishes the two: a `TypeError` is
+  reported as **"NOTHING WAS ACTUALLY SENT ... this run rules out nothing at all"**, and only a
+  request that genuinely reached the server counts as evidence.
+
+- **A guard test now compares `PrimeRobot`'s method signatures against `PrimeRestClient`'s.** A
+  wrapper that cannot forward an argument fails with `TypeError` before any request is made --
+  trivially detectable, expensive to miss. Verified against the actual a28 bug by reintroducing it.
+
+### Confirmed by field testing
+
+- **System uptime counts POWERED-ON hours**, not time since registration. Settled by two accounts
+  at opposite ends of the range: one rarely switched off showed a 14-hour gap against wall-clock
+  time, another unplugged for months showed 5579 hours. Both match their owners' recollection --
+  and if it tracked wall-clock time, both gaps would have to be near zero.
+
+  Consequence for consumers: do not present this as device age. On a robot that has spent months
+  unplugged the two differ by more than half.
+
 ## [0.1.11a28] - 2026-07-26
 
 ### Changed

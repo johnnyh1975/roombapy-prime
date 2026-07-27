@@ -1,110 +1,157 @@
-# roombapy-prime — Write-Path Test Status (systematisch)
+# roombapy-prime — Write-path test status
 
-> Stand: v0.1.11a24 / Roomba+ v4.0.0a6. Konsolidiert aus allen bisherigen Feldtests,
-> damit nichts doppelt gefragt oder übersehen wird.
+> As of v0.1.11a29. Consolidated from every field session so far, so that
+> nothing gets asked twice or quietly forgotten.
+>
+> Rewritten in English (this revision) to match the project's own
+> convention; the previous version was German.
 
-## Legende
+## Legend
 
-✅ live bestätigt · ⚠️ teilweise/mit Vorbehalt · ❌ nie getestet · 🚫 zentral blockiert
+✅ confirmed live · ⚠️ partial or with caveats · ❌ never tested · 🚫 broken
 
 ---
 
-## 1. `verify-schedule-write` (`update_schedules()`)
+## 1. `verify-schedule-write` — `update_schedules()`
 
-| Schritt | Status | Von |
+| Step | Status | By |
 |---|---|---|
-| Resend unverändert | ✅ | chairstacker |
-| Zeitplan deaktivieren | ✅ | chairstacker |
+| Unchanged resend | ✅ | chairstacker |
+| Disable a schedule | ✅ | chairstacker |
 
-**Fertig.** Kein weiterer Testbedarf.
+**Done.** No further testing needed.
 
 ---
 
-## 2. `verify-map-edit` (`edit_map()` / Raumumbenennung)
+## 2. `verify-map-edit` — `edit_map()`, room rename
 
-| Schritt | Status | Von |
+| Step | Status | By |
 |---|---|---|
-| Raum umbenennen | ✅ | chairstacker (2×) |
+| Rename a room | ✅ | chairstacker (twice) |
 
-**Fertig.** Kein weiterer Testbedarf.
+**Done.**
 
 ---
 
-## 3. `verify-favorite-write` (`create_favorite()`/`update_favorite()`/`delete_favorite()`)
+## 3. `verify-favorite-write`
 
-| Stufe | Status | Von | Anmerkung |
+| Step | Status | By |
+|---|---|---|
+| List | ✅ | chairstacker |
+| Unchanged resend | ✅ | chairstacker |
+| Change colour | ✅ | chairstacker |
+| Create + delete | ✅ | chairstacker, arielgr |
+| Standalone `--delete` | ✅ | chairstacker |
+
+**Done.** arielgr's full validation run created and deleted a test
+favorite cleanly, which closed the last open question here.
+
+---
+
+## 4. `verify-region-commands` — **SOLVED**
+
+| Step | Status | By |
+|---|---|---|
+| List favorites | ✅ | chairstacker, jayjay13011, DaRealGuGu |
+| 1 — unchanged resend | ✅ negative | DaRealGuGu |
+| 1b — with `initiator` | ✅ **mission started** | DaRealGuGu |
+| 2 — change suction level | ✅ **mission started** | DaRealGuGu |
+| 3 — from scratch, no favorite | ✅ **robot cleaned room 12** | DaRealGuGu |
+| 4 — ad-hoc / TID zone | ❌ | — |
+
+**What it took.** Two requirements, neither obvious:
+
+- **`initiator` is mandatory.** A stored favorite carries none; the app
+  adds it at send time. Without it the command is delivered,
+  acknowledged and silently ignored.
+- **The wire keys are `start` and `region_id`**, not `clean` and `id`.
+  The latter pair was an assumption recorded in this project's own code
+  and never verified. Stage 3 had shipped with it since it was written,
+  back when nothing worked at all.
+
+**Why it took three rounds.** Two earlier sessions appeared to *disprove*
+the `initiator` requirement. Both were confounded by sends that never
+reached the broker — the connection work had to land before the question
+could even be asked. Nothing about the payload analysis was wrong; the
+experiment was.
+
+**A map version is not required.** The robot re-versions its map every
+few seconds while cleaning (five values inside 37 seconds in one
+capture), and confirmed-working commands carried versions hours out of
+date. The pre-flight check that warned about this was downgraded from a
+failure to a note.
+
+Only stage 4 remains, and it carries the highest risk — it needs
+self-derived geometry rather than anything the robot supplies.
+
+---
+
+## 5. `verify-settings-write` — `set_setting()`
+
+| Setting | Write | Read-back | Real effect |
 |---|---|---|---|
-| 0 — Liste | ✅ | chairstacker | |
-| 1 — Resend unverändert | ✅ | chairstacker | |
-| 2 — Farbe ändern | ✅ | chairstacker | |
-| 3 — Erstellen+Löschen | ⚠️ | chairstacker | Erstellt/gelöscht bestätigt, aber **App-Sichtbarkeit ungeklärt** — offene Rückfrage steht noch aus |
-| Eigenständiges `--delete` | ✅ | chairstacker | Direkt bestätigt (der 409-Kollisions-Fall) |
+| `childLock` | ✅ | ✅ | ✅ **app showed it, robot announced it audibly** |
+| `ecoCharge` | ✅ | ✅ | ❌ no observable effect to check |
+| `noAutoPasses` | ✅ | ✅ | ❌ untested |
+| `vacHigh` | ✅ | ✅ | ❌ untested |
+| `schedHold` | ✅ | ✅ | 🚫 **accepted but ineffective** |
 
-**Fast fertig.** Einzig offen: Klärung mit chairstacker, ob "gelöscht" auf App-Ebene oder nur API-Ebene geprüft wurde (siehe letzte Nachricht an ihn).
+All by DaRealGuGu.
 
----
+**`childLock` is the first setting whose physical effect is confirmed**,
+not merely its acceptance.
 
-## 4. `verify-region-commands` (`send_routine_command_via_cmd_topic()`) 🚫 zentraler Blocker
+**`schedHold` does nothing.** The write succeeds, the read-back confirms
+it, and the schedule stays active in the app. Writing it to
+`rw-settings` is evidently not the mechanism the app uses.
 
-| Stufe | Status | Von | Anmerkung |
-|---|---|---|---|
-| 0 — Favoriten listen | ✅ | chairstacker, jayjay13011 | |
-| 1 — Resend unverändert | ✅ negativ (vor Fix) | chairstacker, jayjay13011 | Beide: keine Wirkung — aber `favorite_id` fehlte im gesendeten Payload, siehe unten |
-| 1b — mit `initiator` | ⏳ ausstehend | jayjay13011 (a19, korrekter `rmtApp`-Wert) | Ergebnis noch nicht zurückgemeldet — **die wichtigste offene Einzelfrage** |
-| 2 — Suction-Level ändern | ✅ negativ (ohne initiator/favorite_id) | jayjay13011 | Lief technisch fehlerfrei, aber ohne beide jetzt bekannten fehlenden Felder |
-| 3 — Eigener Raum, kein Favorit | ✅ negativ (ohne initiator) | jayjay13011 | Echte Raumnamen erstmals bestätigt (`--list-rooms`) |
-| 4 — Ad-hoc/TID-Zone | ❌ | — | Höchstes Risiko, braucht selbst ermittelte Geometriedaten |
-
-**Zwei reale Codelücken in dieser Session gefunden, beide behoben:**
-- **a20**: Stufe 2/3 haben `initiator` nie gesetzt (nur Stufe 1b) — jeder bisherige Stufe-2/3-Test hat die eigentliche Hypothese nie geprüft
-- **a21, größerer Fund**: **`favorite_id` wurde in keiner Stufe (1/1b/2) je gesetzt**, obwohl die eigene Recherche (`send_routine_command_via_cmd_topic()`s Docstring) längst bestätigt, dass die echte App es beim Wiederholen eines Favoriten immer mitschickt. Betrifft **rückwirkend alle bisherigen negativen Ergebnisse** — keiner der bisherigen Tests hat je ein wirklich app-äquivalentes Kommando gesendet.
-
-**Geklärte Nebenfrage (parallele APK-Recherche, Aufrufcode-Ebene, nicht nur String-Suche):** `irbt_topic_prefix` wird bei `cmd`, `mission/timeline/report` **und** `rejected/report` nachweislich aus **demselben** gespeicherten Konstruktor-Wert (Offset `0x191` in `AssetIotTopicFactory`) verkettet — kein struktureller Unterschied zwischen dem bestätigt funktionierenden und den unsicheren Pfaden. Die Präfix-Hypothese als Erklärung für Stille auf den Beobachtungskanälen ist damit **widerlegt**, nicht nur unbestätigt.
-
-**Der Engpass bleibt Stufe 1b/2 mit dem jetzt vollständigen Payload** (a21) — noch nicht erneut getestet. Alles bisher Beobachtete (inkl. jayjays Stufe 1b auf a19) ist damit vorläufig überholt, sobald jemand auf a21 aktualisiert.
+Worth recording how that surfaced: the cross-check against the classic
+shadow flagged the divergence — `rw-settings` said True while classic
+still said False — **before** the tester looked in the app. Two sources
+disagreeing turned out to mean "the write did not take". Notably, only
+*enabling* diverges; disabling moved both in step.
 
 ---
 
-## 5. `roombapy-prime-verify-region-commands-session` (neu, a19+)
+## 6. `verify-virtual-wall-write` — 🚫 **broken**
 
-Session-Runner für Stufe 1→1b→2 mit einem Login, automatischer Favoriten-Auswahl, strukturierter
-Event-Zusammenfassung. Reduziert Wiederholungsaufwand, ersetzt aber nicht die eigentlichen
-Testergebnisse — noch niemand hat ihn mit dem vollständigen (a21) Payload durchlaufen.
-
----
-
-## 6. `verify-virtual-wall-write` (`SetVirtualWallsV1`)
-
-| Stufe | Status | Von |
+| Step | Status | By |
 |---|---|---|
-| 0 — Liste | ❌ | — |
-| 1 — Resend unverändert | ❌ | — |
+| 0a — `--list-maps` | ✅ | DaRealGuGu |
+| 0b — `--list-walls` | ✅ | DaRealGuGu |
+| 1 — `--update-unchanged` | 🚫 HTTP 500 | DaRealGuGu (three attempts) |
 
-**Komplett unangefasst** — die einzige der vier "normalen" Schreibskripte, die noch niemand auch nur einmal ausprobiert hat.
+**Reads work and produced the first real zone data this project has
+seen**: `1 = KeepOutZone`, `6 = NoMopZone`, confirmed against hardware
+rather than decompilation alone.
+
+**Writes fail with HTTP 500.** Two causes ruled out:
+
+1. **A duplicated closing coordinate.** A GeoJSON ring repeats its first
+   point as its last, so rectangles went out with five points where the
+   format takes four. Real deviation, genuinely fixed — and demonstrably
+   not the cause, since the corrected payload still returned 500.
+2. **`response_type` in the request envelope** — *not actually tested
+   yet.* The a28 attempt died with `TypeError` before any request left
+   the machine, because the parameter was added to the REST client and
+   not to the wrapper. a29 fixes that; the experiment is still pending.
+
+That it returns **500 rather than 400** is itself a clue: the body parses
+and then breaks something downstream.
+
+Next suspect after `response_type`: the discriminator inside `edit_cmd`,
+the other item this project's own docstring has flagged as unverified
+since it was written.
 
 ---
 
-## 7. `verify-settings-write` (`set_setting()` für 5 Settings)
+## What a 0.2.0 beta still needs
 
-| Setting | Status |
-|---|---|
-| `child_lock` | ❌ |
-| `eco_charge` | ❌ |
-| `sched_hold` | ❌ (inkl. offener Frage: synct sich mit der zweiten `schedHold`-Quelle in der classic/unnamed-Shadow?) |
-| `no_auto_passes` | ❌ |
-| `vac_high` | ❌ |
+- **Virtual wall writes** either fixed or documented as known-broken.
+  Documented is acceptable for a beta; silent is not.
+- **One quiet alpha round with no public-signature changes.** a27 changed
+  `Region.to_json()` (`id` → `region_id`) and a28/a29 changed
+  `edit_map()`. Both correct, both breaking. A `b1` released immediately
+  after those would claim a stability that is two versions old.
 
-**Komplett unangefasst** — Skript existiert erst seit a19, noch nie kommuniziert.
-
----
-
-## Priorisierter Plan für die nächste Testrunde
-
-1. **Region-Commands Stufe 1b/2 auf a21 erneut testen** — mit `favorite_id` **und** `initiator`
-   jetzt erstmals vollständig — höchste Priorität, überholt alle bisherigen Ergebnisse
-2. **Favoriten-Rückfrage an chairstacker** — kurze Klärung (App- vs. API-Sichtbarkeit), kein neuer Test
-3. **Virtual-Wall-Write Stufe 0/1** — niedrigstes Risiko unter den komplett unangefassten Skripten
-4. **Settings-Write** — danach, inkl. der `schedHold`-Doppelquellen-Frage
-5. **Region-Commands Stufe 3** erneut mit `initiator` (a20-Fix) — jayjay13011 hat bereits echte
-   Raumdaten und Erfahrung damit
-6. **Region-Commands Stufe 4** — erst, wenn 1b/2 auf a21 ein klares Ergebnis liefern
+Everything else on this page is either done or explicitly optional.

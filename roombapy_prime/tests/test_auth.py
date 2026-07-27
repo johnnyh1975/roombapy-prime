@@ -942,3 +942,110 @@ class TestPrimeSkuDetection:
         from roombapy_prime.auth import is_prime_sku
 
         assert is_prime_sku("n185240") is True
+
+
+class TestSkuGeneration:
+    """Two-character prefix matching, and why it is exactly two.
+
+    ONE IS TOO FEW. SkuUtils.java uses "R" for both generations:
+    R285020 is Prime, R980020 and R111840 are Classic. A single-letter
+    check would eventually set a local-capable robot up as cloud-only —
+    and one tester's account holds exactly that pair.
+
+    THREE IS TOO MANY, which took field data to see. The APK table
+    lists one default SKU per platform, not the variants actually sold.
+    At three characters, four of five Classic field robots fall outside
+    it — i755840 against the table's i71, i355640 against i31, and so
+    on. At two they all match.
+
+    Every SKU below is from a real robot in this project's field-test
+    fleet."""
+
+    _FLEET = [
+        # Classic
+        ("i755840", "classic", "Thonno, i7+"),
+        ("i755640", "classic", "veronoicc, i7+"),
+        ("i857640", "classic", "veronoicc, i8+"),
+        ("i355640", "classic", "mdarocha, i3+"),
+        ("R980040", "classic", "DaRealGuGu, Roomba 980"),
+        ("S955840", "classic", "ronluna, s9+"),
+        ("m613840", "classic", "boutXIII, Braava jet m6"),
+        # Prime
+        ("G185020", "prime", "chairstacker"),
+        ("N185240", "prime", "DaRealGuGu, 505 Combo"),
+        ("Y414040", "prime", "arielgr"),
+    ]
+
+    @pytest.mark.parametrize(("sku", "expected", "who"), _FLEET)
+    def test_every_real_field_device_is_classified(self, sku, expected, who):
+        from roombapy_prime.auth import sku_generation
+
+        assert sku_generation(sku) == expected, f"misclassified {who}'s robot"
+
+    def test_the_R_pair_that_makes_one_character_wrong(self):
+        """Both live on the same account. A single-letter check cannot
+        separate them, and getting it wrong routes a Prime robot down
+        the local path where it cannot work."""
+        from roombapy_prime.auth import sku_generation
+
+        assert sku_generation("R285020") == "prime"
+        assert sku_generation("R980040") == "classic"
+
+    def test_the_two_sets_do_not_overlap(self):
+        """The property the whole scheme rests on. If a future SKU
+        breaks it, two characters stop being enough and this fails
+        loudly rather than misclassifying something."""
+        from roombapy_prime.auth import _CLASSIC_PREFIXES_2, _PRIME_PREFIXES_2
+
+        assert not (_PRIME_PREFIXES_2 & _CLASSIC_PREFIXES_2)
+
+    def test_unknown_is_a_real_answer_not_a_default(self):
+        """The distinction that matters most for callers. `not
+        is_prime_sku(...)` treats unknown as Classic and would route an
+        uncatalogued Prime robot down the local path."""
+        from roombapy_prime.auth import is_classic_sku, is_prime_sku, sku_generation
+
+        assert sku_generation("ZZ99999") == "unknown"
+        assert not is_prime_sku("ZZ99999")
+        assert not is_classic_sku("ZZ99999")
+
+    def test_the_widened_classic_families_are_recognised(self):
+        """Families iRobot shipped that SkuUtils.java does not list. The
+        APK has one default SKU per internal platform; the retail range
+        was wider. i8 was confirmed missing by a real device before this
+        list was widened, which is what prompted checking the rest."""
+        from roombapy_prime.auth import sku_generation
+
+        for sku in ("i455640", "i555640", "i655640", "j555640", "j655640", "e515840"):
+            assert sku_generation(sku) == "classic", sku
+
+    def test_q0_is_prime_and_was_deliberately_not_claimed_for_classic(self):
+        """The one candidate that had to be dropped. iRobot sold a
+        Classic "q" series, but Prime's CongoVacuum is Q012020 — so "Q0"
+        belongs to Prime, and claiming it for Classic would have routed
+        a cloud-only robot down the local path.
+
+        This is why widening the Classic list is only safe when each
+        addition is checked against the Prime set first."""
+        from roombapy_prime.auth import sku_generation
+
+        assert sku_generation("Q012020") == "prime"
+
+    def test_docks_are_neither(self):
+        from roombapy_prime.auth import sku_generation
+
+        assert sku_generation("4816446") == "dock"
+
+    def test_empty_and_none_are_unknown(self):
+        from roombapy_prime.auth import sku_generation
+
+        assert sku_generation(None) == "unknown"
+        assert sku_generation("") == "unknown"
+
+    def test_matching_is_case_insensitive(self):
+        """Real SKUs arrive in both cases -- i755840 lowercase from one
+        source, R980040 uppercase from another."""
+        from roombapy_prime.auth import sku_generation
+
+        assert sku_generation("i755840") == sku_generation("I755840") == "classic"
+        assert sku_generation("n185240") == sku_generation("N185240") == "prime"

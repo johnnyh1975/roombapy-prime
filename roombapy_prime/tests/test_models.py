@@ -3387,3 +3387,219 @@ class TestCapabilityFlagsFromRealCaptures:
 
         assert caps.scrub == 3
         assert caps.mop_lift is None
+
+
+class TestCurrentStateShadowFromRealCaptures:
+    """Same guard as the capability one above, for the shadow that
+    carries live robot state.
+
+    `from_json()` reads only declared fields, so an unmodelled key
+    vanishes silently -- no error, no warning. That already cost this
+    project five capability flags; `googleControl` was the same mistake
+    in a different object, and it surfaced only because a tester happened
+    to paste the shadow's raw key list.
+
+    The key sets below are verbatim from real robots. Adding one when a
+    new device appears is the cheapest way to keep this honest -- and
+    the sets genuinely differ between models, which is exactly why a
+    single capture is not enough."""
+
+    # arielgr, sku Y414040
+    _ARIELGR = [
+        "batPct", "bin", "cleanMissionStatus", "detectedPad", "dock",
+        "googleControl", "lastDisconnect", "p2maps", "regDate",
+        "runtimeStats", "svcEndpoints", "tankPresent", "tz",
+    ]
+
+    def _modelled(self) -> set[str]:
+        import dataclasses
+
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        return {f.name for f in dataclasses.fields(CurrentStateShadow)}
+
+    @staticmethod
+    def _snake(key: str) -> str:
+        import re
+
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
+
+    def test_no_key_from_a_real_capture_is_dropped(self):
+        # svcEndpoints is service-discovery plumbing, not robot state --
+        # deliberately not modelled here.
+        ignored = {"svcEndpoints"}
+        modelled = self._modelled()
+
+        dropped = sorted(
+            k for k in self._ARIELGR
+            if k not in ignored and self._snake(k) not in modelled
+        )
+
+        assert not dropped, (
+            f"keys present in a real ro-currentstate but not modelled: {dropped}. "
+            "from_json() reads only declared fields, so these vanish silently."
+        )
+
+    def test_google_control_survives_parsing(self):
+        """The specific field this test class was written for."""
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        shadow = CurrentStateShadow.from_json({"googleControl": {"linked": True}})
+
+        assert shadow.google_control == {"linked": True}
+
+    def test_an_absent_key_stays_none(self):
+        """Not every robot reports every key -- absent must not become a
+        default that reads like a real answer."""
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        shadow = CurrentStateShadow.from_json({"batPct": 90})
+
+        assert shadow.google_control is None
+        assert shadow.tank_present is None
+
+
+class TestRobotSettingsFromRealCaptures:
+    """Third guard of the same family, for `rw-settings`.
+
+    Written differently from its two siblings, and the difference
+    matters. Those compare a capture's keys against the dataclass's
+    FIELD NAMES, which works only while the two happen to match. Here
+    they deliberately do not: the wire key `swScrub` is stored as
+    `scrub` and `langs2` as `languages_raw`, both for good reasons.
+
+    A name-based check reports those as missing. They are not -- a
+    manual pass over this exact capture produced three false alarms
+    before the parser was actually run.
+
+    So this asserts what actually matters: does from_json() KEEP the
+    value? That question has one right answer regardless of what the
+    field ends up being called."""
+
+    # arielgr, sku Y414040 -- verbatim key list from his rw-settings.
+    _ARIELGR = {
+        # NOTE: the tester's report listed "audio" as a key but not its
+        # contents. {"volume": 3} is what this library expects; whether
+        # that inner key is right is UNVERIFIED, so this capture uses it
+        # rather than inventing an alternative and calling the mismatch
+        # a finding.
+        "audio": {"volume": 3}, "carpetBoost": True, "childLock": False,
+        "cloudEnv": "prod", "country": "US", "ecoCharge": False,
+        "langs2": {"sL": "en-US"}, "mapUploadAllowed": True, "name": "Robot",
+        "noAutoPasses": False, "nsmip": 1, "padWetness": {"disposable": 2},
+        "schedHold": False, "suctionLevel": 2, "swScrub": 3,
+        "timezone": "America/New_York", "twoPass": False,
+    }
+
+    def test_every_meaningful_key_survives_parsing(self):
+        """Structural, not name-based: parse the capture, then parse it
+        again with one key removed. If nothing changes, that key was
+        being discarded."""
+        import dataclasses
+
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        # Infrastructure keys, not robot settings -- not expected to
+        # appear on the model.
+        ignored = {"nsmip", "cloudEnv", "svcEndpoints"}
+
+        full = dataclasses.asdict(RobotSettings.from_json(self._ARIELGR))
+
+        discarded = []
+        for key in self._ARIELGR:
+            if key in ignored:
+                continue
+            without = dict(self._ARIELGR)
+            del without[key]
+            if dataclasses.asdict(RobotSettings.from_json(without)) == full:
+                discarded.append(key)
+
+        assert not discarded, (
+            f"keys whose removal changes nothing, i.e. silently discarded: {discarded}. "
+            "Note this catches a nested key being wrong too: a top-level key can be read "
+            "while the sub-key it looks for does not exist, which no name-based check sees."
+        )
+
+    def test_the_renamed_keys_are_kept_under_their_own_names(self):
+        """Documents the two deliberate renames, so a future reader does
+        not 'fix' them back and break every caller."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        settings = RobotSettings.from_json(self._ARIELGR)
+
+        assert settings.scrub == 3           # wire key: swScrub
+        assert settings.languages_raw        # wire key: langs2
+
+
+class TestNoShadowKeyIsSilentlyDiscarded:
+    """The general form of the three guards above, covering every named
+    shadow with a real capture behind it.
+
+    WHY IT IS STRUCTURAL AND NOT NAME-BASED. Comparing capture keys
+    against dataclass field names produces false alarms whenever a wire
+    key is deliberately stored under a different name -- `swScrub` as
+    `scrub`, `langs2` as `languages_raw`, `softwareVer` folded into a
+    version object. A manual name-based pass over these captures
+    reported six missing fields; every one was wrong.
+
+    Removing a key and checking whether the parse result changes has one
+    correct answer regardless of naming. It also catches a case no name
+    check can see: a top-level key that IS read while the sub-key it
+    looks for does not exist.
+
+    The captures are verbatim key lists from real robots (arielgr, sku
+    Y414040). Contents are plausible fillers where the tester reported
+    only key names -- which is fine, because this test asks whether a
+    value survives, not what it is."""
+
+    # Service-discovery plumbing and internal counters, not robot state.
+    _IGNORED = {"svcEndpoints", "nsmip"}
+
+    def _discarded(self, cls, capture: dict) -> list[str]:
+        import dataclasses
+
+        full = dataclasses.asdict(cls.from_json(capture))
+        out = []
+        for key in capture:
+            if key in self._IGNORED:
+                continue
+            without = {k: v for k, v in capture.items() if k != key}
+            if dataclasses.asdict(cls.from_json(without)) == full:
+                out.append(key)
+        return out
+
+    def test_software_status_shadow(self):
+        from roombapy_prime.models.robot_info import SoftwareStatusShadow
+
+        capture = {
+            "deploymentId": "d1", "deploymentMpkg": "pkg", "deploymentState": "idle",
+            "imuRecal": 1, "lastCommand": {"command": "start"},
+            "lastSwUpdate": {"sts": 1}, "softwareVer": "1.2.3",
+            "subModSwVer": {"nav": "x"}, "nsmip": 1,
+        }
+
+        assert not self._discarded(SoftwareStatusShadow, capture)
+
+    def test_connection_status_shadow(self):
+        from roombapy_prime.models.robot_info import ConnectionStatusShadow
+
+        assert not self._discarded(
+            ConnectionStatusShadow, {"connected": True, "connectedv2": True}
+        )
+
+    def test_config_info_shadow(self):
+        from roombapy_prime.models.robot_info import ConfigInfoShadow
+
+        capture = {"hwPartsRev": {"navSerialNo": "N1"}, "passwordHash": "h", "nsmip": 1}
+
+        assert not self._discarded(ConfigInfoShadow, capture)
+
+    def test_stats_shadow(self):
+        from roombapy_prime.models.robot_info import StatsShadow
+
+        capture = {
+            "bbchg": {"nChgOk": 1}, "bbchg3": {"nAvgMin": 2}, "bbmssn": {"nMssn": 3},
+            "bbpause": {"pauses": 1}, "bbrstinfo": {"nNavRst": 4}, "bbsys": {"hr": 5},
+        }
+
+        assert not self._discarded(StatsShadow, capture)

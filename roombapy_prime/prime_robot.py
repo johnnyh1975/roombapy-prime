@@ -497,13 +497,26 @@ class PrimeRobot:
         docstring."""
         return await self._rest.download_map_bundle(url)
 
-    async def edit_map(self, p2map_id: str, command: MapEditCommandV1) -> dict:
-        """NEW (July 11, fourth session) -- command is now one of the
-        9 V1 command dataclasses from models/map_editing.py (RenameRoomV1,
-        SplitRoomV1, MergeRoomsV1, ...) -- the actually active path
-        (see rest_client.py's docstring, PRIME_APP_GAP_ANALYSIS). For
-        the unused V2 path see edit_map_v2()."""
-        return await self._rest.edit_map(p2map_id, command)
+    async def edit_map(
+        self, p2map_id: str, command: MapEditCommandV1,
+        response_type: str | None = "link",
+    ) -> dict:
+        """command is one of the 9 V1 command dataclasses from
+        models/map_editing.py (RenameRoomV1, SplitRoomV1, MergeRoomsV1,
+        ...) -- the actually active path (see rest_client.py's
+        docstring, PRIME_APP_GAP_ANALYSIS). For the unused V2 path see
+        edit_map_v2().
+
+        response_type forwarded to the REST client -- see its own
+        docstring for why it is a parameter at all.
+
+        ADDED HERE ONE RELEASE LATE (a29). a28 added it to the REST
+        client and not to this wrapper, so all three variants of a
+        field experiment died with TypeError before a single request
+        left the machine. The tester's whole run was wasted, and the
+        script then printed "that rules out response_type as the
+        cause" -- which was false, because nothing had been tested."""
+        return await self._rest.edit_map(p2map_id, command, response_type=response_type)
 
     async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict:
         """The V2 path never called by the app itself -- see

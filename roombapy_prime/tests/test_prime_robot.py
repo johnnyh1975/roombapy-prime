@@ -1021,7 +1021,10 @@ async def test_edit_map_and_edit_map_v2_delegate() -> None:
     command = MagicMock()
 
     assert await robot.edit_map("map1", command) == {"v1": True}
-    rest.edit_map.assert_awaited_once_with("map1", command)
+    # response_type is forwarded explicitly -- it was added to the REST
+    # client in a28 and NOT to this wrapper, so a field experiment died
+    # with TypeError before a single request left the machine.
+    rest.edit_map.assert_awaited_once_with("map1", command, response_type="link")
 
     assert await robot.edit_map_v2("map1", command) == {"v2": True}
     rest.edit_map_v2.assert_awaited_once_with("map1", command)
@@ -1558,3 +1561,49 @@ class TestConcurrentWatchersDoNotFightOverTheConnection:
         robot._reconnect_generation += 1
 
         assert robot._reconnect_generation == 1
+
+
+class TestWrapperSignaturesMatchTheRestClient:
+    """PrimeRobot is a thin wrapper over PrimeRestClient. When the two
+    drift apart, the failure is a TypeError raised before anything
+    reaches the network.
+
+    THIS HAPPENED (a28): `response_type` was added to the REST client
+    and not to the wrapper. A field experiment that was supposed to try
+    three request shapes died on all three before a single request left
+    the machine -- and the script then announced that the parameter had
+    been ruled out, which was false. An entire testing round produced
+    nothing but a wrong conclusion.
+
+    A signature mismatch is trivially detectable and expensive to miss,
+    which is exactly what a test is for."""
+
+    _WRAPPED = [
+        "edit_map", "edit_map_v2", "get_robot_parts", "get_favorites",
+        "get_schedules", "get_mission_history", "get_active_map_versions",
+    ]
+
+    @pytest.mark.parametrize("name", _WRAPPED)
+    def test_the_wrapper_accepts_everything_the_client_does(self, name):
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        wrapper = getattr(PrimeRobot, name, None)
+        client = getattr(PrimeRestClient, name, None)
+        if wrapper is None or client is None:
+            pytest.skip(f"{name} is not present on both")
+
+        # blid is supplied by the wrapper itself, so the client having
+        # it while the wrapper does not is expected and correct.
+        client_params = set(inspect.signature(client).parameters) - {"self", "blid"}
+        wrapper_params = set(inspect.signature(wrapper).parameters) - {"self"}
+
+        missing = sorted(client_params - wrapper_params)
+
+        assert not missing, (
+            f"PrimeRobot.{name}() cannot pass {missing} through to "
+            f"PrimeRestClient.{name}(). Callers using those arguments will fail with "
+            "TypeError before any request is made."
+        )

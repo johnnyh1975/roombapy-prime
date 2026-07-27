@@ -1552,6 +1552,15 @@ class CurrentStateShadow:
     reg_date: str | None = None
     runtime_stats: RuntimeStatsSummary | None = None
     tank_present: bool | None = None
+
+    # ADDED FROM A REAL CAPTURE (arielgr, sku Y414040). Present in his
+    # ro-currentstate and previously dropped -- from_json() reads only
+    # declared fields, so an unmodelled key vanishes without any error.
+    #
+    # Contents not investigated: presumably Google Home / Assistant
+    # integration state, from the name alone. Kept as a raw dict rather
+    # than guessing at a structure for something nobody has looked at.
+    google_control: dict[str, Any] | None = None
     tz: dict[str, Any] | None = None
     svc_endpoints: dict[str, Any] | None = None
 
@@ -1577,6 +1586,7 @@ class CurrentStateShadow:
             reg_date=data.get("regDate"),
             runtime_stats=RuntimeStatsSummary.from_json(runtime_data) if runtime_data else None,
             tank_present=data.get("tankPresent"),
+            google_control=data.get("googleControl"),
             tz=data.get("tz"),
             svc_endpoints=data.get("svcEndpoints"),
         )
@@ -1724,26 +1734,29 @@ class BbRstInfoStats:
 
 @dataclass(frozen=True)
 class BbSysStats:
-    """CONFIRMED, REAL VALUES (chairstacker): hours=7354, minutes=0.
+    """POWERED-ON HOURS, not time since registration. Confirmed by two
+    field accounts with very different usage.
 
-    Device registered 2025-09-19, capture taken 2026-07-23: 307 days
-    elapsed, so 7368 hours of wall-clock time against 7354 reported.
+    | account      | wall-clock | reported | gap        | robot was |
+    |--------------|-----------:|---------:|-----------:|-----------|
+    | chairstacker |     7368 h |   7354 h |     14 h   | rarely off |
+    | DaRealGuGu   |     9672 h |   4093 h |   5579 h   | off for months |
 
-    THE 14-HOUR GAP IS PROBABLY NOT NOISE. An earlier version of this
-    note treated "close enough" as the end of the analysis. The tester
-    then suggested this counts POWERED-ON time rather than time since
-    registration -- i.e. periods with the robot switched off or the
-    dock unplugged are simply not counted.
+    The hypothesis came from chairstacker, who could not test it since
+    his robot is rarely off; DaRealGuGu's account provided the other
+    end of the range. Both gaps match what each owner recalls of their
+    own downtime -- and if this counted wall-clock time, both gaps
+    would have to be near zero.
 
-    That fits the residual well: 14 hours of downtime spread across ten
-    months is entirely ordinary (a couple of power cuts, a dock moved,
-    a holiday). It explains the difference instead of rounding it away.
+    An earlier version of this note called chairstacker's 14 hours
+    "close enough to be believable" and stopped there. That was lazy:
+    14 hours is not rounding, it was a specific unexplained quantity,
+    and treating it as noise cost the finding a round.
 
-    NOT CONFIRMED -- he could not test it, because his robot was rarely
-    off. What would settle it: a robot with a KNOWN extended
-    powered-off period. If the gap grows by roughly that period, the
-    hypothesis holds; if it tracks wall-clock time regardless, it does
-    not."""
+    PRACTICAL CONSEQUENCE: do NOT present this to users as "time since
+    you got the robot". It is an operating-hours meter, and on a robot
+    that has spent months unplugged the two differ by more than half.
+    """
 
     hours: int | None = None
     minutes: int | None = None

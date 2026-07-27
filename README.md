@@ -6,12 +6,16 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.1.11-alpha.** (currently `a23`) Login, MQTT, mission control, schedule
-> writes, map edits and favorite writes are all confirmed working against
-> real accounts. **Region-based cleaning — sending a robot to one specific
-> room — is the one significant thing that does not work yet**, and is
-> where most current effort goes; see
-> [Confidence & known gaps](#confidence--known-gaps).
+> **Status: v0.1.11-alpha.** (currently `a29`) Reading and writing both work
+> against real hardware, confirmed on three independent accounts:
+> login, MQTT, mission control, schedules, map edits, favorites, robot
+> settings, and **region-based cleaning** — sending a robot to specific
+> rooms, both from a saved favorite and built from scratch.
+>
+> One write path is **known broken**: virtual walls and keep-out zones
+> read correctly but the write returns HTTP 500, cause not yet found.
+> See [Confidence & known gaps](#confidence--known-gaps) for the honest
+> per-area breakdown.
 >
 > The diagnostic scripts live in a **separate distribution**
 > ([`tools/`](tools/README.md)) so that installing this library never puts
@@ -49,7 +53,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a29"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -60,7 +64,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a29#subdirectory=tools"
 ```
 
 See [`tools/README.md`](tools/README.md) for what they do and how to use
@@ -124,7 +128,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-527+ tests, all passing — structural checks against decompiled source,
+551+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -138,14 +142,31 @@ English per project convention).
 
 If you own a Prime/V4 robot, running the diagnostics against your own
 account is by far the most useful thing you can do. Every "confirmed"
-entry in the table below exists because somebody did exactly that, and
-every "unverified" one is waiting for someone to.
+entry above exists because somebody did exactly that.
+
+Three findings that shaped this library came from testers pasting their
+**full** terminal output rather than summarising it as "didn't work":
+the live map turning out to be zlib-compressed (visible in the first two
+bytes of a diagnostic line), `initiator` being mandatory for region
+commands, and a robot's own capability list revealing five fields this
+library was silently discarding. None of those would have surfaced from
+a description of the symptom.
+
+The most useful things right now:
+
+- **Virtual wall writes** — currently broken with HTTP 500 and the cause
+  unknown. The read side works, so stage 0 is safe and already useful.
+- **Robot settings other than child lock** — they write and read back
+  cleanly; whether they change anything is untested.
+- **Anything at all on hardware not listed above.** The capability set
+  genuinely differs between models, and each new device has so far
+  turned up something.
 
 The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a29#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its
@@ -160,85 +181,89 @@ second pair of eyes on that reasoning is genuinely useful.
 
 ## Confidence & known gaps
 
-This table is the honest version. Every "confirmed live" below means a
-real person watched a real robot and reported back — not that a request
-returned without an error.
+The honest version. "Confirmed" below means a real person watched a real
+robot and reported back — not that a request returned without an error.
 
-**TL;DR:** reading works, and most writing works. The one significant
-thing that does **not** work is sending a robot to a specific room.
+**Summary:** reading works. Writing works, with one exception noted
+below. Three independent accounts have exercised this, on a Roomba Plus
+505 Combo, a Roomba Combo (G18-series) and a Y41-series machine.
 
-### Confirmed live
+### Confirmed on real hardware
 
-| Area | Confirmed by |
+| Area | How it was confirmed |
 |---|---|
-| Login (Gigya + AWS Custom Authorizer), token refresh | multiple real accounts |
-| MQTT connection, named-shadow reads | multiple real accounts |
-| Reading state, favorites, mission history, maps, schedules | multiple real accounts |
+| Login (Gigya + AWS Custom Authorizer), token refresh | multiple accounts |
+| MQTT connection, named-shadow reads | multiple accounts |
+| Reading state, favorites, mission history, maps, schedules, parts | multiple accounts |
 | Mission control — `start`/`stop`/`pause`/`resume`/`dock` | robot visibly reacted |
 | `find` (audible locate, no movement) | robot chimed |
-| Schedule writes — unchanged resend **and** a real disable | change took effect |
+| **Region cleaning from a saved favorite** | robot cleaned the named rooms |
+| **Region cleaning built from scratch** | robot travelled to room 12 and cleaned it |
+| Schedule writes — unchanged resend and a real disable | change took effect |
 | Map editing — room rename, with revert | twice, name changed in the app |
 | Favorite writes — resend, colour change, delete | change visible in the app |
+| Robot settings — child lock | appeared in the app, robot announced it audibly |
+| Keep-out zone / no-mop zone **reads** | two real zones, both types correctly identified |
 
-Also resolved along the way: battery and charging state come from the
-named shadow `ro-currentstate`, not from the older `RobotStatusV2`
-model — that one is confirmed to appear nowhere, and is kept only as a
-documented dead end.
+### Region cleaning: what it took, and what it needs
 
-### The open blocker: region-based cleaning
+This was the project's central unknown for months. Two things were
+required, and neither is obvious:
 
-Sending a robot to one specific room does not work. This is the single
-biggest gap, and most current effort goes here.
+- **`initiator` is mandatory.** A stored favorite does not carry one —
+  the app adds it at send time. Resending a favorite unchanged is
+  accepted, acknowledged, and silently ignored.
+- **The wire keys are `start` and `region_id`**, not `clean` and `id`.
+  The latter pair was an assumption recorded in this project's own code
+  and never checked.
 
-What has been ruled out, each by a real test rather than reasoning:
+A map version is **not** required. The robot re-versions its map every
+few seconds while cleaning (five values inside 37 seconds in one real
+capture), so a stored favorite is stale within a minute of being saved —
+and commands carrying versions hours out of date started missions
+regardless.
 
-- **Not a missing field.** The payload now carries everything the real
-  app's own command builder produces, including `favorite_id` and
-  `initiator` — both of which were genuinely missing earlier and are
-  now confirmed present.
-- **Not a wrong envelope.** A `cmd`/`cmdJson` wrapper hypothesis was
-  built, tested and disproven; that envelope belongs to schedule
-  entries, not immediate commands.
-- **Not a broken topic.** The topic prefix applies identically to the
-  command topic and the observation topics — confirmed at the
-  call-site level, not inferred.
-- **Not our instrumentation.** Two bugs in the test tooling (a rejected
-  subscription recorded as successful, and silently swallowed watch
-  errors) meant earlier "nothing happened" results were unreliable.
-  Both are fixed; the results still stand.
+### Known broken
 
-Current leads, all instrumented in the tools and awaiting field results:
-a robot-side readiness refusal (which surfaces in the mission status,
-not in any error field), a stale map version referenced by a stored
-favorite, and a pad/operating-mode mismatch.
+- **Virtual wall / keep-out zone writes** return HTTP 500. Reading works.
+  Two causes have been ruled out by field testing: a duplicated closing
+  coordinate in the polygon (real, fixed, not the cause) and the request
+  envelope's `response_type`, which this project has flagged as
+  unverified since it was written. The next suspect is the discriminator
+  inside `edit_cmd`.
 
-Worth knowing if you search for help on this: every public example of
-Roomba region cleaning you will find is for the **Classic** protocol
-(`pmap_id`, `user_pmapv_id`, flat payload, local MQTT). Prime/V4 uses
-`p2map_id` and a different command structure entirely. The names are
-close enough to look applicable and are not.
+### Accepted but ineffective
 
-### Never tested by anyone
+- **`schedHold`** writes succeed and read back correctly, and the
+  schedule stays active in the app. Writing it to `rw-settings` is
+  evidently not the mechanism the app uses.
 
-- **Virtual walls / keep-out zones** — write path implemented, never run
-- **Robot settings** (child lock, eco charge, schedule hold, …) — write
-  accepted in principle, effect on the robot unconfirmed
+  Worth knowing how that surfaced: this project's cross-check against the
+  classic shadow flagged the divergence *before* the tester looked in the
+  app. Two sources disagreeing turned out to mean "the write did not
+  take", which makes that check a real signal.
 
-If you have a Prime robot, these two are the easiest way to contribute
-something genuinely new. Both start with a read-only stage that cannot
-change anything.
+### Untested
 
-### Still uncertain
-
+- **Robot settings other than child lock** — `ecoCharge`, `noAutoPasses`
+  and `vacHigh` all write and read back cleanly; none has an easily
+  observable effect, so their real-world behaviour is unknown.
+- **Multi-robot household and teaming** concepts beyond basic settings
+  scoping.
 - The discriminator value inside a map-edit command's `edit_cmd`
-  envelope (the envelope shape and 8 of 9 commands' fields are
-  confirmed; `SetRoomMetadata`/`VirtualWall` use custom serializers
-  whose internals are not)
-- Multi-robot household and teaming concepts, beyond basic settings
-  scoping
+  envelope. The envelope shape and 8 of 9 commands' fields are confirmed;
+  `SetRoomMetadata` and `VirtualWall` use custom serializers whose
+  internals are not.
 
-The full reasoning behind every entry above — including the
-conclusions that turned out wrong and why — is in
+### A warning if you search for help
+
+Every public example of Roomba region cleaning you will find is for the
+**Classic** protocol: `pmap_id`, `user_pmapv_id`, a flat payload, local
+MQTT. Prime/V4 uses `p2map_id` and a different command structure
+entirely. The names are close enough to look applicable and are not.
+
+The full reasoning behind every entry above — including the conclusions
+that turned out wrong and why — is in
 [`docs/internal/EVIDENCE_TRAIL.md`](docs/internal/EVIDENCE_TRAIL.md).
 
 ## Data privacy & security

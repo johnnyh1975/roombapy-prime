@@ -1,7 +1,7 @@
 [project]
 name = "roombapy-prime"
-version = "0.1.11a28"
-description = "Cloud client for iRobot 'Prime'/V4-generation robots (Draft, unverified against real V4 hardware)"
+version = "0.1.11a29"
+description = "Cloud client for iRobot 'Prime'/V4-generation robots (alpha; core confirmed against real hardware)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -48,7 +48,7 @@ tools = [
     # resolvable and fail. Kept as a documented pointer rather than a
     # promise pip can keep. To actually get the tooling, see
     # tools/README.md.
-    "roombapy-prime-tools @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28#subdirectory=tools",
+    "roombapy-prime-tools @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a29#subdirectory=tools",
 ]
 
 [build-system]

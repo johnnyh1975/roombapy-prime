@@ -1220,6 +1220,60 @@ Originally CONFIRMED (session 15) via
 
 ## prime_robot.send_routine_command_via_cmd_topic
 
+### SOLVED: `initiator` is mandatory, and `region_id` is the write key
+
+Region cleaning was this project's central unknown for months. Two
+things were required, and the second was an assumption recorded in our
+own code that nobody had checked.
+
+**`initiator` is mandatory.** A stored favorite does not carry one --
+the app adds it when sending. A favorite resent unchanged is delivered,
+acknowledged with a PUBACK, and silently ignored.
+
+The evidence took three field sessions, and the first two pointed the
+wrong way:
+
+| Session | Stage 1 (no initiator) | Stage 1b (with) | Verdict |
+|---|---|---|---|
+| a22 | nothing, **no PUBACK** | nothing, **no PUBACK** | worthless -- nothing was delivered |
+| a24/a25 | nothing, no PUBACK | mission started | suggestive, still confounded |
+| a26 | nothing, **PUBACK** | **mission started** | settled |
+
+Only in the third did all stages get delivery confirmation, which is
+what finally made the comparison mean anything. Two earlier runs had
+appeared to *disprove* the hypothesis; both were artefacts of sends that
+never reached the broker.
+
+**The lesson is about sequencing, not protocol.** The payload analysis
+was right the whole time. The connection work -- reconnect
+serialisation, verifying liveness before publishing and subscribing,
+dropping an unconfirmed subscription that was poisoning the shared
+connection -- had to land before the question was answerable at all.
+Diagnosis before hypothesis.
+
+**The write key is `region_id`, not `id`.** `Region`'s own docstring had
+flagged this honestly for months: reads showed `region_id`, writes
+assumed `id`, and nobody knew which was correct for sending. Two
+confirmed-working commands settled it -- both carried `region_id`, and
+the robot echoed them back unchanged in its own mission timeline. The
+from-scratch command, which still emitted `id`, was delivered with a
+PUBACK and did nothing: same robot, same map, same room, minutes apart.
+
+The same command also used `clean` where the working ones used `start`.
+It had been written when nothing worked at all and was never reconciled
+with the shape that later turned out to work -- a reminder that code
+written during a dead end needs revisiting once the dead end clears.
+
+**Map versions are not required.** A stored favorite carries a
+`user_p2mapv_id` that is stale almost immediately: one tester's own
+mission events show five different map versions inside 37 seconds of
+cleaning. Confirmed-working commands carried versions hours out of date,
+and the from-scratch command that worked carried none at all. A
+pre-flight check warning about this was downgraded from a failure to a
+note -- it fired on every run, for everyone, about something
+demonstrably harmless, which is noise rather than signal.
+
+
 `roombapy_prime/prime_robot.py`
 
 THE HYPOTHESIS: send_simple_command()'s confirmed-working

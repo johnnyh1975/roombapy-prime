@@ -7,16 +7,35 @@ line, bytecode inspection, or "analogy assumption, unconfirmed"). This
 document tells you *what exists and roughly how sure we are*; the
 docstring tells you *why*.
 
-Confidence shorthand used throughout:
+Confidence shorthand used throughout. **Two different questions are
+being answered here**, and conflating them is the easiest way to
+misjudge this library:
+
+*How was the shape derived?*
+
 - 🟢 **Confirmed** — field names/types/methods read directly from
   decompiled source or bytecode, not guessed
-- 🟡 **Plausible** — right shape on paper, never sent to/confirmed
-  against a real server
+- 🟡 **Plausible** — right shape on paper, derived by analogy
 - 🔴 **Best-guess** — genuine uncertainty flagged in the docstring;
   treat as a starting point, not a fact
 
-See [`PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](PRIME_APP_GAP_ANALYSIS_2026-07-11.md)
-for the full evidence trail behind any of this.
+*Has it actually been run against hardware?*
+
+- **confirmed live** — a real person watched a real robot and reported
+  back. This is the strong claim, and it is written out rather than
+  given a colour precisely so it cannot be skimmed past.
+- **known broken** — run against hardware and it failed. More useful
+  than untested, and worth more than a colour.
+- Anything without either label has **not been run by anyone**, however
+  green its derivation. A perfectly decompiled request can still be
+  rejected by a server for reasons no amount of reading reveals — that
+  has happened here more than once.
+
+For the reasoning behind any individual entry, including the
+conclusions that turned out wrong, see
+[`internal/EVIDENCE_TRAIL.md`](internal/EVIDENCE_TRAIL.md). For the
+per-write-path testing status, see
+[`internal/WRITE_PATH_TEST_STATUS.md`](internal/WRITE_PATH_TEST_STATUS.md).
 
 ## Contents
 
@@ -62,7 +81,8 @@ await robot.connect()
 | `robot.get_state(timeout=8.0) -> ShadowResponse` | 🟢 | The classic/unnamed shadow — identity, capabilities, current mission status. `models.parse_robot_status_v2(state.payload...)` can attempt to extract a structured `RobotStatusV2` (bytecode-confirmed fields) from the reported state, but this specific structure is confirmed to NOT appear here — battery/charging/dock status actually lives in the named shadow `"ro-currentstate"` instead, see `get_named_shadow()`'s own row below and `CurrentStateShadow`. |
 | `robot.get_settings(timeout=8.0) -> ShadowResponse` | 🟢 | The named `"rw-settings"` shadow — only responds on SMART-tier devices, per binary analysis. |
 | `robot.get_named_shadow(name, timeout=8.0) -> ShadowResponse` | 🟢 (method) / 🟢 (content, now confirmed) | General form of the above two. Nine named shadows are now fully confirmed live: `"rw-constatus"`/`"rw-schedule"`/`"rw-software"` (chairstacker) — see `ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in `models/robot_info.py` — plus four previously-unknown read-only shadows found via `MQTTTopics.java`: `"ro-currentstate"`/`"ro-stats"`/`"ro-services"`/`"ro-configinfo"`. **`"ro-currentstate"` is where battery/charging status actually lives** — `batPct` (int, 0-100), charging state in `cleanMissionStatus.phase` (e.g. `"charge"`) — see `CurrentStateShadow`/`StatsShadow`/`ServicesShadow`/`ConfigInfoShadow`, all with real, live-confirmed structure, not placeholders. See `roombapy-prime-verify-named-shadows` in the README (recommend pairing with `--delay-seconds 2` for reliability). |
-| `robot.set_setting(key, value, timeout=8.0) -> ShadowResponse` | 🟡 | Writes into the `rw-settings` shadow. |
+| `robot.set_setting(key, value, timeout=8.0) -> ShadowResponse` | 🟢 **confirmed live** (one setting end-to-end) | Writes into the `rw-settings` shadow. `childLock` is confirmed all the way through — the change appeared in the iRobot app and the robot announced it audibly. `ecoCharge`, `noAutoPasses` and `vacHigh` write and read back cleanly but have no easily observable effect, so their real-world behaviour is untested. **`schedHold` is accepted but does nothing**: the write succeeds, the read-back confirms it, and the schedule stays active in the app — writing it here is evidently not the mechanism the app uses. Notably, this project's cross-check against the classic shadow flagged that divergence before anyone looked in the app, which makes it a usable signal rather than a curiosity. |
+
 | `robot.watch_state(named=None, *, queue_maxsize=100) -> AsyncIterator[ShadowResponse]` | 🟢 | Yields every shadow delta as it arrives, until the generator is closed/cancelled. Bounded queue, drops oldest on overflow (logged). Pass `named="rw-settings"` to watch that shadow instead of the default. |
 
 ```python
@@ -77,7 +97,7 @@ async for delta in robot.watch_state():
 | Method | Confidence | Notes |
 |---|---|---|
 | `robot.send_simple_command(command: str, initiator="localApp") -> None` | 🟢 **confirmed live** | `"start"`/`"stop"`/`"pause"`/`"resume"`/`"dock"`/`"find"` — all six live-tested against real robots, watched and confirmed by real users actually reacting, not just an error-free response. Publishes `{"command", "time", "initiator"}` to a dedicated non-shadow MQTT topic (`{irbt_topic_prefix}/things/{blid}/cmd`) — see `mqtt_client.py`'s `cmd_topic()`/`publish_cmd()` for the full evidence trail. Fire-and-forget: no response wait, since there's no known server acknowledgment for this topic — poll `get_state()` afterward if you want confirmation. This is now the recommended way to do basic mission control AND locate ("find my robot") — `"find"` produces a genuine, audible chime with no robot movement (jayjay); two OTHER find-my-robot mechanisms (a REST endpoint, a shadow write) were tried first and confirmed **not working** — this is the one that actually works. |
-| `robot.send_routine_command_via_cmd_topic(command: RoutineCommand) -> None` | 🟡 **experimental, unconfirmed** | For region-aware commands (specific rooms/zones, favorites) that `send_simple_command()` can't express. A reasoned hypothesis (the confirmed simple payload and `RoutineCommand`'s own confirmed fields share two exact key names — not coincidence), but NOT live-tested, and the risk profile is different from the topic-discovery case: a wrong guess here could mean a real device accepts something malformed and behaves unpredictably. **A `favorite_id`-only command is NOT the safer option** — the real app always sends `favorite_id` plus the favorite's own full resolved regions/params together (confirmed via `RoutineCommandBuilder.setFromFavorite()`), never one alone. `roombapy-prime-verify-region-commands` implements a staged, safety-gated 4-stage test package for this (see README) — the safest, stage-1 approach: fetch an existing favorite via `get_favorites()` and resend one of its own `command_def` entries completely unchanged. This also sidesteps `routine_modified`'s own computed-value question (see `CommandParams.routine_modified`'s docstring) and avoids ad-hoc (`TID`) regions, which have their own extra construction requirements (see `RegionType.TID`'s docstring) — stage 4 of the script attempts those specifically, gated behind a third safety flag. |
+| `robot.send_routine_command_via_cmd_topic(command: RoutineCommand) -> None` | 🟢 **confirmed live** | Region-aware cleaning — specific rooms, from a saved favorite or built from scratch. Confirmed on real hardware: the robot travelled to the named room and cleaned it. **Two requirements, neither obvious.** (1) `initiator` is **mandatory** — a stored favorite does not carry one, the app adds it at send time, and without it the command is delivered, acknowledged with a PUBACK, and silently ignored. (2) The wire keys are `command="start"` and `region_id` — not `"clean"` and `id`, which was an assumption in this project's own code until field data settled it. A map version is **not** required: the robot re-versions its map every few seconds while cleaning, so any stored `user_p2mapv_id` is stale within a minute, and confirmed-working commands carried versions hours out of date or none at all. Fire-and-forget like `send_simple_command()`; watch `mission/timeline/report` for the robot's own echo of what it received. See EVIDENCE_TRAIL.md for why this took three field sessions to establish — the first two appeared to disprove it, both confounded by sends that never reached the broker. |
 | `robot.send_mission_command(command: RoutineCommand, timeout=8.0) -> ShadowResponse` | 🔴 **confirmed NOT working for basic commands** | The original approach (device shadow) — live-tested and found to time out with zero response for `start`/`stop`/etc. Kept only for the region-based use case above, which no source has verified either way. Do not use this for basic mission control — use `send_simple_command()` instead. |
 
 **`RoutineCommand`** — the payload for the two `RoutineCommand`-based methods above. Key fields:
@@ -144,6 +164,19 @@ paired-`CommandPolygon` requirements — see `RegionType.TID`'s docstring) with 
 `SplitRoomV1`, `MergeRoomsV1`, `SetRoomTypeV1`, `SetRoomMetadataV1`,
 `SetPermanentAreasV1`, `DeletePermanentAreasV1`, `SetVirtualWallsV1`,
 `AdjustFurnitureV1`.
+
+**Not all nine behave the same.** `RenameRoomV1` is confirmed live
+(twice, with a revert). `SetVirtualWallsV1` is **known broken**: reading
+zones works and both zone types are confirmed against real data
+(`1 = KeepOutZone`, `6 = NoMopZone`), but the write returns HTTP 500 and
+the cause is not yet found. Two candidates have been ruled out by field
+testing — a duplicated closing coordinate in the polygon, and the
+request envelope's `response_type`. That it returns 500 rather than 400
+suggests a body that parses and then fails downstream. The remaining
+suspect is the discriminator inside `edit_cmd`, which this project has
+flagged as unverified since it was written.
+
+The other seven commands have never been sent by anyone.
 
 ---
 
