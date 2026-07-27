@@ -189,7 +189,22 @@ async def list_walls(username: str, password: str, country_code: str, blid: str,
 
     print(f"\n{len(features)} raw policyZones feature(s), {len(walls)} converted to VirtualWallV1:\n")
     for feature, wall in zip(features, walls + [None] * (len(features) - len(walls)), strict=True):
-        kind = type(wall).__name__ if wall is not None else "(dropped -- Threshold or unrecognized)"
+        # KNOWN omissions read differently from unknown ones, and the
+        # old message conflated them (arielgr: a Threshold zone printed
+        # as "dropped -- Threshold or unrecognized", which reads like a
+        # gap in this library and is not).
+        #
+        # Thresholds are doorway markers. They live in policyZones
+        # alongside keep-out zones, but they are NOT virtual walls: the
+        # app edits them through set_thresholds, a separate command with
+        # its own status field. Dropping them here is correct --
+        # resending them as virtual walls would be wrong.
+        if wall is not None:
+            kind = type(wall).__name__
+        elif (feature.properties.zone_type or "") == "Threshold":
+            kind = "(skipped -- a doorway threshold, edited via set_thresholds, not a wall)"
+        else:
+            kind = f"(DROPPED -- zone_type {feature.properties.zone_type!r} is not recognised; please report)"
         print(f"  id={feature.feature_id!r} zone_type={feature.properties.zone_type!r} -> {kind}")
 
     print(
@@ -248,11 +263,34 @@ async def send_update_unchanged(
             ('response_type="binary"', "binary"),
         ]
 
+        local_bug = False
         print(f"\n== Sending -- trying {len(variants)} request shapes, stopping at the first success ==")
         for label, response_type in variants:
             print(f"\n-- {label} --")
             try:
                 result = await robot.edit_map(p2map_id, command, response_type=response_type)
+            except TypeError as exc:
+                # A TypeError here never reached the network -- it is a
+                # bug in THIS code, not an answer from the server.
+                #
+                # HAPPENED FOR REAL (a28): response_type was added to
+                # the REST client and not to the robot wrapper, so all
+                # three variants died before a single request went out
+                # -- and the summary below still announced that
+                # response_type was ruled out. It had not been tested
+                # at all.
+                #
+                # Reporting a local failure as a server result is the
+                # same mistake as the PUBACK false signal earlier in
+                # this project's history, and it wastes a tester's
+                # entire evening.
+                report.add(
+                    f"edit_map() -- {label}", "FAILED",
+                    f"LOCAL BUG, request never sent -- {type(exc).__name__}: {exc}",
+                )
+                print(f"   NOT SENT -- bug in this script: {exc}")
+                local_bug = True
+                continue
             except Exception as exc:  # noqa: BLE001
                 report.add(
                     f"edit_map() -- {label}", "FAILED", f"{type(exc).__name__}: {exc}",
@@ -268,10 +306,18 @@ async def send_update_unchanged(
             )
             return
 
-        print(
-            "\nAll shapes failed. That rules out response_type as the cause, which is\n"
-            "worth knowing -- it was the least-verified part of the request."
-        )
+        if local_bug:
+            print(
+                "\nNOTHING WAS ACTUALLY SENT. The failures above are bugs in this script,\n"
+                "not answers from the server -- so this run rules out nothing at all.\n"
+                "Please report it; the fix belongs on our side."
+            )
+        else:
+            print(
+                "\nAll shapes were sent and all were rejected. That rules out response_type\n"
+                "as the cause, which is worth knowing -- it was the least-verified part of\n"
+                "the request."
+            )
 
 
 

@@ -25,7 +25,7 @@ One command; it pulls the library in as a dependency:
 python3 -m venv ~/roombapy-test-venv
 source ~/roombapy-test-venv/bin/activate
 
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a28#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.1.11a29#subdirectory=tools"
 ```
 
 Requires Python 3.11+. You will need to re-run the `source` line each time you
@@ -92,27 +92,27 @@ command tells you what is missing without making you type credentials first.
 | `…-verify-named-shadows` | Dumps all nine device shadows. The single richest source of protocol data. |
 | `…-verify-commands` | Basic mission commands (start/stop/dock/…) with before/after state. |
 | `…-verify-mission-timeline` | Watches the live mission/event topics. Read-only unless `--start-mission`. |
-| `…-verify-region-commands` | **The open blocker.** Staged attempts at room-specific cleaning. |
+| `…-verify-region-commands` | Room-specific cleaning, staged. **Confirmed working** — see below. |
 | `…-verify-region-commands-session` | The above as one guided session — one login, prompts between stages. |
 | `…-verify-map-edit` | Renames one room and reverts it. |
 | `…-verify-favorite-write` | Create/update/delete saved routines. |
 | `…-verify-schedule-write` | Resend and disable schedules. |
-| `…-verify-virtual-wall-write` | Keep-out zones and virtual walls. **Never run by anyone yet.** |
-| `…-verify-settings-write` | Child lock, eco charge, schedule hold, … **Never run by anyone yet.** |
+| `…-verify-virtual-wall-write` | Keep-out zones and virtual walls. Reads work; **writes currently fail with HTTP 500.** |
+| `…-verify-settings-write` | Child lock, eco charge, schedule hold, … Writes confirmed; most effects untested. |
 
 Every script has `--help`, and it is worth reading before a first run.
 
 The last two are the easiest way to contribute something genuinely new — both
 start read-only.
 
-## Region commands: the current focus
+## Region commands: solved, and worth re-running
 
-Room-specific cleaning does not work yet, and this is where most effort goes.
-The session runner walks the staged attempts with checks that run *before* the
-robot moves at all: a stale map version on the stored favorite, a
-pad/operating-mode mismatch, and whether our own processing drops any field the
-favorite actually carries. After sending, it reads the robot's own readiness
-status — where a refusal surfaces, if there is one.
+Room-specific cleaning works. It took three rounds to establish, and two
+things were required that are not obvious:
+
+- **`initiator` is mandatory.** A stored favorite does not carry one, so
+  resending one unchanged is accepted, acknowledged and silently ignored.
+- **The wire keys are `start` and `region_id`**, not `clean` and `id`.
 
 ```bash
 roombapy-prime-verify-region-commands-session \
@@ -120,12 +120,30 @@ roombapy-prime-verify-region-commands-session \
     --i-understand-this-is-experimental-and-unconfirmed
 ```
 
-It lists your eligible favorites and you pick one by number. **Watch the robot
-while it runs.** If anything looks unexpected, the fastest stop is the real
-iRobot app or the button on the robot.
+It lists your eligible favorites and you pick one by number. **Watch the
+robot while it runs.** The fastest stop is the real iRobot app or the
+button on the robot.
 
-A result of "still nothing, even with all the checks clean" is itself worth
-reporting — it rules out things that cannot currently be ruled out.
+Two notes from the sessions that got this working:
+
+- A favorite made from **specific rooms** tells you far more than a
+  whole-home one. If the robot cleans everything, you have only learned
+  that the command arrived.
+- Check the delivery confirmation in the output. Every stage that
+  received one started a mission; every stage that did not got nothing.
+  A "nothing happened" without a confirmation says nothing about the
+  payload.
+
+## Virtual walls: reads work, writes do not
+
+Stage 0 (`--list-maps`, then `--list-walls`) works and is read-only.
+It is how the zone types were confirmed against real data.
+
+`--update-unchanged` currently fails with HTTP 500. Two causes have been
+ruled out by testing, and the script now tries three request shapes in
+one run rather than one guess per round trip. If all three fail, that is
+also a result — it moves the suspicion to the one remaining unverified
+part of the request.
 
 ## Developing from an unreleased checkout
 
