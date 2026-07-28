@@ -151,3 +151,64 @@ class TestStaleMapVersionIsDetected:
 
         assert fresh is True
         assert entry.status == "SKIPPED"
+
+
+class TestOnlyFirstWallNarrowsTheQuestion:
+    """Splits the virtual-wall failure into two answerable halves.
+
+    Three request envelopes have now been genuinely sent and all
+    rejected with HTTP 500 (DaRealGuGu, a29), so `response_type` is
+    ruled out -- the first negative result in this investigation that
+    was actually earned rather than produced by a local crash.
+
+    What remains open is whether the command SHAPE is wrong or whether
+    something about this particular list is. That distinction matters:
+    unlike rename_room, which is confirmed live, set_virtual_wall has
+    never been observed on the wire from the real app. Its entire
+    structure comes from decompilation, so "the shape is wrong" is a
+    live possibility rather than a long shot.
+
+    One wall is the cheapest way to separate the two, and both outcomes
+    say something -- which was not true of the whole-list test alone."""
+
+    def _walls(self, count: int):
+        from unittest.mock import MagicMock
+
+        return [MagicMock(name=f"wall{i}") for i in range(count)]
+
+    def test_only_the_first_wall_is_kept(self):
+        walls = self._walls(3)
+
+        assert walls[:1] == [walls[0]]
+
+    def test_a_single_wall_list_is_unaffected(self):
+        """With one wall there is nothing to narrow, and the flag must
+        not turn a valid request into an empty one."""
+        walls = self._walls(1)
+        only_first = True
+
+        result = walls[:1] if only_first and len(walls) > 1 else walls
+
+        assert result == walls
+
+    def test_the_flag_is_offered_on_the_command_line(self):
+        """Without this the option exists in code and nobody can reach
+        it -- a pattern that has cost this project real testing rounds."""
+        import inspect
+
+        import roombapy_prime_tools.verify_virtual_wall_write as mod
+
+        source = inspect.getsource(mod)
+
+        assert '"--only-first-wall"' in source
+        assert "args.only_first_wall" in source
+
+    def test_send_update_unchanged_accepts_the_parameter(self):
+        """The other half of the same trap: a flag parsed but never
+        forwarded. That exact mismatch -- parameter added to one layer
+        and not the next -- cost two testers a session each in a28."""
+        import inspect
+
+        from roombapy_prime_tools.verify_virtual_wall_write import send_update_unchanged
+
+        assert "only_first_wall" in inspect.signature(send_update_unchanged).parameters

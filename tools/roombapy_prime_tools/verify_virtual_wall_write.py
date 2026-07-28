@@ -217,6 +217,7 @@ async def list_walls(username: str, password: str, country_code: str, blid: str,
 
 async def send_update_unchanged(
     username: str, password: str, country_code: str, blid: str, p2map_id: str, p2mapv_id: str,
+    only_first_wall: bool = False,
 ) -> None:
     from roombapy_prime.models.map_editing import SetVirtualWallsV1
 
@@ -234,6 +235,26 @@ async def send_update_unchanged(
 
         command = SetVirtualWallsV1(walls=walls)
         payload = command.to_v1_command_body()
+        if only_first_wall and len(walls) > 1:
+            # NARROWING TEST (this session). Three request envelopes have
+            # now been genuinely sent and all rejected with HTTP 500, so
+            # response_type is ruled out -- the first negative result in
+            # this investigation that was actually earned.
+            #
+            # What remains untested is whether the problem is the command
+            # SHAPE or something about this particular list. Unlike
+            # rename_room, which is confirmed live, set_virtual_wall has
+            # never been observed on the wire from the real app: its
+            # entire structure comes from decompilation.
+            #
+            # One wall is the cheapest way to split that question.
+            print(
+                f"\n== --only-first-wall: sending 1 of {len(walls)} wall(s) =="
+                "\n(If this is accepted while the full list was not, the problem is "
+                "the list or one entry in it, not the command shape.)"
+            )
+            walls = walls[:1]
+
         print(f"\nResending {len(walls)} wall(s) -- EXACTLY as read, nothing modified:")
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
@@ -348,6 +369,15 @@ def main() -> None:
         "--update-unchanged", action="store_true",
         help="Stage 1: resend the current, complete list unchanged.",
     )
+    parser.add_argument(
+        "--only-first-wall", action="store_true",
+        help="Stage 1b: resend only the FIRST wall instead of the whole list. "
+        "Splits one question into two -- if a single wall is accepted while the "
+        "full list is rejected, the problem is the list or a specific entry in it; "
+        "if a single wall is rejected too, the command shape itself is wrong. "
+        "Both outcomes are informative, which was not true of the whole-list test "
+        "on its own.",
+    )
     parser.add_argument("--i-understand-this-changes-real-map-zones", action="store_true")
     args = parser.parse_args()
     require_blid(args)
@@ -382,7 +412,10 @@ def main() -> None:
 
     if args.update_unchanged:
         sys.exit(run_script(
-            send_update_unchanged(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id)
+            send_update_unchanged(
+                username, password, args.country_code, args.blid,
+                args.p2map_id, args.p2mapv_id, args.only_first_wall,
+            )
         ))
         return
 
