@@ -8,6 +8,23 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a30] - 2026-07-28
+
+### Confirmed
+- **Virtual wall wire format verified against a second, independent APK read.** Type codes, the
+  degenerate-quadrilateral encoding for linear walls and outer-ring-only handling all already
+  matched. The wall array is not the cause of the HTTP 500.
+- **`response_type` ruled out** by a field run where all three shapes genuinely reached the server.
+
+### Fixed
+- **take(4)**: the app takes exactly the first four polygon points. This library dropped the
+  closing point only when the ring was closed -- identical for rectangles, wrong for anything else.
+
+### Added
+- **`--only-first-wall`** narrows the remaining question to command shape versus list contents.
+- **`set_virtual_wall` replaces the whole shared list** -- documented, with a guard test. A partial
+  list deletes every zone it omits.
+
 ## [0.1.11a29] - 2026-07-26
 
 ### Fixed — a28 was broken

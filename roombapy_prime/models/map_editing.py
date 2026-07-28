@@ -265,25 +265,25 @@ def _flatten_ring(polygon: Polygon) -> list[float]:
     here rather than guessing how (or whether) they'd be represented."""
     ring = list(polygon.coordinates[0]) if polygon.coordinates else []
 
-    # DROP GeoJSON'S CLOSING POINT (this session, real field failure).
+    # take(4): EXACTLY the first four points, unconditionally.
     #
-    # A GeoJSON LinearRing repeats its first coordinate as its last, so
-    # a rectangle read from policyZones.geojson arrives as FIVE points.
-    # The V1 wire format is [id, type, x1,y1, x2,y2, x3,y3, x4,y4] --
-    # four points, confirmed by APK decompilation and written in
-    # VirtualWallRectangleV1's own docstring right here in this file.
+    # CORRECTED (this session) from a "drop the closing point if the ring
+    # is closed" rule. Both produce identical output for a rectangle read
+    # out of policyZones -- a closed 5-point ring becomes the same 4
+    # points either way, which is why field payloads looked right.
     #
-    # We were passing the ring through unchanged, so every rectangle
-    # went out with a duplicated fifth point. A real resend of two
-    # untouched zones (DaRealGuGu) came back HTTP 500 -- a server
-    # error rather than a 400, which fits a payload that parses but
-    # then breaks something downstream.
+    # They differ on any ring that is not a closed rectangle: a 5-point
+    # open polygon produced 12 elements here and 10 in the app. The wire
+    # format is fixed at [id, type, 4 (x,y) pairs], and the app enforces
+    # that by truncating rather than by trusting its input.
     #
-    # Only the CLOSING duplicate is removed, and only when the ring is
-    # genuinely closed: a legitimately repeated point elsewhere in a
-    # polygon stays untouched.
-    if len(ring) > 1 and tuple(ring[0]) == tuple(ring[-1]):
-        ring = ring[:-1]
+    # From APK analysis of the custom VirtualWall serializer:
+    #   polygon.coordinates[0].coordinates.take(4) -> add(x), add(y)
+    #
+    # Only coordinates[0], the outer ring. Interior rings (holes) are
+    # ignored -- which matters because a Polygon can carry them and
+    # nothing else in this file would have dropped them.
+    ring = ring[:4]
 
     flat: list[float] = []
     for x, y in ring:
@@ -557,6 +557,28 @@ class SetVirtualWallsV1:
     walls: list[VirtualWallV1]
 
     def to_v1_command_body(self) -> dict[str, Any]:
+        """THIS REPLACES THE ENTIRE LIST, and the list is shared.
+
+        Confirmed by a second APK read (this session), of
+        P2MapAPIZoneEditing: every write follows the same shape --
+        fetchLatestPersistentMap(), then getKeepOutZones() +
+        getNoMopZones() + getVirtualWalls(), then send the COMBINED
+        list.
+
+        All three zone kinds live in one `virwall` array. Sending only
+        the wall you want to add therefore deletes every keep-out zone
+        and no-mop zone the robot had. Any add/remove helper built on
+        this must read first, merge, and send everything back.
+
+        The app also assigns ids itself, via
+        getNextVirtualWallID(existing) -- there is no server-side
+        allocation, so a caller adding a wall has to pick a free id
+        from the current list.
+
+        NOT the explanation for the HTTP 500 seen in the field: the
+        verify script's --update-unchanged already reads the full list
+        and resends it untouched, which is exactly this pattern, and it
+        still fails."""
         return {
             "command": "set_virtual_wall",
             "params": {"virwall": [w.to_json() for w in self.walls]},
