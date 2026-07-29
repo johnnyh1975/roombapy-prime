@@ -197,21 +197,32 @@ class TestVirtualWallWireFormatAgainstSecondAPKRead:
         ]
 
 
-class TestSetVirtualWallsReplacesTheWholeList:
-    """The contract that makes a naive add-a-wall helper destructive.
+class TestSetVirtualWallsPayload:
+    """The virwall array and its leading count.
 
-    From a second APK read of P2MapAPIZoneEditing: every write does
-    fetchLatestPersistentMap(), extracts keep-out zones, no-mop zones
-    AND virtual walls, and sends the combined list. All three kinds
-    share one `virwall` array.
+    THE COUNT IS THE FIX FOR MONTHS OF HTTP 500s. The array starts with
+    the number of walls as an Int, then the wall arrays:
 
-    So sending just the wall you want to add deletes everything else on
-    the map. On real hardware that is a user's carefully placed zones
-    disappearing with no error and no undo.
+        "virwall": [2, [...], [...]]
 
-    This test exists because the destructive version is the obvious one
-    to write: `SetVirtualWallsV1(walls=[new_wall])` reads perfectly
-    naturally and is exactly wrong."""
+    Confirmed from the app's CommandSerializer bytecode -- one
+    JsonArray, walls.size() added first, walls appended after. The
+    server reads position 0 expecting a number, found an array, and
+    failed while deserialising a body that was otherwise valid JSON.
+    Hence 500 rather than 400.
+
+    It also explains why no field test could narrow it down: wall
+    count, zone types, account and map version were all irrelevant,
+    because the payload failed at element zero.
+
+    Not a general convention -- adjust_furniture is equally list-based
+    and has no counter. This is the only .size() call in the entire
+    serializer.
+
+    THE LIST IS ALSO REPLACED WHOLESALE, and all three zone kinds share
+    it. Sending only the wall you want to add deletes every keep-out
+    and no-mop zone on the map, silently. Now doubly so: a partial list
+    changes both the contents and the count."""
 
     def _wall(self, wall_id):
         from roombapy_prime.models.geometry import Polygon
@@ -220,44 +231,62 @@ class TestSetVirtualWallsReplacesTheWholeList:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
         return VirtualWallRectangleV1(wall_id, Polygon(coordinates=[square]))
 
-    def test_the_payload_carries_exactly_what_it_was_given(self):
-        """No merging happens here -- the caller is responsible for
-        passing the complete list. Stated as a test so the division of
-        responsibility is explicit rather than assumed."""
+    def _virwall(self, walls):
         from roombapy_prime.models.map_editing import SetVirtualWallsV1
 
-        body = SetVirtualWallsV1(walls=[self._wall("1"), self._wall("2")]).to_v1_command_body()
+        return SetVirtualWallsV1(walls=walls).to_v1_command_body()["params"]["virwall"]
 
-        assert len(body["params"]["virwall"]) == 2
+    def test_the_first_element_is_the_wall_count(self):
+        virwall = self._virwall([self._wall("1"), self._wall("2")])
 
-    def test_a_single_wall_produces_a_single_entry(self):
-        """Which on a robot with three zones means the other two are
-        gone. Correct behaviour for this class, dangerous for a caller
-        that has not read the docstring."""
-        from roombapy_prime.models.map_editing import SetVirtualWallsV1
+        assert virwall[0] == 2
 
-        body = SetVirtualWallsV1(walls=[self._wall("1")]).to_v1_command_body()
+    def test_the_count_matches_the_walls_actually_sent(self):
+        """A partial list changes both -- which is the second reason
+        sending one wall of three is destructive rather than merely
+        incomplete."""
+        for n in (1, 2, 3):
+            virwall = self._virwall([self._wall(str(i)) for i in range(n)])
+            assert virwall[0] == n
+            assert len(virwall) == n + 1
 
-        assert len(body["params"]["virwall"]) == 1
+    def test_an_empty_list_still_carries_a_count(self):
+        """Clearing every zone is a legitimate edit, and the count has
+        to say zero rather than the array being empty."""
+        assert self._virwall([]) == [0]
+
+    def test_the_walls_follow_the_count_unchanged(self):
+        virwall = self._virwall([self._wall("7")])
+
+        assert virwall[1][0] == "7"
+        assert len(virwall[1]) == 10
 
     def test_all_three_kinds_share_one_array(self):
-        """The reason a partial list is destructive rather than merely
-        incomplete: no-mop zones and keep-out zones are not separate
-        fields that would be left alone."""
+        """Why a partial list is destructive rather than incomplete:
+        no-mop and keep-out zones are not separate fields that would be
+        left alone."""
         from roombapy_prime.models.geometry import Polygon
         from roombapy_prime.models.map_editing import (
-            SetVirtualWallsV1,
             VirtualWallLinearV1,
             VirtualWallNoMopZoneV1,
         )
 
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
-        body = SetVirtualWallsV1(walls=[
+        virwall = self._virwall([
             self._wall("1"),
             VirtualWallNoMopZoneV1("2", Polygon(coordinates=[square])),
             VirtualWallLinearV1("3", (0.0, 0.0), (1.0, 1.0)),
-        ]).to_v1_command_body()
+        ])
 
-        virwall = body["params"]["virwall"]
-        assert [entry[1] for entry in virwall] == [1, 6, 2]
-        assert len(virwall) == 3
+        assert virwall[0] == 3
+        assert [entry[1] for entry in virwall[1:]] == [1, 6, 2]
+
+    def test_the_command_name_is_singular(self):
+        """set_virtual_wall, not SetVirtualWalls as the class name
+        suggests."""
+        from roombapy_prime.models.map_editing import SetVirtualWallsV1
+
+        body = SetVirtualWallsV1(walls=[self._wall("1")]).to_v1_command_body()
+
+        assert body["command"] == "set_virtual_wall"
+        assert "virwall" in body["params"]

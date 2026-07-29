@@ -581,7 +581,33 @@ class SetVirtualWallsV1:
         still fails."""
         return {
             "command": "set_virtual_wall",
-            "params": {"virwall": [w.to_json() for w in self.walls]},
+            # THE FIRST ELEMENT IS A COUNT, not a wall.
+            #
+            #     "virwall": [2, [...], [...]]
+            #
+            # Confirmed from the app's CommandSerializer bytecode: it
+            # builds one JsonArray, adds walls.size() as an Int, and
+            # only then appends the wall arrays.
+            #
+            # This is why every write returned HTTP 500 while the body
+            # was valid JSON -- the server reads position 0 expecting a
+            # number and finds an array, so it parses and then fails
+            # deserialising. And it is why no field test could narrow it
+            # down: wall count, zone types, account and map version were
+            # all irrelevant, because the payload failed at element
+            # zero before any of them mattered.
+            #
+            # NOT a general convention. adjust_furniture is equally
+            # list-based and has no counter; set_virtual_wall carries
+            # the only .size() call in the whole serializer.
+            #
+            # The count must match the walls actually sent. Callers that
+            # send a partial list therefore change two things at once --
+            # which is exactly why partial writes delete the rest (see
+            # this method's own note about replacing the whole list).
+            "params": {
+                "virwall": [len(self.walls), *(w.to_json() for w in self.walls)]
+            },
         }
 
 

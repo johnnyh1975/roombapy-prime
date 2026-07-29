@@ -8,6 +8,23 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.1.11a31] - 2026-07-29
+
+### Fixed
+- **The virtual-wall HTTP 500: `virwall` starts with a COUNT of the walls.** Confirmed from
+  `CommandSerializer` bytecode -- one JsonArray, `walls.size()` first, walls after. The only
+  `.size()` call in the whole serializer, and absent from the otherwise identical
+  `adjust_furniture`. Explains 500-rather-than-400 (valid JSON, fails deserialising at position 0)
+  and why field testing could not narrow it down.
+- **`--only-first-wall` truncates the payload it sends.** It built the command before trimming the
+  list, so it announced "sending 1 of 2" and sent both.
+
+### Removed
+- **Type-variant probing**, unused. Bytecode settled the id (String) and type code (Int) directly.
+
+### Note
+- `response_type` is untested again: all three variants were rejected for the missing count.
+
 ## [0.1.11a30] - 2026-07-28
 
 ### Confirmed

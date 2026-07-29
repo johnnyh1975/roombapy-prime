@@ -1049,3 +1049,98 @@ class TestSkuGeneration:
 
         assert sku_generation("i755840") == sku_generation("I755840") == "classic"
         assert sku_generation("n185240") == sku_generation("N185240") == "prime"
+
+
+class TestNoLoginFieldIsSilentlyDiscarded:
+    """The login response is the one structure everything passes
+    through and nothing guards.
+
+    Shadow payloads have had a guard since `googleControl` turned up
+    unmodelled, and capability flags since five of them were found being
+    dropped. Both surfaced only because a tester happened to paste raw
+    output. The login response has had no such check at all -- and it is
+    read by every tester, on every run, more often than any shadow.
+
+    What that already cost: `expires` is parsed and stored but never
+    displayed anywhere, so whether Prime logins even carry it has been
+    an open question for months while the answer passed through the code
+    several times a day. Not overlooked -- treated defensively and then
+    never revisited, which is the same outcome by a politer route.
+
+    LoginResult keeps the whole response in `raw`, so unlike the shadow
+    models nothing is lost here. The risk is different: a field that is
+    present, parsed, and never surfaced is invisible in exactly the same
+    way as one that was dropped."""
+
+    _LOGIN_KEYS = {
+        "client_id", "iot_token", "iot_signature", "iot_authorizer_name",
+        "expires", "devices",
+    }
+
+    def test_every_known_connection_token_field_is_modelled(self):
+        import dataclasses
+
+        from roombapy_prime.auth import ConnectionToken
+
+        modelled = {f.name for f in dataclasses.fields(ConnectionToken)}
+
+        assert self._LOGIN_KEYS <= modelled
+
+    def test_a_field_the_response_carries_but_we_do_not_model_is_still_reachable(self):
+        """LoginResult keeps `raw`. That is the safety net the shadow
+        models do not have, and the reason an unmodelled login field is
+        recoverable rather than lost."""
+        import dataclasses
+
+        from roombapy_prime.auth import LoginResult
+
+        assert "raw" in {f.name for f in dataclasses.fields(LoginResult)}
+
+    def test_a_missing_expires_is_none_rather_than_a_guess(self):
+        """Absent must not become a default lifetime. Scheduling a
+        refresh against an invented expiry produces a reconnect at a
+        time chosen by us rather than by the server -- worse than not
+        refreshing, because it looks deliberate."""
+        from roombapy_prime.auth import ConnectionToken
+
+        token = ConnectionToken.from_json({
+            "client_id": "c", "iot_token": "t",
+            "iot_signature": "s", "iot_authorizer_name": "a",
+        })
+
+        assert token.expires is None
+        assert token.seconds_until_expiry() is None
+
+    def test_an_expiry_that_is_present_is_usable(self):
+        import time
+
+        from roombapy_prime.auth import ConnectionToken
+
+        token = ConnectionToken.from_json({
+            "client_id": "c", "iot_token": "t",
+            "iot_signature": "s", "iot_authorizer_name": "a",
+            "expires": int(time.time()) + 3600,
+        })
+
+        remaining = token.seconds_until_expiry()
+
+        assert remaining is not None
+        assert 3500 < remaining <= 3600
+
+    def test_the_four_required_fields_fail_loudly_when_absent(self):
+        """These four are confirmed both in live captures and as native
+        strings in the app's binary. A missing one means the response
+        shape changed fundamentally, and guessing past it would produce
+        a connection that fails for an unexplainable reason."""
+        import pytest
+
+        from roombapy_prime.auth import ConnectionToken
+
+        for missing in ("client_id", "iot_token", "iot_signature", "iot_authorizer_name"):
+            payload = {
+                "client_id": "c", "iot_token": "t",
+                "iot_signature": "s", "iot_authorizer_name": "a",
+            }
+            del payload[missing]
+            with pytest.raises(KeyError):
+                ConnectionToken.from_json(payload)

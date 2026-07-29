@@ -741,7 +741,11 @@ def test_set_virtual_walls_v1_confirmed_field_name() -> None:
 
     assert body["command"] == "set_virtual_wall"
     assert "virwall" in body["params"]
-    assert body["params"]["virwall"] == [["w1", 2, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]]
+    # Leading 1 is the wall COUNT, confirmed from CommandSerializer
+    # bytecode -- the cause of every HTTP 500 this command produced.
+    assert body["params"]["virwall"] == [
+        1, ["w1", 2, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0],
+    ]
 
 
 def test_furniture_item_v1_is_a_positional_array_with_int_bool() -> None:
