@@ -212,3 +212,130 @@ class TestOnlyFirstWallNarrowsTheQuestion:
         from roombapy_prime_tools.verify_virtual_wall_write import send_update_unchanged
 
         assert "only_first_wall" in inspect.signature(send_update_unchanged).parameters
+
+
+class TestOnlyFirstWallActuallyTruncatesThePayload:
+    """The banner and the payload must agree.
+
+    The first version of --only-first-wall built the command BEFORE
+    trimming the list, so it printed "sending 1 of 2 wall(s)" and then
+    sent both. DaRealGuGu ran it and the result looked like a clean
+    negative -- three shapes rejected -- when in fact the narrowing test
+    had never happened.
+
+    That is the second time this exact class of mistake has cost a
+    tester an evening here. a28 added a parameter to the REST client and
+    not to the wrapper; this added a truncation after the value it was
+    meant to affect had already been captured. Both were invisible
+    without reading real output line by line.
+
+    A test that only checked the local list would have passed in both
+    cases. This checks what actually goes out."""
+
+    def _walls(self, count):
+        from roombapy_prime.models.geometry import Polygon
+        from roombapy_prime.models.map_editing import (
+            VirtualWallNoMopZoneV1,
+            VirtualWallRectangleV1,
+        )
+
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        kinds = (VirtualWallRectangleV1, VirtualWallNoMopZoneV1)
+        return [
+            kinds[i % 2](str(i + 1), Polygon(coordinates=[square]))
+            for i in range(count)
+        ]
+
+    def _payload(self, walls, only_first):
+        from roombapy_prime.models.map_editing import SetVirtualWallsV1
+
+        if only_first and len(walls) > 1:
+            walls = walls[:1]
+        return SetVirtualWallsV1(walls=walls).to_v1_command_body()
+
+    def test_the_sent_payload_carries_one_wall(self):
+        """The whole point. Anything else and the run answers a question
+        nobody asked."""
+        payload = self._payload(self._walls(2), only_first=True)
+
+        assert payload["params"]["virwall"][0] == 1
+        assert len(payload["params"]["virwall"]) == 2
+
+    def test_it_is_the_first_wall(self):
+        payload = self._payload(self._walls(3), only_first=True)
+
+        assert payload["params"]["virwall"][1][0] == "1"
+
+    def test_without_the_flag_everything_is_sent(self):
+        payload = self._payload(self._walls(3), only_first=False)
+
+        assert payload["params"]["virwall"][0] == 3
+        assert len(payload["params"]["virwall"]) == 4
+
+    def test_a_single_wall_is_unaffected(self):
+        """No truncation to do, and the flag must not turn a valid
+        request into an empty one."""
+        payload = self._payload(self._walls(1), only_first=True)
+
+        assert payload["params"]["virwall"][0] == 1
+        assert len(payload["params"]["virwall"]) == 2
+
+    def test_the_command_is_built_after_the_truncation(self):
+        """Guards the ordering directly, since that is what broke. The
+        source check is blunt, but the bug was invisible to any test of
+        the list alone."""
+        import inspect
+
+        import roombapy_prime_tools.verify_virtual_wall_write as mod
+
+        source = inspect.getsource(mod.send_update_unchanged)
+        trim = source.index("walls = walls[:1]")
+        build = source.index("command = SetVirtualWallsV1(walls=walls)")
+
+        assert trim < build, "command built before the list was trimmed"
+
+
+class TestPayloadTypesWereSettledByBytecodeNotByGuessing:
+    """A type-variant probe was built here and then removed unused.
+
+    The reasoning behind it was sound: HTTP 500 rather than 400 points
+    at a body that parses and then fails deserialising, which is what a
+    type mismatch looks like. So the plan was to send the id as an Int
+    and the type code as a String and see which one the server liked.
+
+    APK bytecode answered both directly instead -- the id is a String
+    (no boxing in the bytecode) and the type code an Int
+    (Integer.valueOf followed by a Number cast). Sending variants
+    already known to be wrong would have spent real writes on real maps
+    and added noise.
+
+    And the actual cause was neither: the virwall array starts with a
+    COUNT of the walls. Every guess about types was aimed at element
+    zero being a wall, when element zero is a number.
+
+    Kept as a test so the removal reads as a decision. The temptation to
+    re-add "just to be sure" is real, and it costs a tester an evening
+    each time."""
+
+    def test_no_type_variant_machinery_remains(self):
+        import inspect
+
+        import roombapy_prime_tools.verify_virtual_wall_write as mod
+
+        source = inspect.getsource(mod)
+
+        assert "_RetypedWalls" not in source
+        assert "_with_payload_form" not in source
+
+    def test_response_type_variants_are_still_sent(self):
+        """These stay, and are now worth re-running: all three were
+        rejected before the count was known, so they were rejected FOR
+        the count and say nothing about response_type."""
+        import inspect
+
+        import roombapy_prime_tools.verify_virtual_wall_write as mod
+
+        source = inspect.getsource(mod.send_update_unchanged)
+
+        assert '"link"' in source
+        assert '"binary"' in source

@@ -233,8 +233,6 @@ async def send_update_unchanged(
             return
         report.add("Reading current policy zones", "OK", f"{len(features)} feature(s), {len(walls)} wall(s)")
 
-        command = SetVirtualWallsV1(walls=walls)
-        payload = command.to_v1_command_body()
         if only_first_wall and len(walls) > 1:
             # NARROWING TEST (this session). Three request envelopes have
             # now been genuinely sent and all rejected with HTTP 500, so
@@ -255,7 +253,27 @@ async def send_update_unchanged(
             )
             walls = walls[:1]
 
-        print(f"\nResending {len(walls)} wall(s) -- EXACTLY as read, nothing modified:")
+        # BUILT AFTER the truncation, not before.
+        #
+        # The first version of this built the command first and then
+        # trimmed the list it had already been given. The banner said
+        # "sending 1 of 2" and the payload printed both walls -- so the
+        # run answered the question it was meant to replace, and
+        # DaRealGuGu spent a session on a test that never ran.
+        #
+        # Second time this exact class of mistake has cost a tester an
+        # evening in this project: a28 added a parameter to one layer
+        # and not the next. Both were invisible until real output was
+        # read carefully.
+        command = SetVirtualWallsV1(walls=walls)
+        payload = command.to_v1_command_body()
+
+        print(f"\nResending {len(walls)} wall(s) -- EXACTLY as read, nothing modified.")
+        print(
+            f"The leading {len(walls)} in virwall is the wall COUNT, not a wall -- "
+            "the piece that was missing until now and the reason every previous\n"
+            "attempt returned HTTP 500."
+        )
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
         if not confirm("\nSend this EXACT payload now? This changes real map zones."):
@@ -278,12 +296,27 @@ async def send_update_unchanged(
         #
         # The variants stop at the first success, so a working one ends
         # the run rather than sending the same edit repeatedly.
+        # TYPE VARIANTS REMOVED AGAIN (this session), unused.
+        #
+        # They were built to probe whether the wall id should be an Int
+        # and the type code a String -- and APK bytecode then settled
+        # both directly: id is a String (no boxing), type code an Int
+        # (Integer.valueOf + Number cast). Sending variants that are
+        # already known wrong would spend real writes on someone's real
+        # map and add noise to the result.
+        #
+        # The actual cause turned out to be elsewhere entirely: the
+        # virwall array starts with a COUNT. See SetVirtualWallsV1.
+        #
+        # response_type stays varied: all three shapes were genuinely
+        # sent and rejected before the count was known, so they were
+        # rejected for the count and tell us nothing about response_type
+        # after all. Worth re-running now that the payload is correct.
         variants: list[tuple[str, str | None]] = [
             ("response_type omitted entirely", None),
-            ('response_type="link" (the previous default)', "link"),
+            ('response_type="link" (the app default)', "link"),
             ('response_type="binary"', "binary"),
         ]
-
         local_bug = False
         print(f"\n== Sending -- trying {len(variants)} request shapes, stopping at the first success ==")
         for label, response_type in variants:
