@@ -147,8 +147,19 @@ since it was written.
 
 ## What a 0.2.0 beta still needs
 
-- **Virtual wall writes** either fixed or documented as known-broken.
-  Documented is acceptable for a beta; silent is not.
+- ~~**Virtual wall writes** either fixed or documented as known-broken.~~
+  **DONE (a31, field-confirmed 30 July 2026, chairstacker).** The
+  `virwall` array starts with a COUNT of the walls. Confirmed working on
+  the hardest available case: four zones of two different types
+  (3x KeepOutZone + 1x NoMopZone) in one command, response
+  `{"status": "success"}` with a new `p2mapv_id` issued.
+
+  Worth recording why it took so long: three testers between them ruled
+  out list length, zone type mixing, map count, account, map version,
+  our own filtering and all three `response_type` variants -- none of
+  which mattered, because the payload failed at element zero. The
+  500-not-400 response was noted repeatedly and read as a wrong TYPE
+  inside a wall; it was an extra ELEMENT before the walls.
 - **One quiet alpha round with no public-signature changes.** a27 changed
   `Region.to_json()` (`id` → `region_id`) and a28/a29 changed
   `edit_map()`. Both correct, both breaking. A `b1` released immediately

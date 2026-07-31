@@ -8,7 +8,28 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b1] - 2026-07-30
+
+First beta. No code changes from 0.1.11a31 -- the version number catching up with what a31 already
+did, which is what a beta is for.
+
+### Confirmed
+- **Virtual wall writes work end to end**, on two independent accounts. One resent four zones of two
+  types in a single command; the other wrote, re-read the new map version unchanged, and wrote
+  again -- the round trip that separates "accepted" from "stored".
+- **Map bundle models field-confirmed**: borders are MultiPolygon, floor types carry "carpet" under
+  the wire key `type` (not `floor_type`), dockPose reports an orientation.
+
+### Changed
+- `check_version_badge.py` understands beta versions. It raised on 0.2.0b1 exactly as its own
+  docstring predicted -- the badge could not silently keep saying alpha.
+
 ## [0.1.11a31] - 2026-07-29
+
+**FIELD-CONFIRMED 30 July 2026 (chairstacker):** the count fix works. Four zones of two different
+types (3x KeepOutZone + 1x NoMopZone) in one command, `{"status": "success"}`, new `p2mapv_id`
+issued. The hardest case available, and the first successful virtual-wall write this project has
+had.
 
 ### Fixed
 - **The virtual-wall HTTP 500: `virwall` starts with a COUNT of the walls.** Confirmed from

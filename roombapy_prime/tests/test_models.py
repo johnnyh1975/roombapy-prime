@@ -3607,3 +3607,88 @@ class TestNoShadowKeyIsSilentlyDiscarded:
         }
 
         assert not self._discarded(StatsShadow, capture)
+
+
+class TestMapBundleFeaturesAgainstRealCaptures:
+    """The three bundle files whose contents nobody had seen until
+    30 July 2026 (chairstacker).
+
+    All three were modelled from decompiled `$$serializer` classes and
+    never checked against real data -- the exact situation that cost this
+    project weeks on virtual walls, where the decompiled structure looked
+    complete and the missing element appeared in no serializer at all.
+
+    This time the models were right. Recorded as tests so they stay
+    right, and because a verbatim capture is worth more than a note."""
+
+    def test_floor_type_reads_the_wire_key_type_not_floor_type(self):
+        """THE trap in this file. The JSON key is `type`; the attribute is
+        named `floor_type` only because a GeoJSON Feature already has
+        three other `type` keys around it -- the collection's, the
+        feature's and the geometry's.
+
+        Verbatim from the capture:
+        {"type":"Feature","geometry":{...},"properties":{"type":"carpet"}}
+        """
+        from roombapy_prime.models.map_bundle import FloorTypeFeatureProperties
+
+        props = FloorTypeFeatureProperties.from_json({"type": "carpet"})
+
+        assert props.floor_type == "carpet"
+
+    def test_a_floor_type_under_the_wrong_key_is_not_picked_up(self):
+        """Guards the direction of the mapping. If someone "fixes" this to
+        read `floor_type`, every real map goes silently untyped."""
+        from roombapy_prime.models.map_bundle import FloorTypeFeatureProperties
+
+        props = FloorTypeFeatureProperties.from_json({"floor_type": "carpet"})
+
+        assert props.floor_type is None
+
+    def test_borders_are_multipolygons_not_linestrings(self):
+        """Confirmed from the capture: borders.geojson carries
+        MultiPolygon. So borders are AREAS, not lines -- which decides how
+        they draw, and guessing lines would have produced a map of thin
+        strokes where solid regions belong."""
+        import dataclasses
+
+        from roombapy_prime.models.map_bundle import BorderFeature
+
+        geometry_field = next(
+            f for f in dataclasses.fields(BorderFeature) if f.name == "geometry"
+        )
+
+        assert "MultiPolygon" in str(geometry_field.type)
+
+    def test_the_dock_has_an_orientation_as_well_as_a_position(self):
+        """Confirmed from the capture's key list: coordinates, geometry,
+        orientation, properties, type.
+
+        Which means a rendered dock can point the right way rather than
+        being a dot."""
+        from roombapy_prime.models.map_bundle import DockFeatureProperties
+
+        props = DockFeatureProperties.from_json({"orientation": 1.57})
+
+        assert props.orientation == 1.57
+
+    def test_a_floor_type_collection_parses_end_to_end(self):
+        """Structure taken verbatim from the capture, coordinates
+        replaced. Four polygon features, all carpet -- which suggests the
+        file lists carpeted areas rather than classifying every surface,
+        so anything uncovered is hard floor by omission."""
+        from roombapy_prime.models.map_bundle import FloorTypeFeature
+
+        raw = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]],
+            },
+            "properties": {"type": "carpet"},
+        }
+
+        feature = FloorTypeFeature.from_json(raw)
+
+        assert feature.properties.floor_type == "carpet"
+        assert feature.geometry is not None

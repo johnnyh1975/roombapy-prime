@@ -1159,8 +1159,10 @@ async def test_echo_time_estimates_reset_notifications_delegate() -> None:
     assert await robot.poll_echo_value() == {"ok": True}
     rest.poll_echo_value.assert_awaited_once_with("BLID123")
 
-    assert await robot.get_time_estimates({"assetId": "BLID123"}) == {"minutes": 30}
-    rest.get_time_estimates.assert_awaited_once_with({"assetId": "BLID123"})
+    # No argument: the wrapper knows its own blid, and the body is a
+    # single robot_id field.
+    assert await robot.get_time_estimates() == {"minutes": 30}
+    rest.get_time_estimates.assert_awaited_once_with(robot.blid)
 
     assert await robot.reset_robot() == {"reset": True}
     rest.reset_robot.assert_awaited_once_with("BLID123")

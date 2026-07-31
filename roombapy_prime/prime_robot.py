@@ -712,10 +712,15 @@ class PrimeRobot:
         rest_client.py::poll_echo_value()."""
         return await self._rest.poll_echo_value(self.blid)
 
-    async def get_time_estimates(self, body: dict) -> dict:
-        """NEW (session 16) -- see rest_client.py::get_time_estimates()
-        for the note on the unconfirmed body shape."""
-        return await self._rest.get_time_estimates(body)
+    async def get_time_estimates(self) -> dict:
+        """Per-room time estimates for this robot.
+
+        Takes no arguments now: the request body is `{"robot_id": blid}`
+        and this object already knows its blid. The previous signature
+        took a raw dict because the body shape was unknown -- see
+        rest_client.py::get_time_estimates() for how it was traced.
+        """
+        return await self._rest.get_time_estimates(self.blid)
 
     async def reset_robot(self) -> dict:
         """NEW (session 16) -- WARNING: likely a consequential action,

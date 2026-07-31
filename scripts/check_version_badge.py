@@ -35,13 +35,24 @@ def get_pyproject_version() -> str:
 
 
 def pep440_alpha_to_readme_style(version: str) -> str:
-    """"0.1.11a0" -> "v0.1.11-alpha". This project has, so far, only ever
-    used plain alpha pre-releases (aN) -- if a beta/rc/stable version
-    ever appears, this mapping needs extending, and this function
-    raising is the right failure mode (loud, not a silent false pass)."""
+    """"0.1.11a0" -> "v0.1.11-alpha", "0.2.0b1" -> "v0.2.0-beta".
+
+    BETA ADDED 30 July 2026, when 0.2.0b1 made this function raise
+    exactly as its own docstring predicted. Worth noting that the guard
+    worked: the version bump could not quietly ship a README badge that
+    still said alpha.
+
+    Release candidates and stable versions are still unmapped, and still
+    raise. That stays deliberate -- each scheme change is a moment to
+    confirm the badge means what it says, not to widen a regex until
+    nothing fails.
+    """
     match = re.match(r"^(\d+\.\d+\.\d+)a\d+$", version)
     if match:
         return f"v{match.group(1)}-alpha"
+    match = re.match(r"^(\d+\.\d+\.\d+)b\d+$", version)
+    if match:
+        return f"v{match.group(1)}-beta"
     raise ValueError(
         f"pyproject.toml version {version!r} isn't a plain alpha "
         f"pre-release (expected X.Y.ZaN) -- this script's version-string "

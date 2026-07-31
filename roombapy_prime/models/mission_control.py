@@ -206,7 +206,65 @@ class RegionType(StrEnum):
 
 @dataclass(frozen=True)
 class PadWetnessParam:
-    """Confirmed (androguard): NOT an enum (super = Object), but a
+    """Three wetness levels, one per pad category.
+
+    LEVELS CONFIRMED (APK, RobotPadWetnessLevel):
+        0 Damp   1 Moderate   2 Wet   3 Invalid
+
+    Three usable steps, not a free range.
+
+    WRITE PATTERN CONFIRMED (APK, MoppingSettingsUIService::
+    setPadWetness): the app reads the whole map, changes one entry, and
+    sends all three back. It does NOT decide which category applies --
+    the caller picks the category, and the other two ride along
+    unchanged. Same read-modify-write shape as set_virtual_wall, where
+    sending a partial list deletes what it omits.
+
+    WIRE KEYS are the property names, camelCase, because this class
+    carries no @SerialName annotations: `disposable`, `padPlate`,
+    `reusable`.
+
+    padPlate HAS ITS OWN VALUE TABLE, and this is the finding that
+    stops a pad-wetness control from being built.
+
+    MoppingAssetConstants holds four pairs of lookup tables, and two of
+    them are for wetness:
+
+        kPadWetnessMap      / kReversePadWetnessMap
+        kPadPlateWetnessMap / kReversePadPlateWetnessMap
+
+    Backed by separate schema constants -- kPadWetness,
+    kPadWetnessPadPlateFieldName and kPadPlateWetnessLevel. That is not
+    a naming variant of one range; it is a second mapping.
+
+    So a `1` under `disposable` may not mean what a `1` under `padPlate`
+    means, and a control writing one value across all three fields would
+    be wrong for at least one of them -- silently, since the robot would
+    accept it.
+
+    The table CONTENTS are BSS constants, initialised at runtime and not
+    readable statically. Of the three wire keys only `disposable` exists
+    as a literal anywhere in the libraries; `reusable` and `padPlate`
+    live in native constants.
+
+    THERE IS A CAPABILITY FLAG, confirmed 30 July 2026 across two
+    Combo robots: `ppWetLvl` (pp_wet_lvl). One reported 3, the other 0 --
+    both mopping robots, so the flag distinguishes pad-wetness LEVELS
+    from mopping in general. A control must gate on it rather than on
+    scrub or on the dock's pad-wash flag.
+
+    WHAT WOULD STILL SETTLE THE REST: an rw-settings capture with
+    padWetness populated, from a robot whose ppWetLvl is nonzero. Diagnostics now dump shadow
+    contents (ha_roomba_plus v4.0.0a14), so the next download from a
+    Combo answers both the key spelling and whether padPlate's values
+    share a range with the others.
+
+    NOT MAPPED EITHER: RobotPadCategory has ten values (Invalid, Damp,
+    Dry, Wet, ReusableDamp, ReusableDry, ReusableWet, Plate, All,
+    NoPad) against these three fields. Grouping them by name is an
+    inference from similar names and NOT a finding.
+
+    Confirmed (androguard): NOT an enum (super = Object), but a
     class with three predefined constant instances (Damp, Moderate,
     Wet) and three int fields (disposable, padPlate, reusable) --
     presumably a different wetness-level encoding per pad type. Exact

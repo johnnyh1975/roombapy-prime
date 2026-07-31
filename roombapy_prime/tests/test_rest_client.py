@@ -923,12 +923,18 @@ async def test_get_time_estimates_sends_body() -> None:
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    await client.get_time_estimates({"assetId": "BLID123"})
+    await client.get_time_estimates("BLID123")
 
     call = session.calls[0]
     assert call.method == "POST"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/time-estimates"
-    assert call.body_json == {"assetId": "BLID123"}
+    # `robot_id`, not `assetId`. The old test asserted the latter --
+    # a placeholder from when the key was unknown, which quietly read
+    # as a confirmed fact for months.
+    #
+    # Traced from the native format string `{ "%s": "%s" }` with
+    # kRobotId as the first substitution.
+    assert call.body_json == {"robot_id": "BLID123"}
 
 
 @pytest.mark.asyncio

@@ -526,7 +526,26 @@ class FloorTypeFeatureProperties:
     """NEW (session 47) -- not previously modeled at all (this bundle
     content type is itself under an "experimental" package in the
     decompiled source, consistent with being a newer/less-stable
-    feature). CONFIRMED: type."""
+    feature). CONFIRMED: type.
+
+    FIELD-CONFIRMED 30 July 2026 (chairstacker), and the wire key is
+    worth restating because it is a trap: the JSON key is `type`, not
+    `floor_type`. This class names the attribute `floor_type` for
+    readability, since a GeoJSON Feature already has three other `type`
+    keys around it -- the FeatureCollection's, the Feature's and the
+    geometry's.
+
+    That naming cost a tester a moment: asked for `"floor_type"` he found
+    nothing and correctly tried `"type"` instead. Worth remembering when
+    writing grep-style instructions -- the attribute name here is ours,
+    not the robot's.
+
+    OBSERVED VALUES so far: only `"carpet"`. A real capture of four
+    features on one map had carpet for all of them, which suggests the
+    file lists carpeted areas rather than classifying every surface --
+    i.e. anything not covered by a feature is hard floor by omission.
+    Not confirmed: a robot with no carpet at all would settle it, since
+    the file would then be empty or absent."""
 
     floor_type: str | None = None
 

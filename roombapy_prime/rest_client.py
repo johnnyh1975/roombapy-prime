@@ -718,7 +718,7 @@ class PrimeRestClient:
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/echo"
         return await self._request("POST", url)
 
-    async def get_time_estimates(self, body: dict[str, Any]) -> dict[str, Any]:
+    async def get_time_estimates(self, blid: str) -> dict[str, Any]:
         """POST /v1/time-estimates -- NEW (session 16). CONFIRMED from
         base_roomba_config.json (commandId "GetTimeEstimates",
         httpMethod=POST despite "read": true -- presumably POST because
@@ -735,9 +735,47 @@ class PrimeRestClient:
         body. The exact JSON key names the body ultimately serializes
         to remain unconfirmed (native-level from here) -- body is
         still passed through as a raw dict, to be filled in by the
-        caller themselves."""
+        caller themselves.
+
+RESOLVED (30 July 2026) -- and the earlier "not determinable"
+        note in this docstring was wrong.
+
+        The body is a single field:
+
+            {"robot_id": "<BLID>"}
+
+        Confirmed by tracing the native call to StringUtils::vformat:
+        the format string is `{ "%s": "%s" }` (length 0x1c>>1 = 14
+        matches), x1 holds kRobotId and x2 the robot id itself. The
+        csinc pairs around it are libc++'s standard short-string
+        optimisation branch, so there is no ambiguity about which
+        pointer is passed.
+
+        THAT IS WHY NO SERIALIZER EXISTS. The body is assembled as a
+        string with printf-style substitution -- there is no
+        @Serializable class to find, which is what every earlier search
+        was looking for. Worth remembering: absence of a serializer is
+        not absence of a documented format.
+
+        And an earlier abort was premature. This was closed as "native,
+        therefore not determinable" on the grounds that native vtable
+        reconstruction is unreliable. That rule is about reconstructing
+        STRUCTURE from vtables; a format string with traced register
+        arguments is direct evidence of a different kind.
+
+        NOT IN THE BODY: mapId and the region list, despite both
+        appearing in fetchTimeEstimatesWithAreasForAsset(). The server
+        returns everything for the robot and the app filters
+        client-side.
+
+        RESPONSE SHAPE still unconfirmed -- visible on the first
+        successful call, which is now possible."""
         url = f"{self._http_base_auth}/v1/time-estimates"
-        return await self._request("POST", url, body=body)
+        # Built here rather than taken as a raw dict. The old signature
+        # made every caller invent the body, which meant every caller
+        # could invent it differently -- and nobody could, because the
+        # key was unknown.
+        return await self._request("POST", url, body={"robot_id": blid})
 
     async def reset_robot(self, blid: str) -> dict[str, Any]:
         """POST /v1/{blid}/reset -- NEW (session 16). CONFIRMED from

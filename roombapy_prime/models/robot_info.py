@@ -803,6 +803,23 @@ class RobotSettings:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotSettings:
         audio = data.get("audio") or {}
+        # BORROWED FROM THE COMMAND DOMAIN, AND UNVERIFIED HERE.
+        #
+        # PadWetnessParam lives in mission_control.py, decompiled from
+        # com.irobot.data.missioncommand.datamodels (Command.kt). It is a
+        # COMMAND parameter. This is the rw-settings SHADOW, a different
+        # place with similar-looking contents, and no capture of the
+        # shadow's padWetness has ever been seen.
+        #
+        # The two agreeing is plausible and not established. If the
+        # shadow uses snake_case where the command uses camelCase --
+        # `pad_plate` against `padPlate` -- this parses to None silently
+        # and nothing anywhere reports a problem.
+        #
+        # WHAT WOULD SETTLE IT: one diagnostics download from a mopping
+        # robot, showing rw-settings.padWetness verbatim. Until then
+        # nothing writes this field: ha_roomba_plus deliberately ships no
+        # pad-wetness control.
         pad_wetness_data = data.get("padWetness")
         svc_endpoints = data.get("svcEndpoints") or {}
         return cls(
