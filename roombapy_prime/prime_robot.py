@@ -600,6 +600,11 @@ class PrimeRobot:
         docstring."""
         return await self._rest.get_schedules(household_id)
 
+    async def get_schedules_raw(self, household_id: str) -> Any:
+        """See rest_client.py::get_schedules_raw() -- field diagnosis,
+        not part of the normal path."""
+        return await self._rest.get_schedules_raw(household_id)
+
     async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict:
         """HTTP method (POST) confirmed (eighth session), see
         rest_client.py::create_schedules()."""

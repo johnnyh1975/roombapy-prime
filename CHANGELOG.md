@@ -8,6 +8,33 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b5] - 2026-08-01
+
+### Fixed
+- **`verify-writes schedules` reported "0 households" on every account, and called it a pass.** The
+  check read the households list, each household and each schedule with `getattr()`; all three are
+  plain dicts, so all three returned the default. `get_schedules()` was never called at all. A
+  tester with three schedules visible in his app produced output byte-identical to a working
+  account's -- the second field round in a row to end with no information. Three independent bugs;
+  fixing only the first would have produced the same empty answer at the second.
+- **A check that produced no evidence was reported as `OK`.** It now reports `SKIPPED` with the
+  reason, counted separately in the final summary.
+
+### Added
+- **`get_schedules_raw()`** on `PrimeRestClient` and `PrimeRobot` -- the unparsed response, for
+  diagnosis. `get_schedules()` returns a parsed `SchedulesResponse`, which cannot be used to find
+  out whether the parser is dropping something. Added to the wrapper signature guard.
+- **`verify-writes schedules` prints the raw server response before the parsed reading**, and names
+  the disagreement when the two differ -- so a parser bug is legible without another round trip to
+  the tester. Account identity (`owner_cognito_id`, `household_users`) is masked; household and
+  robot ids are not, since which household holds which robot is the open question.
+- First tests on `_list_schedules`, which had none.
+
+### Changed
+- `_list_schedules` accepts exactly the household response shapes `PrimeRobot.get_household_id()`
+  accepts (bare list, or a single household as a top-level dict) rather than guessing at wrapper key
+  names.
+
 ## [0.2.0b1] - 2026-07-30
 
 First beta. No code changes from 0.1.11a31 -- the version number catching up with what a31 already

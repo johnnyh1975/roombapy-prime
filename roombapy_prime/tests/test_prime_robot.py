@@ -1582,7 +1582,8 @@ class TestWrapperSignaturesMatchTheRestClient:
 
     _WRAPPED = [
         "edit_map", "edit_map_v2", "get_robot_parts", "get_favorites",
-        "get_schedules", "get_mission_history", "get_active_map_versions",
+        "get_schedules", "get_schedules_raw", "get_mission_history",
+        "get_active_map_versions",
     ]
 
     @pytest.mark.parametrize("name", _WRAPPED)

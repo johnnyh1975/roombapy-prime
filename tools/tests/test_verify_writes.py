@@ -264,3 +264,131 @@ class TestChecksDeriveTheirPayload:
 
         assert '"FAIL"' not in source
         assert '"FAILED"' in source
+
+
+class TestTheScheduleCheckReadsWhatTheServerSent:
+    """The regression that cost two field rounds.
+
+    `_list_schedules` did all three of its reads with getattr() against
+    values that are plain dicts: the households list (get_user_households
+    returns raw JSON), each household entry, and each schedule
+    (SchedulesList.schedules is list[dict], as its own docstring says).
+    getattr() on a dict returns the default, so the check reported
+    "0 household(s) on this account" for every account that has ever
+    existed, never called get_schedules() at all, and reported that as a
+    pass.
+
+    A tester with three visible schedules in his app produced output
+    byte-identical to a working account's. There was no test on this
+    function at all.
+
+    These tests use dicts, because that is what the server sends.
+    """
+
+    def _run(self, households, schedules=None):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _list_schedules
+
+        robot = AsyncMock()
+        robot.get_user_households.return_value = households
+        robot.get_schedules_raw.return_value = schedules or {}
+        result = asyncio.run(_list_schedules(robot, SimpleNamespace()))
+        return result, robot
+
+    _HOUSEHOLDS = [{
+        "household_id": "HH-A",
+        "household_robots": [{"robot_id": "ROBOT-1"}],
+        "owner_cognito_id": "eu-west-1:private",
+        "household_users": [{"email": "someone@example.com"}],
+    }]
+    _SCHEDULES = {"household_schedules": [{
+        "household_schedule_id": "HS-1",
+        "schedules": [
+            {"schedule_id": "S-1", "options": {"enabled": True}},
+            {"schedule_id": "S-2", "options": {"enabled": False}},
+        ],
+    }]}
+
+    def test_a_real_response_yields_its_households_and_schedules(self):
+        result, robot = self._run(self._HOUSEHOLDS, self._SCHEDULES)
+
+        robot.get_schedules_raw.assert_awaited_once_with("HH-A")
+        assert result == [{
+            "household_id": "HH-A",
+            "raw_schedule_count": 2,
+            "parsed_schedule_count": 2,
+        }]
+
+    def test_a_single_household_returned_as_a_bare_dict_is_read_too(self):
+        """PrimeRobot.get_household_id() accepts this shape, so this must
+        agree with it -- two readers of one endpoint disagreeing about
+        its shape is how the original bug stayed invisible."""
+        result, _ = self._run(self._HOUSEHOLDS[0], self._SCHEDULES)
+
+        assert [entry["household_id"] for entry in result] == ["HH-A"]
+
+    def test_finding_nothing_is_not_reported_as_a_pass(self):
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result, robot = self._run([])
+
+        assert isinstance(result, NoResult)
+        robot.get_schedules_raw.assert_not_awaited()
+
+    def test_a_household_with_no_schedules_is_not_reported_as_a_pass(self):
+        """Distinct from the case above: the account was readable, the
+        query ran, and the answer was empty. Still not a pass -- the
+        check did not establish where the schedules live."""
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result, _ = self._run(self._HOUSEHOLDS, {"household_schedules": []})
+
+        assert isinstance(result, NoResult)
+
+    def test_the_raw_endpoint_is_used_not_the_parsed_one(self):
+        """get_schedules() returns a SchedulesResponse, which has already
+        dropped anything this project does not model. Reading through it
+        would put the suspected component between the server and the
+        tester."""
+        _, robot = self._run(self._HOUSEHOLDS, self._SCHEDULES)
+
+        robot.get_schedules.assert_not_awaited()
+
+    def test_the_parser_disagreeing_with_the_server_is_surfaced(self, capsys):
+        """The whole point. If the server sends schedules and this
+        project reads none, the finding is about the parser, and the
+        tester must not have to run again for us to see it."""
+        result, _ = self._run(self._HOUSEHOLDS, {"household_schedules": [
+            {"household_schedule_id": "HS-1", "schedules": ["not-a-dict"]},
+        ]})
+
+        assert result[0] == {
+            "household_id": "HH-A",
+            "raw_schedule_count": 1,
+            "parsed_schedule_count": 0,
+        }
+        assert "DISAGREEMENT" in capsys.readouterr().out
+
+    def test_an_unreadable_response_shape_says_so_instead_of_reporting_zero(
+        self, capsys
+    ):
+        """The exact silent failure being fixed: a non-empty response
+        that this tool cannot read must not look like an empty account."""
+        self._run({"data": {"households": [{"household_id": "HH-X"}]}})
+
+        assert "parsing gap in this tool" in capsys.readouterr().out
+
+    def test_account_identity_is_masked_before_being_printed(self, capsys):
+        """This output is meant to be pasted into a public issue."""
+        self._run(self._HOUSEHOLDS, self._SCHEDULES)
+
+        out = capsys.readouterr().out
+        assert "eu-west-1:private" not in out
+        assert "someone@example.com" not in out
+        # The evidence itself must survive: which household holds which
+        # robot is the open question on a mixed account.
+        assert "HH-A" in out
+        assert "ROBOT-1" in out

@@ -76,6 +76,81 @@ from ._cli import (
 
 
 @dataclass(frozen=True)
+class NoResult:
+    """A check that ran cleanly and produced no evidence either way.
+
+    "0 household(s) on this account" was reported as a passing check for
+    two field rounds. It was neither a pass nor a failure -- the check
+    had not answered its own question -- but the only two outcomes this
+    tool could express were OK and FAILED, so it picked OK.
+
+    Reuses the existing SKIPPED status rather than adding a new one:
+    SKIPPED already means "this run produced no result", it is already
+    counted separately from OK in Report.summary(), and a status the
+    shared Report class does not know about would print as "?".
+    """
+
+    detail: str
+
+
+def _indent_json(data: Any, indent: int = 3) -> str:
+    """Pretty-printed JSON, indented to sit under the current output.
+
+    Falls back to repr() for anything not JSON-serialisable: this
+    function exists to make a response visible, so it must not be the
+    thing that raises on an unexpected response.
+    """
+    import json
+
+    try:
+        text = json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        text = repr(data)
+    pad = " " * indent
+    return "\n".join(pad + line for line in text.splitlines())
+
+
+def _raw_schedule_count(raw: Any) -> int:
+    """How many schedule objects the SERVER sent, counted without using
+    this project's models at all.
+
+    The point of the cross-check is to be independent of the parser it
+    is checking, so this walks the raw structure by hand.
+    """
+    if not isinstance(raw, dict):
+        return 0
+    total = 0
+    for container in raw.get("household_schedules") or []:
+        if isinstance(container, dict):
+            total += len(container.get("schedules") or [])
+    return total
+
+
+def _parse_schedules(raw: Any) -> list[Any]:
+    """The raw response read through this project's own models.
+
+    SchedulesList.schedules is list[dict] -- raw dicts, NOT
+    HouseholdSchedule instances. Reading `.options` off them returns
+    None on every real response, which is exactly how this check came
+    to report nothing. They have to be parsed explicitly.
+    """
+    from roombapy_prime.models.schedules_dnd import (
+        HouseholdSchedule,
+        SchedulesResponse,
+    )
+
+    if not isinstance(raw, dict):
+        return []
+    response = SchedulesResponse.from_json(raw)
+    return [
+        HouseholdSchedule.from_json(entry)
+        for container in response.household_schedules
+        for entry in container.schedules
+        if isinstance(entry, dict)
+    ]
+
+
+@dataclass(frozen=True)
 class WriteCheck:
     """One write operation a tester can try."""
 
@@ -178,6 +253,61 @@ async def _order_favorite(robot: Any, args: argparse.Namespace) -> Any:
     return await robot.order_favorite(str(favorite_id), insert_at=0)
 
 
+#: Keys whose values are masked before the household response is
+#: printed. Both are account-level identity, neither is needed to
+#: answer the question this check asks, and the output is meant to be
+#: pasted into a public issue.
+#:
+#: Deliberately short. Everything else -- household_id,
+#: household_robots[].robot_id, household_name -- IS the evidence: the
+#: open question is which household holds which robot on a mixed
+#: account, and masking the identifiers would remove the answer along
+#: with the risk. The tool already prints BLIDs unmasked in its header.
+_HOUSEHOLD_MASK_KEYS = frozenset({"owner_cognito_id", "household_users"})
+
+
+def _masked(data: Any) -> Any:
+    """Recursively masks _HOUSEHOLD_MASK_KEYS. Structure is preserved:
+    a masked key still shows that it was present, which is itself a
+    fact about the response shape."""
+    if isinstance(data, dict):
+        return {
+            k: ("[MASKED]" if k.lower() in _HOUSEHOLD_MASK_KEYS else _masked(v))
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_masked(item) for item in data]
+    return data
+
+
+def _household_entries(raw: Any) -> list[dict[str, Any]]:
+    """The household dicts in a get_user_households() response.
+
+    Handles exactly the two shapes PrimeRobot.get_household_id() already
+    handles -- a bare list, or a single household as a top-level dict --
+    and nothing else. No guessing at wrapper keys: an unrecognised shape
+    is fully visible in the raw output printed above this, which is a
+    better outcome than a plausible-looking guess that silently returns
+    an empty list. That guess is the bug this check is being fixed for.
+    """
+    if isinstance(raw, list):
+        return [entry for entry in raw if isinstance(entry, dict)]
+    if isinstance(raw, dict) and ("household_id" in raw or "household_robots" in raw):
+        return [raw]
+    return []
+
+
+def _schedule_line(index: int, schedule: Any) -> str:
+    options = schedule.options
+    start = options.start
+    return (
+        f"       [{index}] schedule_id={schedule.schedule_id!r} "
+        f"enabled={options.enabled} "
+        f"frequency={options.frequency} "
+        f"start={None if start is None else (start.day, start.hour, start.min)}"
+    )
+
+
 async def _list_schedules(robot: Any, args: Any) -> Any:
     """Every household on the account, and what schedules each holds.
 
@@ -193,38 +323,88 @@ async def _list_schedules(robot: Any, args: Any) -> Any:
     So: ask every household, print what each returns. If one of them has
     the schedule, that is the answer. If none does, the endpoint is not
     where these schedules live and that is a different finding.
+
+    WHY IT PRINTS RAW JSON. The first version of this check did all
+    three of its reads with getattr() against values that are plain
+    dicts -- the households list, each household, and each schedule
+    (SchedulesList.schedules is list[dict], as its own docstring says).
+    Every one of those returns None on a dict, so the check reported
+    "0 household(s) on this account" for every account in existence,
+    and never called get_schedules() at all. It reported that as a
+    passing check.
+
+    The tester's output was byte-identical to what a working account
+    produces. A whole field round produced no information, and the
+    round before it had ended the same way.
+
+    So the raw server response is printed FIRST, before anything in
+    this project touches it, and the parsed reading is printed after it
+    as a cross-check. When the two disagree, the disagreement is the
+    finding -- and it is legible without another round trip to the
+    tester.
     """
-    households = await robot.get_user_households()
-    entries = getattr(households, "households", None) or []
-    print(f"   {len(entries)} household(s) on this account")
+    raw_households = await robot.get_user_households()
+    print("   raw get_user_households() response:")
+    print(_indent_json(_masked(raw_households)))
+
+    entries = _household_entries(raw_households)
+    print(f"   {len(entries)} household(s) recognised in that response")
+    if raw_households and not entries:
+        print(
+            "   NOTE: the response above is not empty but no household could be\n"
+            "   read out of it. That is a parsing gap in this tool, not an empty\n"
+            "   account -- the raw response above is the finding."
+        )
 
     summary: list[dict[str, Any]] = []
     for household in entries:
-        household_id = getattr(household, "household_id", None) or getattr(
-            household, "id", None
-        )
+        household_id = household.get("household_id") or household.get("id")
         if not household_id:
+            print("     (a household entry with no household_id -- see raw above)")
+            summary.append({"household_id": None, "error": "no household_id in entry"})
             continue
+
+        print(f"\n     household {household_id}:")
         try:
-            response = await robot.get_schedules(str(household_id))
+            raw_schedules = await robot.get_schedules_raw(str(household_id))
         except Exception as exc:  # noqa: BLE001
-            print(f"     {household_id}: {type(exc).__name__}: {exc}")
+            print(f"       {type(exc).__name__}: {exc}")
             summary.append({"household_id": str(household_id), "error": str(exc)})
             continue
 
-        found = [
-            {
-                "enabled": getattr(o, "enabled", None),
-                "frequency": str(getattr(o, "frequency", None)),
-                "days": getattr(getattr(o, "start", None), "day", None),
-            }
-            for container in (getattr(response, "household_schedules", None) or [])
-            for schedule in (getattr(container, "schedules", None) or [])
-            if (o := getattr(schedule, "options", None)) is not None
-        ]
-        print(f"     {household_id}: {len(found)} schedule(s)")
-        summary.append({"household_id": str(household_id), "schedules": found})
+        print("       raw get_schedules() response:")
+        print(_indent_json(raw_schedules, indent=7))
 
+        parsed = _parse_schedules(raw_schedules)
+        print(f"       parsed: {len(parsed)} schedule(s)")
+        for i, schedule in enumerate(parsed):
+            print(_schedule_line(i, schedule))
+
+        raw_count = _raw_schedule_count(raw_schedules)
+        if raw_count != len(parsed):
+            print(
+                f"       DISAGREEMENT: the raw response above contains {raw_count} "
+                f"schedule object(s),\n"
+                f"       but this project parsed {len(parsed)}. The parser is wrong, "
+                "not the account."
+            )
+
+        summary.append({
+            "household_id": str(household_id),
+            "raw_schedule_count": raw_count,
+            "parsed_schedule_count": len(parsed),
+        })
+
+    if not summary:
+        return NoResult(
+            "no household could be read from this account -- see the raw "
+            "response above; this is not the same as having no schedules"
+        )
+    if all(entry.get("raw_schedule_count") == 0 for entry in summary):
+        return NoResult(
+            f"{len(summary)} household(s) queried, none returned a schedule. "
+            "If the app shows one, this endpoint is not where it lives"
+        )
     return summary
 
 
@@ -490,6 +670,17 @@ def main() -> None:
                 return
             if result is None:
                 report.add(check.name, "SKIPPED", "nothing was sent")
+                return
+            # A check that ran but answered nothing is not a pass. See
+            # NoResult's own docstring for the two field rounds this
+            # distinction cost.
+            if isinstance(result, NoResult):
+                report.add(check.name, "SKIPPED", result.detail)
+                print(
+                    "\nThis check did not answer its own question. That is a "
+                    "result worth having,\nbut only together with the raw output "
+                    f"above -- please {check.verify_by}."
+                )
                 return
             report.add(check.name, "OK", f"response: {result}")
             # ACCEPTED IS NOT THE SAME AS CORRECT. The virtual-wall

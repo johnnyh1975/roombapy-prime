@@ -532,6 +532,25 @@ class PrimeRestClient:
         data = await self._request("GET", url)
         return SchedulesResponse.from_json(data)
 
+    async def get_schedules_raw(self, household_id: str) -> Any:
+        """Same endpoint as get_schedules(), but returns the UNPARSED
+        response. Added for field diagnosis, same reasoning as
+        get_favorites_raw().
+
+        WHY THIS WAS NEEDED. A tester whose app shows three schedules
+        was told by this library that he has none. Every layer between
+        the server and him -- SchedulesResponse.from_json(), which drops
+        anything not under "household_schedules", and the reporting tool
+        above it -- could produce that same empty answer, and a parsed
+        result cannot distinguish "the server sent nothing" from "we
+        failed to read what it sent". Two field rounds were spent on
+        that ambiguity.
+
+        Diagnostic use only; the library's normal path uses
+        get_schedules()."""
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule"
+        return await self._request("GET", url)
+
     async def delete_schedule(self, household_id: str, household_schedule_id: str) -> dict[str, Any]:
         """DELETE /v1/households/{householdId}/settings/schedule/{id} --
         CONFIRMED from DeleteSchedulesRequest (httpMethod = "DELETE")."""
