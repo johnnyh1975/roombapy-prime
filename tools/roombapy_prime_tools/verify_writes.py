@@ -178,6 +178,56 @@ async def _order_favorite(robot: Any, args: argparse.Namespace) -> Any:
     return await robot.order_favorite(str(favorite_id), insert_at=0)
 
 
+async def _list_schedules(robot: Any, args: Any) -> Any:
+    """Every household on the account, and what schedules each holds.
+
+    WHY THIS EXISTS. A tester whose schedules demonstrably fire -- his
+    missions carry `initiator: cloud` -- was told by two separate code
+    paths that he has none. Both call get_schedules() with one household
+    id, and an empty answer cannot distinguish "no schedules" from
+    "wrong household".
+
+    His account has a Classic and a Prime robot, and picking the right
+    household on a mixed account has gone wrong in this project before.
+
+    So: ask every household, print what each returns. If one of them has
+    the schedule, that is the answer. If none does, the endpoint is not
+    where these schedules live and that is a different finding.
+    """
+    households = await robot.get_user_households()
+    entries = getattr(households, "households", None) or []
+    print(f"   {len(entries)} household(s) on this account")
+
+    summary: list[dict[str, Any]] = []
+    for household in entries:
+        household_id = getattr(household, "household_id", None) or getattr(
+            household, "id", None
+        )
+        if not household_id:
+            continue
+        try:
+            response = await robot.get_schedules(str(household_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"     {household_id}: {type(exc).__name__}: {exc}")
+            summary.append({"household_id": str(household_id), "error": str(exc)})
+            continue
+
+        found = [
+            {
+                "enabled": getattr(o, "enabled", None),
+                "frequency": str(getattr(o, "frequency", None)),
+                "days": getattr(getattr(o, "start", None), "day", None),
+            }
+            for container in (getattr(response, "household_schedules", None) or [])
+            for schedule in (getattr(container, "schedules", None) or [])
+            if (o := getattr(schedule, "options", None)) is not None
+        ]
+        print(f"     {household_id}: {len(found)} schedule(s)")
+        summary.append({"household_id": str(household_id), "schedules": found})
+
+    return summary
+
+
 async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> Any:
     """Creates a schedule and offers to delete it again.
 
@@ -220,11 +270,30 @@ async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> A
             break
 
     if template is None:
+        # SAY WHAT WAS ASKED, not just what came back.
+        #
+        # A tester with schedules that demonstrably fire got told he had
+        # none. The message was worse than useless: it sent him to
+        # create a schedule he already had.
+        #
+        # The endpoint is per-HOUSEHOLD, so an empty response can mean
+        # "no schedules" or "wrong household" -- and on an account with
+        # both a Classic and a Prime robot, picking the right one has
+        # bitten this project before. Printing the id and the raw shape
+        # lets a report distinguish them instead of guessing.
+        containers = getattr(response, "household_schedules", None) or []
         print(
-            "   this account has no existing schedule to copy, and a schedule\n"
-            "   built from nothing is rejected by the server -- it carries no\n"
-            "   robot, no days, no time and no commands. Create one in the\n"
-            "   iRobot app first if you want to test this."
+            f"   get_schedules() returned {len(containers)} container(s) for\n"
+            f"   household {household_id}, with no schedule inside.\n"
+            "\n"
+            "   That is either an account with no schedules, or the wrong\n"
+            "   household -- this endpoint is per-household, and an account\n"
+            "   with more than one robot can have more than one.\n"
+            "\n"
+            "   If the iRobot app DOES show a schedule for this robot, that\n"
+            "   is a finding worth reporting rather than a reason to create\n"
+            "   another one. Re-run with --household-id to try a different\n"
+            "   household."
         )
         return None
 
@@ -265,6 +334,16 @@ async def _time_estimates(robot: Any, args: argparse.Namespace) -> Any:
 
 
 CHECKS: tuple[WriteCheck, ...] = (
+    WriteCheck(
+        name="schedules",
+        risk="read",
+        summary="lists every household and the schedules in each (writes nothing)",
+        verify_by=(
+            "nothing to check in the app -- please paste the output if your "
+            "app shows a schedule this does not"
+        ),
+        runner=lambda robot, args: _list_schedules(robot, args),
+    ),
     WriteCheck(
         name="time_estimates",
         risk="read",

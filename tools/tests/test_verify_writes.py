@@ -207,7 +207,12 @@ class TestChecksDeriveTheirPayload:
         source = inspect.getsource(verify_writes._create_and_delete_schedule)
 
         assert "return None" in source
-        assert "no existing schedule to copy" in source
+        # The message now prints the household id and the raw shape:
+        # an empty answer cannot distinguish "no schedules" from
+        # "wrong household", and a tester was sent to create a
+        # schedule he already had.
+        assert "get_schedules() returned" in source
+        assert "wrong household" in source
 
     def test_the_quiet_hours_check_skips_when_none_are_set(self):
         import inspect

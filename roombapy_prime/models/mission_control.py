@@ -1026,11 +1026,29 @@ class Region:
 # charging: with only one bit available it has nothing else to report,
 # so the value looks static when it is not.
 #
-# STILL NOT ENOUGH FOR "vacuuming or mopping right now" on a
-# vacuum-THEN-mop job, where the two happen in sequence rather than
-# together. Nobody has captured one of those mid-mission. But the field
-# is no longer useless: 2 alone, 4 alone and 6 together are
-# distinguishable, and that covers the combo case.
+# FULLY SETTLED (@DaRealGuGu, 1 Aug 2026) with a capture taken during
+# the MOPPING half of a scheduled vacuum-then-mop run:
+#
+#     command  regions[].params.operatingMode = 512   (VacThenMop)
+#     status   cleanMissionStatus.operatingMode = 4   (MopOnly)
+#
+# The whole sequence from one robot:
+#
+#     docked, idle       phase=charge   mode=2   vacuum
+#     pad washing        phase=padWash  mode=6   combo
+#     combo running      phase=run      mode=6   2|4, both engaged
+#     mopping half       phase=run      mode=4   mop only
+#
+# So the status field DOES track the current activity, including inside
+# a two-phase job. "Is it vacuuming or mopping right now" is answerable:
+#
+#     2  vacuuming
+#     4  mopping
+#     6  both at once
+#
+# The command number is separate and stays separate: 512 asks for
+# vacuum-then-mop, 32 for a combined run, and neither ever appears in
+# the status field.
 #
 # PART OF THE ANSWER IS ALREADY VISIBLE, from a different direction.
 # The app's RobotMissionPhase has twelve values including PadWashing and
