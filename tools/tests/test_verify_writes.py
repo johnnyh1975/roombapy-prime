@@ -169,3 +169,93 @@ class TestTheToolRefusesWithoutConsent:
 
         assert "i_understand_this_writes_to_my_robot" in source
         assert "sys.exit(1)" in source
+
+
+class TestChecksDeriveTheirPayload:
+    """Both failures in the first field run were my checks, not the
+    robot.
+
+    The quiet-hours check resent an empty settings object, because that
+    account had no quiet hours configured -- HTTP 400. The schedule check
+    built a schedule from a name and nothing else: no robot, no days, no
+    time, no commands -- HTTP 500.
+
+    Both were reported as "this endpoint does not work". Both endpoints
+    were fine. A check that invents a payload tests the server's
+    willingness to accept nonsense, which is not the question.
+
+    The rule now: read the current value, send it back changed minimally
+    or not at all. Nothing to read means the check skips and says why."""
+
+    def test_the_schedule_check_copies_an_existing_schedule(self):
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes._create_and_delete_schedule)
+
+        assert "get_schedules" in source
+        assert "replace(" in source
+
+    def test_it_skips_when_there_is_nothing_to_copy(self):
+        """A robot with no schedules cannot test schedule creation. That
+        is an honest result, not a reason to construct one."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes._create_and_delete_schedule)
+
+        assert "return None" in source
+        assert "no existing schedule to copy" in source
+
+    def test_the_quiet_hours_check_skips_when_none_are_set(self):
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes._set_dnd)
+
+        assert "no quiet hours are configured" in source
+        assert "return None" in source
+
+    def test_no_check_constructs_a_model_from_literals(self):
+        """The general form. A check building ScheduleOptions(...) or
+        DNDStatus(...) from keyword arguments is inventing a payload --
+        which is exactly what produced both failures."""
+        import inspect
+        import re
+
+        from roombapy_prime_tools import verify_writes
+
+        # Comments are stripped: several of them quote the exact
+        # construction that caused the failure, in order to explain why
+        # it must not happen. A naive text search flags the explanation
+        # as the offence -- which it did on the first run of this test.
+        source = "\n".join(
+            line
+            for line in inspect.getsource(verify_writes).splitlines()
+            if not line.strip().startswith("#")
+        )
+
+        for model in ("ScheduleOptions(", "DNDStatusResponse(", "RobotSettings("):
+            constructed = re.findall(rf"{re.escape(model)}[a-z_]+=", source)
+            assert not constructed, f"{model} built from literals: {constructed}"
+
+    def test_the_status_value_is_the_one_report_accepts(self):
+        """"FAIL" raised KeyError inside Report.add, turning a clean HTTP
+        error into a traceback -- and taking the summary down with it.
+        Two of a tester's runs ended that way, so the real finding
+        arrived buried under our own crash."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = "\n".join(
+            line
+            for line in inspect.getsource(verify_writes).splitlines()
+            if not line.strip().startswith("#")
+        )
+
+        assert '"FAIL"' not in source
+        assert '"FAILED"' in source

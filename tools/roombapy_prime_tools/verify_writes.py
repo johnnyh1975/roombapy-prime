@@ -17,6 +17,26 @@ So: one command, a list, and a risk level per entry.
     roombapy-prime-verify-writes --list
     roombapy-prime-verify-writes set_map_name --new-name "Test"
 
+A CHECK MUST DERIVE ITS PAYLOAD, NEVER INVENT ONE.
+
+Both failures in the first field run came from the same mistake, and
+neither was the robot's:
+
+  - the quiet-hours check resent an empty settings object, because that
+    account had no quiet hours set. HTTP 400.
+  - the schedule check built a schedule from a name and nothing else --
+    no robot, no days, no time, no commands. HTTP 500.
+
+Both were reported as "this endpoint does not work". Both endpoints were
+fine. A check that makes up a payload tests the server's willingness to
+accept nonsense, which is not the question being asked.
+
+So every write check here now reads the current value first and sends
+that back, changed minimally or not at all. When there is nothing to
+read, the check SKIPS and says why. A robot with no schedules cannot
+test schedule creation, and that is an honest result rather than a
+reason to guess.
+
 WHAT IS DELIBERATELY NOT OFFERED.
 
 `delete_map`, `reset_robot` and `reset_robot_parts` are absent, and that
@@ -115,12 +135,26 @@ async def _set_dnd(robot: Any, args: argparse.Namespace) -> Any:
     household_id = await _household_id(robot, args)
     current = await robot.get_dnd_settings(household_id)
     print(f"   current do-not-disturb settings: {current}")
-    raw = getattr(current, "raw", None) or getattr(current, "__dict__", None)
-    if not raw:
-        raise RuntimeError(
-            "could not read the current settings back out, so there is nothing "
-            "safe to resend"
+    # NOTHING SET MEANS NOTHING TO RESEND.
+    #
+    # @DaRealGuGu's account has no quiet hours configured, so every field
+    # came back None and `status` was empty. Sending that back produced
+    # HTTP 400 -- correctly, since it is not a valid settings object.
+    #
+    # A resend check needs something to resend. Skipping is the honest
+    # outcome; inventing values would be a write, not a check.
+    fields = {
+        k: v for k, v in vars(current).items()
+        if not k.startswith("_") and v not in (None, {}, [])
+    }
+    if not fields:
+        print(
+            "   no quiet hours are configured on this account, so there is\n"
+            "   nothing to resend. Set some in the iRobot app first if you\n"
+            "   want to test this one."
         )
+        return None
+    raw = getattr(current, "raw", None) or fields
     if not confirm("Send the SAME settings back unchanged?"):
         return None
     return await robot.set_dnd_settings(household_id, raw)
@@ -151,14 +185,53 @@ async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> A
     tester's app that they have to find and remove; deleting alone needs
     a schedule they already care about.
     """
-    from roombapy_prime.models.schedules_dnd import ScheduleOptions  # noqa: PLC0415
-
     household_id = await _household_id(robot, args)
 
-    # create_schedules takes a LIST of ScheduleOptions, not a name.
-    # Created disabled: an enabled schedule with an unknown default
-    # frequency could send the robot out at a time nobody chose.
-    options = ScheduleOptions(name=args.schedule_name, enabled=False)
+    # BUILT FROM AN EXISTING SCHEDULE, not from scratch.
+    #
+    # A first version sent ScheduleOptions(name=..., enabled=False),
+    # which serialises to exactly two fields. No asset_id, no frequency,
+    # no start time, no commands -- a schedule that says nothing about
+    # which robot, on which days, at what time, to do what.
+    #
+    # The server answered HTTP 500 (@DaRealGuGu). That was reported as
+    # "create_schedules does not work", and it is not: the request shape
+    # was fine and the CONTENT was meaningless.
+    #
+    # Same mistake as the quiet-hours check, which resent an empty
+    # settings object and got HTTP 400. Both were my checks inventing a
+    # payload rather than deriving one from what the robot already has.
+    #
+    # So this copies an existing schedule, changes the name, and marks it
+    # disabled. A robot with no schedules cannot run this check -- which
+    # is the honest outcome, not a reason to invent one.
+    try:
+        response = await robot.get_schedules(household_id)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"could not read existing schedules: {exc}") from exc
+
+    template = None
+    for container in getattr(response, "household_schedules", None) or []:
+        for schedule in getattr(container, "schedules", None) or []:
+            if getattr(schedule, "options", None) is not None:
+                template = schedule.options
+                break
+        if template is not None:
+            break
+
+    if template is None:
+        print(
+            "   this account has no existing schedule to copy, and a schedule\n"
+            "   built from nothing is rejected by the server -- it carries no\n"
+            "   robot, no days, no time and no commands. Create one in the\n"
+            "   iRobot app first if you want to test this."
+        )
+        return None
+
+    from dataclasses import replace  # noqa: PLC0415
+
+    options = replace(template, name=args.schedule_name, enabled=False)
+    print("   copied from an existing schedule, disabled, renamed")
     print(f"   creating a DISABLED schedule named {args.schedule_name!r}")
     created = await robot.create_schedules(household_id, [options])
     print(f"   created: {created}")
@@ -213,7 +286,10 @@ CHECKS: tuple[WriteCheck, ...] = (
     WriteCheck(
         name="set_map_orientation",
         risk="safe",
-        summary="rotates how a map is displayed",
+        summary=(
+            "rotates how a map is displayed. --orientation takes RADIANS: "
+            "0 leaves it as is, 1.5708 is a quarter turn, 3.1416 is upside down"
+        ),
         verify_by="open the iRobot app; the map should appear rotated",
         runner=_set_map_orientation,
         extra_args=("--orientation", "--p2map-id"),
@@ -322,7 +398,16 @@ def main() -> None:
             try:
                 result = await check.runner(robot, args)
             except Exception as exc:  # noqa: BLE001
-                report.add(check.name, "FAIL", f"{type(exc).__name__}: {exc}")
+                # "FAILED", not "FAIL" -- Report.add looks the status up
+                # in a dict and raises KeyError on anything else.
+                #
+                # The effect was worse than a typo: a check that failed
+                # cleanly with an HTTP error turned into a KeyError
+                # traceback, and the final summary crashed on the way out
+                # too. Two of @DaRealGuGu's runs ended that way, so the
+                # actual finding -- HTTP 400 and HTTP 500 from two
+                # endpoints -- arrived buried under our own crash.
+                report.add(check.name, "FAILED", f"{type(exc).__name__}: {exc}")
                 return
             if result is None:
                 report.add(check.name, "SKIP", "nothing was sent")

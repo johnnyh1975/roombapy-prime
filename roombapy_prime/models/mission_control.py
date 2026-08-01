@@ -247,6 +247,37 @@ class PadWetnessParam:
     as a literal anywhere in the libraries; `reusable` and `padPlate`
     live in native constants.
 
+    SHADOW SPELLING CONFIRMED 31 July 2026 (@chairstacker, G185020).
+    A real rw-settings capture reads:
+
+        "padWetness": {"disposable": 3, "reusable": 1, "padPlate": 1}
+
+    camelCase, exactly as the command domain uses -- so borrowing this
+    model for the shadow was correct after all. The snake_case worry
+    (`pad_plate`) was unfounded.
+
+    THE VALUE RANGE BELONGS TO NEITHER KNOWN ENUM.
+
+    A real capture read `disposable: 3` on a working robot. Two
+    candidate scales were checked and both ruled out:
+
+        RobotPadWetnessLevel:  0 Damp, 1 Moderate, 2 Wet, 3 Invalid
+        PadSettings (UI):      0 LOW,  1 MEDIUM,   2 HIGH
+
+    Same 0..2 range, different origins, and 3 fits neither -- it is
+    "invalid" in the first and out of range in the second. So the wire
+    uses a third scale nobody has identified.
+
+    NOT 1-BASED COUNTING of a known enum: that was the obvious guess and
+    it does not hold, because a 1-based RobotPadWetnessLevel would put
+    Wet at 3 and leave Invalid at 4, which no capture shows.
+
+    WHAT DID COME OUT OF IT: PadSettings holds `mCategory`
+    (RobotPadCategory) and `mWetLevel` (int) as SEPARATE fields in one
+    object. Category and wetness are parallel values, not one encoding
+    the other -- which is what the read-modify-write approach here
+    already assumed, now confirmed rather than hoped.
+
     THERE IS A CAPABILITY FLAG, confirmed 30 July 2026 across two
     Combo robots: `ppWetLvl` (pp_wet_lvl). One reported 3, the other 0 --
     both mopping robots, so the flag distinguishes pad-wetness LEVELS

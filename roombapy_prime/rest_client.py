@@ -768,8 +768,44 @@ RESOLVED (30 July 2026) -- and the earlier "not determinable"
         returns everything for the robot and the app filters
         client-side.
 
-        RESPONSE SHAPE still unconfirmed -- visible on the first
-        successful call, which is now possible."""
+        RESPONSE SHAPE CONFIRMED 31 July 2026 (@DaRealGuGu, N185240):
+
+            {"robot_id": "<BLID>",
+             "api_version": "v1",
+             "smart_maps": [
+               {"smart_map_id": "<BLID>-<epoch>",
+                "areas": [
+                  {"area_id": "12", "area_type": "region",
+                   "estimates": [
+                     {"value": 533, "unit": "seconds", "deviation": 0.0,
+                      "data_model_version": "app_prime",
+                      "params": {"operatingMode": 512, "suctionLevel": 3,
+                                 "swScrub": 0, "twoPass": false}},
+                     ...
+                   ]}
+                ],
+                "cleaning_rates": {"deep": 885.0, "light": 391.0,
+                                   "standard": 479.0}}
+             ]}
+
+        THE SHAPE IS RICHER THAN EXPECTED. It is not one estimate per
+        room -- it is one per room PER PARAMETER COMBINATION. A single
+        room came back with 44 entries covering every mix of
+        operatingMode, suctionLevel, swScrub and twoPass.
+
+        So this answers "how long would this room take at these
+        settings", not just "how long does this room take". Anything
+        picking a single number has to select by params, and the sensible
+        selection is the room's own last_operating_mode from the map
+        metadata.
+
+        `cleaning_rates` is per profile in area-per-hour terms and is
+        map-wide rather than per room -- useful for a room that has no
+        estimate yet.
+
+        Note the parameter names are the camelCase wire keys used
+        everywhere else in the command domain, not the snake_case of this
+        library's models."""
         url = f"{self._http_base_auth}/v1/time-estimates"
         # Built here rather than taken as a raw dict. The old signature
         # made every caller invent the body, which meant every caller

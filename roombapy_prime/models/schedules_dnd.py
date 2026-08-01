@@ -92,6 +92,25 @@ class ScheduleDateEntry:
 
 @dataclass(frozen=True)
 class ScheduleOptions:
+    """A schedule's settings.
+
+    ALL SIXTEEN FIELDS MATCH the app's own ScheduleOptions, confirmed by
+    APK analysis: robot_id, name, enabled, frequency, start, end,
+    commands, end_commands, after, until, append, exclude, reminder,
+    deleted, force_cloud, created_time.
+
+    NOTHING IS REQUIRED IN KOTLIN -- every field there is nullable, so
+    the server decides what a valid schedule needs. That explains the
+    HTTP 500 a tester saw: a schedule carrying only `name` and `enabled`
+    is syntactically fine and semantically meaningless, and the server
+    refused it rather than storing a schedule with no robot, no days and
+    no commands.
+
+    So there is no client-side validation to add here. The tooling
+    derives a new schedule from an existing one instead of building one
+    from literals, which is the only reliable way to produce something
+    the server accepts.
+    """
     """CORRECTED (session 46): real wire keys directly confirmed via
     the `ScheduleOptions$$serializer` companion class's `<clinit>`
     (the same technique that resolved RobotStatusV2 in session 40) --
@@ -123,6 +142,11 @@ class ScheduleOptions:
     now). Also confirms ScheduleTime.day is indeed a list of plain
     ints (weekday numbers), settling that field's own hedged guess."""
 
+    #: Serialises as `robot_id` on the wire -- confirmed against the
+    #: app's own ScheduleOptions field list. The attribute keeps the
+    #: name `asset_id` because that is what the REST paths and the
+    #: mission-command domain call the same value; renaming it here
+    #: would make the two halves of this library disagree.
     asset_id: str | None = None
     name: str | None = None
     frequency: ScheduleFrequency | None = None
