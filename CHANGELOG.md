@@ -8,6 +8,38 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b6] - 2026-08-01
+
+### Fixed
+- **`verify-writes schedule_create_delete` could not run on any account.** It located the template
+  schedule it copies with `getattr(schedule, "options", None)`; `SchedulesList.schedules` is
+  `list[dict]`, so that returned `None` every time and the check always took the "no schedules"
+  branch. Second occurrence of the b5 bug, in the same file -- these were the two code paths that
+  told one tester he had none while his app showed three. b5 fixed the other one and rewrote this
+  branch's wording, leaving the cause in place.
+- **An unparsable schedule response is no longer reported as an empty account.** When the server
+  sends schedules and none parse, the check names it as a bug here rather than sending the tester to
+  create a schedule he already has.
+- **`_set_dnd` implied a raw resend it never performed.** `getattr(current, "raw", None) or fields`
+  -- `DNDStatusResponse` has no `raw` field, so only the fallback ever ran. Now explicit, with the
+  limitation stated: the resend is reconstructed from the parsed model and drops unmodelled keys.
+
+- **`SchedulesResponse.from_json()` raised on a malformed response.** `household_schedules` was
+  iterated without checking it is a list; a dict there yields its keys and the nested parser then
+  called `.get()` on a string. In the library, on the path HA's schedule calendar and switches use.
+  A parser's job on an unexpected shape is to return nothing, not to raise.
+- **b6's own new code crashed on a non-dict response.** `(raw or {}).get(...)` raises on any truthy
+  non-dict; found in this release's bug hunt before it shipped.
+
+### Added
+- **Household-scoped checks print which household they picked**, and whether it was resolved from
+  the account or passed with `--household-id`. An empty answer from the wrong household is
+  indistinguishable from an empty answer from the right one, which is the ambiguity behind three
+  rounds of field testing.
+- Tests that execute the `verify_writes` runners against realistic server responses. The module had
+  static tests only (signature matching, source grepping) -- every signature involved was correct,
+  which is why three bugs of this class survived in it.
+
 ## [0.2.0b5] - 2026-08-01
 
 ### Fixed

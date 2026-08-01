@@ -296,9 +296,12 @@ class SchedulesList:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> SchedulesList:
+        # `schedules` is checked for being a list for the same reason
+        # SchedulesResponse.from_json() checks its own -- see there.
+        schedules = data.get("schedules")
         return cls(
             household_schedule_id=data.get("household_schedule_id"),
-            schedules=data.get("schedules") or [],
+            schedules=schedules if isinstance(schedules, list) else [],
         )
 
 
@@ -315,8 +318,22 @@ class SchedulesResponse:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> SchedulesResponse:
-        raw = data.get("household_schedules") or []
-        return cls(household_schedules=[SchedulesList.from_json(s) for s in raw])
+        """FOUND IN THE b6 BUG HUNT. `data.get("household_schedules")`
+        was iterated without checking it is a list: a dict there yields
+        its KEYS, and SchedulesList.from_json() then called .get() on a
+        string. AttributeError, from a parser, on a response the server
+        sent.
+
+        Not hypothetical in the way it sounds -- an error envelope or a
+        changed response shape reaches exactly this line, and it is on
+        the path HA's schedule calendar and switches use. A parser's job
+        on an unexpected shape is to return nothing, not to raise."""
+        raw = data.get("household_schedules") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return cls()
+        return cls(household_schedules=[
+            SchedulesList.from_json(s) for s in raw if isinstance(s, dict)
+        ])
 
 
 @dataclass(frozen=True)

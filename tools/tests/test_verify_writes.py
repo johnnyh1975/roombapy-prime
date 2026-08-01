@@ -392,3 +392,220 @@ class TestTheScheduleCheckReadsWhatTheServerSent:
         # robot is the open question on a mixed account.
         assert "HH-A" in out
         assert "ROBOT-1" in out
+
+
+class TestTheScheduleCreateCheckFindsATemplate:
+    """The second occurrence of the b5 bug, in the same file.
+
+    `_create_and_delete_schedule` derives its payload from an existing
+    schedule -- deliberately, because a payload built from a name and
+    nothing else got HTTP 500 from a real server and was reported as
+    "create_schedules does not work".
+
+    It found that template with `getattr(schedule, "options", None)`.
+    SchedulesList.schedules is list[dict], so that returned None every
+    time: `template` was always None, the check always took the "you
+    have no schedules" branch, and it could not run on any account.
+
+    b5 fixed the OTHER path that told the same tester the same wrong
+    thing, and improved this branch's wording -- making the message
+    clearer while leaving it just as wrong.
+    """
+
+    def _run(self, schedules, confirm_answer=False):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_schedules_raw.return_value = schedules
+        robot.create_schedules.return_value = {"household_schedule_id": "HS-NEW"}
+        args = SimpleNamespace(household_id=None, schedule_name="Roomba+ test")
+
+        with patch.object(verify_writes, "confirm", return_value=confirm_answer):
+            result = asyncio.run(
+                verify_writes._create_and_delete_schedule(robot, args)
+            )
+        return result, robot
+
+    _EXISTING = {"household_schedules": [{
+        "household_schedule_id": "HS-1",
+        "schedules": [{
+            "schedule_id": "S-1",
+            "options": {"enabled": True, "name": "Cuisine"},
+        }],
+    }]}
+
+    def test_an_existing_schedule_is_found_and_copied(self):
+        _, robot = self._run(self._EXISTING)
+
+        robot.create_schedules.assert_awaited_once()
+        sent = robot.create_schedules.await_args.args[1]
+        assert len(sent) == 1
+        # Copied, renamed, disabled -- never a schedule built from a
+        # name alone, which is what the server answered 500 to.
+        assert sent[0].name == "Roomba+ test"
+        assert sent[0].enabled is False
+
+    def test_an_account_with_no_schedules_sends_nothing(self):
+        """The honest skip. A robot with no schedule cannot test schedule
+        creation, and inventing one is what caused the HTTP 500."""
+        result, robot = self._run({"household_schedules": []})
+
+        assert result is None
+        robot.create_schedules.assert_not_awaited()
+
+    def test_unparsable_schedules_are_reported_as_our_bug_not_an_empty_account(
+        self, capsys
+    ):
+        """The whole point of this fix. If the server sent schedules and
+        none parsed, telling the tester he has none sends him to create
+        one he already has -- which is how this went wrong twice."""
+        result, robot = self._run({"household_schedules": [
+            {"household_schedule_id": "HS-1", "schedules": ["unparsable"]},
+        ]})
+
+        assert result is None
+        robot.create_schedules.assert_not_awaited()
+        out = capsys.readouterr().out
+        assert "bug here, not" in out
+
+    def test_the_raw_endpoint_is_used_so_the_parser_can_be_checked(self):
+        _, robot = self._run(self._EXISTING)
+
+        robot.get_schedules.assert_not_awaited()
+        robot.get_schedules_raw.assert_awaited_once_with("HH-A")
+
+    def test_declining_the_delete_leaves_the_created_schedule(self):
+        result, robot = self._run(self._EXISTING, confirm_answer=False)
+
+        robot.delete_schedule.assert_not_awaited()
+        assert result == {"household_schedule_id": "HS-NEW"}
+
+    def test_accepting_the_delete_removes_it_again(self):
+        _, robot = self._run(self._EXISTING, confirm_answer=True)
+
+        robot.delete_schedule.assert_awaited_once_with("HH-A", "HS-NEW")
+
+
+class TestTheQuietHoursCheckResendsWhatItRead:
+    def test_it_sends_the_fields_it_actually_has(self):
+        """`getattr(current, "raw", None) or fields` implied a raw
+        resend. DNDStatusResponse is a frozen dataclass with no `raw`
+        field, so the fallback was the only branch that ever ran."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime.models.schedules_dnd import DNDStatusResponse
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_dnd_settings.return_value = DNDStatusResponse(status="ENABLED")
+
+        with patch.object(verify_writes, "confirm", return_value=True):
+            asyncio.run(verify_writes._set_dnd(
+                robot, SimpleNamespace(household_id=None)
+            ))
+
+        assert robot.set_dnd_settings.await_args.args[1] == {"status": "ENABLED"}
+
+    def test_nothing_configured_means_nothing_is_sent(self):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime.models.schedules_dnd import DNDStatusResponse
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_dnd_settings.return_value = DNDStatusResponse()
+
+        result = asyncio.run(verify_writes._set_dnd(
+            robot, SimpleNamespace(household_id=None)
+        ))
+
+        assert result is None
+        robot.set_dnd_settings.assert_not_awaited()
+
+
+class TestHouseholdSelectionIsVisible:
+    """Every household-scoped check picks a household, and an empty
+    answer from the wrong one looks exactly like an empty answer from
+    the right one. Output that does not name it cannot be read."""
+
+    def _run(self, household_id_arg):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-RESOLVED"
+        return asyncio.run(verify_writes._household_id(
+            robot, SimpleNamespace(household_id=household_id_arg)
+        ))
+
+    def test_the_resolved_household_is_printed(self, capsys):
+        assert self._run(None) == "HH-RESOLVED"
+        assert "HH-RESOLVED" in capsys.readouterr().out
+
+    def test_an_overridden_household_is_printed_as_overridden(self, capsys):
+        assert self._run("HH-MANUAL") == "HH-MANUAL"
+        out = capsys.readouterr().out
+        assert "HH-MANUAL" in out
+        assert "--household-id" in out
+
+
+class TestAnUnexpectedResponseShapeIsNotFatal:
+    """The reporting path must never be the thing that fails.
+
+    FOUND IN THE b6 BUG HUNT, in b6's own new code:
+    `(raw or {}).get("household_schedules")` raises AttributeError on
+    any truthy non-dict. A crash there takes down the diagnostic output
+    this release exists to produce -- the same shape as the `Report.add`
+    KeyError that buried two testers' real findings under our traceback.
+    """
+
+    SHAPES = [
+        [{"household_schedule_id": "HS-1"}],
+        "unexpected",
+        None,
+        {"error": "forbidden"},
+        {"household_schedules": {"oops": 1}},
+        {"household_schedules": ["x", 3]},
+        {"household_schedules": [{"schedules": "nope"}]},
+    ]
+
+    def _run(self, fn_name, raw):
+        import asyncio
+        import contextlib
+        import io
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_user_households.return_value = [{"household_id": "HH-A"}]
+        robot.get_schedules_raw.return_value = raw
+        args = SimpleNamespace(household_id=None, schedule_name="t")
+
+        with patch.object(verify_writes, "confirm", return_value=False), \
+                contextlib.redirect_stdout(io.StringIO()):
+            asyncio.run(getattr(verify_writes, fn_name)(robot, args))
+
+    def test_the_create_check_survives_every_shape(self):
+        for raw in self.SHAPES:
+            self._run("_create_and_delete_schedule", raw)
+
+    def test_the_listing_check_survives_every_shape(self):
+        for raw in self.SHAPES:
+            self._run("_list_schedules", raw)

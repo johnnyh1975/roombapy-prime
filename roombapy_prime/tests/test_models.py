@@ -3692,3 +3692,42 @@ class TestMapBundleFeaturesAgainstRealCaptures:
 
         assert feature.properties.floor_type == "carpet"
         assert feature.geometry is not None
+
+
+class TestSchedulesResponseSurvivesAnUnexpectedShape:
+    """A parser's job on a shape it did not expect is to return nothing,
+    not to raise.
+
+    FOUND IN THE b6 BUG HUNT. `data.get("household_schedules")` was
+    iterated without checking it is a list -- a dict there yields its
+    KEYS, and SchedulesList.from_json() then called .get() on a string.
+    An error envelope or a changed response shape reaches this line, and
+    it is on the path HA's schedule calendar and switches use.
+    """
+
+    def _parse(self, data):
+        from roombapy_prime.models.schedules_dnd import SchedulesResponse
+
+        return SchedulesResponse.from_json(data)
+
+    def test_a_valid_response_is_unaffected(self):
+        result = self._parse({"household_schedules": [
+            {"household_schedule_id": "HS-1", "schedules": [{"schedule_id": "S-1"}]},
+        ]})
+
+        assert len(result.household_schedules) == 1
+        assert result.household_schedules[0].schedules == [{"schedule_id": "S-1"}]
+
+    def test_household_schedules_as_a_dict_yields_nothing(self):
+        assert self._parse({"household_schedules": {"oops": 1}}).household_schedules == []
+
+    def test_non_dict_containers_are_skipped(self):
+        assert self._parse({"household_schedules": ["x", 3]}).household_schedules == []
+
+    def test_schedules_as_a_string_yields_an_empty_list(self):
+        result = self._parse({"household_schedules": [{"schedules": "nope"}]})
+
+        assert result.household_schedules[0].schedules == []
+
+    def test_an_error_envelope_yields_nothing(self):
+        assert self._parse({"error": "forbidden"}).household_schedules == []

@@ -110,6 +110,24 @@ def _indent_json(data: Any, indent: int = 3) -> str:
     return "\n".join(pad + line for line in text.splitlines())
 
 
+def _raw_containers(raw: Any) -> list[Any]:
+    """The `household_schedules` list, whatever shape `raw` turns out
+    to be.
+
+    FOUND IN THE b6 BUG HUNT, introduced by b6 itself: this was
+    `(raw or {}).get("household_schedules")`, which raises
+    AttributeError on any truthy non-dict -- a bare list, a string, an
+    error envelope. The whole point of this release is that an
+    unexpected response shape must be VISIBLE, and a crash here would
+    take the diagnostic output down with it. The reporting path must
+    never be the thing that fails.
+    """
+    if not isinstance(raw, dict):
+        return []
+    containers = raw.get("household_schedules")
+    return containers if isinstance(containers, list) else []
+
+
 def _raw_schedule_count(raw: Any) -> int:
     """How many schedule objects the SERVER sent, counted without using
     this project's models at all.
@@ -117,10 +135,8 @@ def _raw_schedule_count(raw: Any) -> int:
     The point of the cross-check is to be independent of the parser it
     is checking, so this walks the raw structure by hand.
     """
-    if not isinstance(raw, dict):
-        return 0
     total = 0
-    for container in raw.get("household_schedules") or []:
+    for container in _raw_containers(raw):
         if isinstance(container, dict):
             total += len(container.get("schedules") or [])
     return total
@@ -197,12 +213,25 @@ async def _household_id(robot: Any, args: argparse.Namespace) -> str:
     Several of these calls need it, and getting it wrong is not a
     visible failure -- the request simply addresses somebody else's
     household and comes back empty.
+
+    SO IT SAYS WHICH ONE IT PICKED. `get_household_id()` chooses the
+    household containing this robot; on an account with a Classic and a
+    Prime robot there is more than one to choose from, and every empty
+    answer from a household-scoped endpoint has had two possible
+    readings ever since. A tester's output that does not name the
+    household cannot distinguish them, and that ambiguity has now cost
+    three rounds.
     """
     if args.household_id:
+        print(f"   household {args.household_id} (from --household-id)")
         return str(args.household_id)
     household_id = await robot.get_household_id()
     if not household_id:
         raise RuntimeError("could not determine a household id for this account")
+    print(
+        f"   household {household_id} (resolved from the account; override "
+        "with --household-id)"
+    )
     return str(household_id)
 
 
@@ -229,10 +258,22 @@ async def _set_dnd(robot: Any, args: argparse.Namespace) -> Any:
             "   want to test this one."
         )
         return None
-    raw = getattr(current, "raw", None) or fields
+    # RESENT FROM THE PARSED MODEL, and that is a real limitation.
+    #
+    # This used to read `getattr(current, "raw", None) or fields`.
+    # DNDStatusResponse has no `raw` field -- it is a frozen dataclass of
+    # daily_start/daily_end/ends_at/status -- so the fallback was the
+    # only branch that ever ran. The line implied a fidelity this check
+    # does not have.
+    #
+    # What that costs: anything the server sends under a key this
+    # project does not model is dropped, so the "unchanged" resend is
+    # subtly less complete than what came in. Exactly the failure shape
+    # get_favorites_raw()'s docstring was added for. Fixing it properly
+    # needs a raw DND accessor; not invented here without a reason to.
     if not confirm("Send the SAME settings back unchanged?"):
         return None
-    return await robot.set_dnd_settings(household_id, raw)
+    return await robot.set_dnd_settings(household_id, fields)
 
 
 async def _order_favorite(robot: Any, args: argparse.Namespace) -> Any:
@@ -436,18 +477,24 @@ async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> A
     # disabled. A robot with no schedules cannot run this check -- which
     # is the honest outcome, not a reason to invent one.
     try:
-        response = await robot.get_schedules(household_id)
+        raw = await robot.get_schedules_raw(household_id)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"could not read existing schedules: {exc}") from exc
 
-    template = None
-    for container in getattr(response, "household_schedules", None) or []:
-        for schedule in getattr(container, "schedules", None) or []:
-            if getattr(schedule, "options", None) is not None:
-                template = schedule.options
-                break
-        if template is not None:
-            break
+    # PARSED, NOT READ OFF THE DICT.
+    #
+    # SECOND OCCURRENCE, found by sweeping for the first (b5). This read
+    # `getattr(schedule, "options", None)` -- and SchedulesList.schedules
+    # is list[dict], so that returned None for every schedule that has
+    # ever existed. `template` was always None, so this check ALWAYS took
+    # the branch below and told the tester he had no schedules.
+    #
+    # It is the second of the "two separate code paths" that told one
+    # tester he had none. b5 fixed the other one and improved this
+    # branch's WORDING, which made the message clearer while leaving it
+    # just as wrong.
+    parsed = _parse_schedules(raw)
+    template = parsed[0].options if parsed else None
 
     if template is None:
         # SAY WHAT WAS ASKED, not just what came back.
@@ -461,11 +508,24 @@ async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> A
         # both a Classic and a Prime robot, picking the right one has
         # bitten this project before. Printing the id and the raw shape
         # lets a report distinguish them instead of guessing.
-        containers = getattr(response, "household_schedules", None) or []
+        containers = _raw_containers(raw)
+        raw_count = _raw_schedule_count(raw)
         print(
             f"   get_schedules() returned {len(containers)} container(s) for\n"
-            f"   household {household_id}, with no schedule inside.\n"
-            "\n"
+            f"   household {household_id}, holding {raw_count} schedule(s).\n"
+        )
+        if raw_count:
+            # The server sent schedules and none of them parsed. That is
+            # this project's bug, and saying "you have no schedules"
+            # would report it as the account's.
+            print(
+                "   None of them could be read. The server sent schedules and\n"
+                "   this tool failed to parse them -- that is a bug here, not\n"
+                "   something wrong with your account. Please report this\n"
+                "   output.\n"
+            )
+            return None
+        print(
             "   That is either an account with no schedules, or the wrong\n"
             "   household -- this endpoint is per-household, and an account\n"
             "   with more than one robot can have more than one.\n"
