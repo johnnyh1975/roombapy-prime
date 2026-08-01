@@ -614,3 +614,54 @@ class TestPrintFinalSummary:
         out = capsys.readouterr().out
         assert "FINAL REPORT" in out
         assert "0 OK, 0 failed, 0 skipped" in out
+
+
+class TestReportNeverCrashesOnAStatus:
+    """A reporting helper must not be the thing that fails.
+
+    This dict raised KeyError twice on real testers: once for "FAIL",
+    and -- after that call site was fixed and a test written for it --
+    once for "SKIP". Both times a check that had finished cleanly turned
+    into a Python traceback, and `print_final_summary` crashed on the way
+    out too, so the tester saw a stack instead of the result they had
+    just produced.
+
+    THE FIRST FIX WAS THE WRONG SHAPE. It corrected the call site and
+    tested that one string, which left the next typo free to do exactly
+    the same thing. Fixing the lookup covers every future one."""
+
+    def _report(self):
+        from roombapy_prime.diagnostics import Report
+
+        return Report()
+
+    def test_the_canonical_statuses_work(self):
+        report = self._report()
+
+        for status in ("OK", "FAILED", "SKIPPED"):
+            report.add("check", status, "detail")
+
+    def test_the_short_forms_are_accepted(self):
+        """"FAIL" and "SKIP" are what somebody writes when they mean the
+        long form. Both have been written here, by this codebase's own
+        author, on separate occasions."""
+        report = self._report()
+
+        for status in ("FAIL", "SKIP"):
+            report.add("check", status, "detail")
+
+    def test_an_unknown_status_does_not_raise(self):
+        """The general fix. A status nobody anticipated prints with a
+        neutral marker -- ugly, visible, and harmless."""
+        report = self._report()
+
+        report.add("check", "SOMETHING_NEW", "detail")
+
+    def test_the_summary_survives_an_unknown_status(self):
+        """The second half of both crashes: even when `add` was
+        survivable, the final summary re-did the same lookup and took
+        the run down at the very end."""
+        report = self._report()
+        report.add("check", "SOMETHING_NEW", "detail")
+
+        report.print_final_summary()

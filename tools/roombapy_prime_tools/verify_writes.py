@@ -410,7 +410,7 @@ def main() -> None:
                 report.add(check.name, "FAILED", f"{type(exc).__name__}: {exc}")
                 return
             if result is None:
-                report.add(check.name, "SKIP", "nothing was sent")
+                report.add(check.name, "SKIPPED", "nothing was sent")
                 return
             report.add(check.name, "OK", f"response: {result}")
             # ACCEPTED IS NOT THE SAME AS CORRECT. The virtual-wall

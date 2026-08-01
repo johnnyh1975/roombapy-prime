@@ -99,6 +99,37 @@ from .prime_factory import PrimeFactory
 ISSUE_TRACKER_REPO = "johnnyh1975/roombapy-prime"
 
 
+#: Status -> marker. Aliases included on purpose.
+#:
+#: "FAIL" and "SKIP" are what somebody writes when they mean FAILED and
+#: SKIPPED -- and both have been written here, by this codebase's own
+#: author, on two separate occasions. Each time a check that finished
+#: cleanly turned into a KeyError traceback, and the final summary
+#: crashed on the way out, so a tester saw a Python stack instead of the
+#: result they had just produced.
+#:
+#: Accepting the short forms costs two dict entries. Rejecting them cost
+#: two testers a crashed run each.
+#: Emoji variants, for the pre-filled issue body.
+#:
+#: Same aliases as the plain markers below, for the same reason.
+_ISSUE_MARKERS: dict[str, str] = {
+    "OK": "\u2705",
+    "FAILED": "\u274c",
+    "FAIL": "\u274c",
+    "SKIPPED": "\u23ed\ufe0f",
+    "SKIP": "\u23ed\ufe0f",
+}
+
+_STATUS_MARKERS: dict[str, str] = {
+    "OK": "\u2713",
+    "FAILED": "\u2717",
+    "FAIL": "\u2717",
+    "SKIPPED": "\u2013",
+    "SKIP": "\u2013",
+}
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -107,12 +138,25 @@ class CheckResult:
 
 
 @dataclass
+
+
 class Report:
     results: list[CheckResult] = field(default_factory=list)
 
     def add(self, name: str, status: str, detail: str = "") -> None:
         self.results.append(CheckResult(name, status, detail))
-        marker = {"OK": "✓", "FAILED": "✗", "SKIPPED": "–"}[status]
+        # NO KeyError ON AN UNKNOWN STATUS.
+        #
+        # This dict raised twice on real testers: once for "FAIL" and,
+        # after that was fixed, once for "SKIP". Both times a check that
+        # had finished cleanly turned into a traceback, and the final
+        # summary crashed on the way out -- so the tester saw a Python
+        # stack instead of the result they had just produced.
+        #
+        # A reporting helper must never be the thing that fails. An
+        # unrecognised status now prints with a neutral marker and the
+        # status text itself, which is ugly, visible, and harmless.
+        marker = _STATUS_MARKERS.get(status, "?")
         line = f"  [{marker}] {name}"
         if detail:
             line += f" — {detail}"
@@ -167,7 +211,7 @@ class Report:
         print("FINAL REPORT -- everything this run checked")
         print("=" * 60)
         for r in self.results:
-            marker = {"OK": "✓", "FAILED": "✗", "SKIPPED": "–"}[r.status]
+            marker = _STATUS_MARKERS.get(r.status, "?")
             line = f"  [{marker}] {r.name}"
             if r.detail:
                 line += f" — {r.detail}"
@@ -188,7 +232,10 @@ class Report:
             "",
         ]
         for r in self.results:
-            marker = {"OK": "✅", "FAILED": "❌", "SKIPPED": "⏭️"}[r.status]
+            # THIRD COPY of the same trap, found by grepping for the
+            # pattern rather than waiting for a tester to hit it. Same
+            # lookup, different glyphs, same KeyError.
+            marker = _ISSUE_MARKERS.get(r.status, "\u2753")
             entry = f"- {marker} **{r.name}**"
             if r.detail:
                 entry += f": {r.detail}"

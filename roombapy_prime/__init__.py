@@ -61,7 +61,7 @@ from .prime_factory import PrimeFactory
 from .prime_robot import PrimeRobot
 from .rest_client import RestConnectionError, RestError, RestSSLError, RestTimeoutError
 
-__version__ = "0.2.0b2"
+__version__ = "0.2.0b3"
 
 __all__ = [
     "AuthConnectionError",

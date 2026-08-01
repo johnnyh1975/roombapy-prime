@@ -936,3 +936,109 @@ class Region:
         )
 
 
+# WHETHER THE ROBOT IS VACUUMING OR MOPPING RIGHT NOW: not on the wire.
+#
+# Asked because a tester scheduled "vacuum then mop" and both halves
+# reported `cycle: clean` -- nothing distinguished them, so Home
+# Assistant could not say which one was running.
+#
+# APK analysis found the app's answer and it is a COMPUTED value, not a
+# field. `ResolvedDetailedMissionStatus` distinguishes:
+#
+#     25  CleaningVacuuming
+#     26  CleaningMopping
+#     27  CleaningComboVacuumAndMop
+#     28  CleaningComboMopAndScrub
+#     29  CleaningComboVacuumMopAndScrub
+#     30  CleaningMopOnly
+#     39  CleaningPadWashing
+#     10  CleaningPadWetOut
+#
+# matching UI strings "Vacuuming %s", "Mopping %s", "Mopping with
+# SmartScrub %s". But `RobotStatusV2` as a whole is reducer output: the
+# app derives it from raw values rather than reading it.
+#
+# THE RAW INGREDIENT WE HAVE is cleanMissionStatus.operatingMode, and
+# the APK gives a partial decoding:
+#
+#     2   Vacuuming
+#     4   MopOnly
+#     32  VacMopComboOnly
+#     512 VacThenMop
+#
+# TWO REASONS NOT TO BUILD ON IT YET.
+#
+# First, a real capture reports operatingMode 6, which is in none of
+# those categories. As a bitmask 6 is 2|4 -- vacuum plus mop-only, which
+# is contradictory as a single mode. So either the values are not flags,
+# or the decoding is incomplete.
+#
+# Second, both captures showing a value have `cycle: none` and `phase:
+# charge` -- the robots were docked. So operatingMode may describe the
+# NEXT or LAST mission rather than a current one, and nobody has a
+# capture from mid-mission to tell the difference.
+#
+# SETTLED 1 August 2026 (@jouwdan, W155042): operatingMode does NOT
+# describe the current activity.
+#
+# He captured the same robot twice:
+#
+#     docked    cycle=none   phase=charge  operatingMode=2
+#     cleaning  cycle=clean  phase=run     operatingMode=2
+#
+# `cycle` and `phase` moved; operatingMode did not.
+#
+# HIS ROBOT IS VACUUM-ONLY, so on its own that is ambiguous -- a robot
+# that can only vacuum would report "vacuuming" either way. The docked
+# capture is what decides it: a robot sitting on the dock CHARGING is
+# not vacuuming, and the field said 2 anyway.
+#
+# So operatingMode carries the mission's configured mode, not what the
+# robot is doing at this second. It cannot answer "vacuuming or mopping
+# right now" on any robot.
+#
+# CORRECTED SAME DAY (@DaRealGuGu, N185240). The conclusion above holds
+# for a vacuum-only robot and is wrong as a general statement: on a
+# Combo the value DOES move.
+#
+# Three captures from one robot:
+#
+#     docked, idle                      operatingMode = 2
+#     pad washing                       operatingMode = 6
+#     scheduled combo mission running   operatingMode = 6
+#
+# And the scheduled mission's own command carries a DIFFERENT number in
+# its region parameters:
+#
+#     regions[].params.operatingMode = 32   (VacMopComboOnly)
+#     cleanMissionStatus.operatingMode = 6
+#
+# SO THERE ARE TWO SEPARATE USES OF THE SAME NAME, and conflating them
+# is what made 6 look impossible:
+#
+#   - IN A COMMAND it names the requested job. 32 asks for a combined
+#     vacuum-and-mop run.
+#   - IN THE MISSION STATUS it is a bitmask of what is currently
+#     engaged. 6 is 2|4 -- vacuuming and mopping at once, which is
+#     exactly what a combo job executes as.
+#
+# That also explains jouwdan's vacuum-only robot reading 2 while
+# charging: with only one bit available it has nothing else to report,
+# so the value looks static when it is not.
+#
+# STILL NOT ENOUGH FOR "vacuuming or mopping right now" on a
+# vacuum-THEN-mop job, where the two happen in sequence rather than
+# together. Nobody has captured one of those mid-mission. But the field
+# is no longer useless: 2 alone, 4 alone and 6 together are
+# distinguishable, and that covers the combo case.
+#
+# PART OF THE ANSWER IS ALREADY VISIBLE, from a different direction.
+# The app's RobotMissionPhase has twelve values including PadWashing and
+# Refilling, and two of those ARE on the wire as separate dock fields:
+# `dock.pwState` and `dock.pdState`, both fully modelled here as
+# DockState members and both already surfaced as sensors.
+#
+# So "the robot is having its pad washed" is answerable today; "the
+# robot is mopping rather than vacuuming" is not. Worth knowing before
+# anyone treats the whole question as blocked -- the dock half of it is
+# not.
