@@ -468,6 +468,178 @@ async def _list_schedules(robot: Any, args: Any) -> Any:
     return summary
 
 
+def _raw_automation_count(raw: Any) -> int:
+    """How many objects the SERVER sent, counted without the parser.
+
+    Deliberately independent of parse_automations(): the point of a
+    cross-check is to disagree with the thing it checks. Nobody has seen
+    a response, so the container is unknown -- a bare list and a dict
+    wrapping one are equally likely -- and this counts dicts in either
+    rather than assuming a key name.
+    """
+    # ELEMENTS, not dicts. Counting only dicts was the first version and
+    # it defeated the purpose: a list of two things this project cannot
+    # read would have counted 0 against 0 parsed, reported no
+    # disagreement, and passed as "an account with no automations".
+    #
+    # Found by the guard in tools/tests that enforces exactly this rule
+    # -- which is the point of having it rather than remembering.
+    if isinstance(raw, list):
+        return len(raw)
+    if isinstance(raw, dict):
+        for value in raw.values():
+            if isinstance(value, list):
+                return len(value)
+    return 0
+
+
+async def _automations(robot: Any, args: Any) -> Any:
+    """Third-party triggers and geofencing, if the endpoint is alive.
+
+    NOT schedules -- a separate subsystem. The app has hard-coded
+    service ids for August Home, Ecobee, Leviton, MyQ and Wyze, plus
+    geofencing keys and behaviour options (continue cleaning, pause and
+    notify, end job). Automations of the kind "when I leave the house,
+    run favourite X".
+
+    THE OPEN QUESTION IS WHETHER THE URL RESPONDS AT ALL. In the app it
+    is a dead constant: one reference, a static initialiser, no reader
+    -- the same signature as two other strings that turned out to be
+    dead. Its real path is behind the native boundary. A second Home
+    Assistant integration calls this URL, but swallows any error and
+    never reads the result, so a 404 would be invisible there -- that is
+    not evidence the endpoint answers.
+
+    One read on an account with automations configured settles it. A
+    404 closes the topic for good, which is worth as much as a success.
+    """
+    print("   GET /v1/user/automations")
+    print("   (dead constant in the app -- this call is the test)")
+    try:
+        raw = await robot.get_automations_raw()
+    except Exception as exc:  # noqa: BLE001
+        print(f"       {_failure_detail(exc)}")
+        return NoResult(
+            f"the endpoint did not answer: {type(exc).__name__}. A refusal here "
+            "closes the question rather than leaving it open"
+        )
+
+    print("   raw response:")
+    print(_indent_json(raw))
+
+    from roombapy_prime.models import parse_automations  # noqa: PLC0415
+
+    parsed = parse_automations(raw)
+    print(f"   parsed: {len(parsed)} automation(s)")
+    for entry in parsed:
+        print(f"     {entry.automation_id}: type={entry.automation_type} "
+              f"enabled={entry.enabled} favorite={entry.favorite_id}")
+
+    # COUNTED WITHOUT THE PARSER, so a shape we do not recognise cannot
+    # pass as an empty account. That confusion is the whole reason this
+    # tool prints raw responses at all: for three field rounds a derived
+    # zero hid the fact that nothing had been read.
+    #
+    # The container is unknown here -- the endpoint has never answered
+    # anyone -- so this counts dicts in whatever list it finds rather
+    # than assuming a key.
+    raw_count = _raw_automation_count(raw)
+    if raw_count != len(parsed):
+        print(f"   DISAGREEMENT: the raw response holds {raw_count} object(s),\n"
+              f"   this project parsed {len(parsed)}. The parser is wrong, not "
+              "the account.")
+        return NoResult(
+            f"the endpoint answered with {raw_count} object(s) that this project "
+            "could not read -- the raw response above is the finding"
+        )
+
+    if not parsed:
+        return NoResult(
+            "the endpoint answered and held nothing readable -- either an account "
+            "with no automations, or a shape with no objects in it at all; the raw "
+            "response above tells them apart"
+        )
+    return [{"automations": len(parsed)}]
+
+
+async def _clean_score(robot: Any, args: Any) -> Any:
+    """Per-room cleanliness values, if the request body is right.
+
+    The endpoint and its response keys are confirmed from the APK:
+    `clean_scores[].regions[]`, each region carrying `clean_score` (a
+    float from 0.0 to 1.0), `region_id` and `updated_ts`. Accumulated
+    state per room rather than a mission result -- the data behind
+    Smart Clean.
+
+    WHAT IS NOT CONFIRMED IS THE REQUEST BODY. The app calls this
+    through fetchCleanScoreDataForMap(), so the body sits behind the
+    native boundary exactly as /v1/time-estimates did. There it turned
+    out to be a single `{"robot_id": ...}`; the method name here names a
+    map, so `{"p2map_id": ...}` is the analogous guess.
+
+    Which is why this check prints the body it sends and the raw
+    response it gets. A 4xx naming a field would tell us more than a
+    success would, and either beats a status code on its own -- three
+    field rounds have already ended that way.
+    """
+    maps = await robot.get_active_map_versions()
+    entries = maps if isinstance(maps, list) else []
+    if not entries:
+        return NoResult("no maps on this robot, so there is nothing to score")
+
+    summary: list[dict[str, Any]] = []
+    for entry in entries:
+        p2map_id = entry.get("p2map_id") if isinstance(entry, dict) else None
+        if not p2map_id:
+            continue
+        print(f"\n   map {p2map_id}")
+        print(f"   GET /v1/p2maps/clean-score?p2map_id={p2map_id}")
+        try:
+            raw = await robot.get_clean_score_raw(str(p2map_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"       {_failure_detail(exc)}")
+            summary.append({"p2map_id": str(p2map_id), "error": str(exc)})
+            continue
+        print("       raw response:")
+        print(_indent_json(raw, indent=7))
+
+        # Parsed alongside the raw, never instead of it. The keys are
+        # confirmed from the app's own response parser, so a mismatch
+        # here means either the server changed or the confirmation was
+        # misread -- and either is worth seeing in the same run rather
+        # than a round later.
+        from roombapy_prime.models import CleanScoreResponse  # noqa: PLC0415
+
+        parsed = CleanScoreResponse.from_json(raw)
+        rooms = [r for entry in parsed.clean_scores for r in entry.regions]
+        print(f"       parsed: {len(rooms)} room score(s)")
+        for room in rooms:
+            print(f"         region {room.region_id}: {room.clean_score}"
+                  f"  (updated {room.updated_ts})")
+        raw_rooms = sum(
+            len(entry.get("regions") or [])
+            for entry in ((raw or {}).get("clean_scores") or [])
+            if isinstance(entry, dict)
+        ) if isinstance(raw, dict) else 0
+        if raw_rooms != len(rooms):
+            print(f"       DISAGREEMENT: the raw response holds {raw_rooms} region(s),\n"
+                  f"       this project parsed {len(rooms)}. The parser is wrong.")
+        summary.append({
+            "p2map_id": str(p2map_id),
+            "raw_room_count": raw_rooms,
+            "parsed_room_count": len(rooms),
+        })
+
+    if not summary:
+        return NoResult("no map carried a p2map_id to ask about")
+    if all("error" in entry for entry in summary):
+        return NoResult(
+            "every map was rejected -- the request body is the likely reason, "
+            "and the server's own words are above"
+        )
+    return summary
+
+
 async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> Any:
     """Creates a schedule and offers to delete it again.
 
@@ -558,8 +730,50 @@ async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> A
 
     from dataclasses import replace  # noqa: PLC0415
 
-    options = replace(template, name=args.schedule_name, enabled=False)
+    # FIELDS DELIBERATELY DROPPED FROM THE COPY.
+    #
+    # `created_time` is assigned by the server. Copying a template means
+    # replaying the ORIGINAL schedule's timestamp into a create -- in
+    # @DaRealGuGu's b7 run, literally "2026-08-01T18:15:09.211030+00:00"
+    # from the schedule being copied. That is now the last candidate
+    # standing for the HTTP 500 that create has returned on every
+    # attempt:
+    #
+    #   {"errorType": "AspenError.InternalError",
+    #    "errorMessage": "Internal error"}
+    #
+    # A server crash rather than a validation error, which fits a value
+    # the server expected to assign itself.
+    #
+    # The other two candidates are out. `initiator` is not needed: his
+    # working, server-stored schedules do not carry it either. And
+    # `is_smart_clean_fav`, which the server sends and this project does
+    # not model, does not exist anywhere in the iRobot APK -- the server
+    # added it without its own app knowing about it, so its absence from
+    # a request cannot plausibly crash the server.
+    #
+    # If this run still returns 500, `created_time` is cleared too and
+    # the next question is the endpoint itself rather than the payload.
+    dropped = {"created_time": template.created_time}
+    options = replace(
+        template, name=args.schedule_name, enabled=False, created_time=None
+    )
     print("   copied from an existing schedule, disabled, renamed")
+    # PRINTED, so a failing run stays readable without another round
+    # trip. Three field rounds on this one check have already ended with
+    # a status code and no way to tell what was actually sent.
+    # Only report a field as dropped if it was actually there. Found in
+    # the b8 bug hunt: a template carrying no created_time still printed
+    # "deliberately NOT sent: created_time = None", claiming an omission
+    # that never happened. For output whose whole purpose is to stay
+    # readable after a failure, that is the wrong kind of inaccuracy.
+    actually_dropped = {k: v for k, v in dropped.items() if v is not None}
+    if actually_dropped:
+        print("   deliberately NOT sent (server-assigned):")
+        for key, value in actually_dropped.items():
+            print(f"     {key} = {value!r}")
+    else:
+        print("   (template carried no server-assigned fields to drop)")
     print(f"   creating a DISABLED schedule named {args.schedule_name!r}")
 
     # THE BODY THAT IS ABOUT TO GO OUT, printed before it goes.
@@ -619,6 +833,28 @@ CHECKS: tuple[WriteCheck, ...] = (
             "app shows a schedule this does not"
         ),
         runner=lambda robot, args: _list_schedules(robot, args),
+    ),
+    WriteCheck(
+        name="automations",
+        risk="read",
+        summary="third-party triggers and geofencing -- NOT schedules (writes nothing)",
+        verify_by=(
+            "please paste the whole output. This endpoint looks dead in the app, "
+            "so a refusal is as useful as a success -- it closes the question. "
+            "Most useful from an account that has automations set up in the app"
+        ),
+        runner=lambda robot, args: _automations(robot, args),
+    ),
+    WriteCheck(
+        name="clean_score",
+        risk="read",
+        summary="per-room cleanliness values from an endpoint we have never called (writes nothing)",
+        verify_by=(
+            "nothing to check in the app -- please paste the whole output, "
+            "including a failure: the request body is a guess and a rejection "
+            "naming a field would tell us more than a success"
+        ),
+        runner=lambda robot, args: _clean_score(robot, args),
     ),
     WriteCheck(
         name="time_estimates",

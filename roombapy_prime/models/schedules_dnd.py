@@ -410,3 +410,87 @@ class DNDEndsAt:
         return {"endsAt": self.ends_at}
 
 
+
+
+@dataclass(frozen=True)
+class Automation:
+    """One third-party or geofence trigger. NOT a schedule.
+
+    WIRE KEYS from AutomationProvider::parseRoutineJson via
+    RoutineConstants (APK, 2 August 2026). Confirmed as literals in
+    liblegacyCore.so: automation_id, automation_type, automation_source,
+    time_window, service_details, service_id, trigger_id,
+    robot_commands, favorite_id. Resolved through constants rather than
+    their own literals: enabled, one_time, days, hour, minute.
+
+    `automation_type` arrives as a string and the app maps it through
+    automationStringToTypeMap; that map's contents were not read out, so
+    the value is kept as sent rather than parsed into an enum.
+
+    `service_details` identifies the partner: hard-coded ids exist for
+    August Home, Ecobee, Leviton, MyQ and Wyze, alongside a location
+    service for geofencing.
+
+    `robot_commands` is left raw. It carries the same command
+    structures favourites use, and those have their own confirmed
+    models -- but nothing was read out at THIS call site to say the
+    nesting matches, and assuming it does is how wire keys go wrong.
+    """
+
+    automation_id: str | None = None
+    automation_type: str | None = None
+    automation_source: str | None = None
+    enabled: bool | None = None
+    one_time: bool | None = None
+    days: list[Any] = field(default_factory=list)
+    time_window: dict[str, Any] | None = None
+    service_details: dict[str, Any] | None = None
+    favorite_id: str | None = None
+    robot_commands: list[Any] = field(default_factory=list)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> Automation:
+        if not isinstance(data, dict):
+            return cls()
+        days = data.get("days")
+        commands = data.get("robot_commands")
+        return cls(
+            automation_id=data.get("automation_id"),
+            automation_type=data.get("automation_type"),
+            automation_source=data.get("automation_source"),
+            enabled=data.get("enabled"),
+            one_time=data.get("one_time"),
+            days=days if isinstance(days, list) else [],
+            time_window=data.get("time_window"),
+            service_details=data.get("service_details"),
+            favorite_id=data.get("favorite_id"),
+            robot_commands=commands if isinstance(commands, list) else [],
+        )
+
+
+def parse_automations(data: Any) -> list[Automation]:
+    """Whatever shape /v1/user/automations turns out to return.
+
+    NOBODY HAS SEEN A RESPONSE. The endpoint is a dead constant in the
+    app -- one reference, a static initialiser, no reader -- and its
+    real path lies behind the Djinni boundary. So the container is
+    unknown: a bare list is as likely as a dict wrapping one.
+
+    Both are accepted, and anything else yields nothing rather than
+    raising. Guessing at a wrapper key would be inventing structure,
+    which is exactly what this project does not do; accepting the two
+    shapes it could plausibly be costs nothing and hides nothing,
+    because the check that calls this prints the raw response first.
+    """
+    if isinstance(data, list):
+        entries = data
+    elif isinstance(data, dict):
+        found = next(
+            (value for value in data.values() if isinstance(value, list)), None
+        )
+        entries = found if found is not None else []
+    else:
+        return []
+    return [
+        Automation.from_json(entry) for entry in entries if isinstance(entry, dict)
+    ]

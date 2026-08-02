@@ -600,6 +600,17 @@ class PrimeRobot:
         docstring."""
         return await self._rest.get_schedules(household_id)
 
+    async def get_automations_raw(self) -> Any:
+        """See rest_client.py::get_automations_raw() -- third-party
+        triggers and geofencing, NOT schedules. Endpoint liveness
+        unproven."""
+        return await self._rest.get_automations_raw()
+
+    async def get_clean_score_raw(self, p2map_id: str) -> Any:
+        """See rest_client.py::get_clean_score_raw() -- per-room
+        cleanliness, request body still a guess."""
+        return await self._rest.get_clean_score_raw(p2map_id)
+
     async def get_schedules_raw(self, household_id: str) -> Any:
         """See rest_client.py::get_schedules_raw() -- field diagnosis,
         not part of the normal path."""

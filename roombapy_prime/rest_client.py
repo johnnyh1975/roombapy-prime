@@ -832,6 +832,126 @@ RESOLVED (30 July 2026) -- and the earlier "not determinable"
         # key was unknown.
         return await self._request("POST", url, body={"robot_id": blid})
 
+    async def get_clean_score_raw(self, p2map_id: str) -> Any:
+        """POST /v1/p2maps/clean-score -- a per-ROOM cleanliness value.
+
+RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
+        LITERALS in libdataModule.so, read out of jsonToCleanScoreData,
+        not from the Kotlin property names:
+
+            {
+              "clean_score_ranges": [0.0, ...],
+              "clean_scores": [{
+                "p2map_id", "active_p2mapv_id", "user_p2mapv_id",
+                "smart_clean_id", "mission_last_processed": {...},
+                "regions": [{
+                  "region_id", "clean_score", "updated_ts",
+                  "last_updated_by", "smart_clean_prefs"
+                }]
+              }]
+            }
+
+        THE WIRE IS snake_case; the Kotlin side is camelCase
+        (cleanScoreData, cleanScoreRegions, regionId, updatedTs). An
+        earlier draft of this docstring wrote the Kotlin names as if
+        they were the wire format -- the same confusion that once
+        produced 21 wrong wire keys in this library.
+
+        Ten of the thirteen keys are confirmed as literals. `p2map_id`,
+        `active_p2mapv_id` and `regions` resolve through shared
+        serialization constants rather than their own literals here, so
+        their spelling is inherited from confirmed uses elsewhere rather
+        than proven at this call site.
+
+        Range is fixed: CleanScoreConst.MIN_CLEAN_SCORE = 0.0f,
+        MAX_CLEAN_SCORE = 1.0f -- a float, so directly a percentage.
+
+        NOT a mission result. The values hang off pmapId/regionId and
+        `missionLastProcessed` only says how far the running value has
+        been carried -- it is accumulated state per room. This is the
+        data behind Smart Clean / "Dirt Detective".
+
+        GET WITH A QUERY PARAMETER, not a POST body -- and that came
+        from reading a second integration rather than from the APK.
+
+        The APK could not supply it: the call goes through
+        SmartCleanWrappedUseCase.fetchCleanScoreDataForMap() and across
+        the Djinni boundary, exactly as /v1/time-estimates did. An
+        earlier draft of this method guessed by analogy with that one --
+        POST with `{"robot_id": ...}` there, so POST with
+        `{"p2map_id": ...}` here. Plausible, and wrong.
+
+        a-mavrides/roomba_v4 sends `GET .../clean-score?p2map_id=<id>`
+        and, unlike its call to /v1/user/automations, actually CONSUMES
+        the response -- it reads clean_scores[].regions[].region_id and
+        smart_clean_prefs to derive per-room defaults. Code that reads
+        what it fetched is evidence the fetch works; code that swallows
+        errors and never looks is not.
+
+        Still one integration's usage rather than a protocol document,
+        so the check that calls this prints the request and the raw
+        response.
+
+        Returns the UNPARSED response. CleanScoreResponse.from_json()
+        parses it and is built from the confirmed keys above -- the
+        raw form stays available because a parsed result cannot
+        distinguish "the server sent nothing" from "we failed to read
+        what it sent", and this project has spent field rounds on
+        exactly that ambiguity.
+        """
+        url = f"{self._http_base_auth}/v1/p2maps/clean-score"
+        return await self._request("GET", url, query={"p2map_id": p2map_id})
+
+    async def get_automations_raw(self) -> Any:
+        """GET /v1/user/automations -- third-party triggers and
+        geofencing. NOT the schedule endpoint.
+
+        WHAT THIS SUBSYSTEM IS (APK, 2 August 2026). RoutineConstants
+        holds 66 entries, and they settle the purpose: hard-coded
+        service ids for August Home, Ecobee, Leviton, MyQ and Wyze;
+        geofencing keys (kLatitude, kLongitude, kRadius,
+        kEnterRegionLocationTriggerId); and behaviour options
+        (kContinueCleaning, kPauseAndNotify, kEndJob). So: "when I leave
+        the house, run favourite X", or "when Ecobee goes to Away".
+
+        `favorite_id` and `robot_commands` in the payload show it drives
+        the same command structures as favourites do.
+
+        A DIFFERENT DATA MODEL FROM SCHEDULES, not an alternative to
+        them -- automation_id vs schedule_id, time_window{hour,minute}
+        vs start/end, plus service_id/trigger_id, which schedules have
+        no counterpart for. Schedule management stays on
+        /v1/households/{id}/settings/schedule, the only path active in
+        the app's Kotlin.
+
+        THE ENDPOINT MAY NOT BE LIVE, and that is the open question this
+        method exists to settle. In liblegacyCore.so the string has
+        exactly ONE reference -- a static initialiser, recognisable by
+        the __cxa_atexit pattern, sitting between two IFTTT URLs. No
+        reader. Same signature as `sec_message` and `koz-v1.0.0`, both
+        of which turned out to be dead; actively used URLs show two or
+        three real consumers.
+
+        The app reaches the data through
+        AutomationDataUseCaseImpl::fetchAllAutomations() and on across
+        the Djinni boundary, so its real path is not resolvable
+        statically. A second Home Assistant integration
+        (a-mavrides/roomba_v4) calls this URL -- but reading its code,
+        that is NOT evidence the endpoint answers. It swallows any
+        exception into a debug log, defaults the result to {}, writes it
+        to a debug file, and no entity ever reads it. A 404 would look
+        identical to an empty response there, and nobody would notice.
+
+        So there is currently NO evidence for or against, only an
+        untested call in someone else's integration and a dead constant
+        here.
+
+        One read attempt on an account with automations configured
+        settles it either way, and costs nothing if the answer is no.
+        """
+        url = f"{self._http_base_auth}/v1/user/automations"
+        return await self._request("GET", url)
+
     async def reset_robot(self, blid: str) -> dict[str, Any]:
         """POST /v1/{blid}/reset -- NEW (session 16). CONFIRMED from
         base_roomba_config.json (commandId "ResetRobotCommand",

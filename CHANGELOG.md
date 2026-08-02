@@ -8,6 +8,26 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b8] - 2026-08-02
+
+### Changed
+- **`schedule_create_delete` no longer replays `created_time`.** Copying a template schedule meant
+  sending the server back a timestamp it assigns itself. Last candidate standing for the HTTP 500
+  that create has returned on every attempt; the other two (`initiator`, `is_smart_clean_fav`) were
+  ruled out rather than set aside. The check prints which fields it deliberately omits.
+
+### Documented
+- **`DockState` is not exhaustive, and now says so.** The server sends 671 for a pad wash blocked by
+  a missing or empty tank; the code exists nowhere in the iRobot APK, whose pad-wash family ends at
+  669, and the app's own fallback is `"Unknown dock state %d"`. Consumers must handle unknown
+  values. A numeric overlap between this enum's low values and the shadow's `dock.cap` flags is
+  recorded as an open question, deliberately not acted on.
+- **Mop wetness value range resolved.** `padPlate` has its own enumeration, offset by one from the
+  other two pad categories (`0 Invalid, 1 Damp, 2 Moderate, 3 Wet`). This explains a capture that
+  had blocked any wetness control: the "impossible" 3 sat under `disposable`, meaning Invalid --
+  no disposable pad fitted. `ppWetLvl` is a count of usable steps, not a flag. Documented only; a
+  control must still choose the field via `detectedPad`.
+
 ## [0.2.0b7] - 2026-08-01
 
 ### Fixed

@@ -1303,6 +1303,39 @@ class DockState(IntEnum):
 
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#robot_infodockstate
+
+    THE SERVER SENDS CODES THIS ENUM DOES NOT HAVE. Confirmed for 671:
+    a controlled before/after (@chairstacker, dock fwVer 20) read
+    dock.pwState = 671 with the clean water tank removed and 601
+    (PAD_WASH_OKAY) the moment it went back in, while dock.state,
+    dock.error and pdState did not move at all.
+
+    671 does not exist anywhere in the iRobot APK -- the pad-wash family
+    ends at 669 (PAD_WASH_PAD_ACTUATOR_STALL_ERROR), and there is no
+    second, newer dock-state table. The app's own DockStateImpl carries
+    the fallback string "Unknown dock state %d", so the official app
+    shows nothing better than a number here either.
+
+    So the server is ahead of app version 2.2.4, the same way it sends
+    `is_smart_clean_fav` on schedules that the app does not model. A
+    consumer must handle unknown values rather than assume this enum is
+    exhaustive; ha_roomba_plus keeps a separate field-observed table for
+    them, deliberately NOT merged into this one so that decompiled
+    values stay distinguishable from inferred ones.
+
+    UNPROVEN, RECORDED SO IT IS NOT LOST: the low values 1-3 here have
+    the same numbers as the `dock.cap` flags in the shadow. Two field
+    captures read `pw: 1` with `pd: 2` and `pd: 3` respectively, which
+    would map onto PAD_WASH_UNHEATED_WATER plus PAD_DRY_UNHEATED_AIR
+    and PAD_DRY_HEATED_AIR -- i.e. dock.cap would describe WHICH KIND
+    of wash and dry a dock supports rather than a bare capability level.
+
+    That is a numeric coincidence across two namespaces and nothing
+    more. This project has twice been caught by exactly that shape: 671
+    filed into the mission-error table because the number looked
+    plausible there, and `operatingMode` carrying different meanings in
+    a command and in mission status. Do not build on it. It is written
+    down as a question for the next APK round, not as a finding.
     """
 
     DOCK_NO_COMMON_ERROR = 0
@@ -1443,6 +1476,26 @@ class DockStatus:
     pw_state: DockState | None = None
     state: DockState | None = None
 
+    #: Clean water tank level, and NOT reported by every dock.
+    #:
+    #: Two captures, one dock each: fwVer 24 with dock.cap.pd 3 sends
+    #: tankLvl 100; fwVer 20 with dock.cap.pd 2 never sends the key at
+    #: all, not even while pad washing fails for lack of water. Two
+    #: variables differ at once, so which one governs is not decidable
+    #: from the field, and the APK cannot settle it either: pd/pw/pwo
+    #: are not literals, the mapping lives in a runtime-filled
+    #: map<string, DockCapability>, and DockCapability itself is purely
+    #: categorical (Unknown, Evacuation, FluidReplenishment, PadWash,
+    #: PadDry, Detergent) with no notion of a level 2 or 3.
+    #:
+    #: So consumers must gate on this being present, never on a
+    #: capability flag or a particular pd value.
+    #:
+    #: `gwTankLvl` (grey water) is deliberately NOT modelled. The
+    #: literal exists in libcorebase.so but its role could not be
+    #: established, and it appears in no capture from either dock.
+    tank_lvl: int | None = None
+
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockStatus:
         cap_data = data.get("cap")
@@ -1450,6 +1503,7 @@ class DockStatus:
             cap=DockCapabilities.from_json(cap_data) if cap_data else None,
             error=data.get("error"),
             fw_version=data.get("fwVer"),
+            tank_lvl=data.get("tankLvl"),
             known=data.get("known"),
             pd_state=_enum_or_none(DockState, data.get("pdState")),
             pw_state=_enum_or_none(DockState, data.get("pwState")),

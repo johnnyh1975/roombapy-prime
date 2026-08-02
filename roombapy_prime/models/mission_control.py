@@ -256,21 +256,60 @@ class PadWetnessParam:
     model for the shadow was correct after all. The snake_case worry
     (`pad_plate`) was unfounded.
 
-    THE VALUE RANGE BELONGS TO NEITHER KNOWN ENUM.
+    THE VALUE RANGE IS RESOLVED (APK, 2 August 2026): padPlate has its
+    own enumeration, offset by one from the other two.
 
-    A real capture read `disposable: 3` on a working robot. Two
-    candidate scales were checked and both ruled out:
+        RobotPadWetnessLevel:       0 Damp     1 Moderate  2 Wet       3 Invalid
+        RobotPadPlateWetnessLevel:  0 Invalid  1 Damp      2 Moderate  3 Wet
 
-        RobotPadWetnessLevel:  0 Damp, 1 Moderate, 2 Wet, 3 Invalid
-        PadSettings (UI):      0 LOW,  1 MEDIUM,   2 HIGH
+    Two separate enums, exactly as the two lookup-table pairs above
+    implied. The earlier warning was right; the second table now has
+    contents.
 
-    Same 0..2 range, different origins, and 3 fits neither -- it is
-    "invalid" in the first and out of range in the second. So the wire
-    uses a third scale nobody has identified.
+    THIS EXPLAINS THE CAPTURE THAT LOOKED IMPOSSIBLE:
 
-    NOT 1-BASED COUNTING of a known enum: that was the obvious guess and
-    it does not hold, because a 1-based RobotPadWetnessLevel would put
-    Wet at 3 and leave Invalid at 4, which no capture shows.
+        padWetness: {"disposable": 3, "reusable": 1, "padPlate": 1}
+        detectedPad: "padPlate"
+
+    A hard pad plate is fitted, so padPlate is the live field, and 1 is
+    Damp on ITS scale. The 3 under `disposable` is Invalid on
+    RobotPadWetnessLevel -- no disposable pad is fitted, and the field
+    says exactly that. Nothing was out of range: the value that looked
+    wrong sat in the field for a pad the robot does not currently carry.
+
+    The earlier note that a 1-based reading "does not hold" was correct
+    for RobotPadWetnessLevel and wrong as a general conclusion. It is
+    padPlate's own enum that begins at Invalid, which makes it
+    effectively 1-based.
+
+    ppWetLvl READS AS A COUNT of usable steps rather than as a flag:
+    three steps (1..3) for a robot reporting 3, and no level choice at
+    all for one reporting 0 while still mopping. An independent Home
+    Assistant integration (a-mavrides/roomba_v4) builds its picker as
+    range(1, N+1) from this field, which agrees.
+
+    A GLOBAL CONTROL SHOULD NOT BE BUILT AT ALL (APK, 2 August 2026).
+    Two independent findings, either of which would be enough:
+
+    1. REGIONS WIN. CommandParams.copyWith(other) takes `other`'s
+       padWetness whenever it is non-null and only falls back to its
+       own. A region command carrying padWetness.padPlate = 2 therefore
+       beats the global 3 from rw-settings. Seen in the field exactly
+       so: one robot with global 3 and all four regions at 2.
+    2. THE APP DOES NOT TREAT THIS AS USER-MODIFIABLE.
+       onlyUserModifiableParams() keeps precisely one field of the 38 --
+       routineModified -- and nulls the rest, padWetness among them.
+
+    So a global slider would be the schedHold pattern again: accepted by
+    the server, overridden in practice, and stating something false in
+    the UI. Per-region control is a different question and has not been
+    investigated.
+
+    WHAT ANY CONTROL WOULD STILL HAVE TO GET RIGHT: which of the three
+    fields to write. `detectedPad` names the pad currently fitted, and writing
+    padPlate on a robot carrying a disposable pad would apply the wrong
+    scale to the wrong field -- accepted by the robot, and wrong in
+    silence. The category comes from detectedPad, never from a guess.
 
     WHAT DID COME OUT OF IT: PadSettings holds `mCategory`
     (RobotPadCategory) and `mWetLevel` (int) as SEPARATE fields in one

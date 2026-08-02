@@ -665,3 +665,114 @@ class TestReportNeverCrashesOnAStatus:
         report.add("check", "SOMETHING_NEW", "detail")
 
         report.print_final_summary()
+
+
+class TestTheDumpRedactorReachesInsideObjects:
+    """A real leak, caught by a tester before he published his own dump
+    (@utkjmitch, b7).
+
+    `--dump-config` captured ShadowResponse OBJECTS, and json.dump's
+    `default=str` turned each into a repr string on the way out. By then
+    ro-configinfo's passwordHash was one flat string, and key-based
+    redaction cannot reach inside a string.
+
+    "passwordhash" was already in the sensitive-key set. The branch that
+    uses it was never reached -- not a missing rule, a rule that never
+    ran. Same shape as the a17 leak on the Home Assistant side, one
+    layer down.
+    """
+
+    def _capture(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class ShadowResponse:
+            topic: str
+            payload: dict
+
+        return ShadowResponse(
+            topic="$aws/things/BLID/shadow/get/accepted",
+            payload={"state": {"reported": {
+                "passwordHash": "SUPERSECRET123", "batPct": 55,
+            }}},
+        )
+
+    def test_an_object_is_unpacked_so_key_redaction_applies(self):
+        import json
+
+        from roombapy_prime.diagnostics import _redact_raw_capture
+
+        text = json.dumps(
+            _redact_raw_capture({"get_state": self._capture()}, ["u", "p"]),
+            default=str,
+        )
+
+        assert "SUPERSECRET123" not in text
+        # Unpacked rather than blanked: the dump exists to show real
+        # field names and values, so everything else must survive.
+        assert "batPct" in text
+        assert "ShadowResponse(" not in text
+
+    def test_a_secret_already_inside_a_string_is_still_caught(self):
+        """The net under the fix. Unpacking objects is the repair; this
+        catches a key that arrives embedded in text by some other route
+        -- a log line, a repr built before we saw it, a payload a server
+        sent as text."""
+        from roombapy_prime.diagnostics import _redact_raw_capture
+
+        result = _redact_raw_capture(
+            "ShadowResponse(payload={'passwordHash': 'SUPERSECRET123', 'batPct': 55})",
+            [],
+        )
+
+        assert "SUPERSECRET123" not in result
+        assert "batPct" in result
+
+    def test_ordinary_text_is_left_alone(self):
+        """The net is deliberately narrow -- it must not eat content."""
+        from roombapy_prime.diagnostics import _redact_raw_capture
+
+        text = "phase=stuck error=46 condNotReady=[234] batPct=55"
+
+        assert _redact_raw_capture(text, []) == text
+
+
+class TestTheDumpRedactsIdentifiersATesterStrippedByHand:
+    """@utkjmitch removed five things from his dump before sharing it:
+    the password hash, the BLID, the serial number, and the household
+    and cognito ids. Two were automated; the rest depended on him
+    reviewing carefully.
+
+    A dump the maintainers ask for should not need that.
+    """
+
+    def _redact(self, data):
+        import json
+
+        from roombapy_prime.diagnostics import _redact_raw_capture
+
+        return json.dumps(_redact_raw_capture(data, []), default=str)
+
+    def test_serial_number_and_robot_id_are_masked(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class RobotSerialInfo:
+            robot_id: str
+            serial_number: str
+            sku: str
+
+        out = self._redact({"serial": RobotSerialInfo("BLID123", "SER456", "y351020")})
+
+        assert "BLID123" not in out
+        assert "SER456" not in out
+        # The SKU is exactly what a dump is for: it identifies the model,
+        # not the unit or its owner.
+        assert "y351020" in out
+
+    def test_household_id_deliberately_survives(self):
+        """Not an oversight. It is needed to read the schedule and map
+        endpoints, and the tooling prints it on purpose so a tester can
+        tell which household a call addressed. Masking it here while
+        printing it there would be worse than either."""
+        assert "HH-789" in self._redact({"household_id": "HH-789"})

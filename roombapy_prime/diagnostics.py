@@ -85,7 +85,7 @@ import os
 import re
 import sys
 import webbrowser
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, UTC
 from typing import Any
 from urllib.parse import quote
@@ -826,6 +826,19 @@ def redact_aws_url_secrets(text: str) -> str:
     return _AWS_PRESIGNED_URL_SECRETS_RE.sub(r"\1[REDACTED]", text)
 
 
+#: Matches `'passwordHash': 'value'` and `"passwordHash": "value"` in
+#: text, for the string net in _redact_raw_capture. Key names match the
+#: sensitive_keys set there; kept deliberately narrow so it cannot eat
+#: unrelated content.
+_SECRET_IN_TEXT = re.compile(
+    r"([\"']?(?:passwordHash|password|iot_token|iot_signature|user_cert|"
+    r"cognitoId|secretKey|sessionToken|accessKeyId)[\"']?\s*[:=]\s*[\"'])"
+    r"[^\"']*"
+    r"([\"'])",
+    re.IGNORECASE,
+)
+
+
 def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
     """NEW (session 24) -- redaction for --dump-config. Unlike
     _shallow_summary() (structure only, never values -- for the report
@@ -888,7 +901,46 @@ def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
         # hypothetical. Whether it's a hash rather than plaintext
         # doesn't make it safe to leave unredacted by default.
         "passwordhash",
+        # NEW (b8, after reviewing a real shared dump). @utkjmitch
+        # stripped five things by hand before sharing his: the password
+        # hash, the BLID, the serial number, and the household and
+        # cognito ids. Only two of those were automated -- so four out of
+        # five testers who do not review as carefully would have
+        # published the rest.
+        #
+        # A serial number identifies a specific unit and is of no use for
+        # protocol work; robot_id/blid identify the account's robot.
+        # Neither belongs in a file people paste into public issues.
+        #
+        # household_id is deliberately NOT here: it is genuinely needed
+        # for reading the schedule and map endpoints, and the tooling
+        # already prints it on purpose so a tester can tell which
+        # household a call addressed. Redacting it in one place and
+        # printing it in another would be worse than either.
+        "serial_number",
+        "serialnumber",
+        "robot_id",
+        "blid",
     }
+    # OBJECTS ARE UNPACKED BEFORE ANYTHING ELSE, and this is the fix for
+    # a real leak (@utkjmitch, b7).
+    #
+    # --dump-config captured ShadowResponse OBJECTS, and json.dump's
+    # `default=str` turned each one into a repr string on the way out.
+    # By then the payload -- including ro-configinfo's passwordHash --
+    # was one flat string, and key-based redaction cannot reach inside a
+    # string. "passwordhash" was already in the set below; the branch
+    # that uses it was simply never reached.
+    #
+    # Same shape as the a17 leak on the Home Assistant side, one layer
+    # down: not a missing rule, a rule that never ran. He caught his own
+    # dump before sharing it, which is the only reason this was found
+    # rather than published.
+    if is_dataclass(data) and not isinstance(data, type):
+        return _redact_raw_capture(asdict(data), secrets, _depth + 1)
+    if hasattr(data, "__dict__") and not isinstance(data, type):
+        return _redact_raw_capture(vars(data), secrets, _depth + 1)
+
     if isinstance(data, dict):
         result = {}
         for k, v in data.items():
@@ -904,6 +956,13 @@ def _redact_raw_capture(data: Any, secrets: list[str], _depth: int = 0) -> Any:
         for secret in secrets:
             if secret:
                 redacted = redacted.replace(secret, "[REDACTED]")
+        # A NET UNDER THE FIX ABOVE. Unpacking objects is the real
+        # repair; this catches a sensitive key that reaches this
+        # function already embedded in a string by some other route --
+        # a log line, a repr built before we saw it, a nested payload
+        # some server sent as text. Cheap, and the failure it guards
+        # against is a published credential.
+        redacted = _SECRET_IN_TEXT.sub(r"\1[REDACTED]\2", redacted)
         return redact_aws_url_secrets(redacted)
     return data
 

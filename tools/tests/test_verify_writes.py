@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
 
 
 class TestTheChecksMatchTheLibrary:
@@ -685,3 +687,373 @@ class TestTheCreateRequestBodyIsVisible:
         # the printed body, not merely in the object that was sent.
         assert "created_time" in out
         assert "robot_id" in out
+
+
+class TestTheCreateCopyDropsServerAssignedFields:
+    """Copying a template schedule meant replaying its `created_time`
+    into a create request, and create has returned HTTP 500 on every
+    attempt against a real account:
+
+        {"errorType": "AspenError.InternalError",
+         "errorMessage": "Internal error"}
+
+    A server crash rather than a validation error, which fits a value
+    the server expected to assign itself.
+
+    The other two candidates were ruled out rather than guessed away.
+    `initiator` is not required -- @DaRealGuGu's working, server-stored
+    schedules do not carry it. And `is_smart_clean_fav`, which the
+    server sends and this project does not model, does not appear
+    anywhere in the iRobot APK: the server added it without its own app
+    knowing, so its absence cannot plausibly crash the server.
+    """
+
+    _TEMPLATE = {"household_schedules": [{
+        "household_schedule_id": "HS-1",
+        "schedules": [{"schedule_id": "S-1", "options": {
+            "enabled": True, "robot_id": "ROBOT", "frequency": "WEEKLY",
+            "created_time": "2026-08-01T18:15:09.211030+00:00",
+            "start": {"day": [6], "hour": 15, "min": 45}}}],
+    }]}
+
+    def _run(self, capsys=None):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_schedules_raw.return_value = self._TEMPLATE
+        robot.create_schedules.return_value = {"household_schedule_id": "NEW"}
+
+        with patch.object(verify_writes, "confirm", return_value=False):
+            asyncio.run(verify_writes._create_and_delete_schedule(
+                robot, SimpleNamespace(household_id=None, schedule_name="t")
+            ))
+        return robot
+
+    def test_created_time_is_not_replayed(self):
+        robot = self._run()
+
+        sent = robot.create_schedules.await_args.args[1][0]
+        assert sent.created_time is None
+        assert "created_time" not in sent.to_json()
+
+    def test_everything_else_from_the_template_survives(self):
+        """Dropping one field must not turn this into a schedule built
+        from scratch -- that shape got its own HTTP 500 earlier, because
+        a schedule with no commands says nothing about what to clean."""
+        robot = self._run()
+
+        sent = robot.create_schedules.await_args.args[1][0].to_json()
+        assert sent["robot_id"] == "ROBOT"
+        assert sent["frequency"] == "WEEKLY"
+        assert sent["start"]["day"] == [6]
+        assert sent["name"] == "t"
+        assert sent["enabled"] is False
+
+    def test_the_omission_is_printed(self, capsys):
+        """Three rounds on this check have ended with a status code and
+        no way to tell what was sent. If this run still fails, the next
+        reader must be able to see what was left out."""
+        self._run()
+
+        out = capsys.readouterr().out
+        assert "deliberately NOT sent" in out
+        assert "created_time" in out
+        assert "2026-08-01T18:15:09.211030+00:00" in out
+
+
+class TestTheDropReportIsAccurate:
+    """Found in the b8 bug hunt. A template with no `created_time` still
+    printed "deliberately NOT sent: created_time = None", claiming an
+    omission that never happened.
+
+    This output exists so that a failing run stays readable without
+    another round trip to the tester. A line that misdescribes what was
+    sent defeats that.
+    """
+
+    def _run(self, options):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH"
+        robot.get_schedules_raw.return_value = {"household_schedules": [{
+            "household_schedule_id": "HS",
+            "schedules": [{"schedule_id": "S", "options": options}],
+        }]}
+        robot.create_schedules.return_value = {}
+        with patch.object(verify_writes, "confirm", return_value=False):
+            asyncio.run(verify_writes._create_and_delete_schedule(
+                robot, SimpleNamespace(household_id=None, schedule_name="t")
+            ))
+
+    def test_a_real_drop_is_named_with_its_value(self, capsys):
+        self._run({"enabled": True, "created_time": "2026-08-01T18:15:09Z"})
+
+        out = capsys.readouterr().out
+        assert "deliberately NOT sent" in out
+        assert "2026-08-01T18:15:09Z" in out
+
+    def test_nothing_to_drop_is_not_reported_as_a_drop(self, capsys):
+        self._run({"enabled": True, "frequency": "WEEKLY"})
+
+        out = capsys.readouterr().out
+        assert "deliberately NOT sent" not in out
+        assert "no server-assigned fields to drop" in out
+
+
+class TestTheCleanScoreCheckShowsWhatItGuessed:
+    """The endpoint and its model chain are confirmed from Kotlin; the
+    request body is not. The app calls it through
+    fetchCleanScoreDataForMap(), so the body sits behind the native
+    boundary exactly as /v1/time-estimates did -- and there the answer
+    turned out to be a single `{"robot_id": ...}`.
+
+    So the check prints the body it sends. A rejection naming a field
+    would teach more than a success, and either beats a bare status
+    code: three field rounds have already ended that way.
+    """
+
+    def _run(self, maps, response=None, effect=None):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _clean_score
+
+        robot = AsyncMock()
+        robot.get_active_map_versions.return_value = maps
+        if effect is not None:
+            robot.get_clean_score_raw = AsyncMock(side_effect=effect)
+        else:
+            robot.get_clean_score_raw.return_value = response
+        result = asyncio.run(_clean_score(robot, SimpleNamespace()))
+        return result, robot
+
+    _MAPS = [{"p2map_id": "MAP-1", "name": "Ground floor"}]
+
+    def test_the_request_is_printed(self, capsys):
+        self._run(self._MAPS, response={"clean_scores": []})
+
+        assert "clean-score?p2map_id=MAP-1" in capsys.readouterr().out
+
+    def test_the_raw_response_is_printed(self, capsys):
+        # The CONFIRMED wire shape -- snake_case, read as literals out
+        # of the app's own response parser. The Kotlin side is
+        # camelCase, and writing those names here would repeat the
+        # confusion that once produced 21 wrong wire keys.
+        self._run(self._MAPS, response={"clean_scores": [
+            {"p2map_id": "MAP-1", "regions": [
+                {"region_id": "13", "clean_score": 0.82,
+                 "updated_ts": 1785600000},
+            ]},
+        ]})
+
+        out = capsys.readouterr().out
+        assert "clean_score" in out
+        assert "0.82" in out
+        # Parsed alongside the raw, so a mismatch between the confirmed
+        # keys and what the server actually sends shows up in the same
+        # run rather than a field round later.
+        assert "1 room score(s)" in out
+        assert "region 13: 0.82" in out
+
+    def test_a_rejection_carries_the_servers_words(self, capsys):
+        from roombapy_prime.rest_client import RestError
+
+        result, _ = self._run(self._MAPS, effect=RestError(
+            "HTTP 400", status=400,
+            raw_response='{"message":"p2map_id is not a valid field"}',
+        ))
+
+        assert "p2map_id is not a valid field" in capsys.readouterr().out
+        # Every map rejected is not a pass: the check did not answer its
+        # own question.
+        from roombapy_prime_tools.verify_writes import NoResult
+        assert isinstance(result, NoResult)
+
+    def test_a_robot_with_no_maps_is_not_a_failure(self):
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result, robot = self._run([])
+
+        assert isinstance(result, NoResult)
+        robot.get_clean_score_raw.assert_not_awaited()
+
+
+class TestTheCleanScoreParserIsCheckedAgainstTheRaw:
+    def test_a_parser_disagreement_is_surfaced(self, capsys):
+        """The keys come from the app's own response parser, so a
+        mismatch means either the server changed or the confirmation was
+        misread. Both are worth seeing immediately."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _clean_score
+
+        robot = AsyncMock()
+        robot.get_active_map_versions.return_value = [{"p2map_id": "MAP-1"}]
+        robot.get_clean_score_raw.return_value = {"clean_scores": [
+            {"p2map_id": "MAP-1", "regions": ["unparsable", "also-not"]},
+        ]}
+
+        asyncio.run(_clean_score(robot, SimpleNamespace()))
+
+        assert "DISAGREEMENT" in capsys.readouterr().out
+
+
+class TestTheAutomationsCheckSettlesADeadEndpoint:
+    """`/v1/user/automations` is a dead constant in the app: one
+    reference, a static initialiser, no reader -- the same signature as
+    two other strings that turned out to be dead. A second Home
+    Assistant integration calls it, but swallows the error and never
+    reads the result -- so that is not evidence it answers either.
+
+    So a refusal is as valuable as a success here: it closes the
+    question instead of leaving it open, and the check must report it
+    that way rather than as a failure of the tester's account.
+    """
+
+    def _run(self, response=None, effect=None):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _automations
+
+        robot = AsyncMock()
+        if effect is not None:
+            robot.get_automations_raw = AsyncMock(side_effect=effect)
+        else:
+            robot.get_automations_raw.return_value = response
+        return asyncio.run(_automations(robot, SimpleNamespace()))
+
+    def test_a_live_endpoint_is_parsed(self, capsys):
+        result = self._run([{
+            "automation_id": "A1", "automation_type": "GEOFENCE",
+            "enabled": True, "favorite_id": "F-1",
+            "time_window": {"hour": 14, "minute": 30},
+            "service_details": {"service_id": "ecobee"},
+        }])
+
+        assert result == [{"automations": 1}]
+        out = capsys.readouterr().out
+        assert "A1" in out and "GEOFENCE" in out
+
+    def test_a_refusal_is_inconclusive_not_a_failure(self):
+        from roombapy_prime.rest_client import RestError
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result = self._run(effect=RestError(
+            "HTTP 404", status=404, raw_response='{"message":"not found"}'))
+
+        assert isinstance(result, NoResult)
+
+    def test_the_servers_words_survive_a_refusal(self, capsys):
+        from roombapy_prime.rest_client import RestError
+
+        self._run(effect=RestError(
+            "HTTP 403", status=403, raw_response='{"message":"forbidden"}'))
+
+        assert "forbidden" in capsys.readouterr().out
+
+    def test_an_empty_answer_is_not_reported_as_a_pass(self):
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        assert isinstance(self._run([]), NoResult)
+
+
+class TestEveryReadCheckFollowsTheProcedure:
+    """The rules the schedules saga cost three field rounds to learn.
+
+    Each was paid for once and must not have to be paid for again by
+    the next endpoint someone adds:
+
+      1. print the RAW response before this project touches it
+      2. count the raw independently and say so when the two disagree
+      3. an empty or unreadable answer is not a passing check
+
+    Rule 2 is the one that keeps getting missed. `automations` shipped
+    without it in this very release: an unrecognised shape would have
+    parsed to nothing and been reported as "possibly an empty account",
+    which is exactly the b5 bug wearing new clothes.
+
+    Behavioural, not a source grep -- a grep tracks where code lives
+    rather than what it does, and one in this file already broke for
+    that reason.
+    """
+
+    def _feed(self, name, robot_setup):
+        import asyncio
+        import contextlib
+        import io
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot_setup(robot)
+        runner = next(c.runner for c in verify_writes.CHECKS if c.name == name)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            result = asyncio.run(runner(robot, SimpleNamespace(household_id=None)))
+        return result, buffer.getvalue()
+
+    #: name -> how to make the robot answer with objects the parser
+    #: cannot read. Each entry is one endpoint's "the server sent
+    #: something, we understood none of it" case.
+    UNREADABLE = {
+        "schedules": lambda r: (
+            setattr(r, "get_user_households", _returns([{"household_id": "HH"}])),
+            setattr(r, "get_schedules_raw", _returns(
+                {"household_schedules": [{"schedules": ["unparsable"]}]})),
+        ),
+        "clean_score": lambda r: (
+            setattr(r, "get_active_map_versions", _returns([{"p2map_id": "MAP-1"}])),
+            setattr(r, "get_clean_score_raw", _returns(
+                {"clean_scores": [{"regions": ["unparsable"]}]})),
+        ),
+        "automations": lambda r: (
+            setattr(r, "get_automations_raw", _returns(["unparsable", "also-not"])),
+        ),
+    }
+
+    @pytest.mark.parametrize("name", sorted(UNREADABLE))
+    def test_an_unreadable_response_is_never_reported_as_empty(self, name):
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result, out = self._feed(name, self.UNREADABLE[name])
+
+        assert "DISAGREEMENT" in out, (
+            f"{name} parsed nothing out of a non-empty response and said nothing "
+            "about it -- that is the b5 bug: a derived zero hiding a parser miss"
+        )
+        assert not isinstance(result, list) or isinstance(result, NoResult) or result, (
+            f"{name} reported a clean pass for a response it could not read"
+        )
+
+    @pytest.mark.parametrize("name", sorted(UNREADABLE))
+    def test_the_raw_response_reaches_the_output(self, name):
+        """Before any parsing. A parsed count cannot distinguish "the
+        server sent nothing" from "we failed to read what it sent"."""
+        _, out = self._feed(name, self.UNREADABLE[name])
+
+        assert "unparsable" in out, (
+            f"{name} did not print what the server actually sent"
+        )
+
+
+def _returns(value):
+    from unittest.mock import AsyncMock
+
+    return AsyncMock(return_value=value)

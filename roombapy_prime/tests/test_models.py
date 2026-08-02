@@ -3731,3 +3731,95 @@ class TestSchedulesResponseSurvivesAnUnexpectedShape:
 
     def test_an_error_envelope_yields_nothing(self):
         assert self._parse({"error": "forbidden"}).household_schedules == []
+
+
+class TestDockStatusTankLevel:
+    """Not every dock reports it, and that is the whole point.
+
+    Two captures: fwVer 24 / dock.cap.pd 3 sends `tankLvl: 100`; fwVer
+    20 / pd 2 never sends the key, not even while pad washing fails for
+    lack of water. Two variables differ at once, and the APK cannot
+    settle which governs -- pd/pw/pwo are not literals, and
+    DockCapability is purely categorical with no notion of levels.
+
+    So the field is modelled as optional and consumers gate on its
+    presence.
+    """
+
+    def _dock(self, raw):
+        from roombapy_prime.models.robot_info import DockStatus
+
+        return DockStatus.from_json(raw)
+
+    def test_a_dock_that_reports_it(self):
+        assert self._dock({"tankLvl": 100, "error": 0}).tank_lvl == 100
+
+    def test_a_dock_that_does_not_stays_none(self):
+        """None rather than 0: a dock that never mentions the tank has
+        not told us it is empty."""
+        assert self._dock({"error": 0, "fwVer": "20"}).tank_lvl is None
+
+    def test_zero_is_kept_as_zero(self):
+        assert self._dock({"tankLvl": 0}).tank_lvl == 0
+
+
+class TestCleanScoreResponse:
+    """Wire keys confirmed as literals in the app's own response parser.
+    The wire is snake_case; the Kotlin side is camelCase, and writing
+    the Kotlin names as wire keys is the mistake that once cost this
+    library 21 of them -- including, briefly, in this endpoint's own
+    docstring.
+    """
+
+    _RAW = {
+        "clean_score_ranges": [0.0, 0.33, 0.66],
+        "clean_scores": [{
+            "p2map_id": "MAP-1",
+            "active_p2mapv_id": "MAPV-1",
+            "user_p2mapv_id": "260801T112421.581",
+            "smart_clean_id": "SC-1",
+            "mission_last_processed": {"missionId": "01KY"},
+            "regions": [
+                {"region_id": "13", "clean_score": 0.87,
+                 "updated_ts": 1784976894, "last_updated_by": "robot",
+                 "smart_clean_prefs": "auto"},
+                {"region_id": "10", "clean_score": 0.12, "updated_ts": 1784976000},
+            ],
+        }],
+    }
+
+    def _parse(self, data):
+        from roombapy_prime.models import CleanScoreResponse
+
+        return CleanScoreResponse.from_json(data)
+
+    def test_a_full_response_parses(self):
+        result = self._parse(self._RAW)
+
+        assert result.clean_score_ranges == [0.0, 0.33, 0.66]
+        data = result.clean_scores[0]
+        assert data.p2map_id == "MAP-1"
+        assert [r.region_id for r in data.regions] == ["13", "10"]
+        assert data.regions[0].clean_score == 0.87
+        assert data.regions[0].updated_ts == 1784976894
+
+    def test_a_score_of_zero_is_kept(self):
+        """0.0 is a real reading -- the dirtiest a room can be. Anything
+        that treats it as falsy loses exactly the value that matters."""
+        result = self._parse({"clean_scores": [{"regions": [
+            {"region_id": "1", "clean_score": 0.0},
+        ]}]})
+
+        assert result.clean_scores[0].regions[0].clean_score == 0.0
+
+    def test_mission_last_processed_stays_raw(self):
+        """Its own wire keys were not read out at this call site, and
+        inventing them is how wire keys go wrong."""
+        result = self._parse(self._RAW)
+
+        assert result.clean_scores[0].mission_last_processed == {"missionId": "01KY"}
+
+    def test_an_unexpected_shape_yields_nothing_rather_than_raising(self):
+        for data in ([], "nope", None, {"clean_scores": {"x": 1}},
+                     {"clean_scores": ["not-a-dict"]}):
+            assert self._parse(data).clean_scores == []

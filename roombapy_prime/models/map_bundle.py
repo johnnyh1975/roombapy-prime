@@ -780,3 +780,128 @@ def parse_map_bundle(data: bytes) -> dict[str, Any]:
     return result
 
 
+
+
+@dataclass(frozen=True)
+class CleanScoreRegion:
+    """One room's cleanliness value.
+
+    `clean_score` is a float between CleanScoreConst.MIN_CLEAN_SCORE
+    (0.0) and MAX_CLEAN_SCORE (1.0), so directly a fraction.
+
+    ACCUMULATED STATE, NOT A MISSION RESULT. The value hangs off a
+    region and is carried forward; CleanScoreData.mission_last_processed
+    only says how far it has been advanced. This is the data behind the
+    app's Smart Clean.
+    """
+
+    region_id: str | None = None
+    clean_score: float | None = None
+    updated_ts: int | None = None
+    last_updated_by: str | None = None
+    smart_clean_prefs: str | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CleanScoreRegion:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            region_id=data.get("region_id"),
+            clean_score=data.get("clean_score"),
+            updated_ts=data.get("updated_ts"),
+            last_updated_by=data.get("last_updated_by"),
+            smart_clean_prefs=data.get("smart_clean_prefs"),
+        )
+
+
+@dataclass(frozen=True)
+class CleanScoreData:
+    """The per-room scores for one map."""
+
+    p2map_id: str | None = None
+    active_p2mapv_id: str | None = None
+    user_p2mapv_id: str | None = None
+    smart_clean_id: str | None = None
+    mission_last_processed: dict[str, Any] | None = None
+    regions: list[CleanScoreRegion] = field(default_factory=list)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CleanScoreData:
+        if not isinstance(data, dict):
+            return cls()
+        raw = data.get("regions")
+        return cls(
+            p2map_id=data.get("p2map_id"),
+            active_p2mapv_id=data.get("active_p2mapv_id"),
+            user_p2mapv_id=data.get("user_p2mapv_id"),
+            smart_clean_id=data.get("smart_clean_id"),
+            # Left raw: MissionInfo's own wire keys were not read out at
+            # this call site, and inventing them is how wire keys go
+            # wrong. Whoever needs it can read the dict.
+            mission_last_processed=data.get("mission_last_processed"),
+            regions=[
+                CleanScoreRegion.from_json(entry)
+                for entry in (raw if isinstance(raw, list) else [])
+                if isinstance(entry, dict)
+            ],
+        )
+
+
+@dataclass(frozen=True)
+class CleanScoreResponse:
+    """POST /v1/p2maps/clean-score.
+
+    WIRE KEYS CONFIRMED (APK, 2 August 2026) as literals in
+    libdataModule.so, read out of the app's own response parser
+    (jsonToCleanScoreData) rather than from Kotlin property names. The
+    wire is snake_case; the Kotlin side is camelCase (cleanScoreData,
+    cleanScoreRegions, regionId, updatedTs). Confusing the two is the
+    mistake that once produced 21 wrong wire keys in this library, and
+    an earlier draft of this very endpoint's docstring made it again.
+
+    Ten of the thirteen keys are confirmed as literals here.
+    `p2map_id`, `active_p2mapv_id` and `regions` resolve through shared
+    serialization constants instead of their own literals at this call
+    site, so their spelling is inherited from confirmed uses elsewhere.
+
+    ONE FIELD IS DELIBERATELY NOT MODELLED: `profile`, on the
+    clean_scores[] level. a-mavrides/roomba_v4 reads it and derives the
+    cleaning profile from it ("deep" / "smart" / "normal"), which
+    matches the `params: {"profile": "deep"}` seen inside real schedule
+    commands -- so it very likely exists.
+
+    But it is not among the keys confirmed as literals in the app's
+    response parser, and that integration falls back to "normal" when
+    the key is missing, so its code cannot distinguish "the server sends
+    this" from "someone assumed it". A key read by one consumer with a
+    default is weaker evidence than a key read out of the vendor's own
+    parser, and mixing the two in one model would erase that difference.
+
+    The check that calls this prints the raw response, so a real
+    `profile` shows up the first time anyone runs it. Then it can be
+    added with the same footing as the rest.
+    """
+
+    clean_score_ranges: list[float] = field(default_factory=list)
+    clean_scores: list[CleanScoreData] = field(default_factory=list)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CleanScoreResponse:
+        """Returns an empty response for anything unexpected rather than
+        raising -- a parser's job on a shape it did not expect is to
+        report nothing, not to take the caller down with it."""
+        if not isinstance(data, dict):
+            return cls()
+        ranges = data.get("clean_score_ranges")
+        scores = data.get("clean_scores")
+        return cls(
+            clean_score_ranges=[
+                value for value in (ranges if isinstance(ranges, list) else [])
+                if isinstance(value, (int, float))
+            ],
+            clean_scores=[
+                CleanScoreData.from_json(entry)
+                for entry in (scores if isinstance(scores, list) else [])
+                if isinstance(entry, dict)
+            ],
+        )
