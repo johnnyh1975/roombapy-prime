@@ -799,7 +799,23 @@ class CleanScoreRegion:
     clean_score: float | None = None
     updated_ts: int | None = None
     last_updated_by: str | None = None
-    smart_clean_prefs: str | None = None
+
+    #: A DICT, not the string the model first declared. Live response
+    #: (@DaRealGuGu, b8):
+    #:   {"carpetBoost": false, "operatingMode": 6, "suctionLevel": 1,
+    #:    "swScrub": 0, "twoPass": false}
+    #: The same per-region parameter block that region cleaning
+    #: commands carry. Kept raw: nothing was read out at this call site
+    #: to say the nesting matches the command models, and assuming it
+    #: does is how wire keys go wrong.
+    smart_clean_prefs: dict[str, Any] | None = None
+
+    #: FIELDS THE APK ANALYSIS DID NOT LIST, seen in the first real
+    #: response. Reason enough to keep reading raw output rather than
+    #: trusting a confirmed key list to be exhaustive.
+    high_traffic_enum: str | None = None
+    mission_last_cleaned: dict[str, Any] | None = None
+    mission_last_unfinished: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleanScoreRegion:
@@ -811,6 +827,9 @@ class CleanScoreRegion:
             updated_ts=data.get("updated_ts"),
             last_updated_by=data.get("last_updated_by"),
             smart_clean_prefs=data.get("smart_clean_prefs"),
+            high_traffic_enum=data.get("high_traffic_enum"),
+            mission_last_cleaned=data.get("mission_last_cleaned"),
+            mission_last_unfinished=data.get("mission_last_unfinished"),
         )
 
 
@@ -864,22 +883,29 @@ class CleanScoreResponse:
     serialization constants instead of their own literals at this call
     site, so their spelling is inherited from confirmed uses elsewhere.
 
-    ONE FIELD IS DELIBERATELY NOT MODELLED: `profile`, on the
-    clean_scores[] level. a-mavrides/roomba_v4 reads it and derives the
-    cleaning profile from it ("deep" / "smart" / "normal"), which
-    matches the `params: {"profile": "deep"}` seen inside real schedule
-    commands -- so it very likely exists.
+    CONFIRMED LIVE (@DaRealGuGu, b8) -- the endpoint answers, the GET
+    with `?p2map_id=` is right, and four rooms came back parsed exactly
+    as counted.
 
-    But it is not among the keys confirmed as literals in the app's
-    response parser, and that integration falls back to "normal" when
-    the key is missing, so its code cannot distinguish "the server sends
-    this" from "someone assumed it". A key read by one consumer with a
-    default is weaker evidence than a key read out of the vendor's own
-    parser, and mixing the two in one model would erase that difference.
+    THE REAL RESPONSE CARRIED THREE FIELDS THE APK ANALYSIS DID NOT
+    LIST: `high_traffic_enum`, `mission_last_cleaned` and
+    `mission_last_unfinished`, plus `smart_clean_prefs` as a DICT where
+    the Kotlin side suggested a string. So a key list confirmed from a
+    vendor's own parser is a floor, not a ceiling -- which is the
+    argument for printing raw responses even once a model exists.
 
-    The check that calls this prints the raw response, so a real
-    `profile` shows up the first time anyone runs it. Then it can be
-    added with the same footing as the rest.
+    AND `profile` WAS NOT THERE. a-mavrides/roomba_v4 reads it with a
+    "normal" fallback, so its code could not tell "the server sends
+    this" from "someone assumed it". It was deliberately left
+    unmodelled on exactly that reasoning, and the first real response
+    settles it: absent.
+
+    OPEN: what a score of 0.0 means. All four of his rooms read 0.0,
+    with `last_updated_by` values of "batch_decay_skipped" and
+    "rt_mission" -- so there is decay logic behind it. Whether 0.0 is
+    spotless or unscored is not decidable from one account whose rooms
+    all read the same, and a sensor showing 0% everywhere would need
+    that answer first.
     """
 
     clean_score_ranges: list[float] = field(default_factory=list)

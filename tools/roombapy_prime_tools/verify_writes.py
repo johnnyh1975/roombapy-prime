@@ -789,8 +789,15 @@ async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> A
     # Printing it costs nothing and ends that class of round. Same
     # reasoning as the raw response in `schedules`: show the wire, do
     # not infer it.
-    print("   request body:")
-    print(_indent_json(options.to_json(), indent=5))
+    # THE ACTUAL BODY, wrapper included.
+    #
+    # This printed options.to_json() -- the inner object -- while
+    # create_schedules() wraps it. Four field rounds were spent staring
+    # at a payload that never went over the wire, in the one check whose
+    # purpose is to show what did. Printing the wrapper is what made the
+    # missing `options` level visible at all.
+    print("   request body (as sent):")
+    print(_indent_json({"schedules": [{"options": options.to_json()}]}, indent=5))
 
     created = await robot.create_schedules(household_id, [options])
     print(f"   created: {created}")

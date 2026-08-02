@@ -562,9 +562,48 @@ class PrimeRestClient:
         CONFIRMED (eighth session: CreateSchedulesRequest.<init> sets
         httpMethod = "POST" directly, androguard bytecode inspection --
         previously only assumed). Field structure also confirmed, see
-        models/schedules_dnd.py::ScheduleOptions."""
+        models/schedules_dnd.py::ScheduleOptions.
+
+        THE BODY NESTS EACH SCHEDULE, and getting that wrong is what
+        returned AspenError.InternalError on every attempt for four
+        field rounds.
+
+        CreateSchedulesRequest.getHttpBody() serialises a
+        ScheduleListUpdate whose entries are HouseholdScheduleUpdate
+        objects, built as `HouseholdScheduleUpdate(options, null)`. With
+        the @SerialName annotations from both $$serializers that is:
+
+            {"schedules": [{"options": {...}}]}
+
+        WITHOUT `schedule_id`, and that distinction was itself corrected
+        during the analysis. The constructor does receive null, so the
+        first reading was "sent explicitly as null". But both elements
+        are registered with isOptional=true and default null, and
+        CreateSchedulesRequest uses Json.Default -- no encodeDefaults --
+        so write$Self skips the field entirely. (P2MapsRequest sets
+        encodeDefaults=true; this one does not.)
+
+        Sending `"schedule_id": null` and omitting the key are not the
+        same thing to a server, and this library would have written the
+        null.
+
+        The top-level key was right all along. What was missing is the
+        `options` wrapper: this used to put the ScheduleOptions straight
+        into the array, so the server found `name`, `commands`,
+        `frequency` where it expected `{options, schedule_id}`. A
+        structural mismatch like that produces a 500 rather than a 400 --
+        which is exactly what came back, with no field named, four
+        times.
+
+        WHY UPDATE WAS NEVER AFFECTED: update_schedules() takes
+        HouseholdSchedule objects, and HouseholdSchedule.to_json()
+        already emits {schedule_id, options}. So toggling a schedule
+        worked in the field while creating one never did, from the same
+        module -- the two paths happened to disagree about a shape only
+        one of them had confirmed."""
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule"
-        return await self._request("POST", url, body={"schedules": [s.to_json() for s in schedules]})
+        body = {"schedules": [{"options": s.to_json()} for s in schedules]}
+        return await self._request("POST", url, body=body)
 
     async def update_schedules(
         self, household_id: str, household_schedule_id: str, schedules: list[HouseholdSchedule]

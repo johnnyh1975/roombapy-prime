@@ -3823,3 +3823,72 @@ class TestCleanScoreResponse:
         for data in ([], "nope", None, {"clean_scores": {"x": 1}},
                      {"clean_scores": ["not-a-dict"]}):
             assert self._parse(data).clean_scores == []
+
+
+class TestCleanScoreAgainstTheFirstRealResponse:
+    """The endpoint answered for the first time (@DaRealGuGu, b8), and
+    the response carried three fields the APK key list did not have --
+    plus one it did have with the wrong type.
+
+    A key list confirmed from the vendor's own parser is a floor, not a
+    ceiling. This test is the real payload, trimmed.
+    """
+
+    _REAL = {
+        "clean_score_ranges": [0.7],
+        "clean_scores": [{
+            "active_p2mapv_id": "260802T081336.871",
+            "p2map_id": "BLID-1785514071",
+            "smart_clean_id": "a93b5eb6-fc99-4356-a14a-84814b6bfdb4",
+            "mission_last_processed": {
+                "missionId": "01KZ1NMCAC5GAG47CX55JRN3VV",
+                "nMssn": 53, "startTime": 1785688895,
+            },
+            "regions": [{
+                "region_id": "10",
+                "clean_score": 0.0,
+                "high_traffic_enum": "normal",
+                "last_updated_by": "rt_mission",
+                "mission_last_cleaned": {"nMssn": 51, "startTime": 1785591912},
+                "mission_last_unfinished": {"nMssn": 53, "startTime": 1785688895},
+                "smart_clean_prefs": {
+                    "carpetBoost": False, "operatingMode": 6,
+                    "suctionLevel": 1, "swScrub": 0, "twoPass": False,
+                },
+                "updated_ts": 1785688964,
+            }],
+        }],
+    }
+
+    def _region(self):
+        from roombapy_prime.models import CleanScoreResponse
+
+        return CleanScoreResponse.from_json(self._REAL).clean_scores[0].regions[0]
+
+    def test_smart_clean_prefs_is_a_dict_not_a_string(self):
+        """The Kotlin side suggested a string; the server sends the same
+        per-region parameter block that cleaning commands carry."""
+        prefs = self._region().smart_clean_prefs
+
+        assert isinstance(prefs, dict)
+        assert prefs["operatingMode"] == 6
+
+    def test_the_fields_the_apk_list_did_not_have(self):
+        region = self._region()
+
+        assert region.high_traffic_enum == "normal"
+        assert region.mission_last_cleaned["nMssn"] == 51
+        assert region.mission_last_unfinished["nMssn"] == 53
+
+    def test_a_score_of_zero_survives(self):
+        """Every room on that account read 0.0. Whatever it turns out to
+        mean, a parser that drops it would hide the only value there
+        is."""
+        assert self._region().clean_score == 0.0
+
+    def test_profile_was_not_in_the_response(self):
+        """Another integration reads a `profile` key with a "normal"
+        fallback, so its code could not tell "the server sends this"
+        from "someone assumed it". It was left unmodelled on that
+        reasoning, and the first real response settles it."""
+        assert "profile" not in self._REAL["clean_scores"][0]

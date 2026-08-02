@@ -682,11 +682,24 @@ class TestTheCreateRequestBodyIsVisible:
             ))
 
         out = capsys.readouterr().out
-        assert "request body:" in out
-        # The fields a reader needs in order to judge the 500 must be in
-        # the printed body, not merely in the object that was sent.
-        assert "created_time" in out
+        # THE ENVELOPE, not just the inner object. This printed
+        # options.to_json() while create_schedules() wraps it as
+        # {"schedules": [...]}, so three field rounds went on a payload
+        # that never crossed the wire -- in the check that exists to
+        # show what did.
+        assert "request body (as sent):" in out
+        # THE WRAPPER, not just the inner object. This printed
+        # options.to_json() while the client wraps each schedule as
+        # {"options": ..., "schedule_id": null} -- so four field rounds
+        # went on a payload that never crossed the wire, in the check
+        # that exists to show what did. Printing the wrapper is what
+        # made the missing `options` level visible.
+        assert '"schedules"' in out
+        assert '"options"' in out
         assert "robot_id" in out
+        # Omitted, not sent as null: both fields are optional with
+        # default null and the app serialises without encodeDefaults.
+        assert '"schedule_id"' not in out
 
 
 class TestTheCreateCopyDropsServerAssignedFields:

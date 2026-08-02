@@ -480,9 +480,25 @@ async def test_delete_schedule_url() -> None:
 
 @pytest.mark.asyncio
 async def test_create_schedules_posts_body() -> None:
-    """CORRECTED (session 46) -- real key is "robot_id" (confirmed via
-    ScheduleOptions$$serializer's <clinit>), not "assetId" as
-    previously guessed."""
+    """The shape that four field rounds of HTTP 500 came down to.
+
+    CreateSchedulesRequest.getHttpBody() serialises a ScheduleListUpdate
+    of HouseholdScheduleUpdate objects, built as
+    `HouseholdScheduleUpdate(options, null)`. So each entry is
+    {"options": {...}, "schedule_id": null} -- this test used to assert
+    the ScheduleOptions sitting in the array directly, which is what the
+    client sent and what the server rejected without ever naming a
+    field.
+
+    The top-level key was never the problem, and `schedule_id` is
+    OMITTED rather than sent as null: both elements are optional with
+    default null, and CreateSchedulesRequest uses Json.Default without
+    encodeDefaults, so write$Self skips it. Sending an explicit null and
+    leaving the key out are not the same thing to a server.
+
+    (Earlier correction still holds: the inner key is "robot_id",
+    confirmed via ScheduleOptions$$serializer's <clinit>, not
+    "assetId".)"""
     session = _FakeSession()
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
@@ -495,7 +511,11 @@ async def test_create_schedules_posts_body() -> None:
     assert call.method == "POST"
     assert call.url == f"{HTTP_BASE_AUTH}/v1/households/hh1/settings/schedule"
     assert call.body_json == {
-        "schedules": [{"robot_id": "asset1", "name": "Morning", "frequency": "WEEKLY"}]
+        "schedules": [{
+            "options": {
+                "robot_id": "asset1", "name": "Morning", "frequency": "WEEKLY",
+            },
+        }]
     }
 
 
@@ -1159,3 +1179,35 @@ class TestEditMapResponseType:
             bodies.append(self._body(client)["edit_cmd"])
 
         assert bodies[0] == bodies[1] == bodies[2]
+
+
+@pytest.mark.asyncio
+async def test_update_schedules_was_never_affected_by_the_create_bug() -> None:
+    """The two paths disagreed about a shape only one of them had
+    confirmed, in the same module.
+
+    create_schedules() takes ScheduleOptions and put them straight into
+    the array -- wrong. update_schedules() takes HouseholdSchedule, and
+    HouseholdSchedule.to_json() already emits {schedule_id, options} --
+    right, by accident of which type each signature happened to take.
+
+    That is why toggling a schedule worked in the field for months
+    while creating one never did. Worth a test of its own so a future
+    refactor cannot quietly align them on the wrong shape.
+    """
+    from roombapy_prime.models.schedules_dnd import HouseholdSchedule
+
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.update_schedules("hh1", "hs1", [
+        HouseholdSchedule.from_json(
+            {"schedule_id": "s1", "options": {"name": "Morning", "enabled": False}}
+        )
+    ])
+
+    entry = session.calls[0].body_json["schedules"][0]
+    assert set(entry) == {"schedule_id", "options"}
+    assert entry["schedule_id"] == "s1"
+    assert entry["options"]["enabled"] is False

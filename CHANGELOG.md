@@ -8,6 +8,28 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b9] - 2026-08-02
+
+### Fixed
+- **`create_schedules` sent the wrong body shape**, which is the HTTP 500 that blocked schedule
+  creation for four field rounds. Each entry must be `{"options": {...}}`; the ScheduleOptions were
+  going straight into the array. `schedule_id` is omitted rather than sent as null -- the app
+  serialises without `encodeDefaults`. Confirmed from `CreateSchedulesRequest.getHttpBody()` and
+  both `$$serializer` `<clinit>` blocks.
+- **`schedule_create_delete` printed the inner object, not the body it sent.** Four rounds were
+  spent reading a payload that never crossed the wire, in the check that exists to show what did.
+
+### Changed
+- **Clean score model corrected against the first real response**: `smart_clean_prefs` is a dict,
+  not a string, and three fields the confirmed key list did not have are now modelled
+  (`high_traffic_enum`, `mission_last_cleaned`, `mission_last_unfinished`). A key list confirmed
+  from the vendor's parser is a floor, not a ceiling.
+
+### Confirmed in the field
+- `GET /v1/p2maps/clean-score?p2map_id=<id>` works.
+- `/v1/user/automations` answers with an empty array rather than a 404 -- alive server-side despite
+  being a dead constant in the app.
+
 ## [0.2.0b8] - 2026-08-02
 
 ### Changed
