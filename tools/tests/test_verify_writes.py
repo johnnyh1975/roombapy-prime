@@ -609,3 +609,79 @@ class TestAnUnexpectedResponseShapeIsNotFatal:
     def test_the_listing_check_survives_every_shape(self):
         for raw in self.SHAPES:
             self._run("_list_schedules", raw)
+
+
+class TestAFailureShowsWhatTheServerSaid:
+    """@chairstacker's HTTP 500 arrived with no explanation, and the
+    explanation was in the exception object all along.
+
+    RestError carries the response body in `raw_response`; the report
+    printed only `str(exc)`, which is "HTTP 500 from <url>". A whole
+    field round produced a status code and nothing else.
+
+    Same shape as b5 and b6: the information existed, the reporting
+    layer did not show it.
+    """
+
+    def test_the_response_body_is_included(self):
+        from roombapy_prime.rest_client import RestError
+        from roombapy_prime_tools.verify_writes import _failure_detail
+
+        detail = _failure_detail(RestError(
+            "HTTP 500 from https://example/settings/schedule",
+            status=500,
+            raw_response='{"message":"created_time is not allowed"}',
+        ))
+
+        assert "HTTP 500" in detail
+        assert "created_time is not allowed" in detail
+
+    def test_an_exception_without_a_body_still_reports_cleanly(self):
+        from roombapy_prime_tools.verify_writes import _failure_detail
+
+        assert _failure_detail(RuntimeError("boom")) == "RuntimeError: boom"
+
+    def test_an_empty_body_adds_nothing(self):
+        from roombapy_prime.rest_client import RestError
+        from roombapy_prime_tools.verify_writes import _failure_detail
+
+        detail = _failure_detail(RestError("HTTP 500", status=500, raw_response=""))
+
+        assert "server said" not in detail
+
+
+class TestTheCreateRequestBodyIsVisible:
+    """Two candidate causes for the 500 were arguable from the code
+    alone -- a copied `created_time`, which the server assigns, and
+    region commands missing `initiator`, which the app adds at send time
+    and stored schedules do not carry. Neither is decidable without
+    seeing the body, so the body gets printed."""
+
+    def test_the_body_is_printed_before_the_request(self, capsys):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_schedules_raw.return_value = {"household_schedules": [{
+            "household_schedule_id": "HS-1",
+            "schedules": [{"schedule_id": "S-1", "options": {
+                "enabled": True, "robot_id": "ROBOT", "created_time": 1700000000,
+                "frequency": "WEEKLY", "start": {"day": [1], "hour": 9, "min": 0}}}],
+        }]}
+        robot.create_schedules.return_value = {"household_schedule_id": "NEW"}
+
+        with patch.object(verify_writes, "confirm", return_value=False):
+            asyncio.run(verify_writes._create_and_delete_schedule(
+                robot, SimpleNamespace(household_id=None, schedule_name="t")
+            ))
+
+        out = capsys.readouterr().out
+        assert "request body:" in out
+        # The fields a reader needs in order to judge the 500 must be in
+        # the printed body, not merely in the object that was sent.
+        assert "created_time" in out
+        assert "robot_id" in out

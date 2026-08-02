@@ -8,6 +8,20 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b7] - 2026-08-01
+
+### Fixed
+- **A failing check hid the server's explanation.** `RestError` carries the response body in
+  `raw_response`; the report printed only `str(exc)`, which is `HTTP 500 from <url>`. A field round
+  that finally reached the server produced a status code and nothing else. Third release running in
+  which the fault was the reporting layer rather than the code doing the work.
+
+### Added
+- **`schedule_create_delete` prints the request body before sending it.** Two causes for the 500 are
+  arguable from the source and not distinguishable without the payload: a copied `created_time`,
+  which the server assigns, and copied region `commands` missing `initiator`, which the app adds at
+  send time. Guessing between them is not how this project works.
+
 ## [0.2.0b6] - 2026-08-01
 
 ### Fixed

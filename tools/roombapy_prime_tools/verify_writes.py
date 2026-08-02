@@ -75,6 +75,25 @@ from ._cli import (
 )
 
 
+def _failure_detail(exc: BaseException) -> str:
+    """The exception, plus whatever the SERVER said about it.
+
+    RestError already carries the response body in `raw_response`, and
+    this layer threw it away: the message is only "HTTP 500 from <url>",
+    which is what a tester pasted back after a failed run.
+
+    An HTTP 500 with no body is nearly useless -- and the body was
+    sitting in the exception object the whole time. Same shape as the
+    two bugs in b5/b6: the information existed, the reporting layer did
+    not show it.
+    """
+    detail = f"{type(exc).__name__}: {exc}"
+    body = getattr(exc, "raw_response", None)
+    if body:
+        detail += f"\n      server said: {str(body)[:800]}"
+    return detail
+
+
 @dataclass(frozen=True)
 class NoResult:
     """A check that ran cleanly and produced no evidence either way.
@@ -542,6 +561,23 @@ async def _create_and_delete_schedule(robot: Any, args: argparse.Namespace) -> A
     options = replace(template, name=args.schedule_name, enabled=False)
     print("   copied from an existing schedule, disabled, renamed")
     print(f"   creating a DISABLED schedule named {args.schedule_name!r}")
+
+    # THE BODY THAT IS ABOUT TO GO OUT, printed before it goes.
+    #
+    # @chairstacker's run got HTTP 500 here, and neither he nor this
+    # project could say what was in the request -- so the round produced
+    # a status code and nothing else. Two candidates were arguable from
+    # the code alone (a copied `created_time`, which the server assigns,
+    # and region commands missing `initiator`, which the app adds at
+    # send time and stored schedules do not carry) and there was no way
+    # to tell them apart without guessing.
+    #
+    # Printing it costs nothing and ends that class of round. Same
+    # reasoning as the raw response in `schedules`: show the wire, do
+    # not infer it.
+    print("   request body:")
+    print(_indent_json(options.to_json(), indent=5))
+
     created = await robot.create_schedules(household_id, [options])
     print(f"   created: {created}")
 
@@ -726,7 +762,7 @@ def main() -> None:
                 # too. Two of @DaRealGuGu's runs ended that way, so the
                 # actual finding -- HTTP 400 and HTTP 500 from two
                 # endpoints -- arrived buried under our own crash.
-                report.add(check.name, "FAILED", f"{type(exc).__name__}: {exc}")
+                report.add(check.name, "FAILED", _failure_detail(exc))
                 return
             if result is None:
                 report.add(check.name, "SKIPPED", "nothing was sent")
