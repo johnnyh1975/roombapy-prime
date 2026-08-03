@@ -8,6 +8,23 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b10] - 2026-08-02
+
+### Added
+- **`dnd_read`, a read-only quiet-hours check.** Nobody has ever seen a populated DND response --
+  three accounts all return empty because none has quiet hours set -- so the model has four fields
+  with no example behind any of them and the write body was never investigated. One run from an
+  account that has them configured unblocks the feature. Counts populated fields independently of
+  the parser, because the write path resends DND from the parsed model and would drop an unmodelled
+  field.
+
+### Fixed
+- **A `null` inside `commands` crashed `ScheduleOptions.from_json()`.** A bare comprehension called
+  `.get()` on every entry, so one malformed element raised `AttributeError` from inside the parser.
+  Everything schedule-shaped read this -- Home Assistant's calendar and every schedule switch --
+  so a single bad entry would have taken all of them down at once. Same shape as the b6
+  `SchedulesResponse` crash, one level further in.
+
 ## [0.2.0b9] - 2026-08-02
 
 ### Fixed

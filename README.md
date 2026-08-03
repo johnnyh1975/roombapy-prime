@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.2.0-beta.** (currently `b9`) Reading and writing both work
+> **Status: v0.2.0-beta.** (currently `b10`) Reading and writing both work
 > against real hardware, confirmed on three independent accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -53,7 +53,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b9"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b10"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -64,7 +64,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b9#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b10#subdirectory=tools"
 ```
 
 See [`tools/README.md`](tools/README.md) for what they do and how to use
@@ -128,7 +128,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-601+ tests, all passing — structural checks against decompiled source,
+624+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -166,7 +166,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b9#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b10#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its

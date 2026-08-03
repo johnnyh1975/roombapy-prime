@@ -90,6 +90,30 @@ class ScheduleDateEntry:
         return body
 
 
+def _unwrap_commands(raw: Any) -> list[Any]:
+    """Command entries with their `{"command": ...}` wrapper removed.
+
+    SKIPS ANYTHING THAT IS NOT A DICT, and that is a fix rather than
+    caution. This was a bare comprehension calling .get() on every
+    entry, so a single null or string in the list raised AttributeError
+    -- from inside a parser, on a response the server sent.
+
+    The blast radius was the whole schedule parse: Home Assistant's
+    schedule calendar and every schedule switch read this, so one
+    malformed entry would have taken all of them down together. Same
+    shape as the SchedulesResponse.from_json crash fixed in b6, one
+    level further in.
+
+    Found by a test feeding malformed shapes at the layer above, which
+    is the only reason it turned up before a robot did it.
+    """
+    return [
+        entry.get("command", entry)
+        for entry in (raw if isinstance(raw, list) else [])
+        if isinstance(entry, dict)
+    ]
+
+
 @dataclass(frozen=True)
 class ScheduleOptions:
     """A schedule's settings.
@@ -229,8 +253,8 @@ class ScheduleOptions:
             end=ScheduleTime.from_json(end_data) if end_data else None,
             after=ScheduleDateEntry.from_json(after_data) if after_data else None,
             until=ScheduleDateEntry.from_json(until_data) if until_data else None,
-            commands=[c.get("command", c) for c in (data.get("commands") or [])],
-            end_commands=[c.get("command", c) for c in (data.get("end_commands") or [])],
+            commands=_unwrap_commands(data.get("commands")),
+            end_commands=_unwrap_commands(data.get("end_commands")),
             append=data.get("append") or [],
             exclude=data.get("exclude") or [],
             created_time=data.get("created_time"),
@@ -376,20 +400,64 @@ class DNDDailySchedule:
     of the `DNDSchedule` sealed class used for building the PUT
     request body -- the other is `DNDEndsAt`.
 
-    UNCONFIRMED: how these two variants get wrapped/discriminated
-    under `DNDSchedule` itself on the wire. `DNDSchedule`'s own
-    `<clinit>` uses a lazy `cachedSerializer` delegate pattern (common
-    for Kotlin sealed-class polymorphic serializers) rather than a
-    directly-readable discriminator string -- resolving that would
-    need deeper native/bytecode tracing than this session pursued, the
-    same kind of limit as the V1 edit commands' envelope format
-    elsewhere in this file. `set_dnd_settings()` therefore still
-    accepts a raw dict rather than this type -- these two dataclasses
-    exist for their own confirmed fields, not yet wired into the
-    request-building path."""
+    THE ENVELOPE QUESTION IS ANSWERED (APK, 2 August 2026): there is
+    no envelope and no discriminator. DNDPutRequest serialises the
+    variant DIRECTLY --
+
+        Json.Default.encodeToString(DNDSchedule.Companion.serializer(), body)
+
+    -- so the body is exactly this object's own two fields, and
+    Json.Default means no encodeDefaults: a field left at its default
+    is omitted rather than sent as null. Same serialisation rule as
+    CreateSchedulesRequest.
+
+    That caveat was why these two classes sat unused while the write
+    path built its own dict instead. The dict mixed BOTH variants and
+    added `status`, which belongs to the response side and is not part
+    of DNDSchedule at all -- and it used the Python attribute names
+    (daily_start) rather than the wire keys (dailyStart). Three faults
+    in one body, which is the HTTP 400 the one live attempt returned.
+
+    MINUTES SINCE MIDNIGHT, range 0-1439 (APK, 2 August 2026). The
+    formula is in machine code, in ScheduleDataUtils::
+    doScheduleConflicts:
+
+        hour * 60 + minute            22:00 -> 1320,  07:30 -> 450
+
+    That fits the type split exactly: an int is ample for 0-1439, while
+    DNDEndsAt needs a long for a real timestamp.
+
+    ONE CAVEAT, deliberately left in. The formula was read out of the
+    general schedule-conflict check, not out of the DND serialisation
+    path itself. Both operate on the same CoreTimeWindow objects
+    (getStartHour/getStartMinute/getEndHour/getEndMinute), so carrying
+    it across is well-founded rather than proven.
+
+    `roombapy-prime-verify-writes dnd_read` prints each value with its
+    minutes-since-midnight reading beside it, so the first tester with
+    quiet hours set confirms or refutes this by glancing at their own
+    app -- no arithmetic, no second round."""
 
     daily_start: int
     daily_end: int
+
+    @classmethod
+    def from_clock(
+        cls, start_hour: int, start_minute: int, end_hour: int, end_minute: int
+    ) -> DNDDailySchedule:
+        """Builds the pair from clock times, so callers do not repeat
+        the conversion and get it subtly wrong.
+
+        Raises rather than clamping on an out-of-range time: a quiet
+        period silently shifted to a different hour is worse than a
+        refusal, and this writes to a real robot."""
+        for hour, minute in ((start_hour, start_minute), (end_hour, end_minute)):
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError(f"not a clock time: {hour}:{minute}")
+        return cls(
+            daily_start=start_hour * 60 + start_minute,
+            daily_end=end_hour * 60 + end_minute,
+        )
 
     def to_json(self) -> dict[str, Any]:
         return {"dailyStart": self.daily_start, "dailyEnd": self.daily_end}
@@ -401,8 +469,13 @@ class DNDEndsAt:
     `DNDSchedule$EndsAt$$serializer`'s `<clinit>`: endsAt (Long,
     presumably epoch millis, matching DNDStatusResponse's own
     confirmed key for the same concept) -- the other of the two
-    `DNDSchedule` variants, see `DNDDailySchedule`'s docstring for the
-    same envelope/discriminator caveat."""
+    `DNDSchedule` variants.
+
+    NEVER SENT ALONGSIDE dailyStart/dailyEnd. DNDSchedule is a sealed
+    class with exactly these two cases, so the app's own type system
+    makes a body carrying both impossible -- and a server has never
+    been asked to accept one. See DNDDailySchedule for the envelope,
+    which is confirmed to be none at all."""
 
     ends_at: int
 

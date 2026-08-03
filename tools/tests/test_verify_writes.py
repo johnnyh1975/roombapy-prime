@@ -493,47 +493,85 @@ class TestTheScheduleCreateCheckFindsATemplate:
         robot.delete_schedule.assert_awaited_once_with("HH-A", "HS-NEW")
 
 
-class TestTheQuietHoursCheckResendsWhatItRead:
-    def test_it_sends_the_fields_it_actually_has(self):
-        """`getattr(current, "raw", None) or fields` implied a raw
-        resend. DNDStatusResponse is a frozen dataclass with no `raw`
-        field, so the fallback was the only branch that ever ran."""
+class TestTheQuietHoursCheckSendsOneVariant:
+    """The body this check built was wrong in three ways at once, which
+    is the HTTP 400 the one live attempt returned.
+
+    It took every non-empty attribute off the parsed response and sent
+    them as a dict, so it used the PYTHON names (daily_start) instead of
+    the wire keys (dailyStart), mixed BOTH cases of a sealed type into
+    one body, and included `status`, which belongs to the response side
+    and is not part of the write structure at all.
+
+    DNDPutRequest serialises a DNDSchedule directly -- no envelope --
+    and DNDSchedule has exactly two mutually exclusive cases.
+    """
+
+    def _run(self, response, confirm_answer=True):
         import asyncio
         from types import SimpleNamespace
         from unittest.mock import AsyncMock, patch
 
-        from roombapy_prime.models.schedules_dnd import DNDStatusResponse
         from roombapy_prime_tools import verify_writes
 
         robot = AsyncMock()
         robot.get_household_id.return_value = "HH-A"
-        robot.get_dnd_settings.return_value = DNDStatusResponse(status="ENABLED")
-
-        with patch.object(verify_writes, "confirm", return_value=True):
-            asyncio.run(verify_writes._set_dnd(
+        robot.get_dnd_settings.return_value = response
+        with patch.object(verify_writes, "confirm", return_value=confirm_answer):
+            result = asyncio.run(verify_writes._set_dnd(
                 robot, SimpleNamespace(household_id=None)
             ))
+        return result, robot
 
-        assert robot.set_dnd_settings.await_args.args[1] == {"status": "ENABLED"}
-
-    def test_nothing_configured_means_nothing_is_sent(self):
-        import asyncio
-        from types import SimpleNamespace
-        from unittest.mock import AsyncMock
-
+    def _dnd(self, **kwargs):
         from roombapy_prime.models.schedules_dnd import DNDStatusResponse
-        from roombapy_prime_tools import verify_writes
 
-        robot = AsyncMock()
-        robot.get_household_id.return_value = "HH-A"
-        robot.get_dnd_settings.return_value = DNDStatusResponse()
+        return DNDStatusResponse(**kwargs)
 
-        result = asyncio.run(verify_writes._set_dnd(
-            robot, SimpleNamespace(household_id=None)
+    def test_a_daily_schedule_sends_only_the_daily_fields(self):
+        _, robot = self._run(self._dnd(
+            daily_start=1320, daily_end=420, status={"enabled": True}
         ))
 
-        assert result is None
+        body = robot.set_dnd_settings.await_args.args[1]
+        assert body == {"dailyStart": 1320, "dailyEnd": 420}
+        # `status` is response-only. Sending it was one of the three
+        # faults in the body that got a 400.
+        assert "status" not in body
+
+    def test_an_ends_at_schedule_sends_only_that(self):
+        _, robot = self._run(self._dnd(ends_at=1785700000))
+
+        assert robot.set_dnd_settings.await_args.args[1] == {
+            "endsAt": 1785700000
+        }
+
+    def test_the_two_variants_are_never_mixed(self):
+        """Two mutually exclusive cases -- the app's own type system
+        makes a body carrying both impossible, and no server has ever
+        been asked to accept one."""
+        _, robot = self._run(self._dnd(
+            daily_start=1320, daily_end=420, ends_at=1785700000
+        ))
+
+        body = robot.set_dnd_settings.await_args.args[1]
+        assert ("endsAt" in body) != ("dailyStart" in body)
+
+    def test_nothing_configured_sends_nothing(self):
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result, robot = self._run(self._dnd(status={}))
+
+        assert isinstance(result, NoResult)
         robot.set_dnd_settings.assert_not_awaited()
+
+    def test_the_body_is_printed_with_its_variant(self, capsys):
+        """A body nobody looked at cost this check a whole release."""
+        self._run(self._dnd(daily_start=1320, daily_end=420))
+
+        out = capsys.readouterr().out
+        assert "variant: daily" in out
+        assert "dailyStart" in out
 
 
 class TestHouseholdSelectionIsVisible:
@@ -1070,3 +1108,124 @@ def _returns(value):
     from unittest.mock import AsyncMock
 
     return AsyncMock(return_value=value)
+
+
+class TestTheDndReadCheck:
+    """Quiet hours are the last unbuilt feature of this line, and the
+    obstacle is not demand -- nobody has ever seen a populated response.
+
+    Three accounts all return `status` empty and every other field null,
+    because none of those users has quiet hours set. So the model has
+    four fields with no example behind any of them, the write body was
+    never investigated, and the one live write attempt returned HTTP 400
+    from a check resending an empty settings object.
+    """
+
+    def _run(self, response=None, effect=None):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _dnd_read
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        if effect is not None:
+            robot.get_dnd_settings_raw = AsyncMock(side_effect=effect)
+        else:
+            robot.get_dnd_settings_raw.return_value = response
+        return asyncio.run(_dnd_read(robot, SimpleNamespace(household_id=None)))
+
+    def test_it_writes_nothing(self):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _dnd_read
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_dnd_settings_raw.return_value = {}
+        asyncio.run(_dnd_read(robot, SimpleNamespace(household_id=None)))
+
+        robot.set_dnd_settings.assert_not_awaited()
+
+    def test_a_populated_response_is_a_result(self, capsys):
+        """camelCase on the wire -- dailyStart, not daily_start. An
+        earlier version of this test used the Python field names and the
+        disagreement check caught it, which is what it is for."""
+        result = self._run({
+            "dailyStart": 1320, "dailyEnd": 420, "status": {"enabled": True},
+        })
+
+        assert result == [{"populated_fields": 3}]
+        assert "1320" in capsys.readouterr().out
+
+    def test_an_empty_account_says_what_is_actually_needed(self):
+        """A valid answer, but not the one that unblocks anything -- and
+        the message has to say so, or three more people run it and
+        report success."""
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result = self._run({"status": {}, "dailyStart": None})
+
+        assert isinstance(result, NoResult)
+        assert "has set them" in result.detail
+
+    def test_a_field_the_model_does_not_know_is_surfaced(self, capsys):
+        """The whole point of reading before writing: an unmodelled
+        field would be silently dropped on the next write, and this
+        library resends DND from the parsed model."""
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result = self._run({"dailyStart": 1320, "unknown_future": "x"})
+
+        assert "DISAGREEMENT" in capsys.readouterr().out
+        assert isinstance(result, NoResult)
+
+
+class TestTheDndReadShowsTheClockTime:
+    """The unit is minutes since midnight per the app's machine code
+    (hour * 60 + minute, range 0-1439) -- but the formula came from the
+    general schedule-conflict check rather than the DND path itself, so
+    it is well-founded rather than proven.
+
+    Printing the reading turns the first real response into a
+    confirmation or a refutation on the spot: the tester glances at
+    their own app instead of doing arithmetic, and there is no second
+    round.
+    """
+
+    def _run(self, response):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _dnd_read
+
+        robot = AsyncMock()
+        robot.get_household_id.return_value = "HH-A"
+        robot.get_dnd_settings_raw.return_value = response
+        asyncio.run(_dnd_read(robot, SimpleNamespace(household_id=None)))
+
+    def test_a_plausible_value_is_shown_as_a_time(self, capsys):
+        self._run({"dailyStart": 1320, "dailyEnd": 450})
+
+        out = capsys.readouterr().out
+        assert "22:00" in out
+        assert "07:30" in out
+
+    def test_midnight_is_shown_rather_than_skipped(self, capsys):
+        """0 is a real time. Anything treating it as falsy would hide
+        the one value most likely to be set."""
+        self._run({"dailyStart": 0, "dailyEnd": 360})
+
+        assert "00:00" in capsys.readouterr().out
+
+    def test_a_value_outside_the_range_refutes_the_reading(self, capsys):
+        """If the unit turns out to be seconds, 79200 shows up here and
+        the output says so instead of printing a nonsense time."""
+        self._run({"dailyStart": 79200})
+
+        out = capsys.readouterr().out
+        assert "NOT a minutes-since-midnight" in out

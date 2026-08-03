@@ -3892,3 +3892,71 @@ class TestCleanScoreAgainstTheFirstRealResponse:
         from "someone assumed it". It was left unmodelled on that
         reasoning, and the first real response settles it."""
         assert "profile" not in self._REAL["clean_scores"][0]
+
+
+class TestScheduleCommandsSurviveAMalformedEntry:
+    """A bare comprehension called .get() on every entry, so one null or
+    string in `commands` raised AttributeError from inside the parser.
+
+    The blast radius was the whole schedule parse -- Home Assistant's
+    schedule calendar and every schedule switch read this, so a single
+    malformed entry would have taken all of them down at once. Same
+    shape as the SchedulesResponse.from_json crash fixed in b6, one
+    level further in.
+    """
+
+    def _commands(self, raw):
+        from roombapy_prime.models.schedules_dnd import ScheduleOptions
+
+        return ScheduleOptions.from_json({"commands": raw}).commands
+
+    def test_a_valid_list_is_unwrapped(self):
+        assert self._commands([{"command": {"regions": [{"region_id": "1"}]}}]) == [
+            {"regions": [{"region_id": "1"}]}
+        ]
+
+    def test_an_entry_without_the_wrapper_is_kept_as_is(self):
+        """The server sends the wrapper; a caller round-tripping already
+        unwrapped data should not lose it."""
+        assert self._commands([{"regions": []}]) == [{"regions": []}]
+
+    def test_a_null_entry_is_skipped_rather_than_raising(self):
+        assert self._commands([{"command": {"a": 1}}, None, "x"]) == [{"a": 1}]
+
+    def test_a_non_list_yields_nothing(self):
+        assert self._commands("nonsense") == []
+
+
+class TestDNDDailyScheduleFromClock:
+    """Minutes since midnight, per ScheduleDataUtils::doScheduleConflicts
+    in the app's machine code: hour * 60 + minute, range 0-1439.
+
+    The conversion lives here so callers do not repeat it. Getting a
+    quiet period an hour wrong is the kind of mistake nobody notices
+    until the robot runs at the wrong time.
+    """
+
+    def _build(self, *args):
+        from roombapy_prime.models.schedules_dnd import DNDDailySchedule
+
+        return DNDDailySchedule.from_clock(*args)
+
+    def test_the_documented_example(self):
+        assert self._build(22, 0, 7, 30).to_json() == {
+            "dailyStart": 1320, "dailyEnd": 450
+        }
+
+    def test_midnight_is_zero_not_falsy_trouble(self):
+        assert self._build(0, 0, 6, 0).to_json()["dailyStart"] == 0
+
+    def test_the_last_minute_of_the_day(self):
+        assert self._build(23, 59, 0, 0).daily_start == 1439
+
+    def test_an_impossible_time_raises_rather_than_clamping(self):
+        """A quiet period silently shifted to a different hour is worse
+        than a refusal -- this writes to a real robot."""
+        import pytest
+
+        for bad in ((24, 0, 7, 0), (22, 60, 7, 0), (-1, 0, 7, 0), (22, 0, 7, -5)):
+            with pytest.raises(ValueError):
+                self._build(*bad)

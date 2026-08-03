@@ -648,11 +648,61 @@ class PrimeRestClient:
         data = await self._request("GET", url)
         return DNDStatusResponse.from_json(data)
 
+    async def get_dnd_settings_raw(self, household_id: str) -> Any:
+        """Same endpoint as get_dnd_settings(), UNPARSED.
+
+        WHY THIS EXISTS. Quiet hours are the last unbuilt feature of the
+        V4/Prime line, and the reason is not that nobody has asked --
+        it is that nobody has ever seen a populated response. On three
+        separate accounts DNDStatusResponse comes back with `status`
+        empty and every other field None, because none of those users
+        has quiet hours configured.
+
+        So this library's DND model is four fields with no populated
+        example behind any of them, and set_dnd_settings()'s own
+        docstring admits the write body was "not further investigated".
+        The one live write attempt returned HTTP 400 -- from a check
+        that resent an empty settings object, which is what you get for
+        writing a shape you have never read.
+
+        Raw rather than parsed for the same reason as
+        get_schedules_raw(): a parsed result cannot distinguish "the
+        server sent nothing" from "we failed to read what it sent", and
+        the first real response is exactly the one that must not be
+        filtered through assumptions.
+
+        Read-only. Nothing is sent."""
+        url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/dnd"
+        return await self._request("GET", url)
+
     async def set_dnd_settings(self, household_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         """PUT /v1/households/{householdId}/settings/dnd -- CONFIRMED
-        from DNDPutRequest (httpMethod = "PUT"). Exact body format
-        (time-window fields) not further investigated -- raw JSON
-        passed through."""
+        from DNDPutRequest (httpMethod = "PUT").
+
+        BODY FORMAT CONFIRMED (APK, 2 August 2026), where this docstring
+        previously said "not further investigated". DNDPutRequest
+        serialises a DNDSchedule directly:
+
+            Json.Default.encodeToString(DNDSchedule.serializer(), body)
+
+        No envelope, no nesting, no discriminator -- and Json.Default,
+        so defaults are omitted rather than sent as null.
+
+        DNDSchedule is a SEALED CLASS with exactly two mutually
+        exclusive variants:
+
+            {"dailyStart": int, "dailyEnd": int}   quiet hours every day
+            {"endsAt": long}                       quiet until one moment
+
+        Build the body with models/schedules_dnd.py::DNDDailySchedule
+        or ::DNDEndsAt. Never both: the app's own type system makes
+        that impossible, and it is the shape the one live attempt sent
+        before returning HTTP 400.
+
+        Still a dict here rather than a typed parameter, because the
+        two variants have no common base worth inventing for a
+        two-field body -- but the two models exist and their to_json()
+        produces exactly what belongs on the wire."""
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/dnd"
         return await self._request("PUT", url, body=settings)
 

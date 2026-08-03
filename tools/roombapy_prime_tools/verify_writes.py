@@ -255,44 +255,73 @@ async def _household_id(robot: Any, args: argparse.Namespace) -> str:
 
 
 async def _set_dnd(robot: Any, args: argparse.Namespace) -> Any:
+    """Sends the account's own quiet hours back unchanged.
+
+    THE BODY THIS BUILT WAS WRONG IN THREE WAYS AT ONCE, which is the
+    HTTP 400 the one live attempt returned. It took every non-empty
+    attribute off the parsed response and sent them as a dict, so it:
+
+      - used the PYTHON names (daily_start) instead of the wire keys
+        (dailyStart)
+      - mixed BOTH variants of a sealed class into one body
+      - included `status`, which belongs to the response side and is
+        not part of the write structure at all
+
+    APK analysis settled the shape (2 August). DNDPutRequest
+    serialises a DNDSchedule directly -- no envelope -- and DNDSchedule
+    has exactly two mutually exclusive cases:
+
+        {"dailyStart": int, "dailyEnd": int}
+        {"endsAt": long}
+
+    So this now picks whichever variant the account actually has and
+    resends that one, built by the library's own DNDDailySchedule /
+    DNDEndsAt models rather than assembled here.
+
+    A resend check still needs something to resend: an account with no
+    quiet hours is skipped rather than sent an invented value. That is
+    the honest outcome, and inventing one would make this a write
+    rather than a check.
+    """
+    from roombapy_prime.models.schedules_dnd import (  # noqa: PLC0415
+        DNDDailySchedule,
+        DNDEndsAt,
+    )
+
     household_id = await _household_id(robot, args)
     current = await robot.get_dnd_settings(household_id)
     print(f"   current do-not-disturb settings: {current}")
-    # NOTHING SET MEANS NOTHING TO RESEND.
-    #
-    # @DaRealGuGu's account has no quiet hours configured, so every field
-    # came back None and `status` was empty. Sending that back produced
-    # HTTP 400 -- correctly, since it is not a valid settings object.
-    #
-    # A resend check needs something to resend. Skipping is the honest
-    # outcome; inventing values would be a write, not a check.
-    fields = {
-        k: v for k, v in vars(current).items()
-        if not k.startswith("_") and v not in (None, {}, [])
-    }
-    if not fields:
+
+    daily_start = getattr(current, "daily_start", None)
+    daily_end = getattr(current, "daily_end", None)
+    ends_at = getattr(current, "ends_at", None)
+
+    if daily_start is not None and daily_end is not None:
+        body = DNDDailySchedule(daily_start, daily_end).to_json()
+    elif ends_at is not None:
+        body = DNDEndsAt(ends_at).to_json()
+    else:
         print(
             "   no quiet hours are configured on this account, so there is\n"
             "   nothing to resend. Set some in the iRobot app first if you\n"
-            "   want to test this one."
+            "   want to exercise this path -- inventing a value here would\n"
+            "   make this a write rather than a check."
         )
-        return None
-    # RESENT FROM THE PARSED MODEL, and that is a real limitation.
-    #
-    # This used to read `getattr(current, "raw", None) or fields`.
-    # DNDStatusResponse has no `raw` field -- it is a frozen dataclass of
-    # daily_start/daily_end/ends_at/status -- so the fallback was the
-    # only branch that ever ran. The line implied a fidelity this check
-    # does not have.
-    #
-    # What that costs: anything the server sends under a key this
-    # project does not model is dropped, so the "unchanged" resend is
-    # subtly less complete than what came in. Exactly the failure shape
-    # get_favorites_raw()'s docstring was added for. Fixing it properly
-    # needs a raw DND accessor; not invented here without a reason to.
+        return NoResult(
+            "no quiet hours set on this account. `dnd_read` is the check that "
+            "helps here -- it needs no write and nobody has yet seen a "
+            "populated response"
+        )
+
+    # THE VARIANT IS NAMED, and the body printed. The whole reason this
+    # check failed for a release was a body nobody had looked at.
+    print(f"   variant: {'daily' if 'dailyStart' in body else 'ends-at'}")
+    print("   request body (as sent):")
+    print(_indent_json(body, indent=5))
+
     if not confirm("Send the SAME settings back unchanged?"):
         return None
-    return await robot.set_dnd_settings(household_id, fields)
+    return await robot.set_dnd_settings(household_id, body)
 
 
 async def _order_favorite(robot: Any, args: argparse.Namespace) -> Any:
@@ -491,6 +520,90 @@ def _raw_automation_count(raw: Any) -> int:
             if isinstance(value, list):
                 return len(value)
     return 0
+
+
+async def _dnd_read(robot: Any, args: Any) -> Any:
+    """Quiet hours, read only. Nothing is sent.
+
+    THE LAST UNBUILT FEATURE OF THIS LINE, and not for want of asking.
+    Nobody has ever seen a populated response: on three accounts the
+    reply comes back with `status` empty and every other field null,
+    because none of those users has quiet hours set in the app.
+
+    So the library's DND model has four fields and no populated example
+    behind any of them, and the write body was never investigated at
+    all. The single live write attempt returned HTTP 400 -- from a check
+    that resent an empty settings object, which is what writing a shape
+    you have never read gets you.
+
+    ONE PERSON WITH QUIET HOURS CONFIGURED, running this, unblocks it.
+    No write, no risk, and the raw response is printed before anything
+    here parses it.
+    """
+    household_id = await _household_id(robot, args)
+    print("   GET .../settings/dnd  (read only, nothing is sent)")
+    try:
+        raw = await robot.get_dnd_settings_raw(household_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"       {_failure_detail(exc)}")
+        return NoResult(f"the endpoint did not answer: {type(exc).__name__}")
+
+    print("   raw response:")
+    print(_indent_json(raw))
+
+    from roombapy_prime.models.schedules_dnd import (  # noqa: PLC0415
+        DNDStatusResponse,
+    )
+
+    parsed = DNDStatusResponse.from_json(raw) if isinstance(raw, dict) else None
+    print("   parsed:", parsed)
+
+    # READ BACK AS A CLOCK TIME, so the tester confirms the unit by
+    # glancing at their app instead of doing arithmetic.
+    #
+    # APK analysis puts these at minutes since midnight (hour * 60 +
+    # minute, range 0-1439) -- but the formula came from the general
+    # schedule-conflict check rather than the DND path itself, so it is
+    # well-founded rather than proven. Printing the reading turns the
+    # first real response into a confirmation or a refutation on the
+    # spot, with no second round.
+    for label, value in (("dailyStart", getattr(parsed, "daily_start", None)),
+                         ("dailyEnd", getattr(parsed, "daily_end", None))):
+        if isinstance(value, int) and 0 <= value <= 1439:
+            print(f"     {label} = {value}  -> {value // 60:02d}:{value % 60:02d} "
+                  "if minutes since midnight")
+        elif value is not None:
+            print(f"     {label} = {value!r}  -> NOT a minutes-since-midnight "
+                  "value; that reading is wrong")
+
+    # COUNTED WITHOUT THE PARSER, the same rule every read check here
+    # follows: a shape this project cannot read must never pass as an
+    # empty account.
+    raw_fields = sum(
+        1 for value in (raw or {}).values() if value not in (None, {}, [], "")
+    ) if isinstance(raw, dict) else 0
+    parsed_fields = sum(
+        1 for value in (
+            (parsed.daily_start, parsed.daily_end, parsed.ends_at, parsed.status)
+            if parsed else ()
+        ) if value not in (None, {}, [], "")
+    )
+    if raw_fields != parsed_fields:
+        print(f"   DISAGREEMENT: the raw response carries {raw_fields} populated "
+              f"field(s),\n   this project read {parsed_fields}. The model is "
+              "incomplete, not the account.")
+        return NoResult(
+            f"the response carries {raw_fields} populated field(s) that this "
+            "project does not fully model -- the raw response above is the finding"
+        )
+
+    if not parsed_fields:
+        return NoResult(
+            "no quiet hours are configured on this account. That is a valid "
+            "answer, but not the one that unblocks the feature -- it needs a run "
+            "from someone who has set them in the iRobot app"
+        )
+    return [{"populated_fields": parsed_fields}]
 
 
 async def _automations(robot: Any, args: Any) -> Any:
@@ -840,6 +953,18 @@ CHECKS: tuple[WriteCheck, ...] = (
             "app shows a schedule this does not"
         ),
         runner=lambda robot, args: _list_schedules(robot, args),
+    ),
+    WriteCheck(
+        name="dnd_read",
+        risk="read",
+        summary="quiet hours, read only -- nothing is sent",
+        verify_by=(
+            "nothing to check in the app. This is only useful from an account "
+            "that HAS quiet hours configured -- please set some first if you "
+            "have not, then paste the whole output. Nobody has ever seen a "
+            "populated response, which is why this feature does not exist yet"
+        ),
+        runner=lambda robot, args: _dnd_read(robot, args),
     ),
     WriteCheck(
         name="automations",

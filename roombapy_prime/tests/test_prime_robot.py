@@ -1583,6 +1583,7 @@ class TestWrapperSignaturesMatchTheRestClient:
     _WRAPPED = [
         "edit_map", "edit_map_v2", "get_robot_parts", "get_favorites",
         "get_schedules", "get_schedules_raw", "get_clean_score_raw", "get_automations_raw",
+        "get_dnd_settings_raw",
         "get_mission_history",
         "get_active_map_versions",
     ]

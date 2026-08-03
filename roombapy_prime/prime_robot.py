@@ -600,6 +600,11 @@ class PrimeRobot:
         docstring."""
         return await self._rest.get_schedules(household_id)
 
+    async def get_dnd_settings_raw(self, household_id: str) -> Any:
+        """See rest_client.py::get_dnd_settings_raw() -- the first
+        populated quiet-hours response is what unblocks the feature."""
+        return await self._rest.get_dnd_settings_raw(household_id)
+
     async def get_automations_raw(self) -> Any:
         """See rest_client.py::get_automations_raw() -- third-party
         triggers and geofencing, NOT schedules. Endpoint liveness
