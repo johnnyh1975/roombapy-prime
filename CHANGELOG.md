@@ -8,6 +8,16 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b12] - 2026-08-04
+
+### Fixed
+- **subscribe() ignored its own result code.** paho reports MQTT_ERR_NO_CONN when the client is not
+  connected and sends no SUBSCRIBE packet at all; this returned as if it had worked, leaving the
+  caller watching a topic it never subscribed to. Now raises, and distinguishes "never sent" from
+  "rejected by the broker".
+- **A missing SUBACK counted as success.** The three-second wait gave up and carried on silently.
+  Unconfirmed topics are now counted and logged; still proceeding, but no longer without a word.
+
 ## [0.2.0b11] - 2026-08-03
 
 ### Added

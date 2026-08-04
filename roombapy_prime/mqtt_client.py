@@ -376,19 +376,55 @@ class PrimeMqttClient:
             # that is the wrong tool here.
             self.reconnect(timeout=timeout)
         mids = []
+        not_sent: dict[str, int] = {}
         for topic in topics:
             result, mid = self._client.subscribe(topic, qos=1)
+            # THE RETURN CODE WAS DISCARDED. paho answers MQTT_ERR_NO_CONN
+            # when the client is not connected, and then no SUBSCRIBE
+            # packet leaves at all -- no SUBACK follows, the wait below
+            # times out, and this function returned as if everything had
+            # worked. The caller then watches a topic it never
+            # subscribed to, forever, with nothing anywhere saying so.
+            if result != mqtt.MQTT_ERR_SUCCESS:
+                not_sent[topic] = result
+                continue
             mids.append(mid)
             self._mid_to_topic[mid] = topic
         waited = 0.0
         while waited < timeout and not all(m in self._confirmed_mids for m in mids):
             time.sleep(0.05)
             waited += 0.05
+        # UNCONFIRMED IS NOT THE SAME AS GRANTED, and this loop used to
+        # treat it that way: "proceeds anyway, better a small residual
+        # risk than a broken library". The residual risk is a watcher
+        # that reports nothing for the rest of its life, and it is
+        # indistinguishable from a quiet robot.
+        unconfirmed = [
+            self._mid_to_topic.get(m, "?") for m in mids
+            if m not in self._confirmed_mids
+        ]
+        self.last_subscribe_unconfirmed = unconfirmed
+        self.subscribe_unconfirmed_count = (
+            getattr(self, "subscribe_unconfirmed_count", 0) + len(unconfirmed)
+        )
+        if unconfirmed:
+            _LOGGER.warning(
+                "roombapy-prime: no SUBACK within %.1fs for %s -- proceeding, but a "
+                "subscription that was never acknowledged delivers nothing and looks "
+                "exactly like a robot with nothing to say",
+                timeout, unconfirmed,
+            )
         rejected = {self._mid_to_topic.get(m, "?"): self._subscribe_failures.pop(m)
                     for m in mids if m in self._subscribe_failures}
         for m in mids:
             self._confirmed_mids.discard(m)
             self._mid_to_topic.pop(m, None)
+        if not_sent:
+            raise SubscriptionRejectedError(
+                f"SUBSCRIBE was never sent for {not_sent} (paho error codes) -- the "
+                "client reported a failure before anything reached the broker. "
+                "Distinct from a rejection: the broker never saw this."
+            )
         if rejected:
             raise SubscriptionRejectedError(
                 f"Broker REJECTED subscription (SUBACK failure code) for: {rejected}. "
