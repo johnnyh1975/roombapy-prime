@@ -46,9 +46,31 @@ class PositionUpdateMessage:
     sequence_number: int
     updates: list[PositionSample]
     last_update_timestamp: datetime
+    #: When the robot stops publishing unless asked again, from
+    #: `update_expire_ts` on the OUTER envelope (@SerialName confirmed
+    #: on LiveMapPositionUpdateResponse).
+    #:
+    #: THIS IS HOW THE APP PACES ITS KEEP-ALIVE. LiveMapKeepAlivePublisher
+    #: schedules the next ping at
+    #:
+    #:     max(0, expiration - now - refreshWindowMillis)
+    #:
+    #: with refreshWindowMillis defaulting to 10000 -- a ten-second
+    #: SAFETY MARGIN before the stream lapses, not a ten-second interval.
+    #: This library polled at a fixed ten seconds, which is the same
+    #: number meaning something entirely different: 8,640 REST calls per
+    #: robot per day instead of one per validity window.
+    #:
+    #: None when the robot did not send it. The caller then has nothing
+    #: to schedule against and must fall back to its own interval --
+    #: pacing on a guessed expiry would risk the stream lapsing
+    #: mid-mission, which is worse than polling too often.
+    expires_at: datetime | None = None
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> PositionUpdateMessage:
+    def from_json(
+        cls, data: dict[str, Any], expire_ts: Any = None
+    ) -> PositionUpdateMessage:
         """data is the "pos_update" envelope including cur_path.
 
     Full evidence trail, correction history and open questions:
@@ -76,6 +98,7 @@ class PositionUpdateMessage:
             sequence_number=sequence_number,
             updates=updates,
             last_update_timestamp=datetime.fromtimestamp(epoch_ts, tz=UTC),
+            expires_at=_as_datetime(expire_ts),
         )
 
 
@@ -106,6 +129,32 @@ class MapUpdateMessage:
         )
 
 
+def _as_datetime(value: Any) -> datetime | None:
+    """`update_expire_ts` as a datetime, whatever unit it arrives in.
+
+    SECONDS OR MILLISECONDS IS NOT SETTLED. The app types it as a Date,
+    which says nothing about the wire, and no capture carrying the field
+    has been seen. Values past the year 2200 are read as milliseconds --
+    a threshold, not a guess: an epoch in seconds does not reach it for
+    another 175 years, and one in milliseconds passed it in 1970.
+
+    Returns None for anything unusable rather than raising. This is
+    pacing information; getting it wrong should cost the pacing, not the
+    stream.
+    """
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    seconds = value / 1000.0 if value > 7_258_118_400 else float(value)
+    try:
+        return datetime.fromtimestamp(seconds, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def parse_livemap_message_data(data: dict[str, Any]) -> PositionUpdateMessage | MapUpdateMessage:
     """Core logic, operates on already-parsed JSON (dict). For
     parse_livemap_message() (raw bytes) AND for prime_robot.py's
@@ -113,7 +162,12 @@ def parse_livemap_message_data(data: dict[str, Any]) -> PositionUpdateMessage | 
     mqtt_client.py's ShadowResponse -- re-serializing would be
     unnecessary)."""
     if "pos_update" in data:
-        return PositionUpdateMessage.from_json(data["pos_update"])
+        # The expiry rides on the OUTER envelope, beside `pos_update`,
+        # and used to be discarded here -- the inner object was parsed
+        # and the wrapper thrown away.
+        return PositionUpdateMessage.from_json(
+            data["pos_update"], expire_ts=data.get("update_expire_ts")
+        )
     if "map_update" in data:
         return MapUpdateMessage.from_json(data)
     msg = f"Unrecognized livemap message shape: keys={list(data.keys())}"

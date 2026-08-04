@@ -606,6 +606,125 @@ async def _dnd_read(robot: Any, args: Any) -> Any:
     return [{"populated_fields": parsed_fields}]
 
 
+#: rw-settings fields the iRobot app's own product profiles list as user
+#: settings, with the value sets it offers. Confirmed for eleven of the
+#: twelve profiles -- the twelfth is `classic-series`, which has an
+#: EMPTY settings list: the new app shows Classic robots no settings at
+#: all.
+#:
+#: `chrgLrPtrn` and `childLock` are the only two whose read AND write
+#: syntax the profile records outright:
+#:
+#:     set: {"chrgLrPtrn": %d}     get: {"setting": "chrgLrPtrn"}
+#:
+#: The other 76 carry a literal "TBD" -- which means the profile author
+#: did not fill it in, NOT that no command exists. @chairstacker
+#: changed padDryDur and pwAreaInterval through the app and produced
+#: two diagnostics files proving it, so those paths plainly work.
+_SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
+    ("chrgLrPtrn", "charge light ring pattern", "0, 1, 2 -- write syntax confirmed"),
+    ("audioVolume", "audio volume", "0-100 -- wire key GUESSED, see below"),
+    ("evacAllowed", "auto-evacuation allowed", "boolean"),
+    ("padDryDur", "mop dry duration", "4, 6, 9, 12 hours"),
+    ("pwAreaInterval", "pad wash frequency", "5, 10, 15 (x10 sq ft)"),
+    ("autoevacFreq", "auto-evacuation frequency", "integer"),
+)
+
+
+def _reported_settings(raw: Any) -> dict[str, Any] | None:
+    """The `reported` block of an rw-settings shadow, whatever wraps it.
+
+    Three shapes are in play and the first attempt handled none of them
+    correctly: a ShadowResponse object with a `.state` attribute, a plain
+    dict `{"state": {"reported": {...}}}`, and a bare reported dict.
+
+    Written the wrong way first -- `getattr(raw, "state", None) or raw`
+    followed by `.get("reported", ...)` -- which silently produced the
+    OUTER dict for the middle shape and probed a key list of exactly
+    ["state"]. It reported "none of these settings exist on this robot",
+    which is the worst kind of wrong: a plausible negative result.
+    """
+    state = getattr(raw, "state", None)
+    if state is None and isinstance(raw, dict):
+        state = raw.get("state")
+    if state is None:
+        state = raw
+    if hasattr(state, "reported"):
+        state = state.reported
+    elif isinstance(state, dict) and "reported" in state:
+        state = state["reported"]
+    return state if isinstance(state, dict) else None
+
+
+async def _settings_roundtrip(robot: Any, args: Any) -> Any:
+    """Resends each known setting at ITS OWN CURRENT VALUE.
+
+    NOTHING CHANGES ON THE ROBOT. Every write here sends back the value
+    the robot already reports, so a success proves the path and a
+    failure costs nothing. Same shape as the DND and favourites checks.
+
+    WHY IT IS WORTH RUNNING. `set_setting()` is confirmed end to end for
+    childLock -- write accepted, read back, and the robot said so out
+    loud. Four more fields were written and read back successfully but
+    have no observable effect to check against. Nobody has tried the
+    fields the app's own product profiles list as user settings.
+
+    If this works per field, six controls become buildable that nobody
+    has today: a volume slider, the charge light ring pattern, mop dry
+    duration, pad wash frequency and two evacuation settings.
+
+    THE schedHold WARNING APPLIES TO EVERY ONE OF THEM. That field
+    accepts a write, reads back changed, and the robot ignores it
+    completely -- the schedule stays active in the app. So a green line
+    below means "the write was accepted", never "the setting works".
+    Only the app or the robot's own behaviour can say the second thing.
+    """
+    current = _reported_settings(await robot.get_settings())
+    if current is None:
+        print("   rw-settings did not come back as a readable shadow")
+        return NoResult("could not read rw-settings -- this robot may be EPHEMERAL tier")
+
+    print("   rw-settings keys on this robot:")
+    print(_indent_json(sorted(current), indent=5))
+
+    present = [(k, label, note) for k, label, note in _SETTING_PROBES if k in current]
+    missing = [k for k, _l, _n in _SETTING_PROBES if k not in current]
+    if missing:
+        # Absent is a result: the profiles say which model gets which
+        # dock setting, and a mop-less robot has no pad fields.
+        print(f"   not on this robot: {', '.join(missing)}")
+    if not present:
+        return NoResult(
+            "none of the probed settings exist on this robot -- the key list "
+            "above is the finding"
+        )
+
+    results = []
+    for key, label, note in present:
+        value = current[key]
+        print(f"\n   {key} = {value!r}   ({label}; {note})")
+        if not confirm(f"Resend {key} at its current value {value!r}?"):
+            print("      skipped")
+            continue
+        try:
+            await robot.set_setting(key, value)
+        except Exception as exc:  # noqa: BLE001
+            print(f"      write FAILED: {_failure_detail(exc)}")
+            results.append({"key": key, "write": "failed"})
+            continue
+
+        after = _reported_settings(await robot.get_settings())
+        read_back = after.get(key) if after else None
+        agreed = read_back == value
+        print(f"      write accepted; read back {read_back!r} "
+              f"({'unchanged, as intended' if agreed else 'CHANGED -- unexpected'})")
+        results.append({"key": key, "write": "ok", "read_back_matches": agreed})
+
+    if not results:
+        return NoResult("every field was skipped")
+    return results
+
+
 async def _automations(robot: Any, args: Any) -> Any:
     """Third-party triggers and geofencing, if the endpoint is alive.
 
@@ -967,6 +1086,19 @@ CHECKS: tuple[WriteCheck, ...] = (
         runner=lambda robot, args: _dnd_read(robot, args),
     ),
     WriteCheck(
+        name="settings_roundtrip",
+        risk="safe",
+        summary="resends each rw-settings value unchanged -- nothing changes",
+        verify_by=(
+            "nothing should change, and that is the point. Then please open "
+            "the iRobot app and check that the settings screen still shows the "
+            "same values -- accepted and read back is NOT the same as working. "
+            "schedHold does both and the robot ignores it entirely. Paste the "
+            "whole output including the key list at the top"
+        ),
+        runner=lambda robot, args: _settings_roundtrip(robot, args),
+    ),
+    WriteCheck(
         name="automations",
         risk="read",
         summary="third-party triggers and geofencing -- NOT schedules (writes nothing)",
@@ -1113,8 +1245,12 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     async def _run() -> None:
+        # connect_mqtt=True because some checks read or write the named
+        # shadows, which only exist over MQTT. A guard test enforces this
+        # at every connection site: fixing one and missing another fails
+        # only against a real robot, which is the expensive place.
         async with connected_robot(
-            username, password, args.country_code, args.blid
+            username, password, args.country_code, args.blid, connect_mqtt=True
         ) as (robot, report):
             print(f"\n== {check.name} ==")
             print(f"   {check.summary}")

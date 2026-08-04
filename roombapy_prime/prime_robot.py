@@ -39,6 +39,7 @@ Still NOT part of this draft:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -67,6 +68,51 @@ from .models import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+#: Ten seconds, matching LiveMapKeepAliveConfig's own default. A margin
+#: before the stream lapses, not an interval.
+_LIVEMAP_REFRESH_WINDOW_S: float = 10.0
+
+
+class _StreamExpiry:
+    """Holds the live-map stream's expiry, as the robot reports it.
+
+    Every position message carries `update_expire_ts`. The app schedules
+    its next keep-alive at `expiration - now - refreshWindowMillis`, so
+    the ping lands shortly before the stream would lapse rather than at
+    a fixed cadence.
+
+    WRITTEN FROM THE MQTT CALLBACK, READ FROM THE KEEP-ALIVE TASK. Both
+    run on the same event loop -- the callback hands over via
+    call_soon_threadsafe -- so a plain attribute is enough and a lock
+    would only add a way to deadlock a background task.
+    """
+
+    def __init__(self) -> None:
+        self._expires_at: datetime | None = None
+
+    def set_result_if_pending(self, expires_at: datetime) -> None:
+        self._expires_at = expires_at
+
+    def next_delay(self, fallback: float) -> float:
+        """Seconds until the next ping should go out.
+
+        Falls back whenever the robot has not told us anything, and that
+        covers more than the first message: a robot that never sends the
+        field keeps the old fixed cadence rather than losing its stream.
+
+        Clamped at both ends. Zero would spin, and an expiry far in the
+        future would leave the stream unattended for hours if the robot
+        ever reported a bad one -- an hour is generous for something the
+        app treats in seconds.
+        """
+        if self._expires_at is None:
+            return fallback
+        remaining = (
+            self._expires_at - datetime.now(tz=UTC)
+        ).total_seconds() - _LIVEMAP_REFRESH_WINDOW_S
+        return min(max(remaining, 1.0), 3600.0)
 
 
 class _AlreadyReconnected(Exception):
@@ -1092,6 +1138,19 @@ class PrimeRobot:
         self,
         *,
         queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
+        #: THE APP DOES NOT USE A FIXED INTERVAL. LiveMapKeepAlivePublisher
+        #: schedules relative to an expiration/refreshWindowMillis whose
+        #: value has not been reconstructed, so this is a stand-in.
+        #:
+        #: Ten seconds is almost certainly too aggressive: it is 8,640
+        #: REST calls per robot per day, running whether or not anything
+        #: is moving. scripts/check_request_budget.py in the integration
+        #: exists because of a bug of exactly that size, and it cannot
+        #: see this one -- it lives here, not in an entity.
+        #:
+        #: Not changed on a guess. Raising it without knowing the real
+        #: expiry would trade a cost problem for a stream that dies
+        #: mid-mission, which is worse.
         keep_alive_interval: float = 10.0,
     ) -> AsyncIterator[PositionUpdateMessage | MapUpdateMessage]:
         """CONFIRMED LIVE (this session, jayjay13011, roombapy-prime
@@ -1134,15 +1193,71 @@ class PrimeRobot:
             except ValueError as exc:
                 loop.call_soon_threadsafe(_put_with_backpressure, queue, exc, topic)
                 return
+            # The robot tells us how long its stream stays valid. Handing
+            # that to the keep-alive turns a fixed poll into a schedule
+            # the robot itself sets -- see _keep_alive_loop().
+            expires = getattr(parsed, "expires_at", None)
+            if expires is not None:
+                loop.call_soon_threadsafe(expiry.set_result_if_pending, expires)
             loop.call_soon_threadsafe(_put_with_backpressure, queue, parsed, topic)
 
+        expiry = _StreamExpiry()
+
         async def _keep_alive_loop() -> None:
+            # THE FIRST PING COMES BEFORE THE FIRST SLEEP, and that is a
+            # correction rather than a tidy-up.
+            #
+            # This loop used to sleep first. The subscription was in
+            # place, but nothing had asked the robot to publish -- so
+            # `watch_live_map()` sat in `await queue.get()` with an empty
+            # queue, producing no messages, no exception and no counter
+            # movement.
+            #
+            # If that first ping then FAILS, the except below logs a
+            # warning and carries on, so the state is permanent and
+            # completely silent: subscribed, waiting, forever. A field
+            # capture showed exactly that -- mid-mission, every live-map
+            # counter at zero, no error recorded anywhere
+            # (@chairstacker).
+            #
+            # `_ping_failures` is counted so the caller can tell "one
+            # hiccup" from "this has never worked". Continuing after a
+            # single failure is right; continuing after fifty is how a
+            # dead stream stays invisible.
             while True:
-                await asyncio.sleep(keep_alive_interval)
                 try:
                     await self.get_live_map_stream()
+                    self._live_map_ping_failures = 0
                 except Exception:
-                    _LOGGER.warning("watch_live_map(): keep-alive ping failed, continuing anyway", exc_info=True)
+                    self._live_map_ping_failures = (
+                        getattr(self, "_live_map_ping_failures", 0) + 1
+                    )
+                    _LOGGER.warning(
+                        "watch_live_map(): keep-alive ping failed (%d in a row), "
+                        "continuing anyway -- the robot only publishes while these "
+                        "pings succeed, so a run of failures means a silent, empty "
+                        "stream rather than a slow one",
+                        self._live_map_ping_failures, exc_info=True,
+                    )
+                # PACED BY THE ROBOT, not by a constant.
+                #
+                # Each position message carries `update_expire_ts`: when
+                # the stream lapses unless asked again. The app pings a
+                # refresh window before that, defaulting to ten seconds
+                # -- a SAFETY MARGIN, not an interval.
+                #
+                # This loop polled at a flat ten seconds, which is the
+                # same number meaning something else entirely: 8,640
+                # REST calls per robot per day, running whether or not
+                # anything moves. With a one-minute validity window the
+                # same coverage costs about sixty.
+                #
+                # `keep_alive_interval` stays the fallback for as long as
+                # the robot has not said anything, and for robots that
+                # never send the field. Pacing on a guessed expiry would
+                # risk the stream lapsing mid-mission, and this project
+                # has just spent a week on one silent stream.
+                await asyncio.sleep(expiry.next_delay(keep_alive_interval))
 
         await asyncio.to_thread(self._mqtt.subscribe, topic, _on_livemap_message)
         keep_alive_task = asyncio.ensure_future(_keep_alive_loop())

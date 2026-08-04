@@ -581,6 +581,27 @@ class RobotReadinessState(IntEnum):
     handleConditionalStartRefuseReason(vector<RobotReadinessState>)
     rather than through any error field or rejected/report topic.
 
+    THESE ARE ORDINAL POSITIONS, NOT WIRE VALUES -- established by
+    comparing all twelve against the Classic app's own decode table
+    (iRobot Home 7.18.0, 3 August 2026). Eight are checkable there and
+    all eight match the INDEX:
+
+        ours 22 MAP_VERSION_MISMATCH  =  index 22  =  wire 25
+        ours 50 PRECHECK_REFUSED      =  index 50  =  wire 53
+
+    The Classic app maps wire values above 10 down by three
+    (`values()[jsonInt - 3]`), so anything looking a raw wire value up in
+    this enum is off by three above 10. `name_for()` is only used for a
+    diagnostics label today, so nothing acts on it -- but a caller that
+    starts comparing states has to decide which of the two it holds.
+    ha_roomba_plus's const.decode_not_ready() converts wire to index.
+
+    Whether PRIME sends the index or the offset wire value is NOT
+    established. Prime's own readiness values run in the 200s
+    (`readiness_state` 231, 251, 284 in the app's error specs, and a
+    field capture with `condNotReady: [234]`), which is a third range
+    again and matches neither reading here.
+
     DELIBERATELY PARTIAL: the source enum has 80 values (0 "None"
     through 79 "DockUpdate"), but only the ones actually named in the
     research report are listed here. Inventing plausible names for the

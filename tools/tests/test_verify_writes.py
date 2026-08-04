@@ -1229,3 +1229,122 @@ class TestTheDndReadShowsTheClockTime:
 
         out = capsys.readouterr().out
         assert "NOT a minutes-since-midnight" in out
+
+
+class TestSettingsRoundtripChangesNothing:
+    """Every write resends the value the robot already reports, so a
+    success proves the path and a failure costs nothing.
+
+    Worth running because six controls hang on it: a volume slider, the
+    charge light ring pattern, mop dry duration, pad wash frequency and
+    two evacuation settings -- all listed as user settings in the app's
+    own product profiles, none confirmed writable.
+    """
+
+    def _run(self, reported, confirm_answer=True):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_settings.return_value = {"state": {"reported": reported}}
+        with patch.object(verify_writes, "confirm", return_value=confirm_answer):
+            result = asyncio.run(
+                verify_writes._settings_roundtrip(robot, SimpleNamespace())
+            )
+        return result, robot
+
+    def test_each_field_is_resent_at_its_own_value(self):
+        _r, robot = self._run({"chrgLrPtrn": 2, "padDryDur": 12, "unrelated": 1})
+
+        sent = {c.args[0]: c.args[1] for c in robot.set_setting.await_args_list}
+        assert sent == {"chrgLrPtrn": 2, "padDryDur": 12}
+
+    def test_fields_the_robot_does_not_have_are_not_written(self):
+        """The profiles say which model gets which dock setting -- a
+        robot with no mop has no pad fields, and that is a result rather
+        than a gap."""
+        _r, robot = self._run({"chrgLrPtrn": 0})
+
+        assert [c.args[0] for c in robot.set_setting.await_args_list] == ["chrgLrPtrn"]
+
+    def test_declining_writes_nothing(self):
+        _r, robot = self._run({"chrgLrPtrn": 1}, confirm_answer=False)
+
+        robot.set_setting.assert_not_awaited()
+
+    def test_a_robot_with_none_of_them_is_a_result_not_an_error(self):
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        result, robot = self._run({"name": "Henriette"})
+
+        assert isinstance(result, NoResult)
+        robot.set_setting.assert_not_awaited()
+
+    def test_an_unreadable_shadow_does_not_raise(self):
+        """EPHEMERAL-tier robots time out on rw-settings entirely."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import NoResult, _settings_roundtrip
+
+        robot = AsyncMock()
+        robot.get_settings.return_value = "nope"
+        result = asyncio.run(_settings_roundtrip(robot, SimpleNamespace()))
+
+        assert isinstance(result, NoResult)
+
+    def test_a_changed_read_back_is_reported_as_unexpected(self, capsys):
+        """Resending the same value must read back the same value. If it
+        does not, something else moved and that is worth seeing."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        robot = AsyncMock()
+        robot.get_settings.side_effect = [
+            {"state": {"reported": {"chrgLrPtrn": 1}}},
+            {"state": {"reported": {"chrgLrPtrn": 9}}},
+        ]
+        with patch.object(verify_writes, "confirm", return_value=True):
+            asyncio.run(verify_writes._settings_roundtrip(robot, SimpleNamespace()))
+
+        assert "CHANGED -- unexpected" in capsys.readouterr().out
+
+
+class TestReportedSettingsUnwrapping:
+    """Three shapes are in play and the first attempt handled none of
+    them: a ShadowResponse with a `.state` attribute, a plain dict
+    `{"state": {"reported": {...}}}`, and a bare reported dict.
+
+    The wrong version produced the OUTER dict for the middle shape, so
+    the probe saw a key list of exactly ["state"] and reported "none of
+    these settings exist on this robot" -- a plausible negative result,
+    which is the worst kind of wrong.
+    """
+
+    def _unwrap(self, raw):
+        from roombapy_prime_tools.verify_writes import _reported_settings
+
+        return _reported_settings(raw)
+
+    def test_a_plain_nested_dict(self):
+        assert self._unwrap({"state": {"reported": {"a": 1}}}) == {"a": 1}
+
+    def test_an_object_with_state_and_reported(self):
+        from types import SimpleNamespace
+
+        raw = SimpleNamespace(state=SimpleNamespace(reported={"a": 1}))
+        assert self._unwrap(raw) == {"a": 1}
+
+    def test_a_bare_reported_dict(self):
+        assert self._unwrap({"childLock": True}) == {"childLock": True}
+
+    def test_anything_unreadable_yields_none(self):
+        for raw in ("nope", None, 7, {"state": "nope"}):
+            assert self._unwrap(raw) is None

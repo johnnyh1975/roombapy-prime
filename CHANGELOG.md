@@ -8,6 +8,32 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b11] - 2026-08-03
+
+### Added
+- **`settings_roundtrip` check.** Resends each `rw-settings` field at its own current value, so
+  nothing changes on the robot. Probes the six fields iRobot's own product profiles list as user
+  settings -- charge light ring, audio volume, mop dry duration, pad wash frequency and two
+  evacuation settings -- none of which anyone has confirmed writable. A green line means the write
+  was accepted, never that the setting works: `schedHold` accepts, reads back, and is ignored.
+- **`PositionUpdateMessage.expires_at`**, read from `update_expire_ts` on the outer livemap
+  envelope. It rode beside `pos_update` and was discarded -- the inner object was parsed and the
+  wrapper thrown away.
+
+### Fixed
+- **The live-map keep-alive slept before its first ping.** The robot only publishes while those
+  pings arrive, so the subscription sat on an empty queue producing no messages, no exception and
+  no counter movement. A field capture showed exactly that: mid-mission, every counter at zero, no
+  error anywhere. Consecutive ping failures are now counted so one hiccup is distinguishable from
+  "this has never worked".
+
+### Changed
+- **The keep-alive is paced by the robot instead of a constant.** Each position message says when
+  the stream lapses; the app pings a ten-second margin before that, and this library was polling at
+  a flat ten seconds -- the same number meaning something else entirely, at 8,640 REST calls per
+  robot per day. With a one-minute validity window the same coverage costs about sixty. The fixed
+  interval stays as the fallback for robots that never send the field.
+
 ## [0.2.0b10] - 2026-08-02
 
 ### Added

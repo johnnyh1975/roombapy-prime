@@ -1612,3 +1612,135 @@ class TestWrapperSignaturesMatchTheRestClient:
             f"PrimeRestClient.{name}(). Callers using those arguments will fail with "
             "TypeError before any request is made."
         )
+
+
+class TestLiveMapKeepAlivePingsBeforeSleeping:
+    """The loop used to sleep first.
+
+    The subscription was in place but nothing had asked the robot to
+    publish, so `watch_live_map()` sat in `await queue.get()` on an
+    empty queue -- no messages, no exception, no counter movement. And
+    if the first ping then failed, the handler logged a warning and
+    carried on, making the state permanent and completely silent.
+
+    A field capture showed exactly that: mid-mission, every live-map
+    counter at zero, no error recorded anywhere.
+    """
+
+    def _loop_source(self):
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        return inspect.getsource(PrimeRobot.watch_live_map)
+
+    def test_the_ping_comes_before_the_sleep(self):
+        src = self._loop_source()
+        body = src[src.index("_keep_alive_loop"):]
+        ping = body.index("await self.get_live_map_stream()")
+        # The sleep is now paced by the robot's own expiry, so the line
+        # reads next_delay(keep_alive_interval) rather than the bare
+        # constant it used to.
+        sleep = body.index("await asyncio.sleep(expiry.next_delay(")
+        assert ping < sleep, "the loop sleeps before asking the robot to publish"
+
+    def test_consecutive_failures_are_counted(self):
+        """One hiccup and "this has never worked" have to be
+        distinguishable -- continuing after a single failure is right,
+        continuing after fifty is how a dead stream stays invisible."""
+        src = self._loop_source()
+        assert "_live_map_ping_failures" in src
+        assert "self._live_map_ping_failures = 0" in src
+
+    def test_a_success_resets_the_counter(self):
+        """Otherwise a robot that recovers still looks broken."""
+        src = self._loop_source()
+        body = src[src.index("_keep_alive_loop"):]
+        reset = body.index("self._live_map_ping_failures = 0")
+        increment = body.index("getattr(self, \"_live_map_ping_failures\", 0) + 1")
+        assert reset < increment, "the reset must sit on the success path"
+
+
+class TestKeepAliveIsPacedByTheRobot:
+    """Every position message carries `update_expire_ts`: when the
+    stream lapses unless asked again.
+
+    The app schedules its next ping at `expiration - now -
+    refreshWindowMillis`, with that window defaulting to ten seconds --
+    a SAFETY MARGIN before the stream would lapse, not an interval.
+
+    This library polled at a flat ten seconds, which is the same number
+    meaning something else entirely: 8,640 REST calls per robot per day,
+    running whether or not anything moves. With a one-minute validity
+    window the same coverage costs about sixty.
+    """
+
+    def _expiry(self, seconds_from_now=None):
+        from datetime import UTC, datetime, timedelta
+
+        from roombapy_prime.prime_robot import _StreamExpiry
+
+        holder = _StreamExpiry()
+        if seconds_from_now is not None:
+            holder.set_result_if_pending(
+                datetime.now(tz=UTC) + timedelta(seconds=seconds_from_now)
+            )
+        return holder
+
+    def test_the_ping_lands_a_window_before_the_stream_lapses(self):
+        assert round(self._expiry(60).next_delay(10.0)) == 50
+
+    def test_the_fallback_applies_until_the_robot_says_something(self):
+        """And it keeps applying for robots that never send the field --
+        those keep the old fixed cadence rather than losing their
+        stream."""
+        assert self._expiry().next_delay(10.0) == 10.0
+
+    def test_an_expiry_inside_the_window_does_not_spin(self):
+        """Five seconds of validity is less than the ten-second margin.
+        Zero delay would hammer the endpoint."""
+        assert self._expiry(5).next_delay(10.0) == 1.0
+
+    def test_an_already_lapsed_expiry_pings_almost_at_once(self):
+        assert self._expiry(-300).next_delay(10.0) == 1.0
+
+    def test_an_absurd_expiry_is_capped(self):
+        """A bad value must not leave the stream unattended for days.
+        An hour is generous for something the app handles in seconds."""
+        assert self._expiry(60 * 60 * 24 * 30).next_delay(10.0) == 3600.0
+
+
+class TestTheExpiryIsReadOffTheEnvelope:
+    """It rides beside `pos_update`, not inside it, and used to be
+    discarded: the inner object was parsed and the wrapper thrown away.
+    """
+
+    def _parse(self, expire_ts):
+        from roombapy_prime.models.livemap import parse_livemap_message_data
+
+        return parse_livemap_message_data({
+            "update_expire_ts": expire_ts,
+            "pos_update": {"cur_path": [1, 1.5, 2.5, 0.0, 2.0, 1700000000]},
+        })
+
+    def test_seconds_and_milliseconds_both_work(self):
+        """Which unit the wire uses is not settled -- the app types it as
+        a Date, which says nothing, and no capture carrying the field has
+        been seen. Values past the year 2200 are read as milliseconds: a
+        threshold rather than a guess, since an epoch in seconds does not
+        reach it for another 175 years."""
+        assert self._parse(1785800000).expires_at == self._parse(
+            1785800000000
+        ).expires_at
+
+    def test_a_message_without_it_still_parses(self):
+        """Pacing information. Getting it wrong should cost the pacing,
+        not the stream."""
+        for value in (None, 0, -1, "later", True):
+            assert self._parse(value).expires_at is None
+
+    def test_the_points_are_unaffected(self):
+        message = self._parse(1785800000)
+
+        assert len(message.updates) == 1
+        assert message.updates[0].point == (1.5, 2.5)
