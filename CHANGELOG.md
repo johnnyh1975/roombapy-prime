@@ -8,6 +8,21 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b13] - 2026-08-04
+
+### Fixed
+- **The live-map heading had half a turn added to it.** Undocumented, and asserted by a test that
+  only restated it. The first field observation of the value showed the line pointing out of the
+  back of the robot.
+
+### Added
+- **TimeEstimates model** for POST /v1/time-estimates: three levels (mission, map, region/zone),
+  several estimates per room distinguished by cleaning params, unit carried in the payload, and a
+  confidence gate.
+- **mission_history check** -- reports the response SHAPE, and distinguishes an envelope mismatch
+  from an empty history, which otherwise look identical.
+- **Mission history parsing confirmed** as a bare array from the app's own restservices package.
+
 ## [0.2.0b12] - 2026-08-04
 
 ### Fixed

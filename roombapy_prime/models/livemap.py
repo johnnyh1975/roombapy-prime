@@ -88,7 +88,23 @@ class PositionUpdateMessage:
         updates = [
             PositionSample(
                 point=(point_values[i], point_values[i + 1]),
-                orientation=point_values[i + 2] + 3.1415927,
+                # THE WIRE ANGLE, UNMODIFIED. This added 3.1415927 --
+                # half a turn -- with no comment, no entry in the
+                # evidence trail, and a test that asserted only
+                # `0.0 + 3.1415927`, which restates the code rather than
+                # checking it against anything.
+                #
+                # The first observation anyone has ever made of the
+                # heading says it was wrong: with the marker finally
+                # drawn (a24), the line points out of the BACK of the
+                # robot (@DaRealGuGu, 505). Half a turn is exactly that.
+                #
+                # Removed rather than compensated for downstream,
+                # because a consumer drawing an arrow should get the
+                # angle the robot reported. If this turns out to be
+                # wrong, the line points backwards -- which is where it
+                # already was, so the change cannot cost anything.
+                orientation=point_values[i + 2],
                 operating_modes=int(point_values[i + 3]),
             )
             for i in range(0, len(point_values), 4)

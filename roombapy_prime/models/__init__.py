@@ -23,3 +23,5 @@ from .favorites import *  # noqa: F401,F403
 from .schedules_dnd import *  # noqa: F401,F403
 from .mission_history import *  # noqa: F401,F403
 from .robot_info import *  # noqa: F401,F403
+
+from .time_estimates import TimeEstimate, TimeEstimates  # noqa: E402,F401

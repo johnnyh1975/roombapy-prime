@@ -126,7 +126,23 @@ class MissionCommandRecord:
 @dataclass(frozen=True)
 class MissionHistoryEntry:
     """Confirmed (androguard, MissionHistory): top-level fields of the
-    mission history response. `timeline` deliberately remains raw JSON
+    mission history response.
+
+    FOUR MINUTE FIELDS, NOT ONE, and they are not interchangeable:
+
+        durationM   wall clock, start to finish
+        runM        actually cleaning
+        pauseM      paused
+        chrgM       charging mid-mission
+
+    A consumer asking "how long did the last clean take" almost
+    certainly wants `runM`, not `durationM` -- a robot that returned to
+    charge halfway through reports a wall-clock duration several times
+    its cleaning time. This entry carries all four, so the decision
+    belongs to the caller rather than here.
+
+    Verified against the vendor's own 20-entry sample: every field in
+    that payload maps to something on this class, none left over. `timeline` deliberately remains raw JSON
     -- see module docstring for the effort limit on the 20 sub-event
     types. Not all 30+ bytecode fields were included here -- focus on
     the ones most useful for evaluation (times, doneCode, error code,
@@ -224,10 +240,30 @@ class MissionHistoryEntry:
 
 def parse_mission_history(data: dict[str, Any] | list[dict[str, Any]]) -> list[MissionHistoryEntry]:
     """Converts the raw get_mission_history() response into a list of
-    typed MissionHistoryEntry objects. NEW (July 11, ninth session).
-    Accepts either a raw list or a dict with an enclosing key (response
-    envelope shape not confirmed -- so both forms are tolerated:
-    {"missions": [...]} or directly [...])."""
+    typed MissionHistoryEntry objects.
+
+    THE RESPONSE IS A BARE ARRAY. Confirmed from the app's own
+    `restservices/missionhistory` package: the API method returns
+    `Result<List<MissionHistory>>`, and `MissionHistory` is a single
+    entry -- `startTime`, `durationM`, `sqft`, `done_raw`, `nMssn`,
+    `robot_id`. There is no envelope class anywhere in that package: 63
+    files, 30 of them `$$serializer`, none for a container with a root
+    field.
+
+    So the `missions` and `history` keys below never fire. They were
+    guesses, and they were guesses in a place where being wrong is
+    invisible: a response full of missions parsing to an empty list
+    reads exactly like a robot with no history.
+
+    Kept anyway. They cost one branch, they cannot match a bare array,
+    and if iRobot ever wraps the response the parser survives it. What
+    changed is that the array form is now the documented case rather
+    than the fallback.
+
+    The `responseCode`/`responseBody` hull around the vendor's own
+    sample in `res/raw/atlantis_history_responses.json` is the
+    SIMULATOR's wrapper, not the server's -- every `*_sim_responses.json`
+    in that directory carries the same one."""
     if isinstance(data, dict):
         entries = data.get("missions") or data.get("history") or []
     else:

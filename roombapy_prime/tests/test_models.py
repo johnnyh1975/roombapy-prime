@@ -132,7 +132,12 @@ def test_parse_livemap_position_update_single_point() -> None:
     assert len(result.updates) == 1
     sample = result.updates[0]
     assert sample.point == (1.5, 2.5)
-    assert sample.orientation == 0.0 + 3.1415927
+    # The wire angle, unmodified. This used to read `0.0 + 3.1415927`,
+    # which asserted the half-turn the parser applied rather than
+    # anything about the robot -- a test that agrees with the code by
+    # construction. The half turn is gone: the first field observation
+    # of the heading showed the line pointing out of the back.
+    assert sample.orientation == 0.0
     assert sample.operating_modes == 1
 
 
@@ -3960,3 +3965,80 @@ class TestDNDDailyScheduleFromClock:
         for bad in ((24, 0, 7, 0), (22, 60, 7, 0), (-1, 0, 7, 0), (22, 0, 7, -5)):
             with pytest.raises(ValueError):
                 self._build(*bad)
+
+
+class TestTheHeadingIsTheWireAngle:
+    """The parser used to add half a turn, undocumented.
+
+    No comment, no evidence-trail entry, and a test that asserted
+    `0.0 + 3.1415927` -- which restates the parser rather than checking
+    it against the robot.
+
+    The first observation anyone has made of the heading says it was
+    wrong: with the marker finally drawn, the line pointed out of the
+    BACK of the robot (@DaRealGuGu, 505 series, a24). Half a turn is
+    exactly that.
+    """
+
+    def _sample(self, angle):
+        from roombapy_prime.models.livemap import PositionUpdateMessage
+
+        message = PositionUpdateMessage.from_json(
+            {"cur_path": [1, 1.5, 2.5, angle, 2.0, 1700000000]}
+        )
+        return message.updates[0]
+
+    def test_zero_stays_zero(self):
+        assert self._sample(0.0).orientation == 0.0
+
+    def test_a_quarter_turn_stays_a_quarter_turn(self):
+        assert self._sample(1.5707963).orientation == 1.5707963
+
+    def test_no_half_turn_is_added_anywhere(self):
+        """Checked across the circle rather than at one value -- an
+        offset applied conditionally would slip past a single case."""
+        for angle in (-3.0, -1.0, 0.0, 0.5, 2.0, 3.0):
+            assert self._sample(angle).orientation == angle, angle
+
+
+class TestMissionHistoryIsABareArray:
+    """Confirmed from the app's `restservices/missionhistory` package:
+    the API returns `Result<List<MissionHistory>>`, and `MissionHistory`
+    is a single entry. No envelope class exists anywhere in it.
+
+    The `missions` and `history` keys the parser also accepts were
+    guesses, made in a place where being wrong is invisible: a response
+    full of missions parsing to an empty list reads exactly like a robot
+    with no history.
+    """
+
+    _ENTRY = {
+        "robot_id": "B", "nMssn": 36, "startTime": 1589884703,
+        "timestamp": 1589884800, "durationM": 12, "runM": 9, "pauseM": 2,
+        "chrgM": 1, "sqft": 240, "done_raw": "ok", "evacs": 1,
+    }
+
+    def _parse(self, payload):
+        from roombapy_prime.models.mission_history import parse_mission_history
+
+        return parse_mission_history(payload)
+
+    def test_the_confirmed_form_is_a_bare_list(self):
+        assert len(self._parse([self._ENTRY, self._ENTRY])) == 2
+
+    def test_the_guessed_envelopes_still_work(self):
+        """Kept as a fallback: one branch, cannot match an array, and it
+        survives iRobot ever wrapping the response."""
+        assert len(self._parse({"missions": [self._ENTRY]})) == 1
+        assert len(self._parse({"history": [self._ENTRY]})) == 1
+
+    def test_the_four_minute_fields_are_separate(self):
+        """A caller asking how long the last clean took wants `runM`, not
+        `durationM` -- a robot that charged halfway through reports a
+        wall-clock duration several times its cleaning time."""
+        entry = self._parse([self._ENTRY])[0]
+
+        assert entry.duration_m == 12
+        assert entry.minutes_running == 9
+        assert entry.minutes_paused == 2
+        assert entry.minutes_charging == 1
