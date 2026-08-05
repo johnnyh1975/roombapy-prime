@@ -1348,3 +1348,74 @@ class TestReportedSettingsUnwrapping:
     def test_anything_unreadable_yields_none(self):
         for raw in ("nope", None, 7, {"state": "nope"}):
             assert self._unwrap(raw) is None
+
+
+class TestMissionHistoryShapeCheck:
+    """Four Home Assistant sensors read a store only the Classic path
+    fills. The Prime path could fill it from this endpoint, and the
+    mapping is a small function once the wire shape is known.
+
+    It is not known. The model parses the vendor's own sample from the
+    app's raw resources, but no Prime robot has ever been asked, and
+    that sample is a Classic-era platform.
+    """
+
+    def _run(self, raw):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _mission_history
+
+        robot = AsyncMock()
+        robot.blid = "B"
+        robot.get_mission_history.return_value = raw
+        return asyncio.run(_mission_history(robot, SimpleNamespace()))
+
+    _ENTRY = {
+        "robot_id": "B", "nMssn": 36, "startTime": 1589884703,
+        "timestamp": 1589884703, "durationM": 12, "sqft": 240,
+        "done_raw": "ok", "evacs": 1,
+    }
+
+    def test_a_bare_list_parses(self):
+        result = self._run([self._ENTRY])
+
+        assert result["raw_count"] == 1
+        assert result["parsed_count"] == 1
+
+    def test_an_unknown_envelope_is_called_out(self, capsys):
+        """The discriminator this check exists for. The parser tries
+        `missions` and `history`, neither confirmed -- so a response full
+        of missions can parse to nothing and read exactly like a robot
+        with no history."""
+        self._run({"responseBody": [self._ENTRY, self._ENTRY]})
+
+        out = capsys.readouterr().out
+        assert "the envelope key is wrong, not the history" in out
+
+    def test_a_genuinely_empty_history_says_so(self):
+        from roombapy_prime_tools.verify_writes import NoResult
+
+        assert isinstance(self._run([]), NoResult)
+
+    def test_a_known_envelope_parses(self):
+        result = self._run({"missions": [self._ENTRY]})
+
+        assert result["parsed_count"] == 1
+
+    def test_nothing_is_sent_to_the_robot(self):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _mission_history
+
+        robot = AsyncMock()
+        robot.blid = "B"
+        robot.get_mission_history.return_value = [self._ENTRY]
+        asyncio.run(_mission_history(robot, SimpleNamespace()))
+
+        robot.send_simple_command.assert_not_awaited()
+        robot.update_schedules.assert_not_awaited()
+        robot.set_setting.assert_not_awaited()

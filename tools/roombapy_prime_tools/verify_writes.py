@@ -794,6 +794,83 @@ async def _automations(robot: Any, args: Any) -> Any:
     return [{"automations": len(parsed)}]
 
 
+async def _mission_history(robot: Any, args: Any) -> Any:
+    """Reads the mission history and reports its SHAPE.
+
+    WHY THIS IS WORTH A CHECK OF ITS OWN. Four Home Assistant sensors --
+    clean streak, last mission, last duration, area cleaned today -- read
+    a store that only the Classic path fills. The Prime path could fill
+    it from this endpoint, and the mapping is a small function once the
+    wire shape is known.
+
+    It is not known. The endpoint is implemented and the model parses the
+    vendor's own sample from the app's raw resources (20 entries,
+    `atlantis` platform) -- but no Prime robot has ever been asked, and
+    that sample is a Classic-era platform.
+
+    TWO THINGS CAN GO WRONG AND THEY LOOK ALIKE. The envelope key is a
+    guess: the parser tries `missions` and `history`, neither confirmed.
+    So a response full of missions can parse to an empty list and read
+    exactly like a robot with no history. This check compares the two and
+    says which it is.
+
+    Read-only. Nothing is sent to the robot.
+    """
+    raw = await robot.get_mission_history(robot.blid)
+    print("   raw response, outermost level:")
+    if isinstance(raw, dict):
+        print(f"     dict with keys {sorted(raw)}")
+        for key, value in raw.items():
+            kind = f"list[{len(value)}]" if isinstance(value, list) else type(value).__name__
+            print(f"       {key}: {kind}")
+    elif isinstance(raw, list):
+        print(f"     list with {len(raw)} entries")
+    else:
+        print(f"     {type(raw).__name__}")
+
+    from roombapy_prime.models.mission_history import parse_mission_history
+
+    parsed = parse_mission_history(raw)
+    print(f"\n   parser produced {len(parsed)} entries")
+
+    # The discriminator. A response that clearly holds missions but
+    # parses to nothing means the envelope key is wrong -- a different
+    # and much more fixable finding than an empty history.
+    raw_count = 0
+    if isinstance(raw, list):
+        raw_count = len(raw)
+    elif isinstance(raw, dict):
+        raw_count = max(
+            (len(v) for v in raw.values() if isinstance(v, list)), default=0
+        )
+    if raw_count and not parsed:
+        print(f"   ** the response carries {raw_count} entries and the parser saw "
+              "none -- the envelope key is wrong, not the history **")
+
+    if parsed:
+        first = parsed[0]
+        print("\n   first entry, field by field:")
+        for name in (
+            "mission_id", "robot_id", "start_time", "timestamp", "duration_m",
+            "square_feet_covered", "error_code", "done_raw",
+            "number_of_evacuations", "minutes_running",
+        ):
+            print(f"     {name:24} {getattr(first, name, '(not modelled)')!r}")
+        print("\n   raw keys on the first entry:")
+        source = raw if isinstance(raw, list) else next(
+            (v for v in raw.values() if isinstance(v, list) and v), []
+        )
+        if source and isinstance(source[0], dict):
+            print(_indent_json(sorted(source[0]), indent=5))
+
+    if not parsed and not raw_count:
+        return NoResult(
+            "this robot reports no mission history at all -- a valid answer, "
+            "and not the one that unblocks the four sensors"
+        )
+    return {"raw_count": raw_count, "parsed_count": len(parsed)}
+
+
 async def _clean_score(robot: Any, args: Any) -> Any:
     """Per-room cleanliness values, if the request body is right.
 
@@ -1108,6 +1185,17 @@ CHECKS: tuple[WriteCheck, ...] = (
             "Most useful from an account that has automations set up in the app"
         ),
         runner=lambda robot, args: _automations(robot, args),
+    ),
+    WriteCheck(
+        name="mission_history",
+        risk="read",
+        summary="reads the mission history and reports its shape -- nothing is sent",
+        verify_by=(
+            "nothing to check on the robot or in the app; the output IS the "
+            "result. Please paste all of it, including the field list -- four "
+            "Home Assistant sensors are waiting on this shape"
+        ),
+        runner=lambda robot, args: _mission_history(robot, args),
     ),
     WriteCheck(
         name="clean_score",
