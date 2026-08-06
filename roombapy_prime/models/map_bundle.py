@@ -796,9 +796,45 @@ class CleanScoreRegion:
     """
 
     region_id: str | None = None
+    #: WHICH DIRECTION THIS RUNS IS NOT ESTABLISHED, and it matters:
+    #: an automation built on the wrong reading does the opposite of what
+    #: its author meant.
+    #:
+    #: The one real capture has four rooms, and neither reading survives
+    #: all four:
+    #:
+    #:     region 12   0.25     last cleaned by mission 61 (newest)
+    #:     region 11   0.3487   mission 58
+    #:     region 10   0.3151   mission 56 (oldest)
+    #:     region 13   0.523    mission 56 (oldest)
+    #:
+    #: Two rooms cleaned by the SAME mission read 0.523 and 0.3151, so
+    #: it is not simply time since cleaning. And `last_updated_by` reads
+    #: `batch_decay`, which suggests the value decays -- pointing the
+    #: other way from the newest-room-lowest reading.
+    #:
+    #: Left unlabelled deliberately. Naming it cleanliness or dirtiness
+    #: on this evidence would be a guess wearing a label.
     clean_score: float | None = None
     updated_ts: int | None = None
     last_updated_by: str | None = None
+    #: `normal` in the only capture there is; the other values are
+    #: unknown.
+    high_traffic_enum: str | None = None
+    #: The mission that last cleaned this room, and the one that last
+    #: left it UNFINISHED -- `{"missionId": ..., "nMssn": ...,
+    #: "startTime": ...}` or None.
+    #:
+    #: The unfinished one answers a question nothing else does: which
+    #: room did not get done. Two of the four rooms in the first capture
+    #: carry one.
+    mission_last_cleaned: dict[str, Any] | None = None
+    mission_last_unfinished: dict[str, Any] | None = None
+    #: What the robot would use for this room on a smart clean --
+    #: `operatingMode`, `suctionLevel`, `carpetBoost`, `twoPass`,
+    #: `swScrub`. Kept raw; these are the robot's own defaults rather
+    #: than anything this library sets.
+    smart_clean_prefs: dict[str, Any] | None = None
 
     #: A DICT, not the string the model first declared. Live response
     #: (@DaRealGuGu, b8):

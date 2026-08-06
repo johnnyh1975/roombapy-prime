@@ -9,6 +9,92 @@ Tested against the vendor's own simulator response, three levels deep.
 
 import pytest
 
+#: THE LIVE SHAPE, from a real robot (@DaRealGuGu, N185240). The model
+#: was built against the app simulator's response first, which uses
+#: entirely different names -- it parsed this to nothing, which would
+#: have left the calendar and the progress sensor silently empty.
+_LIVE = {
+    "robot_id": "BLID",
+    "api_version": "v1",
+    "smart_maps": [{
+        "smart_map_id": "BLID-1785514071",
+        "areas": [
+            {"area_id": "10", "area_type": "region", "estimates": [
+                {"value": 3120, "unit": "seconds", "deviation": 0.0,
+                 "data_model_version": "app_prime",
+                 "params": {"operatingMode": 512, "suctionLevel": 1,
+                            "swScrub": 1, "twoPass": False}},
+                {"value": 1387, "unit": "seconds", "deviation": 0.0,
+                 "data_model_version": "app_prime",
+                 "params": {"operatingMode": 32, "suctionLevel": 2,
+                            "swScrub": 0, "twoPass": False}},
+            ]},
+            {"area_id": "14", "area_type": "region", "estimates": [
+                {"value": 181, "unit": "seconds", "deviation": 0.0,
+                 "params": {"operatingMode": 2, "suctionLevel": 1,
+                            "twoPass": False}},
+            ]},
+        ],
+        "cleaning_rates": {"deep": 923.0, "light": 373.0, "standard": 466.0},
+    }],
+}
+
+
+class TestTheLiveShape:
+    """What a real robot returns, which is not what the simulator
+    describes."""
+
+    def _parsed(self):
+        from roombapy_prime.models import TimeEstimates
+
+        return TimeEstimates.from_json(_LIVE)
+
+    def test_areas_become_regions(self):
+        parsed = self._parsed()
+
+        assert sorted(parsed.by_region) == ["10", "14"]
+        assert len(parsed.by_region["10"]) == 2
+
+    def test_the_value_key_is_read(self):
+        """`value` on the wire, not `estimate` -- that was the
+        simulator's name."""
+        assert self._parsed().by_region["14"][0].estimate == 181
+
+    def test_seconds_are_seconds(self):
+        """The unit travels in the payload and reads `seconds` here,
+        where the simulator said `minute`. Assuming either would be off
+        by sixty and still look plausible."""
+        assert self._parsed().by_region["14"][0].seconds == 181
+
+    def test_estimates_without_a_confidence_field_are_kept(self):
+        """The live response has none. Treating its absence as poor would
+        discard every estimate a real robot returns."""
+        assert self._parsed().by_region["10"][0].is_confident is True
+
+    def test_the_mode_still_selects(self):
+        from roombapy_prime.models import TimeEstimates
+
+        best = TimeEstimates.best(
+            self._parsed().by_region["10"], operatingMode=32
+        )
+
+        assert best.estimate == 1387
+
+    def test_cleaning_rates_are_carried(self):
+        assert self._parsed().cleaning_rates == {
+            "deep": 923.0, "light": 373.0, "standard": 466.0
+        }
+
+    def test_there_is_no_whole_mission_total(self):
+        """The simulator's shape had one; the real response does not. A
+        caller wanting a mission duration has to sum the areas it plans
+        to clean -- which is the honest arithmetic anyway."""
+        assert self._parsed().mission == []
+
+    def test_regions_are_reachable_per_map_too(self):
+        assert ("BLID-1785514071", "10") in self._parsed().by_map_region
+
+
 _SAMPLE = {
     "robot_id": "BLID",
     "time_estimates": [

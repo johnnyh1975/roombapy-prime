@@ -8,6 +8,29 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b14] - 2026-08-06
+
+### Fixed
+- **TimeEstimates parsed a real response as empty.** The model was built from the app simulator, and
+  the live response uses smart_maps/areas/value/seconds where the simulator uses
+  pmaps/regions/estimate/minute. There is no whole-mission total and no confidence field.
+- **set_map_orientation changed the orientation it claimed to preserve**, sending the argument default
+  of 0.0 rather than the map current value.
+- **The CLI crashed on a cp1252 console before running any check**, on the U+2713 in its own status
+  lines. stdout and stderr are now reconfigured with errors=replace as the first statement of main().
+- **settings_roundtrip could never read the settings shadow.** It looked for a state attribute on a
+  ShadowResponse, which has topic and payload instead, and reported the failure as "this robot may be
+  EPHEMERAL tier" -- a wrong claim about the tester hardware. Six controls were waiting on this check.
+- **CleanScoreRegion declared four fewer fields than its parser read** -- high_traffic_enum,
+  mission_last_cleaned, mission_last_unfinished and smart_clean_prefs existed at runtime and in no
+  type. Which direction clean_score runs stays unlabelled: neither reading survives the one real
+  capture.
+
+### Confirmed
+- Mission history is a bare array -- 62 of 62 entries parsed from a real robot.
+- set_map_name and order_favorite both accepted, rename verified in the app.
+- The automations endpoint is alive and returns an empty list on an account with none.
+
 ## [0.2.0b13] - 2026-08-04
 
 ### Fixed

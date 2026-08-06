@@ -11,14 +11,33 @@ independently confirmed against `FavoriteTimeEstimate$$serializer`:
 
     {
       "robot_id": ...,
-      "time_estimates": [ ... ],              whole mission
-      "pmaps": [{
-        "pmap_id": ...,
-        "time_estimates": [ ... ],            whole map
-        "regions": [{"region_id": "5", "time_estimates": [ ... ]}],
-        "zones":   [{"zone_id": "1",   "time_estimates": [ ... ]}]
+      "api_version": "v1",
+      "smart_maps": [{
+        "smart_map_id": ...,
+        "areas": [{
+          "area_id": "10",
+          "area_type": "region",
+          "estimates": [{
+            "value": 3120, "unit": "seconds",
+            "deviation": 0.0, "data_model_version": "app_prime",
+            "params": {"operatingMode": 512, "suctionLevel": 1,
+                       "swScrub": 1, "twoPass": False}
+          }]
+        }],
+        "cleaning_rates": {"deep": 923.0, "light": 373.0, "standard": 466.0}
       }]
     }
+
+NO WHOLE-MISSION TOTAL. The simulator's shape had one; the real response
+does not. A caller wanting a mission duration has to sum the areas it
+plans to clean -- which is the honest arithmetic anyway, since a mission
+covering three rooms is not the same as one covering all of them.
+
+NO CONFIDENCE FIELD EITHER. `deviation` sits where confidence was
+expected, and it reads 0.0 on every one of the 44 estimates in the first
+real capture. Whether it ever moves is unknown, so nothing is filtered
+on it -- filtering on a field that is always zero would silently drop
+everything the day it stops being zero.
 
 THREE LEVELS, AND THEY ARE ALL USEFUL. One request answers both open
 questions: a calendar needs the mission total, a progress sensor needs
@@ -58,6 +77,10 @@ class TimeEstimate:
     #: discriminator between several estimates for one room, kept raw
     #: because the full set of keys is not enumerated anywhere.
     params: dict[str, Any] = field(default_factory=dict)
+    #: Sits where a confidence value was expected, and read 0.0 on every
+    #: estimate of the first real capture. Kept raw because nobody knows
+    #: what a non-zero one means.
+    deviation: float | None = None
 
     @property
     def seconds(self) -> float | None:
@@ -78,6 +101,11 @@ class TimeEstimate:
         built on one is worse than no percentage: it looks equally
         authoritative and is not.
         """
+        # NOTHING IS FILTERED OUT WHEN THERE IS NO CONFIDENCE FIELD,
+        # and the live response has none. Treating its absence as poor
+        # would discard every estimate a real robot returns.
+        if not self.confidence:
+            return True
         return str(self.confidence).upper() in (
             TimeEstimateConfidence.GOOD_CONFIDENCE.value.upper(),
             TimeEstimateConfidence.PARTIAL_CONFIDENCE.value.upper(),
@@ -85,11 +113,19 @@ class TimeEstimate:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TimeEstimate:
+        # `value` on the wire. `estimate` was the simulator's name and
+        # is kept as a fallback -- it costs one `or` and covers the case
+        # where the two shapes turn out to be per-account or
+        # per-firmware rather than simulator-versus-live.
+        raw = data.get("value")
+        if raw is None:
+            raw = data.get("estimate")
         return cls(
-            estimate=float(data.get("estimate") or 0.0),
+            estimate=float(raw or 0.0),
             unit=str(data.get("unit") or ""),
             confidence=str(data.get("confidence") or ""),
             params=data.get("params") or {},
+            deviation=data.get("deviation"),
         )
 
 
@@ -118,6 +154,10 @@ class TimeEstimates:
         default_factory=dict
     )
     by_zone: dict[str, list[TimeEstimate]] = field(default_factory=dict)
+    #: Square units per hour, or some such, for each cleaning mode --
+    #: `deep`, `light`, `standard`. Carried because the response offers
+    #: it; what the numbers measure is not established.
+    cleaning_rates: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, data: Any) -> TimeEstimates:
@@ -127,6 +167,31 @@ class TimeEstimates:
         by_region: dict[str, list[TimeEstimate]] = {}
         by_map_region: dict[tuple[str, str], list[TimeEstimate]] = {}
         by_zone: dict[str, list[TimeEstimate]] = {}
+        rates: dict[str, float] = {}
+
+        # THE LIVE SHAPE FIRST. `smart_maps` / `areas` is what a real
+        # robot returns; the `pmaps` / `regions` branch below is the
+        # simulator's and is kept because it costs one loop.
+        for smart_map in data.get("smart_maps") or []:
+            if not isinstance(smart_map, dict):
+                continue
+            map_id = str(smart_map.get("smart_map_id") or "")
+            for key, value in (smart_map.get("cleaning_rates") or {}).items():
+                if isinstance(value, (int, float)):
+                    rates[str(key)] = float(value)
+            for area in smart_map.get("areas") or []:
+                if not isinstance(area, dict):
+                    continue
+                area_id = str(area.get("area_id") or "")
+                if not area_id:
+                    continue
+                estimates = _estimates(area.get("estimates"))
+                # `area_type` separates rooms from zones in one list.
+                if str(area.get("area_type") or "region") == "zone":
+                    by_zone[area_id] = estimates
+                else:
+                    by_region[area_id] = estimates
+                    by_map_region[(map_id, area_id)] = estimates
 
         for pmap in data.get("pmaps") or []:
             if not isinstance(pmap, dict):
@@ -157,6 +222,7 @@ class TimeEstimates:
             by_region=by_region,
             by_map_region=by_map_region,
             by_zone=by_zone,
+            cleaning_rates=rates,
         )
 
     @staticmethod
