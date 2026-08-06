@@ -222,8 +222,29 @@ async def _set_map_orientation(robot: Any, args: argparse.Namespace) -> Any:
     # RADIANS, not degrees -- the parameter is orientation_rad. Passing
     # 90 expecting a quarter turn would rotate the map by about 14 full
     # revolutions, landing somewhere arbitrary.
-    print(f"   setting orientation {args.orientation} rad on map {p2map_id}")
-    return await robot.set_map_orientation(p2map_id, float(args.orientation))
+    # WITHOUT --orientation, RESEND WHAT THE MAP ALREADY HAS.
+    #
+    # The abort notice promises this check "resends what is already
+    # there", and it did not: it sent the argument default of 0.0
+    # regardless. @DaRealGuGu's map went from -0.0035 rad to 0.0 --
+    # invisible on screen, and still a change made by a check that said
+    # it made none.
+    #
+    # A tool that misdescribes itself is worse than one that refuses:
+    # the whole point of these checks is that a tester can trust the
+    # summary before running them.
+    requested = args.orientation
+    if requested is None:
+        current = None
+        for entry in (await robot.get_active_map_versions()) or []:
+            if isinstance(entry, dict) and entry.get("p2map_id") == p2map_id:
+                current = entry.get("user_orientation_rad")
+                break
+        requested = current if isinstance(current, (int, float)) else 0.0
+        print(f"   resending the map's current orientation ({requested} rad)")
+    else:
+        print(f"   setting orientation {requested} rad on map {p2map_id}")
+    return await robot.set_map_orientation(p2map_id, float(requested))
 
 
 async def _household_id(robot: Any, args: argparse.Namespace) -> str:
@@ -644,11 +665,32 @@ def _reported_settings(raw: Any) -> dict[str, Any] | None:
     ["state"]. It reported "none of these settings exist on this robot",
     which is the worst kind of wrong: a plausible negative result.
     """
-    state = getattr(raw, "state", None)
-    if state is None and isinstance(raw, dict):
-        state = raw.get("state")
+    # THE PAYLOAD IS ON `.payload`, NOT `.state`.
+    #
+    # `get_settings()` returns a ShadowResponse, whose fields are `topic`
+    # and `payload` -- there is no `state` attribute at all. Looking for
+    # one fell through to the object itself, found no `reported` in it,
+    # and reported "could not read rw-settings -- this robot may be
+    # EPHEMERAL tier".
+    #
+    # @DaRealGuGu's robot reports rw-settings perfectly well; his own
+    # diagnostics list it among the seeded shadows. So the check
+    # answered a question about his hardware that was really a question
+    # about our attribute name -- and it answered it wrongly, in a way
+    # that reads like a fact about his robot.
+    #
+    # Six controls were waiting on this check. It has been unable to
+    # succeed since it was written.
+    state = getattr(raw, "payload", None)
+    if state is None:
+        state = getattr(raw, "state", None)
     if state is None:
         state = raw
+    # The payload carries its own `state` wrapper, so unwrap until the
+    # `reported` block or the bare settings are in hand. Four shapes are
+    # in play and each one has bitten this function once.
+    if isinstance(state, dict) and "state" in state:
+        state = state["state"]
     if hasattr(state, "reported"):
         state = state.reported
     elif isinstance(state, dict) and "reported" in state:
@@ -1230,7 +1272,8 @@ CHECKS: tuple[WriteCheck, ...] = (
         name="set_map_orientation",
         risk="safe",
         summary=(
-            "rotates how a map is displayed. --orientation takes RADIANS: "
+            "resends a map's current orientation, changing nothing. "
+            "--orientation takes RADIANS to rotate it instead: "
             "0 leaves it as is, 1.5708 is a quarter turn, 3.1416 is upside down"
         ),
         verify_by="open the iRobot app; the map should appear rotated",
@@ -1291,7 +1334,30 @@ def _print_list() -> None:
     )
 
 
+def _survive_a_narrow_console() -> None:
+    """Stops a check tickmark from killing the run on Windows.
+
+    The status lines print U+2713. A cp1252 console cannot encode it, so
+    `print()` raises UnicodeEncodeError **before the check does any
+    work** -- the tool dies on its own decoration, and the error names an
+    encoding rather than anything the tester did (@utkjmitch).
+
+    `PYTHONUTF8=1` fixes it from outside; nobody should have to know
+    that. Falling back to `errors="replace"` costs a mangled tickmark on
+    a console that could not have shown it anyway.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - platform specific
+            pass
+
+
 def main() -> None:
+    _survive_a_narrow_console()
     parser = argparse.ArgumentParser(
         description="Try a write operation that has no verifier yet."
     )
@@ -1300,7 +1366,10 @@ def main() -> None:
     parser.add_argument("--list", action="store_true", help="show what can be run")
     parser.add_argument("--new-name", default="Roomba+ test")
     parser.add_argument("--p2map-id", default=None)
-    parser.add_argument("--orientation", type=float, default=0.0,
+    # NO DEFAULT: omitting it means "resend what the map already has",
+    # which is what the abort notice promises. A default of 0.0 made the
+    # check quietly straighten every map it was run against.
+    parser.add_argument("--orientation", type=float, default=None,
                         help="in RADIANS (0 = unchanged for most maps)")
     parser.add_argument("--schedule-name", default="Roomba+ test schedule")
     parser.add_argument("--household-id", default=None)

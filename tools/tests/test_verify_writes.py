@@ -1419,3 +1419,143 @@ class TestMissionHistoryShapeCheck:
         robot.send_simple_command.assert_not_awaited()
         robot.update_schedules.assert_not_awaited()
         robot.set_setting.assert_not_awaited()
+
+
+class TestOrientationResendsWhatIsThere:
+    """The abort notice promises this check "resends what is already
+    there", and it did not: it sent the argument default of 0.0
+    regardless. @DaRealGuGu's map went from -0.0035 rad to 0.0 --
+    invisible on screen, and still a change made by a check that said it
+    made none.
+
+    A tool that misdescribes itself is worse than one that refuses: the
+    point of these checks is that a tester can trust the summary before
+    running them.
+    """
+
+    def _run(self, orientation, current=-0.0035279512971639893):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _set_map_orientation
+
+        robot = AsyncMock()
+        robot.blid = "B"
+        robot.get_active_map_versions.return_value = [
+            {"p2map_id": "M1", "user_orientation_rad": current}
+        ]
+        args = SimpleNamespace(orientation=orientation, p2map_id="M1")
+        asyncio.run(_set_map_orientation(robot, args))
+        return robot.set_map_orientation.await_args.args[1]
+
+    def test_without_an_argument_the_current_value_goes_back(self):
+        assert self._run(None) == -0.0035279512971639893
+
+    def test_an_explicit_value_is_honoured(self):
+        assert self._run(1.5708) == 1.5708
+
+    def test_zero_can_still_be_asked_for_explicitly(self):
+        """Straightening a map is a legitimate request -- it just must
+        not happen by accident."""
+        assert self._run(0.0) == 0.0
+
+    def test_a_map_with_no_orientation_falls_back_to_zero(self):
+        assert self._run(None, current=None) == 0.0
+
+
+class TestTheSettingsShadowIsRead:
+    """`get_settings()` returns a ShadowResponse, whose fields are
+    `topic` and `payload` -- there is no `state` attribute at all.
+    Looking for one fell through to the object itself, found no
+    `reported`, and reported "could not read rw-settings -- this robot
+    may be EPHEMERAL tier".
+
+    @DaRealGuGu's robot reports rw-settings perfectly well; his own
+    diagnostics list it among the seeded shadows. So the check answered
+    a question about our attribute name and phrased it as a fact about
+    his hardware.
+
+    Six controls were waiting on this check. It had never been able to
+    succeed.
+    """
+
+    def _read(self, raw):
+        from roombapy_prime_tools.verify_writes import _reported_settings
+
+        return _reported_settings(raw)
+
+    def test_the_real_shape_a_robot_returns(self):
+        from roombapy_prime.mqtt_client import ShadowResponse
+
+        response = ShadowResponse(
+            topic="$aws/things/B/shadow/name/rw-settings/get/accepted",
+            payload={"state": {"reported": {"vol": 3, "chrgLrPtrn": 1}}},
+        )
+
+        assert self._read(response) == {"vol": 3, "chrgLrPtrn": 1}
+
+    def test_a_plain_dict_with_the_same_wrapping(self):
+        assert self._read({"state": {"reported": {"vol": 3}}}) == {"vol": 3}
+
+    def test_a_bare_reported_block(self):
+        assert self._read({"vol": 3}) == {"vol": 3}
+
+    def test_nothing_usable_is_still_nothing(self):
+        """The skip message stays correct for a robot that genuinely has
+        no settings shadow -- it just must not fire for one that does."""
+        from roombapy_prime.mqtt_client import ShadowResponse
+
+        assert self._read(None) is None
+        assert self._read(ShadowResponse(topic="t", payload="nope")) is None
+
+
+class TestTheToolSurvivesANarrowConsole:
+    """The status lines print U+2713. A cp1252 console cannot encode it,
+    so `print()` raised UnicodeEncodeError before the check did any work
+    -- the tool died on its own decoration, and the error named an
+    encoding rather than anything the tester had done (@utkjmitch).
+    """
+
+    def test_both_streams_are_reconfigured(self):
+        from unittest.mock import MagicMock, patch
+
+        from roombapy_prime_tools.verify_writes import _survive_a_narrow_console
+
+        out, err = MagicMock(), MagicMock()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            _survive_a_narrow_console()
+
+        out.reconfigure.assert_called_once_with(errors="replace")
+        err.reconfigure.assert_called_once_with(errors="replace")
+
+    def test_a_stream_that_cannot_be_reconfigured_is_left_alone(self):
+        """Piped and captured streams do not all offer it, and refusing
+        to start over that would be the same failure in a new coat."""
+        from unittest.mock import MagicMock, patch
+
+        from roombapy_prime_tools.verify_writes import _survive_a_narrow_console
+
+        plain = MagicMock(spec=[])
+        with patch("sys.stdout", plain), patch("sys.stderr", plain):
+            _survive_a_narrow_console()
+
+    def test_a_refusing_stream_does_not_stop_the_run(self):
+        from unittest.mock import MagicMock, patch
+
+        from roombapy_prime_tools.verify_writes import _survive_a_narrow_console
+
+        stream = MagicMock()
+        stream.reconfigure.side_effect = ValueError("read-only")
+        with patch("sys.stdout", stream), patch("sys.stderr", stream):
+            _survive_a_narrow_console()
+
+    def test_it_runs_before_anything_prints(self):
+        """The point is that it happens first -- the crash was in the
+        very first status line."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        body = inspect.getsource(verify_writes.main)
+        assert body.splitlines()[1].strip() == "_survive_a_narrow_console()"
