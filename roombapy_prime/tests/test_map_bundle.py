@@ -52,18 +52,29 @@ class TestCleanScoreAgainstARealResponse:
 
         assert region.mission_last_unfinished["nMssn"] == 62
 
+    def test_higher_means_dirtier(self):
+        """Settled by an eleven-room account (@jouwdan): the value tracks
+        how long ago each room was last cleaned. Three rooms cleaned by
+        the newest mission read exactly 0.0 with
+        `last_updated_by: batch_decay_skipped`; the room untouched since
+        mission 12 reads 0.6973, approaching the 0.7 threshold.
+
+        A four-room account had looked ambiguous because two rooms
+        shared a mission and differed anyway -- room size and traffic
+        move the rate, not the direction.
+
+        Pinned as a fact about the data. If it ever inverts, this is
+        where it should be noticed."""
+        just_cleaned = self._region(clean_score=0.0,
+                                    last_updated_by="batch_decay_skipped")
+        long_ago = self._region(clean_score=0.6973)
+
+        assert long_ago.clean_score > just_cleaned.clean_score
+
     def test_the_value_is_carried_without_being_interpreted(self):
-        """WHICH DIRECTION IT RUNS IS NOT ESTABLISHED.
-
-        The one real capture has four rooms and neither reading survives
-        all four: two cleaned by the SAME mission read 0.523 and 0.3151,
-        so it is not simply time since cleaning, and `last_updated_by`
-        says `batch_decay`, which points the other way again.
-
-        So this stays a number the library passes through. Naming it
-        cleanliness or dirtiness on this evidence would be a guess
-        wearing a label, and an automation built on the wrong reading
-        does the opposite of what its author meant."""
+        """The library passes the number through unchanged; naming it is
+        the caller's business, and the caller now knows which way it
+        runs."""
         assert self._region(clean_score=0.25).clean_score == 0.25
         assert self._region(clean_score=0.523).clean_score == 0.523
 

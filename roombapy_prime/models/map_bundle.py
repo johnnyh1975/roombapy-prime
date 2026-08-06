@@ -796,25 +796,30 @@ class CleanScoreRegion:
     """
 
     region_id: str | None = None
-    #: WHICH DIRECTION THIS RUNS IS NOT ESTABLISHED, and it matters:
-    #: an automation built on the wrong reading does the opposite of what
-    #: its author meant.
+    #: HIGHER MEANS DIRTIER. Settled by an eleven-room account
+    #: (@jouwdan), where the value tracks how long ago each room was
+    #: last cleaned almost perfectly:
     #:
-    #: The one real capture has four rooms, and neither reading survives
-    #: all four:
+    #:     mission 33 (just now)   0.0, 0.0, 0.0
+    #:     mission 32              0.15, 0.1744, 0.1744
+    #:     mission 27              0.2801, 0.4
+    #:     mission 25              0.4201
+    #:     mission 12 (long ago)   0.6973
     #:
-    #:     region 12   0.25     last cleaned by mission 61 (newest)
-    #:     region 11   0.3487   mission 58
-    #:     region 10   0.3151   mission 56 (oldest)
-    #:     region 13   0.523    mission 56 (oldest)
+    #: The three rooms cleaned by the newest mission read exactly zero
+    #: and carry `last_updated_by: batch_decay_skipped` -- decay skipped
+    #: because they had just been reset. And `clean_score_ranges: [0.7]`
+    #: is the threshold the oldest room is approaching, which makes it
+    #: "needs cleaning" rather than "clean enough".
     #:
-    #: Two rooms cleaned by the SAME mission read 0.523 and 0.3151, so
-    #: it is not simply time since cleaning. And `last_updated_by` reads
-    #: `batch_decay`, which suggests the value decays -- pointing the
-    #: other way from the newest-room-lowest reading.
+    #: A four-room account looked ambiguous because two of its rooms
+    #: shared a mission and differed anyway -- room size and traffic
+    #: move the rate, not the direction. Eleven rooms across five
+    #: missions settle it.
     #:
-    #: Left unlabelled deliberately. Naming it cleanliness or dirtiness
-    #: on this evidence would be a guess wearing a label.
+    #: So anything built on this is DIRTINESS. The field name points the
+    #: other way, and an automation written from the name alone would do
+    #: the opposite of what its author meant.
     clean_score: float | None = None
     updated_ts: int | None = None
     last_updated_by: str | None = None

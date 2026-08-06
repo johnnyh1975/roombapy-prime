@@ -23,8 +23,9 @@ This file only tracks what changed from a user's point of view.
   EPHEMERAL tier" -- a wrong claim about the tester hardware. Six controls were waiting on this check.
 - **CleanScoreRegion declared four fewer fields than its parser read** -- high_traffic_enum,
   mission_last_cleaned, mission_last_unfinished and smart_clean_prefs existed at runtime and in no
-  type. Which direction clean_score runs stays unlabelled: neither reading survives the one real
-  capture.
+  type. Which direction clean_score runs is now settled: HIGHER MEANS DIRTIER, from an eleven-room
+  account where rooms cleaned by the newest mission read exactly 0.0 and one untouched for twenty
+  missions read 0.6973 against a 0.7 threshold.
 
 ### Confirmed
 - Mission history is a bare array -- 62 of 62 entries parsed from a real robot.
