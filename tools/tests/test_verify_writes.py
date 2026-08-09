@@ -1559,3 +1559,45 @@ class TestTheToolSurvivesANarrowConsole:
 
         body = inspect.getsource(verify_writes.main)
         assert body.splitlines()[1].strip() == "_survive_a_narrow_console()"
+
+
+class TestTheSettingsRunAsksBeforeItWrites:
+    """The prompts used to sit between two MQTT operations, and
+    @DaRealGuGu's run failed on exactly the operation after one.
+
+    Worse, prompting per field meant the first failure ended the run: he
+    answered one question, it failed, and the other four probes were
+    never attempted. Six fields with a question each is six chances to
+    lose the remaining ones.
+    """
+
+    def _source(self):
+        import inspect
+
+        from roombapy_prime_tools.verify_writes import _settings_roundtrip
+
+        return inspect.getsource(_settings_roundtrip)
+
+    def test_every_prompt_happens_before_the_first_write(self):
+        source = self._source()
+        last_confirm = source.rindex("confirm(")
+        first_write = source.index("await robot.set_setting")
+
+        assert last_confirm < first_write
+
+    def test_a_failed_write_does_not_end_the_run(self):
+        """One refused write says nothing about the others, and finding
+        out costs one more attempt."""
+        source = self._source()
+        after_failure = source[source.index('"write": "failed"'):]
+
+        assert "continue" in after_failure[:400]
+        assert "return" not in after_failure[:200]
+
+    def test_confirming_nothing_writes_nothing(self):
+        """Already handled at the end -- an empty result set reports
+        "every field was skipped" rather than a success with no
+        writes."""
+        source = self._source()
+
+        assert 'NoResult("every field was skipped")' in source

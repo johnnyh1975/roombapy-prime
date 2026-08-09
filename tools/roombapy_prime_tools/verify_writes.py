@@ -644,7 +644,15 @@ async def _dnd_read(robot: Any, args: Any) -> Any:
 #: two diagnostics files proving it, so those paths plainly work.
 _SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
     ("chrgLrPtrn", "charge light ring pattern", "0, 1, 2 -- write syntax confirmed"),
-    ("audioVolume", "audio volume", "0-100 -- wire key GUESSED, see below"),
+    # `audio`, NOT `audioVolume`. The guessed name is why this probe
+    # reported "not on this robot" for a setting the robot plainly has:
+    # @DaRealGuGu's key list contains `audio` and no `audioVolume`.
+    #
+    # A guess in a probe list does not just fail to find its field -- it
+    # says the field is absent, which reads as a fact about the
+    # hardware. Second time in this file that a wrong name became a
+    # wrong claim about somebody's robot.
+    ("audio", "audio volume", "range unknown -- read the current value first"),
     ("evacAllowed", "auto-evacuation allowed", "boolean"),
     ("padDryDur", "mop dry duration", "4, 6, 9, 12 hours"),
     ("pwAreaInterval", "pad wash frequency", "5, 10, 15 (x10 sq ft)"),
