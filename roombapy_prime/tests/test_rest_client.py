@@ -1211,3 +1211,50 @@ async def test_update_schedules_was_never_affected_by_the_create_bug() -> None:
     assert set(entry) == {"schedule_id", "options"}
     assert entry["schedule_id"] == "s1"
     assert entry["options"]["enabled"] is False
+
+
+class TestFavouritesParseWhicheverSpellingArrives:
+    """The model's own `to_json` disagreed with this parser. It writes
+    `default`, `deleted`, `hidden` and `commanddefs`; the parser read
+    `favorite_id`, `display_order` and `modification_secs`. Both were
+    written from the app's source, and the parser's docstring admitted
+    nobody had seen a real response.
+
+    A favourite whose id does not parse is dropped by the caller -- so a
+    mismatch produces an account with no favourites rather than an
+    error. @chairstacker has seven and saw no buttons.
+    """
+
+    def _parsed(self, raw):
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        return PrimeRestClient._favorite_from_json(raw)
+
+    def test_the_spelling_the_model_itself_writes(self):
+        favorite = self._parsed({"favoriteid": "F1", "name": "Kitchen"})
+
+        assert favorite.favorite_id == "F1"
+
+    def test_the_spelling_the_parser_expected(self):
+        favorite = self._parsed({"favorite_id": "F2", "name": "Hall"})
+
+        assert favorite.favorite_id == "F2"
+
+    def test_a_bare_id_also_works(self):
+        assert self._parsed({"id": "F3"}).favorite_id == "F3"
+
+    def test_command_defs_under_either_name(self):
+        assert self._parsed({"favoriteid": "F", "commanddefs": []}) is not None
+        assert self._parsed({"favoriteid": "F", "command_defs": []}) is not None
+
+    def test_nothing_recognisable_leaves_the_id_empty(self):
+        """The caller drops those, which is right -- a favourite with no
+        id cannot be run."""
+        assert self._parsed({"name": "Nameless"}).favorite_id is None
+
+    def test_the_first_spelling_present_wins(self):
+        """Both at once should not be ambiguous. Order is the order
+        given, and the app's own is first."""
+        favorite = self._parsed({"favoriteid": "A", "favorite_id": "B"})
+
+        assert favorite.favorite_id == "A"

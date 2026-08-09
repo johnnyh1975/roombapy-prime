@@ -8,6 +8,23 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b15] - 2026-08-06
+
+### Fixed
+- **Favourites never parsed.** The parser read favorite_id while the model own to_json writes
+  favoriteid; the caller drops favourites with no id, so the mismatch produced an account with no
+  favourites rather than an error. Both spellings accepted.
+- **The volume probe used a guessed wire key.** It looked for audioVolume where robots report audio,
+  and reported the setting as absent -- a wrong name became a wrong claim about a tester hardware.
+- **get_shadow re-subscribed to topics it already held**, and that redundant step is what failed on a
+  second read of the same shadow in one session. Skipped when already subscribed; cleared on
+  disconnect.
+
+### Changed
+- **settings_roundtrip asks about every field before writing any of them.** Prompting per field put a
+  human pause between MQTT operations and let the first failure end the run.
+- **clean_score direction settled: HIGHER MEANS DIRTIER**, from an eleven-room account.
+
 ## [0.2.0b14] - 2026-08-06
 
 ### Fixed

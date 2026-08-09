@@ -1201,3 +1201,79 @@ class TestSubscribeAlsoRevivesADeadConnection:
         source = inspect.getsource(mqtt_client)
 
         assert 'assert self._client is not None' not in source
+
+
+class TestARepeatReadDoesNotResubscribe:
+    """`get_shadow()` subscribed on every call and never unsubscribed, so
+    a second read of the same shadow in one session re-subscribed to
+    topics the broker had already granted -- work that contributes
+    nothing and can still fail.
+
+    It did fail: @DaRealGuGu's second `rw-settings` read got no SUBACK
+    within three seconds and then no response within eight, while the
+    first read in the same session had worked.
+    """
+
+    def _client(self):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = object.__new__(PrimeMqttClient)
+        client._subscribed_topics = set()
+        client._connected = True
+        client._disconnect_loop = None
+        client._disconnect_event = None
+        client._disconnect_reason = None
+        client._subscribe_and_wait = MagicMock()
+        return client
+
+    def test_the_first_read_subscribes(self):
+        client = self._client()
+        topics = ["a/get/accepted", "a/get/rejected"]
+
+        fresh = [t for t in topics if t not in client._subscribed_topics]
+        if fresh:
+            client._subscribe_and_wait(fresh)
+            client._subscribed_topics.update(fresh)
+
+        client._subscribe_and_wait.assert_called_once_with(topics)
+
+    def test_a_second_read_of_the_same_shadow_does_not(self):
+        client = self._client()
+        topics = ["a/get/accepted", "a/get/rejected"]
+        client._subscribed_topics.update(topics)
+
+        fresh = [t for t in topics if t not in client._subscribed_topics]
+        if fresh:
+            client._subscribe_and_wait(fresh)
+
+        client._subscribe_and_wait.assert_not_called()
+
+    def test_a_different_shadow_still_subscribes(self):
+        client = self._client()
+        client._subscribed_topics.add("a/get/accepted")
+        topics = ["b/get/accepted", "b/get/rejected"]
+
+        fresh = [t for t in topics if t not in client._subscribed_topics]
+        if fresh:
+            client._subscribe_and_wait(fresh)
+
+        client._subscribe_and_wait.assert_called_once_with(topics)
+
+    def test_a_disconnect_forgets_everything(self):
+        """A NEW SESSION GRANTS NOTHING. Keeping the set across a
+        disconnect would make the next read skip a subscription it no
+        longer has -- the exact silence this change exists to avoid."""
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = self._client()
+        client._subscribed_topics.update(["a/get/accepted", "b/get/rejected"])
+
+        PrimeMqttClient._on_disconnect(
+            client, MagicMock(), None, None, "session ended"
+        )
+
+        assert client._subscribed_topics == set()

@@ -155,6 +155,28 @@ def _raise_clear_timeout_error(exc: BaseException) -> None:
     ) from exc
 
 
+def _either(data: dict, *names: str) -> Any:
+    """The first of several spellings that is present.
+
+    THE MODEL'S OWN `to_json` DISAGREES WITH THE FAVOURITE PARSER. It
+    writes `default`, `deleted`, `hidden` and `commanddefs`; the parser
+    read `favorite_id`, `display_order` and `modification_secs`. Both
+    were written from the app's source, and the parser's own docstring
+    admits nobody had seen a real response.
+
+    A favourite whose id does not parse is dropped by the caller -- so a
+    mismatch here does not produce an error, it produces an account with
+    no favourites. @chairstacker has seven and saw no buttons.
+
+    Accepting both spellings costs one lookup and cannot be wrong in the
+    way a choice between them can.
+    """
+    for name in names:
+        if name in data:
+            return data[name]
+    return None
+
+
 class PrimeRestClient:
     """Thin wrapper around the p2maps REST surface. Takes an existing
     aiohttp.ClientSession (same one used for auth.login(), so cookies/
@@ -1111,21 +1133,23 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         already a dict. Without this, a real string-shaped response
         would crash outright on c["command"] (subscripting a string
         by a non-integer key)."""
-        command_defs_raw = data.get("commanddefs") or []
+        command_defs_raw = _either(data, "commanddefs", "command_defs") or []
         command_defs_raw = [
             json.loads(c) if isinstance(c, str) else c for c in command_defs_raw
         ]
         return FavoriteV1(
-            favorite_id=data.get("favorite_id"),
+            favorite_id=_either(data, "favoriteid", "favorite_id", "id"),
             name=data.get("name"),
             color=data.get("color"),
             icon=data.get("icon"),
             order=data.get("order"),
-            display_order=data.get("display_order"),
+            display_order=_either(data, "display_order", "displayorder"),
             is_default=bool(data.get("default", False)),
             is_deleted=bool(data.get("deleted", False)),
             is_hidden=bool(data.get("hidden", False)),
-            modification_secs=data.get("modification_secs"),
+            modification_secs=_either(
+                data, "modification_secs", "modificationsecs"
+            ),
             version=data.get("version"),
             command_defs=[
                 RoutineCommand(

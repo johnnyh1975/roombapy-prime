@@ -234,6 +234,11 @@ class PrimeMqttClient:
         # same device observed by chairstacker -- a pure network-timing
         # race, not a tier difference.
         self._confirmed_mids: set[int] = set()
+        #: Topics this client has subscribed to and not released, so a
+        #: repeat read does not re-subscribe to what the broker already
+        #: granted. Cleared on disconnect, because a new session starts
+        #: with none of them.
+        self._subscribed_topics: set[str] = set()
         # REAL BUG FOUND AND FIXED (this session, prompted directly by a
         # field result: chairstacker triggered a favorite AND a room
         # clean from the real app -- the robot genuinely reacted to
@@ -596,6 +601,10 @@ class PrimeMqttClient:
         neither exists here yet" -- this is the first half of closing
         that gap; watch_state() in prime_robot.py is the second)."""
         self._connected = False
+        # A NEW SESSION GRANTS NOTHING. Keeping the set across a
+        # disconnect would make the next read skip a subscription it no
+        # longer has -- the exact silence this change exists to avoid.
+        self._subscribed_topics.clear()
         self._disconnect_reason = str(reason_code)
         if self._disconnect_loop is not None and self._disconnect_event is not None:
             self._disconnect_loop.call_soon_threadsafe(self._disconnect_event.set)
@@ -994,7 +1003,27 @@ class PrimeMqttClient:
                 topic = f"{base}/{suffix}"
                 self._pending.setdefault(topic, []).append(_capture)
                 topics.append(topic)
-            self._subscribe_and_wait(topics)
+
+            # ONLY SUBSCRIBE TO WHAT IS NOT ALREADY SUBSCRIBED.
+            #
+            # This subscribed on EVERY call and never unsubscribed, so a
+            # second read of the same shadow in one session re-subscribed
+            # to topics the broker had already granted -- work that
+            # contributes nothing and can still fail.
+            #
+            # It did fail: @DaRealGuGu's second `rw-settings` read got no
+            # SUBACK within three seconds and then no response within
+            # eight, while the first read in the same session had worked.
+            #
+            # Removing the redundant call is not a retry and not a
+            # heuristic -- it deletes a step rather than catching it. And
+            # it keeps the SUBACK guard meaningful for the first
+            # subscription, where an unacknowledged one really does mean
+            # a topic that will deliver nothing.
+            fresh = [t for t in topics if t not in self._subscribed_topics]
+            if fresh:
+                self._subscribe_and_wait(fresh)
+                self._subscribed_topics.update(fresh)
             self._client.publish(f"{base}/get", payload=b"", qos=1)
 
             waited = 0.0
