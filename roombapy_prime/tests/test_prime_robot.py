@@ -1744,3 +1744,81 @@ class TestTheExpiryIsReadOffTheEnvelope:
 
         assert len(message.updates) == 1
         assert message.updates[0].point == (1.5, 2.5)
+
+
+class TestTheRegionCommandShapeThatWorks:
+    """CONFIRMED on real hardware (@Echovictor37, Combo 105, sku
+    Y311240): the robot cleaned only the targeted room, and
+    `operating_mode` selected vacuum-only versus vacuum-and-mop, both
+    visually verified.
+
+    **A THIRD FAILURE MODE came with it.** With `command_type=CLEAN` and
+    `map_id=None`, the broker returned a PUBACK and the robot cleaned the
+    whole house — not the requested room, and not nothing either.
+
+    This project knew two ways a command fails: no effect, and a PUBACK
+    followed by silence. This is a third: accepted, effective, and not
+    what was asked. **A confirmed send proves delivery, never intent.**
+    """
+
+    def _command(self, command_type, map_id):
+        from roombapy_prime.models.mission_control import (
+            CommandParams,
+            Region,
+            RegionType,
+            RoutineCommand,
+        )
+
+        return RoutineCommand(
+            command_type=command_type,
+            asset_id="BLID",
+            map_id=map_id,
+            regions=[Region(
+                region_id="11", region_type=RegionType.RID,
+                params=CommandParams(operating_mode=2),
+            )],
+            initiator="rmtApp",
+        )
+
+    def test_the_confirmed_shape_serialises_with_start(self):
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        body = self._command(MissionCommandType.START, "M1").to_json()
+
+        assert body["command"] == "start"
+
+    def test_the_map_id_is_carried(self):
+        """Omitting it was half of what turned a room clean into a
+        whole-house clean."""
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        body = self._command(MissionCommandType.START, "M1").to_json()
+
+        assert "M1" in str(body)
+
+    def test_the_initiator_is_carried(self):
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        body = self._command(MissionCommandType.START, "M1").to_json()
+
+        assert body.get("initiator") == "rmtApp"
+
+    def test_the_region_keeps_its_operating_mode(self):
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        body = self._command(MissionCommandType.START, "M1").to_json()
+
+        assert "operatingMode" in str(body)
+
+    def test_the_docstring_records_the_confirmation_and_the_caveat(self):
+        """So the next person reading it does not repeat the whole-house
+        clean to find out."""
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        doc = inspect.getdoc(PrimeRobot.send_routine_command_via_cmd_topic)
+
+        assert "CONFIRMED WORKING" in doc
+        assert "THIRD FAILURE MODE" in doc
+        assert "clean_all" in doc

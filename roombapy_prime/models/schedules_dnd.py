@@ -187,9 +187,26 @@ class ScheduleOptions:
     enabled: bool | None = None
     force_cloud: bool | None = None
     reminder: int | None = None
+    #: EVERYTHING THE SERVER SENT THAT THIS MODEL DOES NOT NAME.
+    #
+    # The server is ahead of the app it was reverse-engineered from:
+    # `is_smart_clean_fav` arrives on real schedules and appears nowhere
+    # in APK 2.2.4, neither in Kotlin nor natively (APK research 10).
+    #
+    # Writing a schedule is read-modify-write. Without this, every write
+    # silently drops whatever the server knows and the app does not --
+    # and the loss is invisible, because the request is accepted and the
+    # field simply stops coming back.
+    #
+    # Kept opaque on purpose: nothing here needs to be understood, only
+    # returned unchanged.
+    unknown_fields: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
-        body: dict[str, Any] = {}
+        # The unknown ones FIRST, so a named field always wins if the
+        # two ever collide -- our understanding of a key we model should
+        # not be overwritten by a stale copy of it.
+        body: dict[str, Any] = dict(self.unknown_fields)
         if self.asset_id is not None:
             body["robot_id"] = self.asset_id
         if self.name is not None:
@@ -241,11 +258,22 @@ class ScheduleOptions:
         params/regions/id_multipolys fields). Safe for an unchanged
         round-trip specifically because nothing here needs to be
         understood, only preserved byte-for-byte."""
+        # The sixteen `@SerialName` keys of ScheduleOptions, confirmed
+        # from the app's own `$$serializer` `<clinit>` block. Anything
+        # else the server sends is carried through untouched.
+        known = {
+            "robot_id", "name", "frequency", "start", "end", "after",
+            "until", "commands", "end_commands", "append", "exclude",
+            "created_time", "deleted", "enabled", "force_cloud", "reminder",
+        }
+        extras = {k: v for k, v in data.items() if k not in known}
+
         start_data = data.get("start")
         end_data = data.get("end")
         after_data = data.get("after")
         until_data = data.get("until")
         return cls(
+            unknown_fields=extras,
             asset_id=data.get("robot_id"),
             name=data.get("name"),
             frequency=_enum_or_none(ScheduleFrequency, data.get("frequency")),

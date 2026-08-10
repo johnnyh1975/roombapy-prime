@@ -196,6 +196,37 @@ def _shadow_base(blid: str, named: str | None) -> str:
     return f"$aws/things/{blid}/shadow"
 
 
+def _publish_confirmed(info: Any, topic: str, timeout: float = 5.0) -> None:
+    """Raises unless the broker actually took the message.
+
+    A publish that never leaves and a robot that never answers look the
+    same from the caller: silence, then a timeout. paho reports the
+    difference in the return code and in `is_published()`, and both were
+    being discarded.
+    """
+    # A client that returns nothing at all is a stand-in, not a broker.
+    # Refusing here would fail tests rather than find bugs.
+    if info is None:
+        return
+    rc = getattr(info, "rc", None)
+    if rc is not None and rc != mqtt.MQTT_ERR_SUCCESS:
+        raise ShadowError(
+            f"PUBLISH to {topic} was refused by the client (paho rc={rc}) -- "
+            "the request never left, so a timeout below would mean nothing."
+        )
+    try:
+        info.wait_for_publish(timeout=timeout)
+    except (RuntimeError, ValueError) as exc:
+        raise ShadowError(
+            f"PUBLISH to {topic} could not be confirmed: {exc}"
+        ) from exc
+    if not info.is_published():
+        raise ShadowError(
+            f"PUBLISH to {topic} was queued but never sent within {timeout}s -- "
+            "the connection accepts messages and is not delivering them."
+        )
+
+
 class PrimeMqttClient:
     """One connection, one blid. Not designed for long-lived reuse across
     many operations yet — construct, do what you need, disconnect.
@@ -1024,7 +1055,20 @@ class PrimeMqttClient:
             if fresh:
                 self._subscribe_and_wait(fresh)
                 self._subscribed_topics.update(fresh)
-            self._client.publish(f"{base}/get", payload=b"", qos=1)
+            # THE PUBLISH IS CONFIRMED, not fired and forgotten.
+            #
+            # `publish()` returns a result code and a handle, and this
+            # ignored both. A queued-but-unsent request produces exactly
+            # the symptom @DaRealGuGu reported: no answer within eight
+            # seconds, no error, nothing to distinguish "the robot has no
+            # such shadow" from "we never asked".
+            #
+            # This is the same class of gap b12 closed for `subscribe`.
+            # It was closed there and left open here, three lines apart.
+            _publish_confirmed(
+                self._client.publish(f"{base}/get", payload=b"", qos=1),
+                f"{base}/get",
+            )
 
             waited = 0.0
             while waited < timeout and not result:

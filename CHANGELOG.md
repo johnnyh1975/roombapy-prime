@@ -8,6 +8,25 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.2.0b16] - 2026-08-09
+
+### Fixed
+- **A shadow GET did not check that its request was sent.** publish() returns a result code and a
+  handle and both were discarded, so a queued-but-unsent request looked identical to a silent robot.
+- **Schedule writes dropped server fields this library does not model**, is_smart_clean_fav among
+  them. Read-modify-write now carries unknown keys through untouched.
+
+### Confirmed
+- **Region-targeted cleaning works on real hardware** (@Echovictor37, Combo 105): the robot cleaned
+  only the targeted room and operating_mode selected vacuum versus vacuum-and-mop. The method was
+  documented as EXPERIMENTAL, UNCONFIRMED and is not any more. A third failure mode came with it:
+  command_type=CLEAN with map_id=None returned a PUBACK and cleaned the whole house -- accepted,
+  effective, and not what was asked.
+
+### Added
+- **--debug on the verification tool.** Asking a tester for a log previously meant guessing at an
+  environment variable the tool does not read.
+
 ## [0.2.0b15] - 2026-08-06
 
 ### Fixed

@@ -1277,3 +1277,64 @@ class TestARepeatReadDoesNotResubscribe:
         )
 
         assert client._subscribed_topics == set()
+
+
+class TestAShadowGetIsActuallySent:
+    """`publish()` returns a result code and a handle, and `get_shadow`
+    discarded both.
+
+    A queued-but-unsent request produces exactly the symptom
+    @DaRealGuGu reported: no answer within eight seconds, no error, and
+    nothing to distinguish "this robot has no such shadow" from "we
+    never asked". **This is the same class of gap b12 closed for
+    `subscribe`** — closed there, left open three lines away.
+    """
+
+    def _confirm(self, **attrs):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import _publish_confirmed
+
+        info = MagicMock()
+        info.rc = attrs.get("rc", 0)
+        info.is_published.return_value = attrs.get("published", True)
+        if "raises" in attrs:
+            info.wait_for_publish.side_effect = attrs["raises"]
+        return lambda: _publish_confirmed(info, "topic")
+
+    def test_a_normal_publish_passes(self):
+        self._confirm()()
+
+    def test_a_refused_publish_says_the_request_never_left(self):
+        from roombapy_prime.mqtt_client import ShadowError
+
+        with pytest.raises(ShadowError, match="never left"):
+            self._confirm(rc=4)()
+
+    def test_a_queued_but_unsent_publish_is_caught(self):
+        """The connection accepts messages and does not deliver them --
+        the state that looks healthiest and works least."""
+        from roombapy_prime.mqtt_client import ShadowError
+
+        with pytest.raises(ShadowError, match="queued but never sent"):
+            self._confirm(published=False)()
+
+    def test_an_unconfirmable_publish_is_reported(self):
+        from roombapy_prime.mqtt_client import ShadowError
+
+        with pytest.raises(ShadowError, match="could not be confirmed"):
+            self._confirm(raises=RuntimeError("loop not running"))()
+
+    def test_a_stand_in_client_is_tolerated(self):
+        """Refusing on None would fail tests rather than find bugs."""
+        from roombapy_prime.mqtt_client import _publish_confirmed
+
+        _publish_confirmed(None, "topic")
+
+    def test_get_shadow_uses_it(self):
+        import inspect
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        source = inspect.getsource(PrimeMqttClient.get_shadow)
+        assert "_publish_confirmed(" in source

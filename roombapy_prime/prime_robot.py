@@ -468,10 +468,38 @@ class PrimeRobot:
         return await asyncio.to_thread(self._mqtt.publish_cmd, self._irbt_topic_prefix, command, initiator)
 
     async def send_routine_command_via_cmd_topic(self, command: RoutineCommand) -> bool:
-        """EXPERIMENTAL, UNCONFIRMED (session 46) -- a well-reasoned
-        hypothesis for the region-aware case send_simple_command()
-        explicitly can't cover, NOT a confirmed working path. Read the
-        linked evidence trail before using it against a real device.
+        """CONFIRMED WORKING on real hardware (@Echovictor37, Combo 105,
+        sku Y311240, on b14). The robot cleaned ONLY the targeted room,
+        and `operating_mode` correctly selected vacuum-only versus
+        vacuum-and-mop, both visually verified.
+
+        THE SHAPE THAT WORKS:
+
+            RoutineCommand(
+                command_type=MissionCommandType.START,   # not CLEAN
+                asset_id=robot.blid,
+                map_id=<active p2map_id>,                # not None
+                regions=[Region(region_id=<room_id>,
+                                region_type=RegionType.RID,
+                                params=CommandParams(operating_mode=...))],
+                initiator="rmtApp",
+            )
+
+        A THIRD FAILURE MODE, and the one worth remembering. With
+        `command_type=CLEAN` and `map_id=None`, the broker returned a
+        PUBACK **and the robot cleaned the whole house** -- not the
+        requested room, and not nothing either.
+
+        This project already knew two ways a command can fail: no effect
+        at all, and a PUBACK followed by silence. This is a third: the
+        command is accepted, has an effect, and the effect is not the one
+        asked for. **A confirmed send proves delivery, never intent** --
+        and a robot cleaning every room when one was requested is the
+        most expensive way to learn that.
+
+        STILL UNTESTED: `clean_all` / `select_all=True` through this
+        path, as opposed to `send_simple_command("start")`. Whether it
+        needs the same START-not-CLEAN treatment is unknown.
 
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_routine_command_via_cmd_topic
