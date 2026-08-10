@@ -60,6 +60,7 @@ read what they do.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -1366,6 +1367,21 @@ def _survive_a_narrow_console() -> None:
 
 def main() -> None:
     _survive_a_narrow_console()
+    # DEBUG WITHOUT A DETOUR.
+    #
+    # Asking a tester for a debug log meant telling them to set an
+    # environment variable this tool does not read, or to wrap the call
+    # in a Python one-liner. Both were guessed rather than checked, and
+    # the second time that happened in one day.
+    #
+    # A check whose failures need a log should be able to produce one.
+    if "--debug" in sys.argv:
+        sys.argv.remove("--debug")
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        )
+        logging.getLogger("paho").setLevel(logging.DEBUG)
     parser = argparse.ArgumentParser(
         description="Try a write operation that has no verifier yet."
     )

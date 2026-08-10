@@ -25,7 +25,7 @@ One command; it pulls the library in as a dependency:
 python3 -m venv ~/roombapy-test-venv
 source ~/roombapy-test-venv/bin/activate
 
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b15#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b16#subdirectory=tools"
 ```
 
 Requires Python 3.11+. You will need to re-run the `source` line each time you

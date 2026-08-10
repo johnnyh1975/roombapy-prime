@@ -1601,3 +1601,49 @@ class TestTheSettingsRunAsksBeforeItWrites:
         source = self._source()
 
         assert 'NoResult("every field was skipped")' in source
+
+
+class TestTheToolCanProduceItsOwnDebugLog:
+    """Asking a tester for a debug log meant telling them to set an
+    environment variable this tool does not read, or to wrap the call in
+    a Python one-liner. Both were guessed rather than checked.
+
+    A check whose failures need a log should be able to produce one.
+    """
+
+    def _run_main(self, argv):
+        from unittest.mock import MagicMock, patch
+
+        from roombapy_prime_tools import verify_writes
+
+        with patch.object(verify_writes.sys, "argv", argv), patch.object(
+            verify_writes, "logging"
+        ) as log, patch.object(
+            verify_writes, "_run", MagicMock(), create=True
+        ), patch.object(
+            verify_writes, "_survive_a_narrow_console", MagicMock()
+        ):
+            try:
+                verify_writes.main()
+            except SystemExit:
+                pass
+            except Exception:
+                pass
+        return log, argv
+
+    def test_the_flag_turns_debug_on(self):
+        log, _ = self._run_main(["prog", "--debug", "settings_roundtrip"])
+
+        assert log.basicConfig.called
+
+    def test_the_flag_is_removed_before_parsing(self):
+        """argparse would reject an unknown argument, so the check would
+        never run at all."""
+        _, argv = self._run_main(["prog", "--debug", "settings_roundtrip"])
+
+        assert "--debug" not in argv
+
+    def test_without_it_nothing_is_configured(self):
+        log, _ = self._run_main(["prog", "settings_roundtrip"])
+
+        assert not log.basicConfig.called
