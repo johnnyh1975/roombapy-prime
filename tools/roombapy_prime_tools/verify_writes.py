@@ -653,11 +653,32 @@ _SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
     # says the field is absent, which reads as a fact about the
     # hardware. Second time in this file that a wrong name became a
     # wrong claim about somebody's robot.
-    ("audio", "audio volume", "range unknown -- read the current value first"),
-    ("evacAllowed", "auto-evacuation allowed", "boolean"),
+    # THE VENDOR'S OWN 24 WRITABLE KEYS, from
+    # `RobotServiceHandler.settingFromKey` in app 3.0.0. Two entries
+    # here were wrong, and both are ones that failed in the field:
+    #
+    #   `audio`        -> `audio.volume`. The app addresses the sub-key
+    #                     with a dot, it does not write the whole map.
+    #                     @jouwdan's write of `audio` = {"volume": 100}
+    #                     got no UPDATE response at all.
+    #
+    #   `evacAllowed`  -> NOT IN THE LIST. It is readable and appears in
+    #                     `rw-settings`, but it is not one of the 24 the
+    #                     app writes. @DaRealGuGu's write of it was the
+    #                     one that failed on re-read.
+    #
+    # Neither is proof -- a robot may accept more than its app sends.
+    # But asking for a key the vendor never writes, and calling the
+    # silence a bug, is how three testers spent a week on this check.
+    ("audio.volume", "audio volume", "range unknown -- read the current value first"),
     ("padDryDur", "mop dry duration", "4, 6, 9, 12 hours"),
     ("pwAreaInterval", "pad wash frequency", "5, 10, 15 (x10 sq ft)"),
     ("autoevacFreq", "auto-evacuation frequency", "integer"),
+    ("padWashAllowed", "pad washing allowed", "boolean"),
+    ("pwHeat", "pad wash heated water", "boolean"),
+    ("pwReturn", "return to dock for pad wash", "boolean"),
+    ("pwTimeInterval", "pad wash time interval", "integer"),
+    ("padWetness.padPlate", "pad plate wetness", "sub-key, not the whole map"),
 )
 
 

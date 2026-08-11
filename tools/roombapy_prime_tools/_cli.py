@@ -327,6 +327,22 @@ def _report_account_robots(login_result, target_blid: str, report: Report) -> No
     if len(robots) <= 1:
         return
 
+    # SAID BEFORE THE RUN, not after it fails.
+    #
+    # Three testers on three accounts hit the same transport wall with
+    # three different symptoms, and the pattern fits one connection
+    # evicting another: AWS IoT drops the older client when a second
+    # arrives with the same client_id.
+    #
+    # That costs nothing to rule out and everything to overlook -- a run
+    # that fails this way looks like a robot problem, and two of the
+    # three testers reasonably concluded their hardware was at fault.
+    print(
+        "\nBefore you run: close the iRobot phone app completely, and stop "
+        "Home Assistant's Roomba+ integration if it talks to this robot.\n"
+        "Two connections to one robot evict each other, and the result "
+        "looks like a broken robot rather than a conflict."
+    )
     print(f"\n== {len(robots)} robots on this account ==")
     for entry_blid, entry in robots.items():
         marker = "->" if entry_blid == target_blid else "  "

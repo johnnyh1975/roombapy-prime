@@ -90,6 +90,7 @@ from typing import Any
 
 
 from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
+from roombapy_prime.vendor_errors import vendor_error
 from roombapy_prime.diagnostics import Report
 from roombapy_prime.models.mission_control import Region, RegionType
 
@@ -975,7 +976,15 @@ def _describe_typed_event(event) -> str:
         parts.append(f"zone_id={field(zone_ev, 'zone_id', None)!r}")
     error_ev = field(event, "error", None)
     if error_ev is not None:
-        parts.append(f"** ERROR value={field(error_ev, 'value', None)!r} **")
+        # NAME THE CODE. This printed `ERROR value=46` and left the
+        # reader to look it up -- and looking it up meant asking us,
+        # because until now this library had no error table at all.
+        _code = field(error_ev, "value", None)
+        _text = vendor_error(_code)
+        parts.append(
+            f"** ERROR {_code}: {_text['title']} **" if _text
+            else f"** ERROR value={_code!r} (not in iRobot's catalogue) **"
+        )
     return " ".join(parts)
 
 

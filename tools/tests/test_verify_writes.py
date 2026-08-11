@@ -1647,3 +1647,58 @@ class TestTheToolCanProduceItsOwnDebugLog:
         log, _ = self._run_main(["prog", "settings_roundtrip"])
 
         assert not log.basicConfig.called
+
+
+class TestTheCandidateKeysAreTheVendorsOwn:
+    """Two entries in this list were wrong, and both are the ones that
+    failed in the field.
+
+    `audio` should be `audio.volume` — the app addresses the sub-key
+    with a dot rather than writing the whole map, and @jouwdan's write
+    of `audio` = `{"volume": 100}` got no UPDATE response at all.
+
+    `evacAllowed` is readable and appears in `rw-settings`, but is
+    **not** one of the 24 keys `RobotServiceHandler.settingFromKey`
+    writes. @DaRealGuGu's write of it was the one that failed on
+    re-read.
+
+    Neither is proof — a robot may accept more than its app sends. But
+    asking for a key the vendor never writes, and calling the silence a
+    bug, is how three testers spent a week on this check.
+    """
+
+    #: `RobotServiceHandler.settingFromKey`, app 3.0.0.
+    VENDOR_KEYS = {
+        "audio.volume", "autoevacFreq", "carpetBoost", "childLock",
+        "detergent", "langs2.aSlots", "langs2.dLangs", "langs2.sLang",
+        "langs2.sVer", "langs2.uLangs", "mapUploadAllowed", "name",
+        "odoaMode", "padDryDur", "padWashAllowed", "padWetness.padPlate",
+        "pwAreaInterval", "pwHeat", "pwReturn", "pwTimeInterval",
+        "suctionLevel", "swScrub", "timezone", "twoPass",
+    }
+
+    def _candidates(self):
+        import re
+        import pathlib
+
+        source = pathlib.Path(
+            "tools/roombapy_prime_tools/verify_writes.py"
+        ).read_text()
+        i = source.index("THE VENDOR'S OWN 24 WRITABLE KEYS")
+        block = source[i:i + 2000]
+        return set(re.findall(r'^\s*\("([a-zA-Z0-9_.]+)",', block, re.M))
+
+    def test_every_candidate_is_one_the_vendor_writes(self):
+        stray = sorted(self._candidates() - self.VENDOR_KEYS)
+
+        assert not stray, (
+            "these are asked for but the app never writes them, so a "
+            f"silent robot proves nothing: {stray}"
+        )
+
+    def test_the_volume_key_is_dotted(self):
+        assert "audio.volume" in self._candidates()
+        assert "audio" not in self._candidates()
+
+    def test_evac_allowed_is_gone(self):
+        assert "evacAllowed" not in self._candidates()

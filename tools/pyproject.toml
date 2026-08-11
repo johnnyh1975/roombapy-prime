@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime-tools"
-version = "0.2.0b16"
+version = "0.3.0b1"
 description = "Diagnostic and field-test tooling for roombapy-prime (moves real robots -- read the safety notes)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ classifiers = [
 # than cleanly. scripts/check_version_pin.py enforces that this pin and
 # the core's own version stay in step.
 dependencies = [
-    "roombapy-prime @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b16",
+    "roombapy-prime @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b1",
 ]
 
 [project.optional-dependencies]
