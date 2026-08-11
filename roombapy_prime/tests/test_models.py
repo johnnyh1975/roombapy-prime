@@ -869,7 +869,12 @@ def test_mission_command_type_values_match_serialname_annotations() -> None:
     assert MissionCommandType.CLEAN_SPOT.value == "point_clean"
     assert MissionCommandType.TIDY.value == "tidy"
     assert MissionCommandType.START.value == "start"
-    assert len(list(MissionCommandType)) == 30
+    # 34: startDoNotDisturb and stopDoNotDisturb from app 3.0.0, plus
+    # the vendor spellings of pointClean and fluidRefill beside our
+    # point_clean and flrefill.
+    # Do Not Disturb was previously writable only through the settings
+    # REST call, and these are a second way in over the command topic.
+    assert len(list(MissionCommandType)) == 34
 
 
 def test_routine_command_to_json_required_fields() -> None:
@@ -4042,3 +4047,1039 @@ class TestMissionHistoryIsABareArray:
         assert entry.minutes_running == 9
         assert entry.minutes_paused == 2
         assert entry.minutes_charging == 1
+
+
+class TestCoverageWasInThePayloadAllAlong:
+    """`RoomInfoDto` and `ZoneInfoDto` in app 3.0.0 declare `coverage`
+    beside `area`, `passArea`, `passCount` and `totalArea`. Neither
+    parser read it.
+
+    **RoomEvent's docstring spends fourteen lines reasoning about
+    whether `area` or `total_area` means "how much was covered".** The
+    field that answers it was in the same object, unparsed — and
+    iRobot's own analysis notes it makes per-room mission progress
+    directly computable, without time estimates.
+    """
+
+    def test_a_room_reports_its_coverage(self):
+        from roombapy_prime.models.mission_history import RoomEvent
+
+        event = RoomEvent.from_json({
+            "rid": "11", "coverage": 0.87, "area": 354,
+            "passArea": 300, "passCount": 2, "totalArea": 310,
+        })
+
+        assert event.coverage == 0.87
+
+    def test_a_zone_reports_its_coverage(self):
+        from roombapy_prime.models.mission_history import ZoneEvent
+
+        assert ZoneEvent.from_json({"zid": "Z1", "coverage": 0.5}).coverage == 0.5
+
+    def test_absent_coverage_is_none_not_zero(self):
+        """Zero means the room was entered and nothing was done. Absent
+        means the robot did not say — and a firmware that omits the
+        field must not read as a failed clean."""
+        from roombapy_prime.models.mission_history import RoomEvent, ZoneEvent
+
+        assert RoomEvent.from_json({"rid": "11"}).coverage is None
+        assert ZoneEvent.from_json({"zid": "Z1"}).coverage is None
+
+    def test_the_other_fields_still_parse(self):
+        """Adding a field to a positional constructor is how the next
+        one gets shifted by one."""
+        from roombapy_prime.models.mission_history import ZoneEvent
+
+        event = ZoneEvent.from_json({
+            "zid": "Z1", "coverage": 0.5, "passCount": 3,
+            "status": "done", "totalArea": 42, "area": 40,
+        })
+
+        assert (event.pass_count, event.status, event.total_area) == (3, "done", 42)
+
+
+class TestTwoFieldsWeSendThatTheVendorStrips:
+    """`CommandDTO` in app 3.0.0 has thirteen fields. `robot_id`,
+    `select_all` and `id` are not among them — and iRobot's own 2.2.4
+    code stripped exactly those three unconditionally before sending.
+
+    **They are kept anyway.** @Echovictor37 confirmed a region-targeted
+    clean on real hardware with this payload, these fields included.
+    Removing them would change the one path in this library known to
+    work, on the strength of an app model rather than a test.
+
+    This test exists so the decision is visible rather than accidental:
+    if somebody removes them, they should be removing something a test
+    says is deliberate.
+    """
+
+    def _body(self):
+        from roombapy_prime.models.mission_control import (
+            CommandParams,
+            MissionCommandType,
+            Region,
+            RegionType,
+            RoutineCommand,
+        )
+
+        return RoutineCommand(
+            command_type=MissionCommandType.START,
+            asset_id="BLID", map_id="M1",
+            regions=[Region(region_id="11", region_type=RegionType.RID,
+                            params=CommandParams(operating_mode=2))],
+            initiator="rmtApp",
+        ).to_json()
+
+    def test_both_are_still_sent(self):
+        body = self._body()
+
+        assert "robot_id" in body
+        assert "select_all" in body
+
+    def test_the_reason_is_written_down(self):
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        source = inspect.getsource(mission_control)
+
+        assert "SHOULD NOT BE" in source
+        assert "Echovictor37" in source
+
+    def test_the_confirmed_fields_are_all_present(self):
+        """Whatever else is in the payload, the four that made a real
+        robot clean one room must be."""
+        body = self._body()
+
+        assert body["command"] == "start"
+        assert body["p2map_id"] == "M1"
+        assert body["initiator"] == "rmtApp"
+        assert body["regions"][0]["region_id"] == "11"
+
+
+class TestTheTwoParamsThreePointZeroAdded:
+    """`edgeOnly` and `quiet` are new in app 3.0.0's `CommandParamsDTO`
+    and absent from 2.2.4 — so this model had no way to know about them
+    until the 3.0 analysis listed them.
+
+    **Their values are unknown.** Integer per the DTO, and nothing here
+    guesses at a range: a caller with a value from a capture can pass
+    it, one without sends nothing.
+    """
+
+    def test_both_round_trip(self):
+        from roombapy_prime.models.mission_control import CommandParams
+
+        body = CommandParams(edge_only=1, quiet=0).to_json()
+
+        assert body["edgeOnly"] == 1
+        assert body["quiet"] == 0
+
+    def test_both_are_read_back(self):
+        from roombapy_prime.models.mission_control import CommandParams
+
+        params = CommandParams.from_json({"edgeOnly": 2, "quiet": 1})
+
+        assert (params.edge_only, params.quiet) == (2, 1)
+
+    def test_unset_means_absent_not_zero(self):
+        """Zero is a value the robot may act on. Sending it because
+        nobody chose is how a quiet clean happens unasked."""
+        from roombapy_prime.models.mission_control import CommandParams
+
+        body = CommandParams(operating_mode=2).to_json()
+
+        assert "edgeOnly" not in body
+        assert "quiet" not in body
+
+
+class TestTheStatusObjectsWereReadPartially:
+    """`DockStatusData` and `CleanMissionStatusData` each declare fields
+    these models never took."""
+
+    def test_the_dock_refill_state_is_read(self):
+        """`frState` is the dock counterpart to `pwState` and `pdState`,
+        which this model has had all along — so a dock could report that
+        it was refilling and nothing here could say so."""
+        from roombapy_prime.models.robot_info import DockStatus
+
+        assert DockStatus.from_json({"frState": 2}).fr_state == 2
+
+    def test_the_docks_identity_fields_are_read(self):
+        from roombapy_prime.models.robot_info import DockStatus
+
+        dock = DockStatus.from_json({
+            "id": "D1", "pn": "P900", "hwRev": 1, "varId": 6, "fwVerSec": "2.1",
+        })
+
+        assert (dock.dock_id, dock.part_number) == ("D1", "P900")
+        assert (dock.hardware_revision, dock.variant_id) == (1, 6)
+        assert dock.fw_version_secondary == "2.1"
+
+    def test_pause_timings_are_read(self):
+        """A paused robot shows `phase: "pause"` and no more. `expireTm`
+        says when that pause lapses, `rechrgTm` when it intends to
+        resume after charging — Classic surfaces both, Prime had the
+        same numbers in the same object and dropped them."""
+        from roombapy_prime.models.robot_info import CleanMissionStatus
+
+        status = CleanMissionStatus.from_json({
+            "phase": "pause", "expireTm": 1786205257, "rechrgTm": 1786208857,
+        })
+
+        assert status.expire_time == 1786205257
+        assert status.recharge_time == 1786208857
+
+    def test_not_ready_and_cond_not_ready_stay_separate(self):
+        """A scalar and a list in the same object — confirmed by the
+        Kotlin declaration, and matching what the field showed:
+        `notReady: 0` beside `condNotReady: [234]`. A robot can be ready
+        while naming conditions it would otherwise be blocked by."""
+        from roombapy_prime.models.robot_info import CleanMissionStatus
+
+        status = CleanMissionStatus.from_json({
+            "notReady": 0, "condNotReady": [234],
+        })
+
+        assert status.not_ready == 0
+        assert status.cond_not_ready == [234]
+
+    def test_nothing_reported_stays_none(self):
+        from roombapy_prime.models.robot_info import CleanMissionStatus, DockStatus
+
+        assert DockStatus.from_json({}).fr_state is None
+        assert CleanMissionStatus.from_json({}).expire_time is None
+
+
+class TestTwoGuessedKeysThatNoRobotEverSent:
+    """`MissionHistoryItemResponse` says `dirt` and `map_id`. This model
+    read `numberOfDirtDetects` and `staticMapId` — readable guesses at
+    what the fields might be called.
+
+    **No robot has ever sent either name**, so both have read None on
+    every mission since they were written. Nothing failed; the values
+    were simply always absent, which is indistinguishable from a robot
+    that does not report them.
+    """
+
+    def test_the_dirt_counter_reads_the_vendor_key(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({"dirt": 7})
+
+        assert entry.number_of_dirt_detects == 7
+
+    def test_the_map_id_reads_the_vendor_key(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        assert MissionHistoryEntry.from_json({"map_id": "MP1"}).static_map_id == "MP1"
+
+    def test_the_guessed_names_still_work(self):
+        """Kept as a fallback rather than removed: if any firmware
+        anywhere does send them, dropping the reader would turn a
+        working field into a missing one to tidy up a name."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({
+            "numberOfDirtDetects": 3, "staticMapId": "OLD",
+        })
+
+        assert entry.number_of_dirt_detects == 3
+        assert entry.static_map_id == "OLD"
+
+    def test_the_vendor_key_wins_when_both_appear(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({
+            "dirt": 7, "numberOfDirtDetects": 3,
+        })
+
+        assert entry.number_of_dirt_detects == 7
+
+
+class TestTheLegacyMapKeySwitch:
+    """`CommandDTO` carries `p2map_id` and `pmap_id` as four separate
+    nullable fields, not as alternatives — the app decides per device
+    via `allowLegacyReportedValuesInCommand`.
+
+    **The switch defaults off.** @Echovictor37's confirmed clean used
+    the payload without `pmap_id`, and a confirmed shape outranks a
+    plausible one.
+    """
+
+    def _command(self, **kwargs):
+        from roombapy_prime.models.mission_control import (
+            MissionCommandType,
+            RoutineCommand,
+        )
+
+        return RoutineCommand(
+            command_type=MissionCommandType.START, asset_id="B",
+            map_id="M1", regions=[], initiator="rmtApp",
+        ).to_json(**kwargs)
+
+    def test_the_confirmed_payload_is_the_default(self):
+        assert "pmap_id" not in self._command()
+
+    def test_the_legacy_name_can_be_added(self):
+        body = self._command(legacy_map_keys=True)
+
+        assert body["pmap_id"] == "M1"
+        assert body["p2map_id"] == "M1"
+
+    def test_the_new_name_is_always_there(self):
+        assert self._command()["p2map_id"] == "M1"
+
+
+class TestTheTimelineWasReadWithLongNames:
+    """`MissionEventDto` declares `cmd`, `disc`, `poly` and
+    `tentativeLoc`. This parser read `command`, `discovery`, `polygon`
+    and `tentativeLocation` — the readable forms, which `reloc` was
+    already the exception to.
+
+    Four event types were being dropped from every real timeline.
+    """
+
+    def _event(self, payload):
+        from roombapy_prime.models.mission_history import MissionTimelineEvent
+
+        return MissionTimelineEvent.from_json(payload)
+
+    def test_the_vendor_short_names_are_read(self):
+        event = self._event({
+            "type": "room",
+            "cmd": {"command": "start"},
+            "disc": {"rid": "11"},
+            "poly": {"area": 5},
+            "tentativeLoc": {"rid": "12"},
+        })
+
+        assert event.command is not None
+        assert event.discovery is not None
+        assert event.polygon is not None
+        assert event.tentative_location is not None
+
+    def test_the_long_names_still_work(self):
+        """Both are accepted rather than swapped: the long names came
+        from somewhere, and a payload using them would lose four event
+        types if they were removed to tidy up."""
+        event = self._event({
+            "command": {"command": "start"}, "polygon": {"area": 5},
+        })
+
+        assert event.command is not None
+        assert event.polygon is not None
+
+
+class TestTravelAndFutureEvents:
+    def test_travel_reads_the_vendor_keys(self):
+        from roombapy_prime.models.mission_history import TravelEvent
+
+        event = TravelEvent.from_json({"polyid": "P1", "wid": "W1"})
+
+        assert (event.poly_id, event.waypoint_id) == ("P1", "W1")
+
+    def test_travel_in_progress_is_read(self):
+        """`wip` was declared and unread, so a journey under way and one
+        finished looked the same."""
+        from roombapy_prime.models.mission_history import TravelEvent
+
+        assert TravelEvent.from_json({"wip": True}).in_progress is True
+
+    def test_future_events_are_kept(self):
+        """Finished events say where the robot has been; these say where
+        it is going — the half a progress display actually needs, and
+        the half this library was throwing away."""
+        from roombapy_prime.models.mission_history import MissionTimelineReport
+
+        report = MissionTimelineReport.from_json({
+            "finEvents": [{"type": "room"}],
+            "futureEvents": [{"type": "room"}, {"type": "travel"}],
+        })
+
+        assert len(report.fin_events) == 1
+        assert len(report.future_events) == 2
+
+    def test_no_future_events_is_an_empty_list(self):
+        from roombapy_prime.models.mission_history import MissionTimelineReport
+
+        assert MissionTimelineReport.from_json({}).future_events == []
+
+
+class TestTheLastFiveUnreadFields:
+    """The tail of a systematic comparison: every model's serialiser
+    checked against the 223 vendor classes, not sampled.
+    """
+
+    def test_a_mission_knows_which_favourite_started_it(self):
+        """`favoriteId` and `userMapId` were declared and unread, so the
+        history could not tell a favourite run from a manual one."""
+        from roombapy_prime.models.mission_history import MissionCommandRecord
+
+        record = MissionCommandRecord.from_json({
+            "favoriteId": "F1", "userMapId": "U1",
+        })
+
+        assert (record.favorite_id, record.user_map_id) == ("F1", "U1")
+
+    def test_a_room_event_accepts_the_legacy_map_names(self):
+        """`RoomInfoDto` carries `p2mapId`/`p2mapvId` AND
+        `pmapId`/`pmapvId` in parallel — the same dual convention as the
+        command. Only the new pair was read."""
+        from roombapy_prime.models.mission_history import RoomEvent
+
+        event = RoomEvent.from_json({"pmapId": "P1", "pmapvId": "PV1"})
+
+        assert (event.map_id, event.map_version) == ("P1", "PV1")
+
+    def test_the_new_names_still_win(self):
+        from roombapy_prime.models.mission_history import RoomEvent
+
+        event = RoomEvent.from_json({
+            "p2mapId": "NEW", "pmapId": "OLD",
+        })
+
+        assert event.map_id == "NEW"
+
+    def test_map_sharing_is_read(self):
+        from roombapy_prime.models.robot_info import HouseholdRobot
+
+        robot = HouseholdRobot.from_json({"robot_pmap_sharing": True})
+
+        assert robot.pmap_sharing is True
+
+    def test_the_users_map_rotation_is_read(self):
+        """Without it the renderer had no way to match the app's
+        orientation."""
+        from roombapy_prime.models.robot_info import P2MapVersion
+
+        version = P2MapVersion.from_json({"user_orientation_rad": 1.5708})
+
+        assert version.user_orientation_rad == 1.5708
+
+    def test_a_clean_score_error_is_read(self):
+        from roombapy_prime.models.map_bundle import CleanScoreData
+
+        assert CleanScoreData.from_json({"error": "boom"}).error == "boom"
+
+    def test_a_non_dict_clean_score_still_parses(self):
+        """The guard branch must not be where new fields land."""
+        from roombapy_prime.models.map_bundle import CleanScoreData
+
+        assert CleanScoreData.from_json(None).error is None
+
+
+class TestTheTwoRegionFieldsThreePointZeroAdded:
+    """`RegionDTO` in app 3.0.0 has five keys; 2.2.4 had three. This
+    model could not have known about `region_name` and `region_type`.
+
+    **Note the collision.** The wire key `region_type` is NOT this
+    dataclass's `region_type`, which serialises as `type` — iRobot added
+    a second, differently-named concept beside the existing one. Reusing
+    the attribute name would have made one of them unreachable.
+    """
+
+    def _region(self, **kwargs):
+        from roombapy_prime.models.mission_control import Region, RegionType
+
+        return Region(
+            region_id="11", region_type=RegionType.RID, **kwargs
+        ).to_json()
+
+    def test_unset_means_absent(self):
+        """The confirmed payload had neither, and a command that works
+        must not grow keys because a model gained fields."""
+        body = self._region()
+
+        assert set(body) == {"region_id", "type"}
+
+    def test_the_label_is_written_under_the_vendor_key(self):
+        assert self._region(region_label="Kitchen")["region_name"] == "Kitchen"
+
+    def test_the_kind_does_not_displace_the_type(self):
+        """`type` carries the RID/ZID discriminator that makes region
+        cleaning work. If `region_type` overwrote it, every targeted
+        clean would become something else."""
+        body = self._region(region_kind="room")
+
+        assert body["type"] == "rid"
+        assert body["region_type"] == "room"
+
+
+class TestCommandSpellingIsFieldConfirmedNotAppDerived:
+    """App 3.0.0 spells the multi-word commands in camelCase —
+    `washPad`, `dryPad`, `stopEvac`. This enum uses lowercase.
+
+    **The lowercase forms are what a real robot recorded.**
+    @DaRealGuGu's `rw-software.lastCommand` shows `"washpad"` and
+    `"drypad"`, and his pad-wash counter stands at 90: the washes are
+    happening.
+
+    So the difference is real and ours works. Switching to match the app
+    would change a demonstrated path to fit a model — the same trade
+    declined three times in one day.
+    """
+
+    def test_the_confirmed_lowercase_spellings_are_kept(self):
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        assert MissionCommandType.WASHPAD.value == "washpad"
+        assert MissionCommandType.DRYPAD.value == "drypad"
+
+    def test_the_difference_is_written_down(self):
+        """So the next person comparing against the app finds the
+        reason instead of 'fixing' it."""
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        source = inspect.getsource(mission_control)
+
+        assert "CASE DIFFERS FROM THE APP" in source
+        assert "field-confirmed" in source
+
+    def test_the_two_dnd_commands_are_noted_as_missing(self):
+        """`startDoNotDisturb` and `stopDoNotDisturb` are new in 3.0 —
+        DND was previously only writable through the settings REST
+        call."""
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        assert "startDoNotDisturb" in inspect.getsource(mission_control)
+
+
+class TestTheFirmwareCatalogue:
+    """`GET /v2/firmware` answers what the shadow cannot: `softwareVer`
+    says what is installed, this says what exists.
+
+    **`expectedInstallationTime` is the field that matters in a home** —
+    somebody deciding whether to start an update at nine in the evening
+    can be told rather than left to find out.
+    """
+
+    def test_an_item_parses(self):
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        item = FirmwareItem.from_json({
+            "version": "24.29.5", "sku": "N185240",
+            "targetSoftwareVer": ["24.30.0"], "notes": "Fixes docking",
+            "expectedInstallationTime": 1800, "expectedDownloadTime": 300,
+            "track": "production", "otaPriority": 2,
+        })
+
+        assert item.version == "24.29.5"
+        assert item.expected_installation_time == 1800
+        assert item.notes == "Fixes docking"
+
+    def test_a_dock_item_parses(self):
+        from roombapy_prime.models.robot_info import DockFirmware
+
+        dock = DockFirmware.from_json({"version": "4.8.6", "track": "production"})
+
+        assert (dock.version, dock.track) == ("4.8.6", "production")
+
+    def test_neither_breaks_on_rubbish(self):
+        from roombapy_prime.models.robot_info import DockFirmware, FirmwareItem
+
+        assert FirmwareItem.from_json(None).version is None
+        assert DockFirmware.from_json("nonsense").version is None
+
+    def test_the_call_returns_raw(self):
+        """The request model declares no HTTP method and nothing
+        describes the envelope. Modelling a response nobody has seen is
+        how this library got a `time_estimates` shape it had to replace
+        wholesale."""
+        import inspect
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        doc = inspect.getdoc(PrimeRestClient.get_firmware_raw)
+
+        assert "no HTTP method" in doc
+        assert "unknown" in doc
+
+
+class TestTwoCapabilityFlagsFromRealCaptures:
+    """`addOnHw` and `pose` are both in `Robot$Capabilities` and both in
+    real diagnostics (@connormxy: `addOnHw: 0`, `pose: 2`). Neither was
+    read.
+
+    **`pose` is the interesting one:** it separates a robot that reports
+    its position from one that does not — which is exactly the
+    EPHEMERAL/SMART distinction this project derives by other means.
+    """
+
+    def test_both_are_read(self):
+        from roombapy_prime.models.robot_info import CapabilityFlags
+
+        flags = CapabilityFlags.from_json({"addOnHw": 0, "pose": 2})
+
+        assert flags.add_on_hw == 0
+        assert flags.pose == 2
+
+    def test_zero_is_a_value_not_an_absence(self):
+        """`addOnHw: 0` means no add-on hardware, which is different
+        from a robot that did not report the field."""
+        from roombapy_prime.models.robot_info import CapabilityFlags
+
+        assert CapabilityFlags.from_json({"addOnHw": 0}).add_on_hw == 0
+        assert CapabilityFlags.from_json({}).add_on_hw is None
+
+    def test_the_existing_flags_still_parse(self):
+        from roombapy_prime.models.robot_info import CapabilityFlags
+
+        flags = CapabilityFlags.from_json({
+            "binFullDetect": 2, "oMode": 78, "ota": 2, "multiPass": 2,
+            "addOnHw": 0, "pose": 2,
+        })
+
+        assert (flags.bin_full_detect, flags.o_mode) == (2, 78)
+        assert (flags.ota, flags.multi_pass) == (2, 2)
+
+
+class TestTheThirdGuessedKey:
+    """`MissionTimelineDto` says `covStrat`. This model read
+    `coverageStrategy` — the third readable guess found by the same
+    check, after `numberOfDirtDetects` for `dirt` and `staticMapId` for
+    `map_id`.
+
+    All three had the same signature: a plausible name, no error, and a
+    value that read None on every mission ever recorded.
+    """
+
+    def test_the_vendor_key_is_read(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({"timeline": {"covStrat": "deep"}})
+
+        assert entry.coverage_strategy is not None
+
+    def test_the_guessed_key_still_works(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({
+            "timeline": {"coverageStrategy": "deep"},
+        })
+
+        assert entry.coverage_strategy is not None
+
+    def test_neither_present_is_none(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        assert MissionHistoryEntry.from_json({"timeline": {}}).coverage_strategy is None
+
+
+class TestTheRobotSendsMoreThanTheAppDeclares:
+    """`oModeStats` is in real mission entries and in **neither**
+    iRobot's own 33-key `MissionHistoryItemResponse` nor this reader.
+
+    Found by checking read keys against real captures rather than
+    against the app — the app model is authoritative for what iRobot
+    *uses*, not for what the robot *sends*.
+    """
+
+    def test_the_per_mode_statistics_are_kept(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({
+            "oModeStats": {"vac": {"nMin": 10, "sqft": 90}},
+        })
+
+        assert entry.o_mode_stats == {"vac": {"nMin": 10, "sqft": 90}}
+
+    def test_it_answers_what_a_duration_cannot(self):
+        """A Combo mission's forty minutes say nothing about the split.
+        This does."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({
+            "durationM": 40,
+            "oModeStats": {"vac": {"nMin": 10, "sqft": 90},
+                           "mop": {"nMin": 30, "sqft": 200}},
+        })
+
+        assert entry.duration_m == 40
+        assert entry.o_mode_stats["mop"]["nMin"] == 30
+
+    def test_it_is_kept_raw(self):
+        """Inventing a model for modes nobody has captured is what put
+        three guessed keys in this file already."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        odd = {"somethingNew": {"nMin": 1}}
+        entry = MissionHistoryEntry.from_json({"oModeStats": odd})
+
+        assert entry.o_mode_stats == odd
+
+    def test_absent_is_none(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        assert MissionHistoryEntry.from_json({}).o_mode_stats is None
+
+
+class TestTheFiveClassesThatChangedBetweenVersions:
+    """A generated 2.2.4 -> 3.0.0 diff, five classes with altered
+    fields. Three were already handled; two were not.
+    """
+
+    def test_the_schedule_id_is_read_from_either_placement(self):
+        """2.2.4 carried it beside `options`; 3.0.0 declares it as one of
+        `ScheduleOptionsDto`'s own keys.
+
+        A schedule whose id cannot be found is one nobody can edit or
+        delete — Home Assistant matches calendar events on it — and that
+        failure would look like an empty calendar rather than a parse
+        error."""
+        from roombapy_prime.models.schedules_dnd import HouseholdSchedule
+
+        assert HouseholdSchedule.from_json(
+            {"schedule_id": "S1", "options": {}}
+        ).schedule_id == "S1"
+        assert HouseholdSchedule.from_json(
+            {"options": {"schedule_id": "S2"}}
+        ).schedule_id == "S2"
+
+    def test_the_outer_placement_wins(self):
+        from roombapy_prime.models.schedules_dnd import HouseholdSchedule
+
+        schedule = HouseholdSchedule.from_json(
+            {"schedule_id": "OUT", "options": {"schedule_id": "IN"}}
+        )
+
+        assert schedule.schedule_id == "OUT"
+
+    def test_threshold_type_is_kept_although_dropped(self):
+        """The only field iRobot removed rather than renamed. This is a
+        read path: an unread field costs nothing, a dropped one costs
+        whatever it carried."""
+        import dataclasses
+
+        from roombapy_prime.models.map_bundle import PolicyZoneFeatureProperties
+
+        names = {f.name for f in dataclasses.fields(PolicyZoneFeatureProperties)}
+
+        assert "threshold_type" in names
+
+    def test_the_timeline_request_id_was_renamed_and_is_read(self):
+        """`requestId` became `timelineRequestId`."""
+        from roombapy_prime.models.mission_history import MissionTimelineReport
+
+        report = MissionTimelineReport.from_json({"timelineRequestId": "T1"})
+
+        assert report.timeline_request_id == "T1"
+
+    def test_the_raw_livemap_url_is_read(self):
+        """Added in 3.0.0 beside the existing one."""
+        from roombapy_prime.models.livemap import MapUpdateMessage
+
+        message = MapUpdateMessage.from_json({
+            "map_update": {"livemap_url": "u1", "livemap_url_raw": "u2"},
+        })
+
+        assert message.livemap_url_raw == "u2"
+
+
+class TestSelectAllNeverTravelsWithRegions:
+    """iRobot's own 2.2.4 code stripped `select_all` before sending and
+    3.0.0 does not model it, so the robot most likely ignores it.
+
+    **Most likely is not certainly, and this key says "clean
+    everything".** @Echovictor37 showed what that costs when it goes
+    wrong: a command the robot accepted and answered by cleaning the
+    whole house instead of the requested room.
+
+    Nothing in this library sets `clean_all` True today. This makes that
+    stay true rather than depend on nobody ever doing it.
+    """
+
+    def _body(self, regions, clean_all):
+        from roombapy_prime.models.mission_control import (
+            MissionCommandType,
+            Region,
+            RegionType,
+            RoutineCommand,
+        )
+
+        return RoutineCommand(
+            command_type=MissionCommandType.START,
+            asset_id="B", map_id="M1",
+            regions=[
+                Region(region_id=r, region_type=RegionType.RID) for r in regions
+            ],
+            clean_all=clean_all,
+        ).to_json()
+
+    def test_a_region_command_never_says_clean_everything(self):
+        """The one combination that could reproduce his whole-house
+        clean, if any firmware reads the key."""
+        assert self._body(["11"], clean_all=True)["select_all"] is False
+
+    def test_a_whole_house_command_still_can(self):
+        assert self._body([], clean_all=True)["select_all"] is True
+
+    def test_the_ordinary_case_is_unchanged(self):
+        assert self._body(["11"], clean_all=False)["select_all"] is False
+        assert self._body([], clean_all=False)["select_all"] is False
+
+    def test_the_regions_survive_either_way(self):
+        body = self._body(["11", "12"], clean_all=True)
+
+        assert [r["region_id"] for r in body["regions"]] == ["11", "12"]
+
+
+class TestTheLibraryCanNameAnError:
+    """This library had **no error table at all**. It passed codes
+    through as integers, so `verify_region_commands` printed
+    `ERROR value=46` and left the reader to look it up — and looking it
+    up meant asking us.
+
+    112 codes with iRobot's own title and explanation, in eight
+    languages, taken from app 3.0.0's locale files.
+    """
+
+    def test_a_documented_code_gets_the_vendor_title(self):
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert vendor_error(46)["title"] == "Battery too low to clean"
+
+    def test_the_explanation_comes_with_it(self):
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert "dock" in vendor_error(46)["content"].lower()
+
+    def test_localisation_works(self):
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert vendor_error(234, "fr")["title"].startswith("Impossible")
+
+    def test_an_unknown_language_falls_back_to_english(self):
+        """An English sentence that says what to do beats a localised
+        label that does not."""
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert vendor_error(46, "sv")["title"] == "Battery too low to clean"
+
+    def test_an_undocumented_code_returns_none(self):
+        """@connormxy's 236 is in neither the app's 112 nor anywhere
+        else. A caller should say "error 236" rather than pretend to a
+        name."""
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert vendor_error(236) is None
+
+    def test_rubbish_input_does_not_raise(self):
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert vendor_error(None) is None
+        assert vendor_error("nonsense") is None
+
+    def test_the_tool_uses_it(self):
+        import pathlib
+
+        source = pathlib.Path(
+            "tools/roombapy_prime_tools/verify_region_commands.py"
+        ).read_text()
+
+        assert "vendor_error(_code)" in source
+        assert "not in iRobot's catalogue" in source
+
+
+class TestTheModelsNameTheirOwnErrors:
+    """A library that surfaces a robot's errors should name them.
+
+    These models carried `error: 46` and every caller had to look it up
+    somewhere — which meant asking the maintainers, because until now
+    nothing here could say what 46 means.
+    """
+
+    def test_a_mission_error_carries_its_text(self):
+        from roombapy_prime.models.robot_info import CleanMissionStatus
+
+        status = CleanMissionStatus.from_json({"error": 46})
+
+        assert status.error == 46
+        assert status.error_text["title"] == "Battery too low to clean"
+
+    def test_a_dock_error_carries_its_text(self):
+        from roombapy_prime.models.robot_info import DockStatus
+
+        dock = DockStatus.from_json({"error": 671})
+
+        assert "Clean Water Tank" in dock.error_text["title"]
+
+    def test_the_code_is_kept_beside_the_text(self):
+        """Replacing the number with a name would lose the one thing a
+        report can be searched on."""
+        from roombapy_prime.models.robot_info import CleanMissionStatus
+
+        assert CleanMissionStatus.from_json({"error": 234}).error == 234
+
+    def test_an_undocumented_code_has_no_text(self):
+        """@connormxy's 236. A caller should be able to say "error 236,
+        undocumented" rather than "no error"."""
+        from roombapy_prime.models.robot_info import CleanMissionStatus
+
+        status = CleanMissionStatus.from_json({"error": 236})
+
+        assert status.error == 236
+        assert status.error_text is None
+
+    def test_no_error_has_no_text(self):
+        from roombapy_prime.models.robot_info import CleanMissionStatus, DockStatus
+
+        assert CleanMissionStatus.from_json({}).error_text is None
+        assert DockStatus.from_json({"error": 0}).error_text is None
+
+
+class TestTheScopeOfMapEditVersionThree:
+    """`MapServiceHandler` has 34 methods and only two mention V3:
+    `deleteCleanZonesV3` and `observeV3EditResponses`.
+
+    So V3 is **not** a replacement waiting to obsolete V1 and V2. It is
+    one operation the app moved to a different channel, plus the channel
+    itself — and a caller losing sleep over "should we support V3" is
+    worrying about a single delete.
+    """
+
+    def _doc(self):
+        from roombapy_prime.models import map_editing
+
+        return map_editing.__doc__
+
+    def test_the_scope_is_recorded(self):
+        doc = self._doc()
+
+        assert "EXACTLY ONE OPERATION" in doc
+        assert "deleteCleanZonesV3" in doc
+
+    def test_the_transport_shape_is_recorded(self):
+        """`method` is the constant `service.mapedit`; the operation
+        lives in an uninterpreted `data.value`, so the payloads are not
+        discoverable from this APK at all."""
+        doc = self._doc()
+
+        assert "service.mapedit" in doc
+        assert "editv3_req" in doc
+
+    def test_how_to_detect_v3_without_writing(self):
+        """Watching `editv3_resp` answers it; a write attempt is not
+        needed and would be the expensive way to ask."""
+        assert "editv3_resp" in self._doc()
+
+
+class TestTwoCommandsWithTwoSpellings:
+    """`CommandType` lists twenty values, all camelCase — including
+    `pointClean` and `fluidRefill`. This enum had `point_clean` and
+    `flrefill`.
+
+    **`point_clean` is not a guess.** It appears verbatim in a real
+    favourite definition returned by the server, inside a routine named
+    "Spot Clean" with `routine_type: SPOT_CLEAN`. The server stores it
+    that way whatever the app sends.
+
+    `flrefill` appears in no capture at all — that one is a guess, and
+    `fluidRefill` is the vendor's.
+    """
+
+    def test_both_spellings_are_available(self):
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        values = {e.value for e in MissionCommandType}
+
+        assert {"point_clean", "pointClean"} <= values
+        assert {"flrefill", "fluidRefill"} <= values
+
+    def test_the_field_confirmed_one_is_not_removed(self):
+        """A server that stores `point_clean` in its own favourites will
+        keep sending it back. Dropping the reader to tidy up a spelling
+        would lose a working value."""
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        assert MissionCommandType("point_clean")
+
+    def test_the_reason_is_written_down(self):
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        source = inspect.getsource(mission_control)
+
+        assert "IS NOT A GUESS" in source
+        assert "appears in no capture at all" in source
+
+
+class TestTheFirmwareTargetIsAList:
+    """`FirmwareItemDto` types `targetSoftwareVer` as `List<String>` --
+    one release can target several installed versions, which is what an
+    upgrade path looks like.
+
+    **This class modelled it as a string**, written today from the
+    wire-key list alone. The key names said nothing about types; the
+    model dump does — and that is the difference between the two files
+    this analysis ships.
+    """
+
+    def test_a_list_is_kept(self):
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        item = FirmwareItem.from_json({
+            "targetSoftwareVer": ["24.29.5", "24.30.0"],
+        })
+
+        assert item.target_software_ver == ["24.29.5", "24.30.0"]
+
+    def test_a_single_string_is_accepted(self):
+        """No response has been seen, and a firmware entry naming one
+        target is not obviously wrong."""
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        assert FirmwareItem.from_json(
+            {"targetSoftwareVer": "24.29.5"}
+        ).target_software_ver == ["24.29.5"]
+
+    def test_absent_stays_none(self):
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        assert FirmwareItem.from_json({}).target_software_ver is None
+
+
+class TestTwoMapCommandsTheAppDropped:
+    """`SetFloorTypes` and `SetThresholds` exist in 2.2.4 and are gone
+    from 3.0.0. Only the read side survives (`FloorTypeFeature`);
+    thresholds vanish entirely, including
+    `PolicyZoneFeature$Properties.threshold_type`.
+
+    **They are kept.** The app dropping a command does not prove the
+    robot rejects it, and neither has ever been sent from here — so
+    removing them would trade an untested path for an untested absence.
+
+    What changed is the expectation: if either fails in the field, "the
+    app no longer sends this" is the first explanation to consider, not
+    the last.
+    """
+
+    def test_both_commands_still_build(self):
+        from roombapy_prime.models import map_editing
+
+        assert hasattr(map_editing, "SetFloorTypes")
+        assert hasattr(map_editing, "SetThresholds")
+
+    def test_the_change_is_recorded(self):
+        from roombapy_prime.models import map_editing
+
+        doc = map_editing.__doc__
+
+        assert "NO LONGER EXIST IN THE APP" in doc
+        assert "SetThresholds" in doc
+
+    def test_the_read_side_is_unaffected(self):
+        """`threshold_type` was kept on the properties for the same
+        reason — an unread field costs nothing."""
+        import dataclasses
+
+        from roombapy_prime.models.map_bundle import PolicyZoneFeatureProperties
+
+        names = {f.name for f in dataclasses.fields(PolicyZoneFeatureProperties)}
+
+        assert "threshold_type" in names

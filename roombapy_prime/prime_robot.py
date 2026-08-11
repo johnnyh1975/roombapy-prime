@@ -227,6 +227,11 @@ class PrimeRobot:
         self._rest = rest_client
         self._relogin = relogin
         self._irbt_topic_prefix = irbt_topic_prefix
+        #: Timeline requests are matched to their reports by this id.
+        #: The app starts at 1 and increments; reusing one would make
+        #: two requests indistinguishable, which is the single thing the
+        #: field exists to prevent.
+        self._timeline_request_id = 0
         self.deployment = deployment or {}
         self._refresh_task: asyncio.Task[None] | None = None
 
@@ -420,6 +425,26 @@ class PrimeRobot:
         the underlying feature actually changed -- checking the real
         app's own settings screen (or observing the actual behavior)
         after calling this is the only way to confirm a real effect."""
+        # ONE KEY, ONE VALUE -- CONFIRMED AS THE VENDOR'S OWN SHAPE.
+        #
+        # `RobotServiceHandler.settingFromKey(keyPath)` in app 3.0.0 is a
+        # switch over 24 individual keys, each returning its own Setting,
+        # and `updateSetting(keyPath, value, assetId)` writes exactly
+        # that pair. This method already did it that way; the analysis
+        # confirms it rather than changing it.
+        #
+        # DOTTED KEYS ARE ADDRESSED DIRECTLY. `padWetness.padPlate` and
+        # the five `langs2.*` keys appear in that switch with their dots
+        # intact -- the app targets the sub-key, it does not read the
+        # whole map, change one entry and write it back.
+        #
+        # That retires the read-modify-write advice this project carried
+        # for `padWetness`: it described the OLD app's behaviour.
+        #
+        # WHAT IT DOES NOT RETIRE: a region's params override the global
+        # value during a mission (`CommandParams.copyWith`). A global
+        # wetness control is still questionable -- not because of how it
+        # is written, but because of what outranks it while cleaning.
         return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
 
     async def trigger_echo_via_shadow(self, value: object = True, timeout: float = 8.0) -> ShadowResponse:
@@ -449,6 +474,33 @@ class PrimeRobot:
         )
 
     async def send_simple_command(self, command: str, initiator: str = "localApp") -> bool:
+        """A CORRECT COMMAND CAN STILL DO NOTHING, and nothing on the
+        wire says so.
+
+        @utkjmitch's Y351020 ignored `start`, `stop`, `dock` and `find`
+        for **61 hours** -- each broker-confirmed, each without effect,
+        robot idle and mid-mission alike, on fresh sessions and old
+        ones. A full "simple verbs are dead on this SKU" report was
+        drafted before the pattern showed itself: the robot's cloud
+        document had frozen at `{phase: "run", error: 48}` after an
+        errored mission, and **every failure predated the power cycle
+        that cleared it, every success came after**.
+
+        So this is a fourth way a command fails, beside the three the
+        evidence trail records: the payload is right, the transport is
+        right, and the robot's own state makes it inert.
+
+        WHAT TO CHECK BEFORE CONCLUDING A COMMAND IS BROKEN: whether
+        `cleanMissionStatus.phase` has been `run` for longer than a
+        mission takes while `batPct` climbs. Charging and running are
+        mutually exclusive; a document claiming both has stopped
+        tracking the robot. Only a power cycle clears it -- iRobot's own
+        app cannot end its own phantom mission either.
+
+        VERBS CONFIRMED on this SKU once it was cleared: `start` (twice,
+        user-observed), `pause`, and `dock` from Home Assistant. Plain
+        shape, `initiator: "localApp"`, no map id, no regions.
+        """
         """NEW (session 39) -- the corrected mission-control path,
         replacing send_mission_command() for basic commands. See
         mqtt_client.py's cmd_topic()/publish_cmd() docstrings for the
@@ -468,7 +520,17 @@ class PrimeRobot:
         return await asyncio.to_thread(self._mqtt.publish_cmd, self._irbt_topic_prefix, command, initiator)
 
     async def send_routine_command_via_cmd_topic(self, command: RoutineCommand) -> bool:
-        """CONFIRMED WORKING on real hardware (@Echovictor37, Combo 105,
+        """FOR REGIONS. A whole-house clean is `send_simple_command("start")`.
+
+        `clean_all=True` does nothing here, confirmed on hardware
+        (@Echovictor37, both with `regions` omitted and with an empty
+        list: PUBACK, no effect). `CommandDTO` has thirteen fields and
+        `select_all` is not among them -- iRobot's own code strips it
+        before sending, so the robot never sees the key.
+
+        There is no clean_all payload shape to find.
+
+        CONFIRMED WORKING on real hardware (@Echovictor37, Combo 105,
         sku Y311240, on b14). The robot cleaned ONLY the targeted room,
         and `operating_mode` correctly selected vacuum-only versus
         vacuum-and-mop, both visually verified.
@@ -685,6 +747,11 @@ class PrimeRobot:
         unproven."""
         return await self._rest.get_automations_raw()
 
+    async def get_firmware_raw(self, sku: str | None = None) -> Any:
+        """See rest_client.py::get_firmware_raw() -- available releases,
+        method and envelope both unconfirmed."""
+        return await self._rest.get_firmware_raw(sku or self.sku)
+
     async def get_clean_score_raw(self, p2map_id: str) -> Any:
         """See rest_client.py::get_clean_score_raw() -- per-room
         cleanliness, request body still a guess."""
@@ -793,9 +860,12 @@ class PrimeRobot:
         UPDATED (session 53) -- now returns a parsed RobotPartsInfo."""
         return await self._rest.get_robot_parts(self.blid)
 
-    async def reset_robot_parts(self) -> dict:
+    async def reset_robot_parts(self, part_ids: list[str] | None = None) -> dict:
         """NEW (session 15) -- see rest_client.py::reset_robot_parts()."""
-        return await self._rest.reset_robot_parts(self.blid)
+        # Only forwarded when named, so the plain call stays plain.
+        if part_ids is None:
+            return await self._rest.reset_robot_parts(self.blid)
+        return await self._rest.reset_robot_parts(self.blid, part_ids)
 
     async def get_serial_number_data(self) -> RobotSerialInfo:
         """NEW (session 15) -- see rest_client.py::get_serial_number_data().
@@ -807,7 +877,12 @@ class PrimeRobot:
         rest_client.py::poll_echo_value()."""
         return await self._rest.poll_echo_value(self.blid)
 
-    async def get_time_estimates(self) -> dict:
+    async def get_time_estimates(
+        self,
+        smart_map_id: str | None = None,
+        region_id: str | None = None,
+        zone_id: str | None = None,
+    ) -> dict:
         """Per-room time estimates for this robot.
 
         Takes no arguments now: the request body is `{"robot_id": blid}`
@@ -815,7 +890,17 @@ class PrimeRobot:
         took a raw dict because the body shape was unknown -- see
         rest_client.py::get_time_estimates() for how it was traced.
         """
-        return await self._rest.get_time_estimates(self.blid)
+        # Only what was asked for is forwarded, so the plain call stays
+        # a plain call -- a caller that names nothing produces exactly
+        # the request this library has field-confirmed.
+        narrowing = {
+            k: v for k, v in (
+                ("smart_map_id", smart_map_id),
+                ("region_id", region_id),
+                ("zone_id", zone_id),
+            ) if v is not None
+        }
+        return await self._rest.get_time_estimates(self.blid, **narrowing)
 
     async def reset_robot(self) -> dict:
         """NEW (session 16) -- WARNING: likely a consequential action,
@@ -856,6 +941,27 @@ class PrimeRobot:
         ) as inner:
             async for response in inner:
                 yield response
+
+    async def request_mission_timeline(self) -> int:
+        """Asks the robot for its mission timeline and returns the id.
+
+        The report arrives on the watch topic carrying the same
+        `timelineRequestId`, so a caller that has a watcher running can
+        match the answer to its question rather than taking the next
+        thing that appears.
+
+        The counter starts at 1 and increments, as the app's does.
+        Reusing an id would make two requests indistinguishable, which
+        is the one thing this field exists to prevent.
+        """
+        self._timeline_request_id += 1
+        request_id = self._timeline_request_id
+        await asyncio.to_thread(
+            self._mqtt.request_mission_timeline,
+            self._irbt_topic_prefix,
+            request_id,
+        )
+        return request_id
 
     async def watch_mission_timeline(
         self,

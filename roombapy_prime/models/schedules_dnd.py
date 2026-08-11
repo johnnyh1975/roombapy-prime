@@ -314,7 +314,23 @@ class HouseholdSchedule:
         why commands/end_commands round-trip as raw dicts rather than
         parsed RoutineCommand objects."""
         return cls(
-            schedule_id=data.get("schedule_id", ""),
+            # 3.0.0 MOVED THE ID INSIDE THE OPTIONS.
+            #
+            # The 2.2.4 envelope carried `schedule_id` beside `options`;
+            # `ScheduleOptionsDto` in 3.0.0 declares it as one of its own
+            # thirteen keys, and `HouseholdScheduleDto` now holds a
+            # `schedules` list plus a `household_schedule_id`.
+            #
+            # Both placements are read. A schedule whose id we cannot
+            # find is a schedule nobody can edit or delete -- Home
+            # Assistant matches calendar events on it -- and that failure
+            # would look like an empty calendar rather than a parse
+            # error.
+            schedule_id=(
+                data.get("schedule_id")
+                or (data.get("options") or {}).get("schedule_id")
+                or ""
+            ),
             options=ScheduleOptions.from_json(data.get("options") or {}),
         )
 

@@ -783,6 +783,30 @@ class PrimeRestClient:
         data = await self._request("GET", url)
         return RoutinesDefaultsResponse.from_json(data)
 
+    async def get_firmware_raw(self, sku: str | None = None) -> Any:
+        """Available firmware releases, from `GET /v2/firmware`.
+
+        WHAT THE SHADOW CANNOT SAY. `softwareVer` reports what is
+        installed; this reports what exists -- release notes, and
+        `expectedInstallationTime`, which is what somebody deciding
+        whether to start an update at nine in the evening actually needs.
+
+        RAW, AND THAT IS DELIBERATE. `FirmwareRequest` in app 3.0.0
+        declares the path and **no HTTP method** -- the verb is a guess,
+        GET being the only sensible one for a catalogue. The response
+        envelope is unknown too: `FirmwareItemDto` describes an item,
+        not what wraps it.
+
+        So this returns whatever comes back. `FirmwareItem.from_json`
+        parses an item once a caller has found where the items are.
+        Modelling a response nobody has seen is how this library got a
+        `time_estimates` shape it had to replace wholesale.
+        """
+        url = f"{self._http_base_auth}/v2/firmware"
+        if sku:
+            url = f"{url}?sku={_path_segment(sku)}"
+        return await self._request("GET", url)
+
     async def get_robot_parts(self, blid: str) -> RobotPartsInfo:
         """GET /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
         from the actual APK configuration file
@@ -806,7 +830,9 @@ class PrimeRestClient:
         data = await self._request("GET", url)
         return RobotPartsInfo.from_json(data)
 
-    async def reset_robot_parts(self, blid: str) -> dict[str, Any]:
+    async def reset_robot_parts(
+        self, blid: str, part_ids: list[str] | None = None
+    ) -> dict[str, Any]:
         """POST /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
         from the same configuration file (commandId "ResetRobotParts",
         httpMethod=POST, identical urlPath to get_robot_parts()).
@@ -814,7 +840,19 @@ class PrimeRestClient:
         replacement) -- body shape not investigated, raw JSON passed
         through."""
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
-        return await self._request("POST", url)
+        # THE BODY IS NOW KNOWN. `AssetHealthResetDto` declares
+        # `robot_id`, `num_parts` and `parts` -- this sent a POST with no
+        # body at all, which is why the docstring above says the shape
+        # was never investigated.
+        #
+        # A reset with no parts named is not obviously "reset
+        # everything"; it is as likely to be rejected or to do nothing.
+        # Naming them is the only reading the DTO supports.
+        body: dict[str, Any] = {"robot_id": blid}
+        if part_ids:
+            body["parts"] = list(part_ids)
+            body["num_parts"] = len(body["parts"])
+        return await self._request("POST", url, body=body)
 
     async def get_serial_number_data(self, blid: str) -> RobotSerialInfo:
         """GET /v1/robots?robot_id={blid} -- NEW (session 15). CONFIRMED
@@ -848,7 +886,13 @@ class PrimeRestClient:
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/echo"
         return await self._request("POST", url)
 
-    async def get_time_estimates(self, blid: str) -> dict[str, Any]:
+    async def get_time_estimates(
+        self,
+        blid: str,
+        smart_map_id: str | None = None,
+        region_id: str | None = None,
+        zone_id: str | None = None,
+    ) -> dict[str, Any]:
         """POST /v1/time-estimates -- NEW (session 16). CONFIRMED from
         base_roomba_config.json (commandId "GetTimeEstimates",
         httpMethod=POST despite "read": true -- presumably POST because
@@ -941,7 +985,25 @@ RESOLVED (30 July 2026) -- and the earlier "not determinable"
         # made every caller invent the body, which meant every caller
         # could invent it differently -- and nobody could, because the
         # key was unknown.
-        return await self._request("POST", url, body={"robot_id": blid})
+        # THE BODY HAS FOUR FIELDS, and this sent one.
+        #
+        # `TimeEstimatesRequestBody` in app 3.0.0 declares `robot_id`,
+        # `smart_map_id`, `region_id` and `zone_id`. Sending only the
+        # first asks for every estimate on every map -- which works, and
+        # is what a caller wanting one room's number pays for.
+        #
+        # The three narrowing fields are optional here for the same
+        # reason they are nullable there: omitting them is a valid
+        # request, and the broad answer is the one this library has
+        # field-confirmed on two accounts.
+        body: dict[str, Any] = {"robot_id": blid}
+        if smart_map_id is not None:
+            body["smart_map_id"] = smart_map_id
+        if region_id is not None:
+            body["region_id"] = region_id
+        if zone_id is not None:
+            body["zone_id"] = zone_id
+        return await self._request("POST", url, body=body)
 
     async def get_clean_score_raw(self, p2map_id: str) -> Any:
         """POST /v1/p2maps/clean-score -- a per-ROOM cleanliness value.
@@ -1076,7 +1138,23 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         return await self._request("POST", url)
 
     async def get_notifications(self, blid: str, app_version: str = "2.2.4") -> dict[str, Any]:
-        """GET /v1/robots/{blid}/timeline -- NEW (session 16). CONFIRMED
+        """GET /v1/robots/{blid}/timeline.
+
+        MOSTLY MARKETING, and worth saying before anyone builds on it.
+        Six of the seven `details_type` values are surveys, banners and
+        commerce: `NPS_SURVEY`, `MISSION_SURVEY`, `E_COMMERCE`,
+        `CONTEXTUAL_MESSAGE`, `CONTEXTUAL_MESSAGE_NON_DISMISSIBLE`,
+        `BANNER`.
+
+        The robot events an integration wants are in `MissionTimelineDto`
+        / `MissionEventDto`, which this library already parses and which
+        arrive over MQTT without a REST call.
+
+        There is also a `GET /v1/user/timeline` covering every robot with
+        a filter. Same content; the per-robot path just saves the
+        filtering.
+
+        Originally: NEW (session 16). CONFIRMED
         from base_roomba_config.json (commandId "GetNotifications",
         urlPath="/v1/robots/%s/timeline?event_type=HKC&
         details_type_filter=all&app_version=%s&limit=50"). "HKC" as an

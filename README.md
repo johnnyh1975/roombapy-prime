@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.2.0-beta.** (currently `b11`) Reading and writing both work
+> **Status: v0.3.0-beta.** (currently `b11`) Reading and writing both work
 > against real hardware, confirmed on three independent accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -29,6 +29,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 - [Testing](#testing)
 - [Contributing](#contributing)
 - [Confidence & known gaps](#confidence--known-gaps)
+- [What the vendor's own app told us](#what-the-vendors-own-app-told-us)
 - [Data privacy & security](#data-privacy--security)
 - [Why not just extend roombapy?](#why-not-just-extend-roombapy)
 - [Documentation](#documentation)
@@ -53,7 +54,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b16"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b1"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -64,7 +65,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b16#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b1#subdirectory=tools"
 ```
 
 See [`tools/README.md`](tools/README.md) for what they do and how to use
@@ -128,7 +129,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-688+ tests, all passing — structural checks against decompiled source,
+815+ tests, all passing — structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -166,7 +167,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.2.0b16#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b1#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its
@@ -271,6 +272,34 @@ The full reasoning behind every entry above — including the conclusions
 that turned out wrong and why — is in
 [`docs/internal/EVIDENCE_TRAIL.md`](docs/internal/EVIDENCE_TRAIL.md).
 
+## What the vendor's own app told us
+
+`com.irobot.home.prime` 3.0.0 is a Flutter rewrite, and its data layer
+ships as plain Kotlin serialisers rather than compiled constants. A
+systematic comparison against it — 223 serialiser classes, 87 enums, 71
+request classes, 25 locale files — corrected this library in places no
+amount of field testing would have found, because **nothing was
+failing**:
+
+| Found | Why it mattered |
+|---|---|
+| `dirt`, `map_id`, `covStrat` | read here as `numberOfDirtDetects`, `staticMapId`, `coverageStrategy` — plausible names no robot has ever sent, so all three read `None` on every mission ever recorded |
+| `cmd`, `disc`, `poly`, `tentativeLoc` | four timeline event types dropped from every real timeline, because this library read the long forms |
+| `coverage` | per-room mission progress, declared beside fields already read. `RoomEvent`'s docstring spent fourteen lines reasoning about what `area` and `total_area` mean; the field that answers it was in the same object |
+| 112 error codes | with iRobot's own title and explanation in 25 languages. Of 126 labels written here, **two** matched the vendor's |
+| `schedule_id` inside options | 3.0.0 moved it; a schedule whose id cannot be found is one nobody can edit, and that reads as an empty calendar rather than an error |
+| 24 writable settings | `audio.volume` with a dot, not `audio`; `padWetness.padPlate` addressed directly, retiring a read-modify-write recommendation |
+
+The full comparison — what was checked, what was corrected, what was deliberately left alone, and
+what the APK cannot answer — is in
+**[docs/internal/APK_3_0_0_FINDINGS.md](docs/internal/APK_3_0_0_FINDINGS.md)**.
+
+**And one thing it did not settle.** The app spells four commands in
+camelCase (`washPad`, `dryPad`) where this library uses lowercase. The
+lowercase forms are what a real robot recorded in its own shadow, with a
+pad-wash counter to match, so they stay. A confirmed shape outranks a
+plausible one — a rule this comparison had cause to apply three times.
+
 ## Data privacy & security
 
 **In one sentence:** everything goes directly to iRobot's own cloud
@@ -305,6 +334,7 @@ Everything else — the session-by-session reverse-engineering trail
 (`docs/archive/`) — is background material, not needed to use the
 library. See the comment at the top of each folder's files for what's
 there and why.
+- [APK 3.0.0 findings](docs/internal/APK_3_0_0_FINDINGS.md) — what iRobot's own app corrected, and what was deliberately left alone
 
 ## Credits
 

@@ -1662,3 +1662,46 @@ GET /v1/p2maps/{map_id}/versions/{map_version}/geojson
         a dedicated dataclass for a single field), but callers can now
         reliably do `result["map_url"]` instead of guessing among
         candidate keys.
+
+## Region commands: what the field settled
+
+**The confirmed shape** (@Echovictor37, Combo 105, sku Y311240):
+
+```
+command_type = START          not CLEAN
+map_id       = <active p2map_id>   not None
+regions      = [Region(region_id=..., region_type=RID, params=...)]
+initiator    = "rmtApp"
+```
+
+The robot cleaned only the targeted room, and `operating_mode` selected vacuum versus
+vacuum-and-mop, both visually verified.
+
+**Three ways this command fails**, all observed:
+
+| Symptom | Cause found |
+|---|---|
+| PUBACK, whole house cleaned | `command_type=CLEAN` with `map_id=None` — accepted, effective, and not what was asked |
+| PUBACK, nothing at all | `select_all=True` for a whole-house clean. The key is not in `CommandDTO`; the robot never sees it |
+| PUBACK, nothing at all | the from-scratch command emitting `id` instead of `region_id` |
+
+**A fourth way, and it is not about the payload at all.** @utkjmitch's Y351020 ignored `start`,
+`stop`, `dock` and `find` for 61 hours — each broker-confirmed, each without effect, on fresh
+sessions and old ones. The commands were correct. The robot's cloud document had frozen at
+`{phase: "run", error: 48}` after an errored mission, and every failure predated the power cycle
+that cleared it.
+
+A full "simple verbs are dead on this SKU" report was drafted before the pattern showed itself. So:
+**a command test that fails on someone's robot can pass an hour later, and neither result is
+wrong** — check whether the phase has been `run` for longer than a mission takes while the battery
+climbs.
+
+**A confirmed send proves delivery, never intent.** Two guards added in b12 and b16 check delivery,
+and both would have stayed silent through all three of these.
+
+**`initiator` is mandatory but not inspected** — for region cleans. `"localApp"` behaved identically
+to `"rmtApp"`. Untested elsewhere, and iRobot's own builder defaults to `RmtApp` rather than
+omitting it.
+
+**A whole-house clean is `send_simple_command("start")`.** There is no clean_all shape on the
+routine-command path.

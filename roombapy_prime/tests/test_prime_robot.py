@@ -1822,3 +1822,238 @@ class TestTheRegionCommandShapeThatWorks:
         assert "CONFIRMED WORKING" in doc
         assert "THIRD FAILURE MODE" in doc
         assert "clean_all" in doc
+
+
+class TestTheDoNotDisturbCommands:
+    """Confirmed from `BasicCommandBuilder`: both appear in its explicit
+    `supportedTypes` list, and `build()` emits `command`, `initiator` and
+    `time` with every other position null.
+
+    So they switch Do Not Disturb on and off **ad hoc**. The window
+    itself is separate, set through
+    `PUT /v1/households/{id}/settings/dnd`.
+    """
+
+    def test_the_wire_values_are_camel_case(self):
+        """Verbatim from `CommandType`'s raw source:
+        `startDoNotDisturb("startDoNotDisturb")` — the value is in the
+        bracket, not inferred from the constant name."""
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        assert MissionCommandType.STARTDONOTDISTURB.value == "startDoNotDisturb"
+        assert MissionCommandType.STOPDONOTDISTURB.value == "stopDoNotDisturb"
+
+    def test_they_differ_from_the_lowercase_neighbours_on_purpose(self):
+        """`washpad` and `drypad` are lowercase here because the field
+        confirmed them lowercase. Nobody has sent these two at all, so
+        the vendor's spelling stands unopposed."""
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        assert MissionCommandType.WASHPAD.value == "washpad"
+        assert MissionCommandType.STARTDONOTDISTURB.value != "startdonotdisturb"
+
+    @pytest.mark.asyncio
+    async def test_the_simple_command_path_carries_them(self):
+        """`BasicCommandBuilder` sends nothing this library does not
+        already send, so no new path is needed."""
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.models.mission_control import MissionCommandType
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        robot = object.__new__(PrimeRobot)
+        robot._mqtt = MagicMock()
+        robot._mqtt.publish_cmd = MagicMock(return_value=True)
+        robot.blid = "B"
+        robot._irbt_topic_prefix = "irbt"
+
+        await PrimeRobot.send_simple_command(
+            robot, MissionCommandType.STARTDONOTDISTURB.value
+        )
+
+        # publish_cmd takes the command as a string and builds the
+        # envelope itself -- which is precisely why no new path was
+        # needed for these two.
+        assert "startDoNotDisturb" in robot._mqtt.publish_cmd.call_args.args
+
+    def test_the_confirmed_shape_is_written_down(self):
+        """So nobody adds a window parameter looking for one."""
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        source = inspect.getsource(mission_control)
+
+        assert "THEY CARRY NO WINDOW" in source
+        assert "BasicCommandBuilder" in source
+
+
+class TestTheTimelineCanBeAskedFor:
+    """This library subscribed to `mission/timeline/report` and took
+    whatever arrived, so a caller wanting the current mission's progress
+    waited for the robot to volunteer it.
+
+    `MissionTimelineManager.getEncodedRequest()` publishes
+    `{"timelineRequestId": <n>}` to the matching `request` topic, and the
+    report comes back carrying the same id — which is what
+    `MissionTimelineDto.timelineRequestId` is for.
+    """
+
+    def _robot(self):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        robot = object.__new__(PrimeRobot)
+        robot._mqtt = MagicMock()
+        robot._irbt_topic_prefix = "irbt"
+        robot._timeline_request_id = 0
+        return robot
+
+    @pytest.mark.asyncio
+    async def test_the_counter_starts_at_one(self):
+        """As the app's does."""
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        robot = self._robot()
+
+        assert await PrimeRobot.request_mission_timeline(robot) == 1
+
+    @pytest.mark.asyncio
+    async def test_each_request_gets_its_own_id(self):
+        """Reusing one would make two requests indistinguishable, which
+        is the single thing the field exists to prevent."""
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        robot = self._robot()
+        ids = [await PrimeRobot.request_mission_timeline(robot) for _ in range(3)]
+
+        assert ids == [1, 2, 3]
+
+    @pytest.mark.asyncio
+    async def test_the_id_reaches_the_publish(self):
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        robot = self._robot()
+        await PrimeRobot.request_mission_timeline(robot)
+
+        assert 1 in robot._mqtt.request_mission_timeline.call_args.args
+
+    def test_the_request_topic_is_the_report_topic_reversed(self):
+        """One helper, two directions -- so a prefix change cannot move
+        one and leave the other."""
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = object.__new__(PrimeMqttClient)
+        client._blid = "B"
+
+        report = PrimeMqttClient.mission_timeline_topic(client, "irbt", report=True)
+        request = PrimeMqttClient.mission_timeline_topic(client, "irbt", report=False)
+
+        assert report.endswith("/report")
+        assert request.endswith("/request")
+        assert report[: -len("report")] == request[: -len("request")]
+
+
+class TestThereIsNoWholeHouseShapeOnThisPath:
+    """@Echovictor37 tested `clean_all=True` with a valid map id and
+    operating mode, both with `regions` omitted and with an explicit
+    empty list. **PUBACK both times, no effect either time** — and
+    notably not the whole-house clean his earlier `CLEAN`/`map_id=None`
+    command produced.
+
+    The APK says why: `CommandDTO` has thirteen fields and `select_all`
+    is not one of them. iRobot's own code strips it before sending, so
+    the robot never sees the key.
+
+    **A whole-house clean is `send_simple_command("start")`**, confirmed
+    on several robots. This test exists so nobody spends another
+    hardware session looking for a payload that does not exist.
+    """
+
+    def test_the_dead_end_is_documented_where_it_is_reached(self):
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        doc = inspect.getdoc(PrimeRobot.send_routine_command_via_cmd_topic)
+
+        assert "no clean_all payload shape to find" in doc
+        assert 'send_simple_command("start")' in doc
+
+    def test_the_field_is_marked_inert_rather_than_removed(self):
+        """Removing it would change a confirmed-working region payload,
+        and it costs nothing where it is."""
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        source = inspect.getsource(mission_control)
+
+        assert "IS INERT, CONFIRMED ON HARDWARE" in source
+
+    def test_a_region_command_is_unaffected(self):
+        from roombapy_prime.models.mission_control import (
+            MissionCommandType,
+            Region,
+            RegionType,
+            RoutineCommand,
+        )
+
+        body = RoutineCommand(
+            command_type=MissionCommandType.START, asset_id="B", map_id="M1",
+            regions=[Region(region_id="11", region_type=RegionType.RID)],
+            initiator="rmtApp",
+        ).to_json()
+
+        assert body["regions"][0]["region_id"] == "11"
+        assert body["select_all"] is False
+
+
+class TestACorrectCommandCanStillDoNothing:
+    """@utkjmitch's Y351020 ignored `start`, `stop`, `dock` and `find`
+    for **61 hours** — each broker-confirmed, each without effect, robot
+    idle and mid-mission alike, on fresh sessions and old ones.
+
+    A full "simple verbs are dead on this SKU" report was drafted before
+    the pattern showed itself: the robot's cloud document had frozen
+    after an errored mission, and **every failure predated the power
+    cycle that cleared it, every success came after**.
+
+    A fourth failure mode, beside the three about payload shape: the
+    command is right, the transport is right, and the robot's own state
+    makes it inert.
+    """
+
+    def test_the_docstring_warns_before_the_call(self):
+        """Where somebody debugging a dead command actually looks."""
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        doc = inspect.getdoc(PrimeRobot.send_simple_command)
+
+        assert "CORRECT COMMAND CAN STILL DO NOTHING" in doc
+        assert "power cycle" in doc
+
+    def test_the_check_is_named(self):
+        """A reader should be able to rule it out without reproducing
+        61 hours of it."""
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        doc = inspect.getdoc(PrimeRobot.send_simple_command)
+
+        assert "batPct" in doc
+        assert "mutually exclusive" in doc
+
+    def test_the_confirmed_verbs_are_recorded(self):
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        doc = inspect.getdoc(PrimeRobot.send_simple_command)
+
+        assert "VERBS CONFIRMED" in doc

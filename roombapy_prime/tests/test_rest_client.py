@@ -1258,3 +1258,94 @@ class TestFavouritesParseWhicheverSpellingArrives:
         favorite = self._parsed({"favoriteid": "A", "favorite_id": "B"})
 
         assert favorite.favorite_id == "A"
+
+
+class TestTheTimeEstimateBodyHasFourFields:
+    """`TimeEstimatesRequestBody` declares `robot_id`, `smart_map_id`,
+    `region_id` and `zone_id`. This client sent one.
+
+    Sending only `robot_id` asks for every estimate on every map — which
+    works, and is what a caller wanting one room's number pays for.
+    """
+
+    async def _body(self, **kwargs):
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        client = object.__new__(PrimeRestClient)
+        client._http_base_auth = "https://x"
+        with patch.object(
+            client, "_request", AsyncMock(return_value={}), create=True
+        ) as req:
+            await PrimeRestClient.get_time_estimates(client, "BLID", **kwargs)
+        return req.await_args.kwargs["body"]
+
+    @pytest.mark.asyncio
+    async def test_the_broad_request_is_unchanged(self):
+        """The shape field-confirmed on two accounts."""
+        assert await self._body() == {"robot_id": "BLID"}
+
+    @pytest.mark.asyncio
+    async def test_a_map_can_be_named(self):
+        body = await self._body(smart_map_id="M1")
+
+        assert body == {"robot_id": "BLID", "smart_map_id": "M1"}
+
+    @pytest.mark.asyncio
+    async def test_a_room_can_be_named(self):
+        body = await self._body(smart_map_id="M1", region_id="11")
+
+        assert body["region_id"] == "11"
+
+    @pytest.mark.asyncio
+    async def test_none_means_omitted_not_null(self):
+        """A JSON null is a value the server may reject; an absent key
+        is what the DTO's nullability actually describes."""
+        body = await self._body(zone_id=None)
+
+        assert "zone_id" not in body
+
+
+class TestThePartResetCarriesABody:
+    """`AssetHealthResetDto` declares `robot_id`, `num_parts` and
+    `parts`. This client sent a POST with **no body at all** — which is
+    why its own docstring said the shape had never been investigated.
+
+    A reset with no parts named is not obviously "reset everything"; it
+    is as likely to be rejected or to do nothing.
+    """
+
+    async def _body(self, part_ids=None):
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        client = object.__new__(PrimeRestClient)
+        client._http_base_auth = "https://x"
+        with patch.object(
+            client, "_request", AsyncMock(return_value={}), create=True
+        ) as req:
+            await PrimeRestClient.reset_robot_parts(client, "BLID", part_ids)
+        return req.await_args.kwargs["body"]
+
+    @pytest.mark.asyncio
+    async def test_the_robot_is_always_named(self):
+        assert (await self._body())["robot_id"] == "BLID"
+
+    @pytest.mark.asyncio
+    async def test_named_parts_are_sent_with_their_count(self):
+        body = await self._body(["67", "72"])
+
+        assert body["parts"] == ["67", "72"]
+        assert body["num_parts"] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_parts_means_no_parts_key(self):
+        """Rather than an empty list, which a server may read as "reset
+        nothing" or as "reset everything" -- and the difference matters
+        on a counter somebody cannot restore."""
+        body = await self._body()
+
+        assert "parts" not in body
+        assert "num_parts" not in body

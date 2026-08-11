@@ -414,10 +414,54 @@ class RobotDigitalCapabilities:
     Nested inside RobotLoginEntry.digi_cap."""
 
     smart_clean: Any | None = None
+    #: THE OTHER TWELVE. `digiCap` carries thirteen flags in app 3.0.0
+    #: and this class read one.
+    #:
+    #: They are what makes a feature model-dependent rather than
+    #: firmware-dependent, and several answer questions this project has
+    #: asked the hard way:
+    #:
+    #:   cwia               "Clean While Away" -- whether presence-based
+    #:                      cleaning exists on THIS robot at all
+    #:   ddAutomation       Dirt Detective, the vendor's own demand
+    #:                      cleaning
+    #:   cte                cleaning time estimates -- whether asking
+    #:                      for them is worth a call
+    #:   thresholds         doorway thresholds in map editing
+    #:   kozRecommendations suggested keep-out zones
+    #:
+    #: Typed as the DTO types them: Boolean except `appVer`,
+    #: `cleaningProfiles` and `smartClean`, which are Integer.
+    app_ver: int | None = None
+    cleaning_profiles: int | None = None
+    cleaning_time_estimates: bool | None = None
+    clean_while_away: bool | None = None
+    dirt_detective_automation: bool | None = None
+    digital_spot: bool | None = None
+    koz_recommendations: bool | None = None
+    matter: bool | None = None
+    perspective_3d_map: bool | None = None
+    pet_furniture: bool | None = None
+    thresholds: bool | None = None
+    timeline: bool | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotDigitalCapabilities:
-        return cls(smart_clean=data.get("smartClean"))
+        return cls(
+            smart_clean=data.get("smartClean"),
+            app_ver=data.get("appVer"),
+            cleaning_profiles=data.get("cleaningProfiles"),
+            cleaning_time_estimates=data.get("cte"),
+            clean_while_away=data.get("cwia"),
+            dirt_detective_automation=data.get("ddAutomation"),
+            digital_spot=data.get("digiSpot"),
+            koz_recommendations=data.get("kozRecommendations"),
+            matter=data.get("matter"),
+            perspective_3d_map=data.get("perspective3DMap"),
+            pet_furniture=data.get("petFurniture"),
+            thresholds=data.get("thresholds"),
+            timeline=data.get("timeline"),
+        )
 
 
 # Which SKU prefixes identify a V4/Prime-generation robot.

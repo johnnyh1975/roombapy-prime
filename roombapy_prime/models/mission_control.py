@@ -14,6 +14,30 @@ from .enums_common import _enum_or_none
 from .geometry import Position
 
 
+#: CASE DIFFERS FROM THE APP, AND OURS IS THE CONFIRMED ONE.
+#:
+#: App 3.0.0's `CommandType` spells the multi-word commands in
+#: camelCase: `washPad`, `dryPad`, `stopEvac`, `stopPadDry`,
+#: `fluidRefill`, `pointClean`. This enum uses lowercase.
+#:
+#: **The lowercase forms are field-confirmed.** @DaRealGuGu's robot
+#: recorded `"command": "washpad"` and `"command": "drypad"` in its own
+#: `rw-software.lastCommand`, and his pad-wash counter stands at 90 --
+#: the washes are happening.
+#:
+#: So either the robot is case-insensitive here, or it accepts both.
+#: Switching to the app's spelling would change a path that demonstrably
+#: works, to match a model. That is the same trade this library has now
+#: declined three times in one day, and the answer has not changed: a
+#: confirmed shape outranks a plausible one.
+#:
+#: WHAT WOULD SETTLE IT: sending `washPad` on a robot whose counter can
+#: be watched. Until then, nothing here changes.
+#:
+#: Four commands the app has and this enum does not -- `fluidRefill`
+#: (ours is `flrefill`), `pointClean` (ours is `point_clean`),
+#: `startDoNotDisturb` and `stopDoNotDisturb`. The last two are new:
+#: DND was previously only writable through the settings REST call.
 class MissionCommandType(StrEnum):
     """Confirmed from com.irobot.data.missioncommand.datamodels.
     CommandType -- values are the actual @SerialName strings, NOT the
@@ -55,6 +79,48 @@ class MissionCommandType(StrEnum):
     DRYPAD = "drypad"
     STOPPADDRY = "stoppaddry"
     FLUSHSLUICE = "flushsluice"
+    #: NEW IN APP 3.0.0's `CommandType`. Do Not Disturb was previously
+    #: writable only through the settings REST call; these are a second
+    #: way in, over the command topic.
+    #:
+    #: SPELLING TAKEN FROM THE APP, unlike the multi-word commands
+    #: above. Those are lowercase here because the field confirmed them
+    #: lowercase; nobody has sent these at all, so there is no confirmed
+    #: form to prefer over the vendor's.
+    #:
+    #: THEY CARRY NO WINDOW, confirmed from `BasicCommandBuilder`.
+    #:
+    #: Both appear in its explicit `supportedTypes` list, and `build()`
+    #: emits `command`, `initiator` and `time` with every other position
+    #: -- params, regions, point, map ids, ordered -- set to null:
+    #:
+    #:     {"command": "startDoNotDisturb", "time": <unix>,
+    #:      "initiator": "rmtApp"}
+    #:
+    #: So these switch Do Not Disturb on and off **ad hoc**. The window
+    #: itself is a separate matter, set through
+    #: `PUT /v1/households/{id}/settings/dnd`.
+    #:
+    #: That makes `send_simple_command()` the right path for both --
+    #: they need nothing this library does not already send.
+    #: TWO SPELLINGS, BOTH REAL, AND THE FIELD DECIDES.
+    #:
+    #: `CommandType` in app 3.0.0 lists twenty values, all camelCase --
+    #: including `pointClean` and `fluidRefill`. This enum has
+    #: `point_clean` and `flrefill`.
+    #:
+    #: `point_clean` IS NOT A GUESS: it appears verbatim in a real
+    #: favourite definition returned by the server, inside a routine
+    #: named "Spot Clean" with `routine_type: SPOT_CLEAN`. The server
+    #: stores it that way whatever the app sends.
+    #:
+    #: `flrefill` appears in no capture at all, so it is a guess -- and
+    #: `fluidRefill` is the vendor's. Both are offered; a caller with a
+    #: dock that refuses one can try the other.
+    POINTCLEAN_VENDOR = "pointClean"
+    FLUIDREFILL_VENDOR = "fluidRefill"
+    STARTDONOTDISTURB = "startDoNotDisturb"
+    STOPDONOTDISTURB = "stopDoNotDisturb"
     CLEAN_SPOT = "point_clean"
     START_CLEAN = "start_clean"
 
@@ -90,6 +156,17 @@ class RoutineCommand:
     clean_all: bool = False
     spot_geometry: dict[str, Any] | None = None
     favorite_id: str | None = None
+    #: PRESENCE MATTERS, THE VALUE DOES NOT -- for region cleans.
+    #:
+    #: @Echovictor37 ran a region-targeted clean with `"localApp"`
+    #: instead of `"rmtApp"` and it behaved identically. The evidence
+    #: trail records the field as mandatory; this narrows that to
+    #: "mandatory, and not inspected".
+    #:
+    #: Untested for anything else, and worth not over-reading: a robot
+    #: that ignores the value on one command may not ignore it on
+    #: another, and iRobot's own `BasicCommandBuilder` defaults to
+    #: `RmtApp` rather than leaving it out.
     initiator: str | None = None
     # Wire key "id". CONFIRMED to be written by the real app's own
     # buildJsonFromCommandDef (parallel APK research) -- one of exactly
@@ -111,7 +188,23 @@ class RoutineCommand:
     optional/None instead of a guessed default value, since it's
     unclear what the server assumes when the field is missing."""
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(self, legacy_map_keys: bool = False) -> dict[str, Any]:
+        """The command as JSON.
+
+        `legacy_map_keys` also writes `pmap_id` beside `p2map_id`.
+
+        **OFF BY DEFAULT, and that is the cautious choice rather than
+        the obvious one.** The app switches per device
+        (`allowLegacyReportedValuesInCommand`), so some robot somewhere
+        needs the old name -- but @Echovictor37's confirmed
+        region-targeted clean used the payload WITHOUT it, and that is
+        the only shape this library knows works on hardware.
+
+        Adding a key to the one confirmed path on the strength of an app
+        model is the same mistake as removing `robot_id` would be. The
+        switch exists so a legacy-SKU owner can try the other shape; it
+        does not flip itself.
+        """
         """NEW (July 11, eighth session): id_multipolys/params/regions
         now accept either the bytecode-confirmed types
         (CommandPolygon/CommandParams/Region, see below in the module)
@@ -119,12 +212,86 @@ class RoutineCommand:
         cases not covered by the typed models)."""
         body: dict[str, Any] = {
             "command": self.command_type.value,
+            # `robot_id` AND `select_all` ARE SENT AND SHOULD NOT BE.
+            #
+            # `CommandDTO` in app 3.0.0 has thirteen fields and neither
+            # of these is among them -- nor `id`. iRobot's own 2.2.4
+            # code stripped all three unconditionally in
+            # `buildJsonFromCommandDef` before sending; 3.0 does not
+            # model them at all.
+            #
+            # KEPT ANYWAY, deliberately. @Echovictor37 confirmed a
+            # region-targeted clean on real hardware with exactly this
+            # payload, these fields included. Removing them would be a
+            # change to the one path in this library that is known to
+            # work, on the strength of an app model rather than a test.
+            #
+            # The right order is: send both, confirm a clean still works
+            # without them, then drop them. Not the reverse.
             "robot_id": self.asset_id,
             "ordered": self.ordered,
-            "select_all": self.clean_all,
+            # `select_all` IS INERT, CONFIRMED ON HARDWARE.
+            #
+            # @Echovictor37 sent `select_all: true` with a valid map_id
+            # and operating_mode, both with `regions` omitted and with
+            # an explicit empty list. PUBACK both times, **no effect
+            # either time** -- and notably not the whole-house clean his
+            # earlier CLEAN/map_id=None command produced.
+            #
+            # The APK says why: `CommandDTO` has thirteen fields and
+            # `select_all` is not one of them. iRobot's 2.2.4 code
+            # stripped it before sending; 3.0.0 does not model it. The
+            # robot never sees the key.
+            #
+            # **SO THERE IS NO clean_all PAYLOAD TO FIND.** A whole-house
+            # clean is `send_simple_command("start")`, which is confirmed
+            # working on several robots. This path exists for regions.
+            #
+            # The field stays because it costs nothing and removing it
+            # would change a confirmed-working region payload. It is
+            # documented as inert rather than quietly dropped, so nobody
+            # spends another hardware session on it.
+            #
+            # `select_all` NEVER TRAVELS WITH REGIONS.
+            #
+            # iRobot's own 2.2.4 code stripped this key before sending
+            # and 3.0.0 does not model it, so the robot most likely
+            # ignores it. Most likely is not the same as certainly, and
+            # this key says "clean everything".
+            #
+            # @Echovictor37 showed what that costs when it goes wrong:
+            # a command the robot accepted and answered by cleaning the
+            # whole house instead of the requested room. If some
+            # firmware does read `select_all`, a True beside a region
+            # list is the one combination that could reproduce it.
+            #
+            # Nothing in this library sets `clean_all` True today. This
+            # makes that stay true rather than depend on nobody ever
+            # doing it.
+            "select_all": self.clean_all and not self.regions,
         }
         if self.map_id is not None:
             body["p2map_id"] = self.map_id
+            # BOTH CONVENTIONS, and this is not belt-and-braces.
+            #
+            # `CommandDTO` in app 3.0.0 carries `p2map_id`/`user_p2mapv_id`
+            # AND `pmap_id`/`user_pmapv_id` as four separate nullable
+            # fields -- not as alternatives. The app decides per device:
+            # `allowLegacyReportedValuesInCommand` sits beside
+            # `isLegacySku` and `isIrobotHomeClassicDevice`.
+            #
+            # We have no way to evaluate that switch, and sending only
+            # the new name means a legacy-SKU robot silently gets a
+            # command with no map -- which @Echovictor37 showed produces
+            # a WHOLE-HOUSE CLEAN rather than an error.
+            #
+            # Sending both costs one key on robots that ignore it. Not
+            # sending the one a device needs costs a wrong clean --
+            # which is why the switch exists. It defaults off because
+            # the confirmed payload did not carry it, and a confirmed
+            # shape outranks a plausible one.
+            if legacy_map_keys:
+                body["pmap_id"] = self.map_id
         if self.id_multipolys is not None:
             body["id_multipolys"] = [
                 p.to_json() if hasattr(p, "to_json") else p for p in self.id_multipolys
@@ -510,6 +677,16 @@ class CommandPolygon:
         return body
 
 
+#: THE CLASS IS GONE FROM 3.0.0, THE ENCODING IS NOT.
+#:
+#: 2.2.4 had a named `OperatingModeBitmask`; 3.0.0 dropped it and encodes
+#: through `IrobotOperatingModeCodec` instead -- still `mask = 1 << bit`,
+#: still the same powers of two.
+#:
+#: So this enum's values stay correct while the class that named them
+#: does not exist any more. Worth stating, because "the vendor removed
+#: it" reads like "stop using it" and here it means the opposite: they
+#: moved from a model to a codec and kept the numbers.
 class OperatingModeBitmask(IntFlag):
     """CONFIRMED (parallel native-analysis track, this session), and
     independently validated against this project's own real observed
@@ -722,6 +899,15 @@ class CommandParams:
     execute_in_place: bool | None = None
     gentle_mode: int | None = None
     heated_water: int | None = None
+    #: `edgeOnly` and `quiet` -- both new in app 3.0.0's
+    #: `CommandParamsDTO`, both absent from 2.2.4 and therefore from
+    #: this model until the 3.0 analysis listed them.
+    #:
+    #: Their VALUES are unknown. Integer per the DTO, and nothing here
+    #: guesses at a range: a caller that has a value from a capture can
+    #: pass it, and one that does not sends nothing.
+    edge_only: int | None = None
+    quiet: int | None = None
     manual_update: bool | None = None
     monitor_mode: int | None = None
     no_koz: int | None = None
@@ -856,6 +1042,8 @@ class CommandParams:
             "execute_in_place": self.execute_in_place,
             "gentleMode": self.gentle_mode,
             "heatedWater": self.heated_water,
+            "edgeOnly": self.edge_only,
+            "quiet": self.quiet,
             "manUpd": self.manual_update,
             "monitor_mode": self.monitor_mode,
             "noKOZ": self.no_koz,
@@ -915,6 +1103,8 @@ class CommandParams:
             execute_in_place=data.get("execute_in_place"),
             gentle_mode=data.get("gentleMode"),
             heated_water=data.get("heatedWater"),
+            edge_only=data.get("edgeOnly"),
+            quiet=data.get("quiet"),
             manual_update=data.get("manUpd"),
             monitor_mode=data.get("monitor_mode"),
             no_koz=data.get("noKOZ"),
@@ -963,6 +1153,20 @@ class Region:
 
     region_id: str
     region_type: RegionType
+    #: `region_name` and `region_type` -- NEW IN APP 3.0.0's `RegionDTO`
+    #: and absent from 2.2.4, so this model had no way to know of them.
+    #:
+    #: Note the collision: the wire key `region_type` is NOT this
+    #: dataclass's `region_type`, which serialises as `type`. iRobot
+    #: added a second, differently-named concept beside the existing
+    #: one. Both are written when set.
+    #:
+    #: Their purpose is unconfirmed -- a name alongside an id suggests
+    #: the app sends what it displayed, so a robot could echo it back in
+    #: the timeline. Nothing here depends on that reading; the fields
+    #: are carried, not interpreted.
+    region_label: str | None = None
+    region_kind: str | None = None
     name: str | None = None
     params: CommandParams | None = None
 
@@ -979,6 +1183,10 @@ class Region:
         # was delivered with a PUBACK and did nothing at all. Same
         # robot, same map, same room, minutes apart.
         body: dict[str, Any] = {"region_id": self.region_id, "type": self.region_type.value}
+        if self.region_label is not None:
+            body["region_name"] = self.region_label
+        if self.region_kind is not None:
+            body["region_type"] = self.region_kind
         if self.name is not None:
             body["name"] = self.name
         if self.params is not None:

@@ -1,4 +1,54 @@
-"""Map edit commands -- both the V1 (actually used) and V2 (dead code) paths.
+"""A THIRD GENERATION EXISTS, AND IT IS MQTT RATHER THAN REST.
+
+`P2MapV3Editor.sendEdit()` in app 3.0.0:
+
+    {"method": "service.mapedit",
+     "msgId": "<random int as string>",
+     "params": {"map_id": "<id>", "data": {"value": <any JSON>}}}
+
+published to `{irbt_prefix}/things/{blid}/editv3_req`, with answers on
+`editv3_resp`.
+
+**THERE ARE NO METHOD NAMES TO GUESS.** `method` is the constant
+`service.mapedit`; the actual operation lives in `data.value`, a generic
+`JsonElement` the Kotlin layer does not interpret. `P2MapV3Editor` is a
+transport channel and nothing more -- which means the payloads inside it
+are not discoverable from this APK at all.
+
+**V3 CARRIES EXACTLY ONE OPERATION TODAY.** `MapServiceHandler` has 34
+methods and only two mention V3: `deleteCleanZonesV3` and
+`observeV3EditResponses`. Everything else -- `setCleanZones`,
+`setFurniture`, `setMapName`, `setRenameRoom`, `setVirtualWall`,
+`updateKeepOutZones` -- goes through the paths this module already
+implements.
+
+So V3 is not a replacement waiting to obsolete V1 and V2. It is one
+operation the app moved to a different channel, plus the channel itself.
+A caller losing sleep over "should we support V3" is worrying about a
+single delete.
+
+TWO COMMANDS HERE NO LONGER EXIST IN THE APP.
+`EditMapV2Request$CommandV2$SetFloorTypes` and `$SetThresholds` are in
+2.2.4 and gone from 3.0.0 -- only the READ side survives
+(`FloorTypeFeature$Properties`); thresholds vanish entirely, including
+`PolicyZoneFeature$Properties.threshold_type`.
+
+`SetFloorTypes` and `SetThresholds` below are kept. The app dropping a
+command does not prove the robot rejects it, and neither has ever been
+sent from here -- so removing them would trade an untested path for an
+untested absence. What has changed is the expectation: if either fails
+in the field, "the app no longer sends this" is the first explanation to
+consider, not the last.
+
+Nothing in this module speaks V3. The V1 and V2 commands below are
+verified against their own serialisers and are what this library sends.
+
+WHAT THIS MEANS FOR A CALLER: if a robot ever refuses a V1/V2 edit, the
+next thing to establish is whether it wants V3 -- and that can be
+established WITHOUT a write, by watching whether the robot publishes on
+`editv3_resp` at all.
+
+Map edit commands -- both the V1 (actually used) and V2 (dead code) paths.
 
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full

@@ -1144,3 +1144,64 @@ class TestNoLoginFieldIsSilentlyDiscarded:
             del payload[missing]
             with pytest.raises(KeyError):
                 ConnectionToken.from_json(payload)
+
+
+class TestAllThirteenDigitalCapabilities:
+    """`digiCap` carries thirteen flags in app 3.0.0. This class read
+    one.
+
+    They are what makes a feature model-dependent rather than
+    firmware-dependent, and several answer questions this project has
+    asked the hard way — `cwia` says whether presence-based cleaning
+    exists on THIS robot at all, which was previously only inferable
+    from IFTTT marketing text.
+    """
+
+    def _caps(self, **kwargs):
+        from roombapy_prime.auth import RobotDigitalCapabilities
+
+        return RobotDigitalCapabilities.from_json(kwargs)
+
+    def test_clean_while_away_is_read(self):
+        """The flag behind "start my robot when I leave home"."""
+        assert self._caps(cwia=True).clean_while_away is True
+
+    def test_dirt_detective_is_read(self):
+        """iRobot's own demand cleaning — worth knowing before offering
+        ours as if it were the only option."""
+        assert self._caps(ddAutomation=True).dirt_detective_automation is True
+
+    def test_time_estimate_support_is_read(self):
+        """Whether asking for estimates is worth a call at all."""
+        assert self._caps(cte=False).cleaning_time_estimates is False
+
+    def test_the_integer_flags_keep_their_values(self):
+        """`appVer`, `cleaningProfiles` and `smartClean` are Integer in
+        the DTO, not Boolean — a truthiness check would lose the
+        version."""
+        caps = self._caps(appVer=3, cleaningProfiles=2, smartClean=1)
+
+        assert (caps.app_ver, caps.cleaning_profiles) == (3, 2)
+        assert caps.smart_clean == 1
+
+    def test_every_flag_has_a_reader(self):
+        """Thirteen in the DTO, thirteen here."""
+        payload = {
+            "appVer": 3, "cleaningProfiles": 2, "cte": True, "cwia": True,
+            "ddAutomation": True, "digiSpot": True, "kozRecommendations": True,
+            "matter": True, "perspective3DMap": True, "petFurniture": True,
+            "smartClean": 1, "thresholds": True, "timeline": True,
+        }
+        caps = self._caps(**payload)
+        unread = [
+            f.name for f in __import__("dataclasses").fields(caps)
+            if getattr(caps, f.name) is None
+        ]
+
+        assert not unread, f"declared but not parsed: {unread}"
+
+    def test_an_absent_flag_is_none_not_false(self):
+        """False means the robot says it cannot. None means it did not
+        say — and hiding a feature because a flag was missing is worse
+        than offering one that fails."""
+        assert self._caps().clean_while_away is None

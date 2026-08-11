@@ -6,6 +6,8 @@ picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
 evidence trail behind any individual field."""
 from __future__ import annotations
 
+from ..vendor_errors import vendor_error
+
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any
@@ -529,10 +531,15 @@ class P2MapVersion:
     visible: bool | None = None
     name: str | None = None
     rooms_metadata: list[RoomMetadataEntry] = field(default_factory=list)
+    #: `user_orientation_rad` -- how the user rotated this map version.
+    #: `P2MapData` declares it; the renderer had no way to match the
+    #: app's orientation without it.
+    user_orientation_rad: float | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> P2MapVersion:
         return cls(
+            user_orientation_rad=data.get("user_orientation_rad"),
             p2map_id=data.get("p2map_id", ""),
             entity_type=data.get("entity_type"),
             create_time=data.get("create_time"),
@@ -695,10 +702,14 @@ class HouseholdRobot:
     entity_id: str | None = None
     robot_id: str | None = None
     creation_timestamp: int | None = None
+    #: `robot_pmap_sharing` -- whether this robot's maps are shared
+    #: with the household. Declared and unread.
+    pmap_sharing: bool | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HouseholdRobot:
         return cls(
+            pmap_sharing=data.get("robot_pmap_sharing"),
             household_id=data.get("household_id"),
             entity_id=data.get("entity_id"),
             robot_id=data.get("robot_id"),
@@ -925,6 +936,16 @@ class CapabilityFlags:
     area: int | None = None
     autoevac: int | None = None
     bin_full_detect: int | None = None
+    #: `addOnHw` and `pose` -- both in `Robot$Capabilities`, both in
+    #: real captures (@connormxy's `addOnHw: 0`, `pose: 2`), neither
+    #: read.
+    #:
+    #: `pose` is the interesting one: it is the flag that separates a
+    #: robot reporting its position from one that does not, which is
+    #: exactly the EPHEMERAL/SMART distinction this project derives by
+    #: other means.
+    add_on_hw: int | None = None
+    pose: int | None = None
     carpet_boost: int | None = None
     d_pause: int | None = None
     dnd: int | None = None
@@ -970,6 +991,8 @@ class CapabilityFlags:
             area=data.get("area"),
             autoevac=data.get("autoevac"),
             bin_full_detect=data.get("binFullDetect"),
+            add_on_hw=data.get("addOnHw"),
+            pose=data.get("pose"),
             carpet_boost=data.get("carpetBoost"),
             d_pause=data.get("dPause"),
             dnd=data.get("dnd"),
@@ -1271,11 +1294,40 @@ class CleanMissionStatus:
     initiator: str | None = None
     mission_id: str | None = None
     mission_start_time: int | None = None
+    #: `expireTm` and `rechrgTm`, both Long in `CleanMissionStatusData`
+    #: and neither read here.
+    #:
+    #: They answer a question nothing else can: a paused robot shows
+    #: `phase: "pause"` and no more, while `expire_time` says when that
+    #: pause lapses and `recharge_time` when it intends to resume after
+    #: charging. Classic surfaces both; Prime had the same numbers in
+    #: the same object and dropped them.
+    expire_time: int | None = None
+    recharge_time: int | None = None
     n_missions: int | None = None
     not_ready: int | None = None
     operating_mode: int | None = None
     phase: str | None = None
     sqft: int | None = None
+
+    @property
+    def error_text(self) -> dict[str, str] | None:
+        """iRobot's own title and explanation for `error`, or None.
+
+        **A LIBRARY THAT SURFACES ERRORS SHOULD NAME THEM.** This model
+        carried `error: 46` and every caller had to look it up
+        somewhere -- which meant asking the maintainers, because until
+        now nothing here could say what 46 means.
+
+        None for a code iRobot does not document, and that distinction
+        is worth keeping: @connormxy's 236 is in neither the app's
+        catalogue nor anywhere else, and a caller should be able to say
+        "error 236, undocumented" rather than "no error".
+
+        `@val` is left in place -- it is the robot's name in iRobot's
+        strings, and a caller that knows it can substitute.
+        """
+        return vendor_error(self.error)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleanMissionStatus:
@@ -1286,6 +1338,8 @@ class CleanMissionStatus:
             initiator=data.get("initiator"),
             mission_id=data.get("missionId"),
             mission_start_time=data.get("mssnStrtTm"),
+            expire_time=data.get("expireTm"),
+            recharge_time=data.get("rechrgTm"),
             n_missions=data.get("nMssn"),
             not_ready=data.get("notReady"),
             operating_mode=data.get("operatingMode"),
@@ -1471,6 +1525,21 @@ class DockStatus:
     cap: DockCapabilities | None = None
     error: int | None = None
     fw_version: str | None = None
+    #: SIX FIELDS `DockStatusData` DECLARES AND NOTHING WAS READING.
+    #:
+    #: `frState` is the fluid-refill state, the dock counterpart to
+    #: `pwState` and `pdState` which this model has had all along -- so
+    #: a dock could report that it was refilling and nothing here could
+    #: say so.
+    #:
+    #: `fwVerSec`, `hwRev`, `varId` and `pn` are new in app 3.0.0;
+    #: `dock_id` was in 2.2.4 and simply not taken.
+    fr_state: int | None = None
+    fw_version_secondary: str | None = None
+    hardware_revision: int | None = None
+    variant_id: int | None = None
+    part_number: str | None = None
+    dock_id: str | None = None
     known: bool | None = None
     pd_state: DockState | None = None
     pw_state: DockState | None = None
@@ -1496,6 +1565,25 @@ class DockStatus:
     #: established, and it appears in no capture from either dock.
     tank_lvl: int | None = None
 
+    @property
+    def error_text(self) -> dict[str, str] | None:
+        """iRobot's own title and explanation for `error`, or None.
+
+        **A LIBRARY THAT SURFACES ERRORS SHOULD NAME THEM.** The dock's own error
+        code, same treatment and every caller had to look it up
+        somewhere -- which meant asking the maintainers, because until
+        now nothing here could say what 46 means.
+
+        None for a code iRobot does not document, and that distinction
+        is worth keeping: @connormxy's 236 is in neither the app's
+        catalogue nor anywhere else, and a caller should be able to say
+        "error 236, undocumented" rather than "no error".
+
+        `@val` is left in place -- it is the robot's name in iRobot's
+        strings, and a caller that knows it can substitute.
+        """
+        return vendor_error(self.error)
+
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockStatus:
         cap_data = data.get("cap")
@@ -1503,6 +1591,12 @@ class DockStatus:
             cap=DockCapabilities.from_json(cap_data) if cap_data else None,
             error=data.get("error"),
             fw_version=data.get("fwVer"),
+            fr_state=data.get("frState"),
+            fw_version_secondary=data.get("fwVerSec"),
+            hardware_revision=data.get("hwRev"),
+            variant_id=data.get("varId"),
+            part_number=data.get("pn"),
+            dock_id=data.get("id"),
             tank_lvl=data.get("tankLvl"),
             known=data.get("known"),
             pd_state=_enum_or_none(DockState, data.get("pdState")),
@@ -2173,3 +2267,99 @@ def parse_robot_status_v2(data: dict[str, Any] | None) -> RobotStatusV2 | None:
     return RobotStatusV2.from_json(data)
 
 
+
+
+@dataclass(frozen=True)
+class FirmwareItem:
+    """A firmware release for a robot, from `GET /v2/firmware`.
+
+    THIS ANSWERS A QUESTION THE SHADOW CANNOT. `softwareVer` says what
+    is installed; nothing says what is available, what it changes, or
+    how long installing it takes. The app shows all three.
+
+    `expected_installation_time` is the one that matters in a home:
+    somebody deciding whether to start an update at nine in the evening
+    can be told rather than left to find out.
+
+    Wire keys verified from `FirmwareItemDto`'s `$$serializer` in app
+    3.0.0 (build 3000008). Untested against the live endpoint -- the
+    request model gives no method, so even the verb is unconfirmed.
+    """
+
+    version: str | None = None
+    sku: str | None = None
+    #: A LIST, NOT A STRING. `FirmwareItemDto` types it
+    #: `List<String>` -- one release can target several installed
+    #: versions, which is what an upgrade path looks like.
+    #:
+    #: Modelled as a string when this class was written today, from the
+    #: wire-key list alone. The key names said nothing about types; the
+    #: model dump does.
+    target_software_ver: list[str] | None = None
+    notes: str | None = None
+    release_date: str | None = None
+    download_url: str | None = None
+    metapackage_url: str | None = None
+    deployment_mpkg: str | None = None
+    track: str | None = None
+    provisioning_priority: int | None = None
+    ota_priority: int | None = None
+    signing: str | None = None
+    fused: bool | None = None
+    expected_download_time: int | None = None
+    expected_installation_time: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> FirmwareItem:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            version=data.get("version"),
+            sku=data.get("sku"),
+            target_software_ver=(
+                list(raw)
+                if isinstance(raw := data.get("targetSoftwareVer"), list)
+                # A single string is accepted rather than dropped: no
+                # response has been seen, and a firmware entry that
+                # names one target is not obviously wrong.
+                else [raw] if isinstance(raw, str)
+                else None
+            ),
+            notes=data.get("notes"),
+            release_date=data.get("releaseDate"),
+            download_url=data.get("downloadUrl"),
+            metapackage_url=data.get("metapackageUrl"),
+            deployment_mpkg=data.get("deploymentMpkg"),
+            track=data.get("track"),
+            provisioning_priority=data.get("provisioningPriority"),
+            ota_priority=data.get("otaPriority"),
+            signing=data.get("signing"),
+            fused=data.get("fused"),
+            expected_download_time=data.get("expectedDownloadTime"),
+            expected_installation_time=data.get("expectedInstallationTime"),
+        )
+
+
+@dataclass(frozen=True)
+class DockFirmware:
+    """A dock firmware release. Five fields where the robot has fifteen
+    -- no notes, no download url, no sku. `DockFirmwareDto`.
+    """
+
+    version: str | None = None
+    provisioning_priority: int | None = None
+    ota_priority: int | None = None
+    track: str | None = None
+    expected_installation_time: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> DockFirmware:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            version=data.get("version"),
+            provisioning_priority=data.get("provisioningPriority"),
+            ota_priority=data.get("otaPriority"),
+            track=data.get("track"),
+            expected_installation_time=data.get("expectedInstallationTime"),
+        )

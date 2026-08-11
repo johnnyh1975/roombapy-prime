@@ -101,6 +101,45 @@ All by DaRealGuGu.
 **`childLock` is the first setting whose physical effect is confirmed**,
 not merely its acceptance.
 
+**`schedHold` does nothing, and the reason is now known.** It appears
+once in iRobot's own Prime app, unannotated and with no consumer across
+3801 classes -- plumbing inherited from Classic. Prime pauses schedules
+through `enabled` per schedule.
+
+**And the settings_roundtrip failures were ours, all four of them.**
+A wrong attribute that blamed the tester's hardware, a guessed wire key
+for the volume, a discarded publish result, and two candidate keys the
+app does not write: `audio` should be `audio.volume`, and `evacAllowed`
+is readable but not among the 24 keys `settingFromKey` writes. Asking
+for a key the vendor never writes, and calling the silence a bug, is how
+three testers spent a week on this check.
+
+## The wall has three faces and one likely cause
+
+```
+@DaRealGuGu   PUBLISH queued but never sent
+@jouwdan      no SUBACK, then no response
+@utkjmitch    PUBLISH refused, paho rc=4
+```
+
+**@utkjmitch's session was half alive**: shadow subscribes dead, cmd-topic publishes working, the
+robot physically obeying commands — one connection, one moment. Whatever kills it does so between
+CONNACK and the first SUBACK, and paho notices only at the next publish. A subscribe always loses
+that race; a bare publish fired quickly enough wins it.
+
+That fits **one connection evicting another** better than anything else: AWS IoT drops the older
+client when a second arrives with the same client_id. It also explains why a *first* read sometimes
+succeeds and every later one fails, which a policy denial would not — a policy denies every time.
+
+The broker's own disconnect reason is now carried into both the SUBACK warning and the publish
+error; this library recorded it and never showed it. And the tool says so **before** the run: close
+the iRobot phone app, and stop any Home Assistant integration pointing at the same robot.
+
+**Ruling this out costs nothing and has never been done.** Two of three testers reasonably concluded
+their hardware was at fault.
+
+The original note follows.
+
 **`schedHold` does nothing.** The write succeeds, the read-back confirms
 it, and the schedule stays active in the app. Writing it to
 `rw-settings` is evidently not the mechanism the app uses.

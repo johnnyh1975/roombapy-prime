@@ -379,6 +379,13 @@ class PolicyZoneFeatureProperties:
     member names weren't extracted."""
 
     zone_type: str | None = None
+    #: REMOVED IN APP 3.0.0. `PolicyZoneFeature$Properties` no longer
+    #: declares it -- the only field iRobot dropped rather than renamed
+    #: between 2.2.4 and 3.0.0.
+    #:
+    #: Kept, because a robot on older firmware may still send it and
+    #: this is a read path: an unread field costs nothing, a dropped one
+    #: costs whatever it carried.
     threshold_type: str | None = None
 
     @classmethod
@@ -884,6 +891,10 @@ class CleanScoreData:
     smart_clean_id: str | None = None
     mission_last_processed: dict[str, Any] | None = None
     regions: list[CleanScoreRegion] = field(default_factory=list)
+    #: `error` -- the response's own error object. A cloud answering
+    #: with one rather than an HTTP failure looks like a successful call
+    #: with no dirty rooms, which is the shape of "nothing to do".
+    error: Any | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleanScoreData:
@@ -891,6 +902,7 @@ class CleanScoreData:
             return cls()
         raw = data.get("regions")
         return cls(
+            error=data.get("error"),
             p2map_id=data.get("p2map_id"),
             active_p2mapv_id=data.get("active_p2mapv_id"),
             user_p2mapv_id=data.get("user_p2mapv_id"),

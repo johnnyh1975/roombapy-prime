@@ -101,6 +101,12 @@ class MissionCommandRecord:
     map_id: str | None = None
     map_version_id: str | None = None
     ordered: int | None = None
+    #: `favoriteId` and `userMapId`, both declared by `Command` and
+    #: neither read -- so a mission started from a favourite could not
+    #: say which one, and the history could not tell a favourite run
+    #: from a manual one.
+    favorite_id: str | None = None
+    user_map_id: str | None = None
     params: CommandParams | None = None
     regions: list[Region] = field(default_factory=list)
     robot_id: str | None = None
@@ -114,6 +120,8 @@ class MissionCommandRecord:
             command=data.get("command"),
             initiator=data.get("initiator"),
             map_id=data.get("p2map_id") or data.get("mapId"),
+            favorite_id=data.get("favoriteId") or data.get("favorite_id"),
+            user_map_id=data.get("userMapId"),
             map_version_id=data.get("user_p2mapv_id") or data.get("mapVersionId"),
             ordered=data.get("ordered"),
             params=CommandParams.from_json(params_data) if params_data else None,
@@ -162,6 +170,23 @@ class MissionHistoryEntry:
     done_raw: str | None = None
     error_code: int | None = None
     square_feet_covered: int | None = None
+    #: `oModeStats` -- MINUTES AND AREA PER OPERATING MODE.
+    #:
+    #: In neither the app model NOR our reader. It appears in real
+    #: mission entries (`{"vac": {"nMin": 10, "sqft": 90}}`) and is
+    #: absent from iRobot's own 33-key `MissionHistoryItemResponse`:
+    #: **the robot sends more than its maker's app declares.**
+    #:
+    #: It answers the one question a Combo mission raises that a single
+    #: duration cannot -- how much of it was vacuuming and how much
+    #: mopping. `duration_m` says forty minutes; this says ten of them
+    #: were vacuum over ninety square feet.
+    #:
+    #: Kept raw. The inner keys are mode names (`vac` observed; `mop`
+    #: and `vacMop` plausible and unseen), and inventing a model for
+    #: modes nobody has captured is what put three guessed keys in this
+    #: file already.
+    o_mode_stats: dict[str, Any] | None = None
     number_of_evacuations: int | None = None
     number_of_dirt_detects: int | None = None
     docked_at_start: bool | None = None
@@ -201,7 +226,14 @@ class MissionHistoryEntry:
         actual error would be needed."""
         command_data = data.get("cmd") or data.get("command")
         timeline_data = data.get("timeline") or {}
-        coverage_strategy = (timeline_data or {}).get("coverageStrategy")
+        # `covStrat` IS THE VENDOR'S KEY, from `MissionTimelineDto`.
+        # `coverageStrategy` was the readable guess, and like `dirt` and
+        # `map_id` before it, no robot has ever sent that spelling --
+        # this has read None on every mission.
+        coverage_strategy = (
+            (timeline_data or {}).get("covStrat")
+            or (timeline_data or {}).get("coverageStrategy")
+        )
         timeline_events = (
             timeline_data.get("finEvents") if isinstance(timeline_data, dict) else timeline_data
         )
@@ -225,11 +257,25 @@ class MissionHistoryEntry:
             error_code=data.get("errorCode"),
             square_feet_covered=data.get("sqft"),
             number_of_evacuations=data.get("evacs"),
-            number_of_dirt_detects=data.get("numberOfDirtDetects"),
+            # `dirt` IS THE VENDOR'S KEY. `numberOfDirtDetects` was a
+            # readable guess at what the field might be called, and no
+            # robot has ever sent it -- so this counter has read None on
+            # every mission since it was written.
+            o_mode_stats=data.get("oModeStats"),
+            number_of_dirt_detects=(
+                data.get("dirt")
+                if data.get("dirt") is not None
+                else data.get("numberOfDirtDetects")
+            ),
             docked_at_start=data.get("dockedAtStart"),
             ended_on_dock=data.get("eDock"),
             command=MissionCommandRecord.from_json(command_data) if command_data else None,
-            static_map_id=data.get("staticMapId"),
+            # Same shape of guess: the response says `map_id`.
+            static_map_id=(
+                data.get("map_id")
+                if data.get("map_id") is not None
+                else data.get("staticMapId")
+            ),
             coverage_strategy=_enum_or_none(CoverageStrategy, coverage_strategy),
             rank_overlap=_enum_or_none(RankOverlap, data.get("rankOverlap")),
             pad_category=_enum_or_none(PadCategory, data.get("padCategory")),
@@ -549,6 +595,18 @@ class RoomEvent:
 
     area: int | None = None
     con_passes: int | None = None
+    #: `coverage` -- how much of the room this visit actually did.
+    #:
+    #: NEVER READ UNTIL NOW, and it was in the payload the whole time.
+    #: `RoomInfoDto` in app 3.0.0 declares it alongside `area`,
+    #: `passArea`, `passCount` and `totalArea`, and iRobot's own analysis
+    #: notes it makes per-room mission progress directly computable --
+    #: without needing time estimates at all.
+    #:
+    #: The docstring above spends fourteen lines reasoning about whether
+    #: `area` or `total_area` means "covered". The field that answers it
+    #: was sitting in the same object, unparsed.
+    coverage: float | None = None
     map_id: str | None = None
     map_version: str | None = None
     pass_area: int | None = None
@@ -562,8 +620,12 @@ class RoomEvent:
         return cls(
             area=data.get("area"),
             con_passes=data.get("conPasses"),
-            map_id=data.get("p2mapId") or data.get("mapId"),
-            map_version=data.get("p2mapvId") or data.get("mapVersion"),
+            coverage=data.get("coverage"),
+            map_id=data.get("p2mapId") or data.get("pmapId") or data.get("mapId"),
+            map_version=(
+                data.get("p2mapvId") or data.get("pmapvId")
+                or data.get("mapVersion")
+            ),
             pass_area=data.get("passArea"),
             pass_count=data.get("passCount"),
             region_id=data.get("rid") or data.get("regionId"),
@@ -659,6 +721,10 @@ class TravelEvent:
     status: int | None = None
     waypoint_id: str | None = None
     zone_id: str | None = None
+    #: `wip` -- travel still in progress. `TravelInfoDto` declares it
+    #: and nothing read it, so a journey under way and one finished
+    #: looked the same.
+    in_progress: bool | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TravelEvent:
@@ -666,11 +732,12 @@ class TravelEvent:
             destination=_enum_or_none(TravelDestination, data.get("dest") or data.get("destination")),
             map_id=data.get("p2mapId") or data.get("mapId"),
             map_version=data.get("p2mapvId") or data.get("mapVersion"),
-            poly_id=data.get("polyId"),
+            poly_id=data.get("polyid") or data.get("polyId"),
             reason=data.get("reason"),
             region_id=data.get("rid") or data.get("regionId"),
             status=data.get("status"),
-            waypoint_id=data.get("waypointId"),
+            waypoint_id=data.get("wid") or data.get("waypointId"),
+            in_progress=data.get("wip"),
             zone_id=data.get("zid") or data.get("zoneId"),
         )
 
@@ -737,6 +804,9 @@ class ZoneEvent:
     pass_count: int | None = None
     status: int | None = None
     total_area: int | None = None
+    #: Same field, same omission as RoomEvent -- `ZoneInfoDto` declares
+    #: it and nothing was reading it.
+    coverage: float | None = None
     zone_id: str | None = None
 
     @classmethod
@@ -744,9 +814,13 @@ class ZoneEvent:
         return cls(
             area=data.get("area"),
             map_id=data.get("p2mapId") or data.get("mapId"),
-            map_version=data.get("p2mapvId") or data.get("mapVersion"),
+            map_version=(
+                data.get("p2mapvId") or data.get("pmapvId")
+                or data.get("mapVersion")
+            ),
             pass_area=data.get("passArea"),
             pass_count=data.get("passCount"),
+            coverage=data.get("coverage"),
             status=data.get("status"),
             total_area=data.get("totalArea"),
             zone_id=data.get("zid") or data.get("zoneId"),
@@ -799,6 +873,16 @@ class MissionTimelineEvent:
         tried, neither of which is correct; "reloc" now added and
         populates the same "relocalizing" attribute."""
 
+        # THE VENDOR'S SHORT NAMES, added beside the long ones.
+        #
+        # `MissionEventDto` in app 3.0.0 declares `cmd`, `disc`, `poly`
+        # and `tentativeLoc`. This parser read `command`, `discovery`,
+        # `polygon` and `tentativeLocation` -- the readable forms, which
+        # `reloc` was already the exception to.
+        #
+        # Both are accepted rather than swapped: the long names came
+        # from somewhere, and a payload that uses them would lose four
+        # event types if they were removed to tidy up.
         def _sub(key: str, parser: Any) -> Any:
             raw = data.get(key)
             return parser(raw) if raw is not None else None
@@ -807,8 +891,8 @@ class MissionTimelineEvent:
             start_time=data.get("ts") or data.get("startTime"),
             end_time=data.get("ets") or data.get("endTime"),
             event_type=data.get("type"),
-            command=_sub("command", CommandEvent.from_json),
-            discovery=_sub("discovery", DiscoveryEvent.from_json),
+            command=_sub("cmd", CommandEvent.from_json) or _sub("command", CommandEvent.from_json),
+            discovery=_sub("disc", DiscoveryEvent.from_json) or _sub("discovery", DiscoveryEvent.from_json),
             error=_sub("error", ErrorEvent.from_json),
             evac=_sub("evac", EvacEvent.from_json),
             live_view=_sub("liveView", LiveViewEvent.from_json),
@@ -816,12 +900,12 @@ class MissionTimelineEvent:
             pad_wash=_sub("padWash", PadWashEvent.from_json),
             panorama=_sub("panorama", PanoramaEvent.from_json),
             plan=_sub("plan", PlanEvent.from_json),
-            polygon=_sub("polygon", PolygonEvent.from_json),
+            polygon=_sub("poly", PolygonEvent.from_json) or _sub("polygon", PolygonEvent.from_json),
             refill=_sub("refill", RefillEvent.from_json),
             relocalizing=_sub("reloc", TentativeLocationEvent.from_json) or _sub("relocalizing", TentativeLocationEvent.from_json),
             room=_sub("room", RoomEvent.from_json),
             sub_room=_sub("subRoom", SubRoomEvent.from_json),
-            tentative_location=_sub("tentativeLocation", TentativeLocationEvent.from_json),
+            tentative_location=_sub("tentativeLoc", TentativeLocationEvent.from_json) or _sub("tentativeLocation", TentativeLocationEvent.from_json),
             travel=_sub("travel", TravelEvent.from_json),
             traversal=_sub("traversal", TraversalEvent.from_json),
             waypoint=_sub("waypoint", WaypointEvent.from_json),
@@ -859,6 +943,7 @@ class MissionTimelineReport:
     command_time: int | None = None
     event: list[MissionTimelineEvent] = field(default_factory=list)
     fin_events: list[MissionTimelineEvent] = field(default_factory=list)
+    future_events: list[MissionTimelineEvent] = field(default_factory=list)
     mission_id: str | None = None
     n_missions: int | None = None
     version: str | None = None
@@ -873,6 +958,17 @@ class MissionTimelineReport:
             command_time=cmd.get("time"),
             event=[MissionTimelineEvent.from_json(e) for e in data.get("event") or []],
             fin_events=[MissionTimelineEvent.from_json(e) for e in data.get("finEvents") or []],
+            # `futureEvents` -- WHAT THE ROBOT STILL INTENDS TO DO.
+            #
+            # `MissionTimelineDto` declares it beside `finEvents` and
+            # nothing read it. Finished events say where the robot has
+            # been; these say where it is going, which is the half a
+            # progress display actually needs and the half this library
+            # was throwing away.
+            future_events=[
+                MissionTimelineEvent.from_json(e)
+                for e in data.get("futureEvents") or []
+            ],
             mission_id=data.get("mission_id"),
             n_missions=data.get("nMssn"),
             version=data.get("ver"),

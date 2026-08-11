@@ -1338,3 +1338,137 @@ class TestAShadowGetIsActuallySent:
 
         source = inspect.getsource(PrimeMqttClient.get_shadow)
         assert "_publish_confirmed(" in source
+
+
+class TestACallbackCannotTakeDownTheConnection:
+    """A callback that raises kills paho's network loop thread, and the
+    connection then looks alive while delivering nothing: publishes
+    queue and are never sent, subscribes get no SUBACK.
+
+    **That is exactly what two testers reported.** @jouwdan's first read
+    listed 21 keys and every operation after it failed. @DaRealGuGu's
+    b16 run said "PUBLISH was queued but never sent" — the same
+    connection in the same state, seen from the other side.
+    """
+
+    def _client(self):
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = object.__new__(PrimeMqttClient)
+        client._pending = {}
+        client._persistent = {}
+        return client
+
+    def _message(self, topic="t/1"):
+        from unittest.mock import MagicMock
+
+        msg = MagicMock()
+        msg.topic = topic
+        msg.payload = b'{"state": {}}'
+        return msg
+
+    def test_a_raising_one_shot_callback_is_survived(self):
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = self._client()
+        client._pending["t/1"] = [lambda _r: (_ for _ in ()).throw(ValueError("x"))]
+
+        PrimeMqttClient._on_message(client, None, None, self._message())
+
+    def test_a_raising_watcher_is_survived(self):
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = self._client()
+        client._persistent["t/#"] = [
+            lambda _r: (_ for _ in ()).throw(RuntimeError("x"))
+        ]
+
+        PrimeMqttClient._on_message(client, None, None, self._message())
+
+    def test_one_bad_callback_does_not_stop_the_others(self):
+        """The message is lost for the one that raised, not for
+        everybody listening."""
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        seen = []
+        client = self._client()
+        client._pending["t/1"] = [
+            lambda _r: (_ for _ in ()).throw(ValueError("x")),
+            seen.append,
+        ]
+
+        PrimeMqttClient._on_message(client, None, None, self._message())
+
+        assert len(seen) == 1
+
+    def test_a_working_callback_still_receives(self):
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        seen = []
+        client = self._client()
+        client._pending["t/1"] = [seen.append]
+
+        PrimeMqttClient._on_message(client, None, None, self._message())
+
+        assert seen and seen[0].topic == "t/1"
+
+
+class TestTheBrokersReasonIsCarriedIntoTheError:
+    """Three accounts, three symptoms, one wall:
+
+        @DaRealGuGu   publish queued but never sent
+        @jouwdan      no SUBACK, then no response
+        @utkjmitch    publish refused, paho rc=4
+
+    **@utkjmitch's half-alive session ties them together:** shadow
+    subscribes dead, cmd-topic publishes working, same connection, robot
+    physically obeying the commands. Whatever kills it does so between
+    CONNACK and the first SUBACK, and paho notices only at the next
+    publish.
+
+    A broker that drops a client for an unauthorised subscribe produces
+    exactly that — and it says why on disconnect. This library recorded
+    that reason and never showed it.
+    """
+
+    def _refuse(self, reason=None):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import ShadowError, _publish_confirmed
+
+        info = MagicMock()
+        info.rc = 4
+        try:
+            _publish_confirmed(info, "topic", disconnect_reason=reason)
+        except ShadowError as exc:
+            return str(exc)
+        raise AssertionError("expected a ShadowError")
+
+    def test_the_reason_reaches_the_message(self):
+        message = self._refuse("Not authorized to subscribe")
+
+        assert "Not authorized to subscribe" in message
+
+    def test_rc_four_is_still_named(self):
+        """`rc=4` is paho's MQTT_ERR_NO_CONN — it says the connection was
+        gone at publish time, not why. Both halves are useful."""
+        assert "rc=4" in self._refuse("x")
+
+    def test_without_a_reason_the_message_does_not_invent_one(self):
+        message = self._refuse(None)
+
+        assert "rc=4" in message
+        assert "disconnect reason" not in message
+
+    def test_the_suback_warning_says_when_the_socket_looks_open(self):
+        """No disconnect reported means the socket is probably fine and
+        the subscription simply unanswered — a different problem from a
+        broker that hung up, and worth telling apart."""
+        import inspect
+
+        from roombapy_prime import mqtt_client
+
+        source = inspect.getsource(mqtt_client)
+
+        assert "the socket is" in source
+        assert "probably still open" in source

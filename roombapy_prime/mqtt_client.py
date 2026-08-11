@@ -196,7 +196,9 @@ def _shadow_base(blid: str, named: str | None) -> str:
     return f"$aws/things/{blid}/shadow"
 
 
-def _publish_confirmed(info: Any, topic: str, timeout: float = 5.0) -> None:
+def _publish_confirmed(
+    info: Any, topic: str, timeout: float = 5.0, disconnect_reason: str | None = None
+) -> None:
     """Raises unless the broker actually took the message.
 
     A publish that never leaves and a robot that never answers look the
@@ -210,9 +212,23 @@ def _publish_confirmed(info: Any, topic: str, timeout: float = 5.0) -> None:
         return
     rc = getattr(info, "rc", None)
     if rc is not None and rc != mqtt.MQTT_ERR_SUCCESS:
+        # WHY THE SOCKET DIED, when we know it.
+        #
+        # `rc=4` is paho's MQTT_ERR_NO_CONN -- it says the connection was
+        # gone at publish time, not why. The broker's own reason arrives
+        # earlier, on disconnect, and this library recorded it and never
+        # showed it.
+        #
+        # @utkjmitch's run is why that matters: CONNACK, then no SUBACK
+        # on the shadow topics, then rc=4 -- while cmd-topic publishes on
+        # the SAME session went through and the robot obeyed them.
+        # Subscribes dead, publishes alive. A broker that drops a client
+        # for an unauthorised subscribe looks exactly like that, and its
+        # disconnect reason would say so.
+        why = f" The broker's last disconnect reason was: {disconnect_reason}." if disconnect_reason else ""
         raise ShadowError(
             f"PUBLISH to {topic} was refused by the client (paho rc={rc}) -- "
-            "the request never left, so a timeout below would mean nothing."
+            f"the request never left, so a timeout below would mean nothing.{why}"
         )
     try:
         info.wait_for_publish(timeout=timeout)
@@ -444,11 +460,27 @@ class PrimeMqttClient:
             getattr(self, "subscribe_unconfirmed_count", 0) + len(unconfirmed)
         )
         if unconfirmed:
+            # THE BROKER'S REASON, IF IT GAVE ONE.
+            #
+            # Three testers hit this on three accounts with three
+            # different symptoms -- no SUBACK, publish queued but never
+            # sent, publish refused with rc=4 -- and @utkjmitch's
+            # half-alive session ties them together: shadow subscribes
+            # dead, cmd-topic publishes working, same connection.
+            #
+            # A broker that drops a client for an unauthorised subscribe
+            # produces exactly that, and it says why on disconnect. This
+            # warning is the first place anyone notices, so it is the
+            # right place to carry the reason.
             _LOGGER.warning(
                 "roombapy-prime: no SUBACK within %.1fs for %s -- proceeding, but a "
                 "subscription that was never acknowledged delivers nothing and looks "
-                "exactly like a robot with nothing to say",
+                "exactly like a robot with nothing to say.%s",
                 timeout, unconfirmed,
+                f" Last disconnect reason from the broker: {self._disconnect_reason}."
+                if self._disconnect_reason else
+                " The broker has not reported a disconnect, so the socket is"
+                " probably still open and the subscription simply unanswered.",
             )
         rejected = {self._mid_to_topic.get(m, "?"): self._subscribe_failures.pop(m)
                     for m in mids if m in self._subscribe_failures}
@@ -481,6 +513,25 @@ class PrimeMqttClient:
         # hands out the same client_id to both, they take turns
         # evicting each other indefinitely. From each side that looks
         # like an unexplained drop, not like a conflict.
+        #
+        # THE THREE-ACCOUNT PATTERN FITS THIS, and nothing else fits it
+        # as well. @utkjmitch's session was HALF ALIVE: shadow
+        # subscribes dead, cmd-topic publishes working, robot physically
+        # obeying -- one connection, one moment. An eviction produces
+        # exactly that, because the socket dies between CONNACK and the
+        # first SUBACK and paho only notices at the next publish. A
+        # subscribe always loses that race; a bare publish fired quickly
+        # enough wins it.
+        #
+        # It also explains why a FIRST read sometimes succeeds and every
+        # later one fails (@jouwdan: 21 keys, then nothing), which an
+        # IoT-policy denial would not -- a policy denies every time.
+        #
+        # WHAT WOULD SETTLE IT COSTS NOTHING: run the check with the
+        # iRobot phone app fully closed, and with Home Assistant's own
+        # integration stopped if it points at the same robot. If the
+        # read then works, the wall is an eviction and not a protocol
+        # question at all.
         #
         # SUSPECTED, NOT CONFIRMED (this session): a tester's Home
         # Assistant sensors froze across two separate coordinators at
@@ -662,7 +713,29 @@ class PrimeMqttClient:
         response = ShadowResponse(topic=msg.topic, payload=payload)
         callbacks = self._pending.pop(msg.topic, [])
         for cb in callbacks:
-            cb(response)
+            # A CALLBACK THAT RAISES KILLS PAHO'S NETWORK LOOP THREAD,
+            # and the connection then looks alive while delivering
+            # nothing: publishes queue and are never sent, subscribes
+            # get no SUBACK.
+            #
+            # That is exactly what two testers reported. @jouwdan's
+            # first read listed 21 keys, and every operation after it
+            # failed -- write, then read, both with "no SUBACK".
+            # @DaRealGuGu's b16 run reported "PUBLISH was queued but
+            # never sent", which is the same connection in the same
+            # state seen from the other side.
+            #
+            # This does not prove a callback raised on their accounts.
+            # It removes the only way one could take the whole client
+            # down without saying so.
+            try:
+                cb(response)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception(
+                    "roombapy-prime: a shadow callback raised for %s -- "
+                    "the message is lost, the connection is not",
+                    msg.topic,
+                )
         # BUG FOUND AND FIXED (this session, via a live wildcard capture
         # that came back suspiciously empty despite matching traffic
         # demonstrably existing -- chairstacker). Persistent subscribers
@@ -680,7 +753,18 @@ class PrimeMqttClient:
         for pattern, cbs in self._persistent.items():
             if mqtt.topic_matches_sub(pattern, msg.topic):
                 for cb in cbs:
-                    cb(response)
+                    # Same guard, same reason. Persistent subscribers are
+                    # the watchers -- mission timeline, live map -- and a
+                    # watcher that raises would take down the client that
+                    # feeds every other call.
+                    try:
+                        cb(response)
+                    except Exception:  # noqa: BLE001
+                        _LOGGER.exception(
+                            "roombapy-prime: a watcher raised for %s -- "
+                            "the message is lost, the connection is not",
+                            msg.topic,
+                        )
 
     def shadow_topic(self, suffix: str, named: str | None = None) -> str:
         """Public accessor for building a full shadow topic, e.g.
@@ -734,6 +818,31 @@ class PrimeMqttClient:
     """
         direction = "report" if report else "request"
         return f"{irbt_topic_prefix}/things/{self._blid}/mission/timeline/{direction}"
+
+    def request_mission_timeline(
+        self, irbt_topic_prefix: str, request_id: int
+    ) -> bool:
+        """Asks the robot to send its mission timeline now.
+
+        THE TIMELINE DOES NOT HAVE TO BE WAITED FOR. This library
+        subscribed to `mission/timeline/report` and took whatever
+        arrived, which meant a caller wanting the current mission's
+        progress waited for the robot to volunteer it.
+
+        `MissionTimelineManager.getEncodedRequest()` publishes
+        `{"timelineRequestId": <n>}` to the matching `request` topic, and
+        the report comes back carrying the same id -- which is what
+        `MissionTimelineDto.timelineRequestId` is for.
+
+        **A RUNNING COUNTER, NOT A RANDOM VALUE.** The app starts at 1
+        and increments; a caller that reuses an id cannot tell which
+        report answered which request.
+        """
+        topic = self.mission_timeline_topic(irbt_topic_prefix, report=False)
+        payload = json.dumps({"timelineRequestId": request_id}).encode()
+        info = self._client.publish(topic, payload=payload, qos=1)
+        _publish_confirmed(info, topic)
+        return True
 
     def rejected_report_topic(self, irbt_topic_prefix: str) -> str:
         """NEW (this session). Found via the same native decompilation
@@ -1068,6 +1177,7 @@ class PrimeMqttClient:
             _publish_confirmed(
                 self._client.publish(f"{base}/get", payload=b"", qos=1),
                 f"{base}/get",
+                disconnect_reason=self._disconnect_reason,
             )
 
             waited = 0.0

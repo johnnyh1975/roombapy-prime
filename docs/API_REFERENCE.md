@@ -45,6 +45,7 @@ per-write-path testing status, see
 - [Favorites](#favorites)
 - [Maps](#maps)
 - [Schedules](#schedules)
+- [Error text](#error-text)
 - [Settings (DND, cleaning profiles, default routines, households)](#settings)
 - [Mission history](#mission-history)
 - [Teaming (multi-robot) — documented, not implemented](#teaming-multi-robot--documented-not-implemented)
@@ -81,7 +82,7 @@ await robot.connect()
 | `robot.get_state(timeout=8.0) -> ShadowResponse` | 🟢 | The classic/unnamed shadow — identity, capabilities, current mission status. `models.parse_robot_status_v2(state.payload...)` can attempt to extract a structured `RobotStatusV2` (bytecode-confirmed fields) from the reported state, but this specific structure is confirmed to NOT appear here — battery/charging/dock status actually lives in the named shadow `"ro-currentstate"` instead, see `get_named_shadow()`'s own row below and `CurrentStateShadow`. |
 | `robot.get_settings(timeout=8.0) -> ShadowResponse` | 🟢 | The named `"rw-settings"` shadow — only responds on SMART-tier devices, per binary analysis. |
 | `robot.get_named_shadow(name, timeout=8.0) -> ShadowResponse` | 🟢 (method) / 🟢 (content, now confirmed) | General form of the above two. Nine named shadows are now fully confirmed live: `"rw-constatus"`/`"rw-schedule"`/`"rw-software"` (chairstacker) — see `ConnectionStatusShadow`/`ScheduleShadow`/`SoftwareStatusShadow` in `models/robot_info.py` — plus four previously-unknown read-only shadows found via `MQTTTopics.java`: `"ro-currentstate"`/`"ro-stats"`/`"ro-services"`/`"ro-configinfo"`. **`"ro-currentstate"` is where battery/charging status actually lives** — `batPct` (int, 0-100), charging state in `cleanMissionStatus.phase` (e.g. `"charge"`) — see `CurrentStateShadow`/`StatsShadow`/`ServicesShadow`/`ConfigInfoShadow`, all with real, live-confirmed structure, not placeholders. See `roombapy-prime-verify-named-shadows` in the README (recommend pairing with `--delay-seconds 2` for reliability). |
-| `robot.set_setting(key, value, timeout=8.0) -> ShadowResponse` | 🟢 **confirmed live** (one setting end-to-end) | Writes into the `rw-settings` shadow. `childLock` is confirmed all the way through — the change appeared in the iRobot app and the robot announced it audibly. `ecoCharge`, `noAutoPasses` and `vacHigh` write and read back cleanly but have no easily observable effect, so their real-world behaviour is untested. **`schedHold` is accepted but does nothing**: the write succeeds, the read-back confirms it, and the schedule stays active in the app — writing it here is evidently not the mechanism the app uses. Notably, this project's cross-check against the classic shadow flagged that divergence before anyone looked in the app, which makes it a usable signal rather than a curiosity. |
+| `robot.set_setting(key, value, timeout=8.0) -> ShadowResponse` | 🟢 **confirmed live** (one setting end-to-end) | Writes into the `rw-settings` shadow. `childLock` is confirmed all the way through — the change appeared in the iRobot app and the robot announced it audibly. `ecoCharge`, `noAutoPasses` and `vacHigh` write and read back cleanly but have no easily observable effect, so their real-world behaviour is untested. **`schedHold` is accepted but does nothing**, and APK analysis now explains why: the field appears exactly once in iRobot's Prime app, with no serialisation annotation and no consumer across 3801 classes. It is inherited plumbing. Prime pauses schedules by setting `enabled` on each one instead. **One key, one value is the vendor's own write shape** (`RobotServiceHandler.updateSetting`), and dotted keys such as `padWetness.padPlate` are addressed directly — the read-modify-write advice this project carried described the older app. Notably, this project's cross-check against the classic shadow flagged that divergence before anyone looked in the app, which makes it a usable signal rather than a curiosity. |
 
 | `robot.watch_state(named=None, *, queue_maxsize=100) -> AsyncIterator[ShadowResponse]` | 🟢 | Yields every shadow delta as it arrives, until the generator is closed/cancelled. Bounded queue, drops oldest on overflow (logged). Pass `named="rw-settings"` to watch that shadow instead of the default. |
 
@@ -96,6 +97,8 @@ async for delta in robot.watch_state():
 
 | Method | Confidence | Notes |
 |---|---|---|
+| `RoutineCommand.to_json(legacy_map_keys=False)` | 🟢 (default), 🔴 (the switch) | `CommandDTO` carries `p2map_id`/`user_p2mapv_id` **and** `pmap_id`/`user_pmapv_id` as four separate nullable fields, and the app decides per device via `allowLegacyReportedValuesInCommand`. We cannot evaluate that flag. **Off by default** because @Echovictor37's confirmed region clean did not carry the old name — a confirmed shape outranks a plausible one. Turn it on if a legacy-SKU robot ignores a region command; a robot receiving no map it recognises cleans the whole house rather than erroring. |
+| `MissionCommandType.STARTDONOTDISTURB` / `.STOPDONOTDISTURB` | 🟡 (shape confirmed, never sent) | New in app 3.0.0 and usable through `send_simple_command()`. `BasicCommandBuilder` lists both in its supported types and emits `command`, `initiator` and `time` with every other field null — **no window parameter**. These switch Do Not Disturb on and off *ad hoc*; the period itself is set separately through the household settings call. Spelled camelCase here, unlike the lowercase multi-word commands: nobody has sent these, so there is no confirmed form to prefer over the vendor's. |
 | `robot.send_simple_command(command: str, initiator="localApp") -> None` | 🟢 **confirmed live** | `"start"`/`"stop"`/`"pause"`/`"resume"`/`"dock"`/`"find"` — all six live-tested against real robots, watched and confirmed by real users actually reacting, not just an error-free response. Publishes `{"command", "time", "initiator"}` to a dedicated non-shadow MQTT topic (`{irbt_topic_prefix}/things/{blid}/cmd`) — see `mqtt_client.py`'s `cmd_topic()`/`publish_cmd()` for the full evidence trail. Fire-and-forget: no response wait, since there's no known server acknowledgment for this topic — poll `get_state()` afterward if you want confirmation. This is now the recommended way to do basic mission control AND locate ("find my robot") — `"find"` produces a genuine, audible chime with no robot movement (jayjay); two OTHER find-my-robot mechanisms (a REST endpoint, a shadow write) were tried first and confirmed **not working** — this is the one that actually works. |
 | `robot.send_routine_command_via_cmd_topic(command: RoutineCommand) -> None` | 🟢 **confirmed live** | Region-aware cleaning — specific rooms, from a saved favorite or built from scratch. Confirmed on real hardware: the robot travelled to the named room and cleaned it. **Two requirements, neither obvious.** (1) `initiator` is **mandatory** — a stored favorite does not carry one, the app adds it at send time, and without it the command is delivered, acknowledged with a PUBACK, and silently ignored. (2) The wire keys are `command="start"` and `region_id` — not `"clean"` and `id`, which was an assumption in this project's own code until field data settled it. A map version is **not** required: the robot re-versions its map every few seconds while cleaning, so any stored `user_p2mapv_id` is stale within a minute, and confirmed-working commands carried versions hours out of date or none at all. Fire-and-forget like `send_simple_command()`; watch `mission/timeline/report` for the robot's own echo of what it received. See EVIDENCE_TRAIL.md for why this took three field sessions to establish — the first two appeared to disprove it, both confounded by sends that never reached the broker. |
 | `robot.send_mission_command(command: RoutineCommand, timeout=8.0) -> ShadowResponse` | 🔴 **confirmed NOT working for basic commands** | The original approach (device shadow) — live-tested and found to time out with zero response for `start`/`stop`/etc. Kept only for the region-based use case above, which no source has verified either way. Do not use this for basic mission control — use `send_simple_command()` instead. |
@@ -200,6 +203,84 @@ analogy to favorites, not generically confirmable from bytecode), and
 
 ---
 
+## Raw accessors and watchers
+
+Two groups that this reference previously omitted entirely, which made them look private. They are
+not — they are the escape hatches, and a caller reaching for one should know what they are getting.
+
+### `*_raw()` — the unparsed response
+
+| Method | What it gives you |
+|---|---|
+| `robot.get_favorites_raw()` | favourites, before `_favorite_from_json()` |
+| `robot.get_schedules_raw(household_id)` | schedules, before the container parse |
+| `robot.get_dnd_settings_raw(household_id)` | Do Not Disturb settings |
+| `robot.get_automations_raw()` | automations; empty on every account seen so far |
+| `robot.get_clean_score_raw(p2map_id)` | per-room dirtiness, and per-room preferences |
+
+**Raw means raw.** These return whatever the server sent, and the typed accessors beside them exist
+because the parse step is easy to forget: a downstream consumer read 0 of 46 missions for three
+releases by iterating raw dictionaries and asking them for attributes.
+
+Use them when you need a field this library does not model yet — which, after the 3.0.0 comparison,
+is a shorter list than it was.
+
+### `watch_*()` — long-lived subscriptions
+
+| Method | Notes |
+|---|---|
+| `robot.watch_named_shadows_updates(...)` | every named shadow's `update/accepted` traffic |
+| `robot.watch_mission_timeline(...)` | mission events as they happen. Pair with `request_mission_timeline()` if you want one now rather than when the robot offers it |
+| `robot.watch_rejected_commands(...)` | commands the robot refused — **unused by this project so far**, and the obvious next place to look when a command is accepted and does nothing |
+| `robot.watch_raw_topic(topic, ...)` | anything else, including wildcards |
+
+A watcher that raises used to take down the whole MQTT client: a callback exception kills paho's
+network loop thread, and the connection then looks alive while delivering nothing. That is guarded
+now, but a watcher is still the wrong place to do slow work.
+
+`robot.trigger_echo_via_shadow()` is **disproven as a locate mechanism** — writing `echo` to
+`rw-constatus` does not make the robot chime (confirmed on real hardware). It is kept because it
+does confirm that an arbitrary named-shadow write reaches the robot, which is a useful thing to be
+able to test. Use `send_simple_command("find")` to actually locate a robot.
+
+`robot.send_umi_get_request(...)` sits with these — a lower-level request path kept for the cases
+the typed calls do not cover.
+
+**The models are not listed individually here either.** There are 163 dataclasses, most of them
+nested inside the ones this reference names — shadow blocks, capability flags, per-event payloads.
+A table of all of them would go stale faster than it could be read, and their field docstrings carry
+things a table cannot: which values are field-confirmed, which came from the vendor's app, and which
+were guesses that turned out wrong. `dataclasses.fields()` and the source are the reference.
+
+**`PrimeMqttClient` is deliberately not documented here.** It is the transport layer, and its
+methods (`subscribe`, `update_shadow`, `shadow_topic`, `replace_token` and the rest) are reachable
+but not part of the supported surface — read `mqtt_client.py` directly if you need them, and expect
+its docstrings to be more current than any table.
+
+## Error text
+
+`CleanMissionStatus.error` and `DockStatus.error` are integers. Both now carry `error_text` beside
+them:
+
+```python
+status = state.clean_mission_status
+status.error        # 46
+status.error_text   # {"title": "Battery too low to clean", "content": "..."}
+```
+
+**Until v0.3.0b1 this library had no error table at all.** Codes went through as integers, so
+`verify_region_commands` printed `ERROR value=46` and left the reader to look it up — which meant
+asking the maintainers.
+
+`vendor_error(code, language="en")` exposes the same catalogue directly: 112 codes with iRobot's own
+title and explanation, in eight languages, taken from app 3.0.0's locale files. It returns `None`
+for a code iRobot does not document, and that distinction is worth keeping — a caller can then say
+"error 236, undocumented" rather than "no error".
+
+`@val` is the robot's name in iRobot's own strings and is left in place, so a caller that knows the
+name substitutes it. Four broken placeholders in the vendor's own text — one using a different form
+in English, three run into the following word in Spanish and Polish — are repaired on the way out.
+
 ## Settings
 
 | Method | Confidence | Notes |
@@ -211,10 +292,10 @@ analogy to favorites, not generically confirmable from bytecode), and
 | `robot.get_cleaning_profiles(asset_id, p2map_id=None) -> dict` | 🟢 (query params, session 38), 🔴 (response envelope) | Query params corrected via direct bytecode read: `robotId`/`includeSmart`/`p2map_id` (not the previously-guessed `asset_id`/`p2map_id`) — `p2map_id` now optional, matching real branching logic. Response envelope itself still unconfirmed (only the per-entry `CleaningProfile.from_json()` shape is) — `DEEP`/`LIGHT`/`NORMAL`/`SMART`, each with its own `CommandParams`. |
 | `robot.get_default_routines(p2map_id) -> RoutinesDefaultsResponse` | 🟢 | Auto-generated per-map cleaning suggestions. Now returns a parsed `RoutinesDefaultsResponse` (also captures `routine_builder_defaults`, previously not exposed at all), confirmed via bytecode. |
 | `robot.get_robot_parts() -> RobotPartsInfo` | 🟢 | Consumable part status (filter/brush/battery wear, unconfirmed which). Confirmed from `res/raw/base_roomba_config.json` (a primary-source config file bundled in the APK), not decompiled logic — see `docs/internal/base_roomba_config_REFERENCE.json`. Now returns a parsed `RobotPartsInfo` directly. |
-| `robot.reset_robot_parts() -> dict` | 🟢 (method), 🔴 (body shape) | Same source as above; presumably resets a part's wear counter after replacement. |
+| `robot.reset_robot_parts(part_ids=None) -> dict` | 🟢 (method), 🟡 (body now known, never sent) | Resets a part's wear counter. **The body was previously empty** — `AssetHealthResetDto` declares `robot_id`, `num_parts` and `parts`, so a POST with nothing in it named no part at all. Naming them is the only reading the model supports; omitting `part_ids` still sends just `robot_id`, which may or may not mean "everything". |
 | `robot.get_serial_number_data() -> RobotSerialInfo` | 🟢 | Confirmed structure (26th session): serial number, user-assigned robot name, `family` (e.g. `"Roomba Combo"`), `series`. Now returns a parsed `RobotSerialInfo` directly. |
 | `robot.poll_echo_value() -> dict` | 🟢 (method), 🔴 (body/response shape) | "Find my robot" — triggers the device's echo/chirp. Confirmed from the same config file (`"PollEchoValueCommand,Set"`); matches the `SetRoombaEchoAwsIotSerializer` found during native analysis. No body sent by default. |
-| `robot.get_time_estimates(body: dict) -> dict` | 🟢 (method/URL), 🔴 (body shape) | `POST` despite being read-only in the config (`"read": true`) — the body presumably specifies which mission/rooms to estimate. Caller supplies the body directly; shape not reverse-engineered. |
+| `robot.get_time_estimates(smart_map_id=None, region_id=None, zone_id=None) -> dict` | 🟢 (method/URL), 🟢 (body) | `POST` despite being read-only in the config (`"read": true`). `TimeEstimatesRequestBody` declares `robot_id`, `smart_map_id`, `region_id` and `zone_id`; sending only the first asks for every estimate on every map, which is the shape confirmed on two accounts and stays the default. The three narrowing fields are optional here for the same reason they are nullable there. |
 | `robot.reset_robot() -> dict` | 🟢 (method/URL), ⚠️ | Confirmed from the config file, but the name and `"write": true` strongly suggest a real, consequential reset — treat as destructive until proven otherwise. |
 | `robot.get_notifications(app_version="2.2.4") -> dict` | 🟢 | Timeline/notification feed (`event_type=HKC`, meaning not decoded — taken verbatim from the config). `app_version` default CORRECTED (session 36) from the previous, evidence-free `"1.0"` placeholder to `"2.2.4"` (the app's own confirmed `BuildConfig.VERSION_NAME`) — the likely cause of an earlier live HTTP 400. |
 
@@ -224,6 +305,8 @@ analogy to favorites, not generically confirmable from bytecode), and
 
 | Method | Confidence | Notes |
 |---|---|---|
+| `robot.request_mission_timeline() -> int` | 🟡 (shape confirmed from source, never sent) | Asks the robot to publish its mission timeline now, rather than waiting for it to volunteer one. Publishes `{"timelineRequestId": <n>}` to `{irbt_prefix}/things/{blid}/mission/timeline/request`; the report arrives on the matching `report` topic carrying the same id, so a caller with a watcher running can match the answer to its question. The counter starts at 1 and increments, as the app's does — reusing an id would make two requests indistinguishable, which is the one thing the field exists to prevent. |
+| `robot.get_firmware_raw(sku=None) -> Any` | 🟡 (path confirmed, **method guessed**) | Available firmware releases from `GET /v2/firmware` — what the shadow cannot say, since `softwareVer` reports only what is installed. `FirmwareItem.from_json()` parses one entry: version, release notes, and `expectedInstallationTime`, which is what somebody deciding whether to start an update at nine in the evening actually needs. **Returns raw.** `FirmwareRequest` declares the path and no HTTP method, and nothing describes the response envelope; modelling one nobody has seen is how this library got a `time_estimates` shape it had to replace wholesale. |
 | `robot.get_mission_history(blid, *, max_reports=None, max_age=None, filter_type=None, exclusive_start_timestamp=None, supported_done_codes=None) -> dict` | 🟢 | Query params all confirmed from source, including the comma-join for `supported_done_codes`. The app's own default call uses `filter_type="omit_quickly_canceled_not_scheduled"` and `supported_done_codes=["dndEnd", "returnHomeEnd"]` (from `base_roomba_config.json`) — not required, but a reasonable default if you want to match the app's own behavior. |
 
 ---
@@ -266,7 +349,12 @@ listed here so the decision is visible and reversible:
 ```python
 from roombapy_prime.models import parse_mission_history
 
+# THIS RETURNS RAW JSON. Conversion is a separate step, and forgetting it
+# is not loud: `parse_mission_history()` produces typed entries, while the
+# raw dicts silently answer None to every attribute a consumer asks for.
+# A downstream importer read 0 of 46 missions this way for three releases.
 raw = await robot.get_mission_history(robot.blid, max_reports=10)
+entries = parse_mission_history(raw)
 entries = parse_mission_history(raw)  # -> list[MissionHistoryEntry]
 for e in entries:
     print(e.mission_id, e.done_code, e.duration_m, e.square_feet_covered)
