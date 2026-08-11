@@ -1702,3 +1702,52 @@ class TestTheCandidateKeysAreTheVendorsOwn:
 
     def test_evac_allowed_is_gone(self):
         assert "evacAllowed" not in self._candidates()
+
+
+class TestTheNewCallsHaveChecks:
+    """A method nobody can run is a method nobody will confirm.
+
+    `get_firmware_raw()` and `request_mission_timeline()` were built from
+    the vendor's model and have never been sent to a robot. Both are
+    read-only or publish-only, so there is no reason for a tester to
+    have to write a script.
+    """
+
+    def _check(self, name):
+        from roombapy_prime_tools.verify_writes import CHECKS
+
+        return next((c for c in CHECKS if c.name == name), None)
+
+    def test_the_firmware_read_is_offered(self):
+        check = self._check("firmware_catalogue")
+
+        assert check is not None
+        assert check.risk == "safe"
+
+    def test_it_says_a_405_is_a_result(self):
+        """The app declares the path and no HTTP method, so GET is
+        inferred. A tester should not read a rejection as their account
+        being broken."""
+        check = self._check("firmware_catalogue")
+
+        assert "405" in check.verify_by
+        assert "not a failure of your account" in check.verify_by
+
+    def test_the_timeline_request_is_offered(self):
+        check = self._check("timeline_request")
+
+        assert check is not None
+        assert check.risk == "safe"
+
+    def test_it_explains_that_silence_is_the_answer(self):
+        """The shape is confirmed from source and has never been sent.
+        Nothing arriving tells us something."""
+        check = self._check("timeline_request")
+
+        assert "never been sent" in check.verify_by
+
+    def test_every_check_declares_its_risk(self):
+        """So nobody runs a write thinking it reads."""
+        from roombapy_prime_tools.verify_writes import CHECKS
+
+        assert all(c.risk for c in CHECKS)

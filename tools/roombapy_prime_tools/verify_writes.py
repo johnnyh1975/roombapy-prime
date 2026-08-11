@@ -728,6 +728,40 @@ def _reported_settings(raw: Any) -> dict[str, Any] | None:
     return state if isinstance(state, dict) else None
 
 
+async def _firmware_catalogue(robot: Any, args: Any) -> Any:
+    """Reads `/v2/firmware`. Writes nothing, and cannot.
+
+    The interesting part is not the data but whether the call works at
+    all: the app declares this path with no HTTP method, so the verb is
+    inferred. A 405 would tell us more than a success would.
+    """
+    raw = await robot.get_firmware_raw()
+    print(f"   response type: {type(raw).__name__}")
+    if isinstance(raw, dict):
+        print(f"   top-level keys: {sorted(raw)}")
+    elif isinstance(raw, list):
+        print(f"   {len(raw)} entries")
+        if raw and isinstance(raw[0], dict):
+            print(f"   first entry keys: {sorted(raw[0])}")
+    return raw
+
+
+async def _timeline_request(robot: Any, args: Any) -> Any:
+    """Asks for the mission timeline and reports the id it used.
+
+    Publishes only -- the report comes back on a topic this check does
+    not subscribe to, so a caller wanting the answer needs a watcher
+    running. What this establishes is whether the request is accepted.
+    """
+    request_id = await robot.request_mission_timeline()
+    print(f"   requested timeline with timelineRequestId={request_id}")
+    print(
+        "   a report carrying the same id should follow on "
+        "mission/timeline/report -- run a watcher alongside this to see it"
+    )
+    return request_id
+
+
 async def _settings_roundtrip(robot: Any, args: Any) -> Any:
     """Resends each known setting at ITS OWN CURRENT VALUE.
 
@@ -1233,6 +1267,35 @@ CHECKS: tuple[WriteCheck, ...] = (
             "populated response, which is why this feature does not exist yet"
         ),
         runner=lambda robot, args: _dnd_read(robot, args),
+    ),
+    WriteCheck(
+        name="firmware_catalogue",
+        risk="safe",
+        summary="reads the available firmware releases -- writes nothing",
+        verify_by=(
+            "there is nothing to verify on the robot; this only asks whether "
+            "the endpoint answers. `FirmwareRequest` in the app declares the "
+            "path and NO HTTP METHOD, so GET is a guess -- a 404 or a 405 is "
+            "a useful result and not a failure of your account. Paste "
+            "whatever comes back, including the shape of the envelope, which "
+            "nothing describes anywhere. Nothing changes on the robot, so "
+            "there is nothing to check in the iRobot app"
+        ),
+        runner=lambda robot, args: _firmware_catalogue(robot, args),
+    ),
+    WriteCheck(
+        name="timeline_request",
+        risk="safe",
+        summary="asks the robot to send its mission timeline now",
+        verify_by=(
+            "a report should arrive on the timeline watch topic carrying the "
+            "SAME timelineRequestId this printed. If nothing arrives within "
+            "the wait, that is the answer -- the request shape is confirmed "
+            "from source but has never been sent to a robot. Nothing "
+            "changes on the robot, so there is nothing to check in the "
+            "iRobot app -- this only asks whether the request is accepted"
+        ),
+        runner=lambda robot, args: _timeline_request(robot, args),
     ),
     WriteCheck(
         name="settings_roundtrip",
