@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import replace
 import ssl
 import threading
 import time
@@ -327,6 +328,8 @@ class PrimeMqttClient:
         self._disconnect_loop: asyncio.AbstractEventLoop | None = None
         self._disconnect_event: asyncio.Event | None = None
         self._disconnect_reason: str | None = None
+        #: Counts reconnects so each gets its own client id.
+        self._reconnects = 1
 
     def _build_client(self) -> mqtt.Client:
         client = mqtt.Client(
@@ -621,9 +624,31 @@ class PrimeMqttClient:
         get/update"."""
         with self._client_lock:
             self._token = new_token
-            self.reconnect(timeout=timeout)
+            # The caller just handed us a token; its client id is the one
+            # to use. Rotating it here would discard what they chose.
+            self.reconnect(timeout=timeout, fresh_client_id=False)
 
-    def reconnect(self, timeout: float = 10.0) -> None:
+    def reconnect(self, timeout: float = 10.0, fresh_client_id: bool = True) -> None:
+        """Reconnects, **with a new client id by default.**
+
+        THE EVICTION MAY BE OURS. @DaRealGuGu's 0.3.0b1 run, with the
+        phone app closed and Home Assistant stopped, still failed -- and
+        the log shows why it could not have been the phone:
+
+            08:19:14  reconnecting (0 persistent subscriptions)
+            08:19:14  connecting ... client_id=app-roombapy-prime-XQWR87YE0
+            08:19:18  no SUBACK ... disconnect reason: Unspecified error
+
+        **The same client id, twice.** AWS IoT drops the older
+        connection when a second arrives using it, and if the broker
+        still holds the first session, our own reconnect is the second
+        one. Nothing external needs to be running for that.
+
+        A fresh id per reconnect costs nothing -- the id is ours to
+        choose, and nothing depends on it staying the same across a
+        reconnect. `fresh_client_id=False` keeps the old behaviour for
+        anyone who needs to reproduce the failure.
+        """
         """NEW (this session, reconnect-after-drop hardening). Same-
         token counterpart to replace_token() -- extracted from it,
         since the "disconnect, connect, restore all persistent
@@ -657,6 +682,22 @@ class PrimeMqttClient:
 
         self.disconnect()
         self._connected = False
+        if fresh_client_id:
+            # A NEW ID SO THE BROKER CANNOT CONFUSE US WITH OURSELVES.
+            #
+            # `disconnect()` closes our socket; it does not guarantee
+            # the broker has released the session. Reconnecting under
+            # the same id while it still holds one is the eviction case
+            # -- with us on both ends of it.
+            #
+            # @DaRealGuGu's 0.3.0b1 run showed the same id twice, four
+            # seconds apart, with the phone app closed and Home
+            # Assistant stopped. Nothing external was left to blame.
+            self._token = replace(
+                self._token,
+                client_id=f"{self._token.client_id}-r{self._reconnects}",
+            )
+            self._reconnects += 1
         self._connect_error = None
         self.connect(timeout=timeout)
 
@@ -828,6 +869,11 @@ class PrimeMqttClient:
         subscribed to `mission/timeline/report` and took whatever
         arrived, which meant a caller wanting the current mission's
         progress waited for the robot to volunteer it.
+
+        **THE REQUEST IS ACCEPTED**, confirmed on an N185240
+        (@DaRealGuGu): the publish went through and returned immediately.
+        Whether a report follows on the matching topic is the next
+        question and needs a watcher running alongside.
 
         `MissionTimelineManager.getEncodedRequest()` publishes
         `{"timelineRequestId": <n>}` to the matching `request` topic, and

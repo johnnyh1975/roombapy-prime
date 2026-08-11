@@ -749,8 +749,18 @@ class PrimeRobot:
 
     async def get_firmware_raw(self, sku: str | None = None) -> Any:
         """See rest_client.py::get_firmware_raw() -- available releases,
-        method and envelope both unconfirmed."""
-        return await self._rest.get_firmware_raw(sku or self.sku)
+        method and envelope both unconfirmed.
+
+        Takes the sku because this object does not have one: the sku is
+        on the login entry, not on the robot. Writing `self.sku` here was
+        the fifth invented attribute in a single day, and @DaRealGuGu
+        found it on the first run.
+        """
+        # NO `self.sku` EXISTS, and writing one was the fifth invented
+        # attribute in a single day (@DaRealGuGu found it on the first
+        # run). The sku lives on the login entry, not on the robot
+        # object -- and a caller who has one can pass it.
+        return await self._rest.get_firmware_raw(sku)
 
     async def get_clean_score_raw(self, p2map_id: str) -> Any:
         """See rest_client.py::get_clean_score_raw() -- per-room

@@ -584,7 +584,20 @@ def test_reconnect_reconnects_and_restores_subscriptions() -> None:
     original_token = client._token
     client.reconnect(timeout=7.0)
 
-    assert client._token is original_token  # NOT swapped, unlike replace_token()
+    # THE TOKEN IS THE SAME EXCEPT FOR ITS CLIENT ID, which reconnect()
+    # now rotates on purpose.
+    #
+    # @DaRealGuGu's run showed the same id twice, four seconds apart,
+    # with the phone app closed and Home Assistant stopped -- so the
+    # eviction, if that is what it is, had nobody left to blame but us.
+    # `disconnect()` closes our socket; it does not guarantee the broker
+    # released the session.
+    #
+    # Everything else must survive: swapping the credentials here would
+    # be `replace_token()`'s job, not this one.
+    assert client._token.iot_authorizer_name == original_token.iot_authorizer_name
+    assert client._token.client_id.startswith(original_token.client_id)
+    assert client._token.client_id != original_token.client_id
     assert reconnect_calls == [7.0]
     assert set(new_fake.subscribed) == {"topic/a", "topic/b"}
 
