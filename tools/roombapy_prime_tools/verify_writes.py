@@ -671,14 +671,49 @@ _SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
     # But asking for a key the vendor never writes, and calling the
     # silence a bug, is how three testers spent a week on this check.
     ("audio.volume", "audio volume", "range unknown -- read the current value first"),
-    ("padDryDur", "mop dry duration", "4, 6, 9, 12 hours"),
-    ("pwAreaInterval", "pad wash frequency", "5, 10, 15 (x10 sq ft)"),
+    # THE VALUE SETS ARE PER MODEL, so no single list belongs here.
+    #
+    # iRobot's product profiles give six different sets across nine
+    # series: [4,6,9,12] for the 205/405, [3,4,5] for the 505,
+    # [2,3,4] for the 410/510, [3,4,6] for the 705, [4,5,6] for the
+    # 715 Combo. Wash frequency splits too: [5,10,15], [6,8,10],
+    # [10,15,20].
+    #
+    # @DaRealGuGu's N185240 reads `padDryDur: 3` and
+    # `pwAreaInterval: 8` -- neither is in the list this hint used to
+    # print, and both are in sets iRobot publishes for other series.
+    # A hint naming one model's values tells most readers the wrong
+    # thing.
+    # NO VALUE SET IS KNOWN FOR THESE TWO.
+    #
+    # `product_profile.json` carries eleven setting types and neither is
+    # among them; the picker lists live in the Dart layer, unreadable.
+    # Sets this project once quoted per series are in no reachable
+    # source -- see docs/internal/SETTING_VALUE_SETS.md.
+    ("padDryDur", "mop dry duration", "hours; no valid set is documented"),
+    ("pwAreaInterval", "pad wash frequency", "x10 sq ft; no valid set is documented"),
     ("autoevacFreq", "auto-evacuation frequency", "integer"),
     ("padWashAllowed", "pad washing allowed", "boolean"),
     ("pwHeat", "pad wash heated water", "boolean"),
     ("pwReturn", "return to dock for pad wash", "boolean"),
     ("pwTimeInterval", "pad wash time interval", "integer"),
     ("padWetness.padPlate", "pad plate wetness", "sub-key, not the whole map"),
+    # PRESENT ON EVERY ROBOT SEEN SO FAR, which matters for the SKUs the
+    # six unblocked settings do not reach.
+    #
+    # @utkjmitch's dockless 104 has 18 rw-settings keys against 28 on a
+    # docked N185240, and **not one of the probed candidates existed on
+    # it** -- every absent key is hardware it does not have. So the write
+    # path stayed unexercised on that SKU for want of something to send.
+    #
+    # These six are on all three accounts and are resent unchanged, so
+    # the risk is the same as the rest of this check.
+    ("carpetBoost", "carpet boost", "boolean"),
+    ("twoPass", "two-pass cleaning", "boolean"),
+    ("noAutoPasses", "disable automatic passes", "boolean"),
+    ("ecoCharge", "eco charge", "boolean"),
+    ("audio", "audio settings", "a map: {\"volume\": n}"),
+    ("padWetness", "pad wetness", "a map, not a scalar"),
 )
 
 
@@ -1270,13 +1305,20 @@ CHECKS: tuple[WriteCheck, ...] = (
     ),
     WriteCheck(
         name="firmware_catalogue",
-        risk="safe",
+        # READ, not "safe". @utkjmitch hit the seam: the gate demanded
+        # --i-understand-this-writes-to-my-robot and told him the check
+        # "writes to your real robot", while its own banner said it
+        # writes nothing. The gate was right about the flag and wrong
+        # about the reason, which is worse than either alone.
+        risk="read",
         summary="reads the available firmware releases -- writes nothing",
         verify_by=(
             "there is nothing to verify on the robot; this only asks whether "
             "the endpoint answers. `FirmwareRequest` in the app declares the "
-            "path and NO HTTP METHOD, so GET is a guess -- a 404 or a 405 is "
-            "a useful result and not a failure of your account. Paste "
+            "path and no HTTP method, so GET was a guess. It resolves: one "
+            "account got a **403** -- the endpoint exists and the consumer "
+            "Cognito role has no execute-api:Invoke on it. That is a "
+            "useful result and not a failure of your account. Paste "
             "whatever comes back, including the shape of the envelope, which "
             "nothing describes anywhere. Nothing changes on the robot, so "
             "there is nothing to check in the iRobot app"
@@ -1285,15 +1327,18 @@ CHECKS: tuple[WriteCheck, ...] = (
     ),
     WriteCheck(
         name="timeline_request",
-        risk="safe",
+        # Publishes a request and changes nothing. Same seam.
+        risk="read",
         summary="asks the robot to send its mission timeline now",
         verify_by=(
-            "a report should arrive on the timeline watch topic carrying the "
-            "SAME timelineRequestId this printed. If nothing arrives within "
-            "the wait, that is the answer -- the request shape is confirmed "
-            "from source but has never been sent to a robot. Nothing "
-            "changes on the robot, so there is nothing to check in the "
-            "iRobot app -- this only asks whether the request is accepted"
+            "the request is accepted -- that much is confirmed on two "
+            "accounts. What an IDLE robot does not do is answer: a 35-second "
+            "watch on a single connection produced no report (@jouwdan). So "
+            "silence here is expected, not a failure. The open question is "
+            "whether a request DURING a mission pulls a report earlier than "
+            "the robot would have sent one anyway, and that needs a watcher "
+            "running while the robot drives. Nothing changes on the robot, "
+            "so there is nothing to check in the iRobot app"
         ),
         runner=lambda robot, args: _timeline_request(robot, args),
     ),

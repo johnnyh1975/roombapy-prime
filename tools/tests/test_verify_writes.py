@@ -1677,6 +1677,14 @@ class TestTheCandidateKeysAreTheVendorsOwn:
         "suctionLevel", "swScrub", "timezone", "twoPass",
     }
 
+    #: On every robot seen so far and NOT in the vendor's 24. They are
+    #: readable and this check only resends them unchanged, so probing
+    #: them is safe -- but it is a different claim from "the app writes
+    #: this", and the guard should not blur the two.
+    PRESENT_BUT_NOT_VENDOR_WRITTEN = {
+        "audio", "ecoCharge", "noAutoPasses", "padWetness",
+    }
+
     def _candidates(self):
         import re
         import pathlib
@@ -1684,12 +1692,22 @@ class TestTheCandidateKeysAreTheVendorsOwn:
         source = pathlib.Path(
             "tools/roombapy_prime_tools/verify_writes.py"
         ).read_text()
+        # THE WHOLE LIST, not a fixed slice of it.
+        #
+        # This read 2000 characters from a marker and stopped, so six
+        # candidates added later sat outside the window and were never
+        # checked. A guard with a hard-coded length silently stops
+        # guarding as soon as the thing it guards grows.
         i = source.index("THE VENDOR'S OWN 24 WRITABLE KEYS")
-        block = source[i:i + 2000]
-        return set(re.findall(r'^\s*\("([a-zA-Z0-9_.]+)",', block, re.M))
+        j = source.index("\n)", i)
+        return set(re.findall(r'^\s*\("([a-zA-Z0-9_.]+)",', source[i:j], re.M))
 
     def test_every_candidate_is_one_the_vendor_writes(self):
-        stray = sorted(self._candidates() - self.VENDOR_KEYS)
+        stray = sorted(
+            self._candidates()
+            - self.VENDOR_KEYS
+            - self.PRESENT_BUT_NOT_VENDOR_WRITTEN
+        )
 
         assert not stray, (
             "these are asked for but the app never writes them, so a "
@@ -1697,8 +1715,14 @@ class TestTheCandidateKeysAreTheVendorsOwn:
         )
 
     def test_the_volume_key_is_dotted(self):
+        """`audio.volume` is what iRobot's handler writes.
+
+        Bare `audio` is probed too, and deliberately: every robot lists
+        it, no robot lists a dotted key, and @utkjmitch's reading is
+        that the dot is write-addressing *into* the bare key rather than
+        a key name of its own. Probing both is how that gets settled."""
         assert "audio.volume" in self._candidates()
-        assert "audio" not in self._candidates()
+        assert "audio" in self._candidates()
 
     def test_evac_allowed_is_gone(self):
         assert "evacAllowed" not in self._candidates()
@@ -1722,29 +1746,38 @@ class TestTheNewCallsHaveChecks:
         check = self._check("firmware_catalogue")
 
         assert check is not None
-        assert check.risk == "safe"
+        # "read", not "safe" -- @utkjmitch found the gate demanding the
+        # write flag and telling him the check "writes to your real
+        # robot", while its own banner said it writes nothing.
+        assert check.risk == "read"
 
-    def test_it_says_a_405_is_a_result(self):
-        """The app declares the path and no HTTP method, so GET is
-        inferred. A tester should not read a rejection as their account
-        being broken."""
+    def test_it_says_a_rejection_is_a_result(self):
+        """@utkjmitch got a **403**: the path exists and GET resolves,
+        but the consumer Cognito role has no `execute-api:Invoke` on
+        it. A tester should not read that as their account being
+        broken."""
         check = self._check("firmware_catalogue")
 
-        assert "405" in check.verify_by
+        assert "403" in check.verify_by
         assert "not a failure of your account" in check.verify_by
 
     def test_the_timeline_request_is_offered(self):
         check = self._check("timeline_request")
 
         assert check is not None
-        assert check.risk == "safe"
+        assert check.risk == "read"
 
-    def test_it_explains_that_silence_is_the_answer(self):
-        """The shape is confirmed from source and has never been sent.
-        Nothing arriving tells us something."""
+    def test_it_says_silence_is_expected(self):
+        """Updated after @jouwdan watched for a report on a single
+        connection and got none in 35 seconds on an idle robot.
+
+        The wording used to say the path had never been sent. It has
+        now, twice, and the answer is that an idle robot does not
+        reply — so a tester seeing nothing should not report a bug."""
         check = self._check("timeline_request")
 
-        assert "never been sent" in check.verify_by
+        assert "IDLE robot does not do is answer" in check.verify_by
+        assert "not a failure" in check.verify_by
 
     def test_every_check_declares_its_risk(self):
         """So nobody runs a write thinking it reads."""
