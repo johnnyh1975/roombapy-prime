@@ -119,6 +119,10 @@ class SubscriptionRejectedError(Exception):
     shadow-specific exception type for a subscribe-level problem)."""
 
 
+class SubscriptionUnconfirmedError(Exception):
+    """Raised when the broker does not acknowledge a subscription."""
+
+
 class ShadowSSLError(ShadowError):
     """TLS/certificate verification failure -- see
     _raise_clear_ssl_error()."""
@@ -404,9 +408,9 @@ class PrimeMqttClient:
         the race described in get_shadow()/update_shadow() -- publish()
         must only happen after this. `timeout` deliberately short
         (SUBACKs are usually very fast, unlike the actual shadow
-        response) -- if this timeout runs out, proceeds anyway (better
-        a small residual risk than a broken library, in case a broker
-        never sends a SUBACK for some reason).
+        response). An unconfirmed subscription raises so a watcher can
+        reconnect instead of waiting forever on a topic that delivers
+        nothing.
 
         NOW RAISES SubscriptionRejectedError on a REJECTED subscription
         (this session) -- see _on_subscribe()'s own docstring for the
@@ -501,6 +505,10 @@ class PrimeMqttClient:
                 "This is a different, more specific finding than 'nothing arrived' -- "
                 "the broker's own IoT policy denied this topic outright, not a silent "
                 "absence of traffic on it."
+            )
+        if unconfirmed:
+            raise SubscriptionUnconfirmedError(
+                f"Broker did not acknowledge subscription(s): {unconfirmed}"
             )
 
     def connect(self, timeout: float = 10.0) -> None:
@@ -1144,7 +1152,6 @@ class PrimeMqttClient:
         if self._client is None or not self._connected:
             self.reconnect()
         is_new_topic = topic not in self._persistent
-        self._persistent.setdefault(topic, []).append(callback)
         if is_new_topic:
             # NEW (session 33): same confirmation as get_shadow()/
             # update_shadow(), for consistency -- the risk here is
@@ -1154,6 +1161,7 @@ class PrimeMqttClient:
             # bug type in two places just because the symptoms show up
             # differently.
             self._subscribe_and_wait([topic])
+        self._persistent.setdefault(topic, []).append(callback)
 
     def unsubscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
         """Removes exactly this callback. Reference-counted: only

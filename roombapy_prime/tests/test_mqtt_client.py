@@ -957,6 +957,21 @@ class TestSubscribeAndWaitRejectionDetection:
 
         assert "restricted/topic" in str(exc_info.value)
 
+    def test_unconfirmed_suback_raises_without_registering_callback(self):
+        from roombapy_prime.mqtt_client import (
+            PrimeMqttClient,
+            SubscriptionUnconfirmedError,
+        )
+
+        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
+        client._client = _FakeMqttClient()
+        client._connected = True
+
+        with pytest.raises(SubscriptionUnconfirmedError):
+            client.subscribe("silent/topic", lambda _msg: None)
+
+        assert "silent/topic" not in client._persistent
+
     def test_mixed_success_and_rejection_across_multiple_topics_reports_only_the_rejected_one(self):
         """_subscribe_and_wait() takes a list of topics -- confirms the
         error message identifies WHICH topic failed, not just that
@@ -1178,7 +1193,11 @@ class TestSubscribeAlsoRevivesADeadConnection:
 
         client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
         client._client = MagicMock()
-        client._client.subscribe.return_value = (0, 1)
+        def subscribe(*_args, **_kwargs):
+            client._confirmed_mids.add(1)
+            return (0, 1)
+
+        client._client.subscribe.side_effect = subscribe
         client._connected = connected
         client.reconnect = MagicMock(
             side_effect=lambda **_kw: setattr(client, "_connected", True)
