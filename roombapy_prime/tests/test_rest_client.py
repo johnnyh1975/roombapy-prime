@@ -1349,3 +1349,57 @@ class TestThePartResetCarriesABody:
 
         assert "parts" not in body
         assert "num_parts" not in body
+
+
+class TestFavouritesArriveInTwoShapes:
+    """@chairstacker's two favourites appear as buttons on Roomba+
+    v3.5.1 and not on the alpha — the same account, the same endpoint,
+    two answers.
+
+    v3.5.1 reaches `/v1/user/favorites` through the Classic cloud
+    client, which does:
+
+        result if isinstance(result, list) else result.get("favorites", [])
+
+    This side returned `[]` for the object form. **That unwrap has been
+    in the Classic path since it was written**, so the wrapped shape is
+    not new server behaviour — this side simply never handled it.
+    """
+
+    async def _favourites(self, response):
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        client = object.__new__(PrimeRestClient)
+        client._http_base_auth = "https://x"
+        with patch.object(
+            client, "_request", AsyncMock(return_value=response), create=True
+        ):
+            return await PrimeRestClient.get_favorites(client)
+
+    @pytest.mark.asyncio
+    async def test_a_bare_list_still_works(self):
+        result = await self._favourites([{"favoriteid": "F1", "name": "Kitchen"}])
+
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_object_wrapping_the_list_is_unwrapped(self):
+        """The shape the Classic path has always handled."""
+        result = await self._favourites(
+            {"favorites": [{"favoriteid": "F1", "name": "Kitchen"}]}
+        )
+
+        assert len(result) == 1
+        assert result[0].name == "Kitchen"
+
+    @pytest.mark.asyncio
+    async def test_an_object_without_the_key_is_empty_not_a_crash(self):
+        assert await self._favourites({"error": "nope"}) == []
+
+    @pytest.mark.asyncio
+    async def test_neither_shape_is_reported_rather_than_swallowed(self):
+        """A string or a number is not "no favourites" -- it is a
+        response nobody expected, and it should say so."""
+        assert await self._favourites("nonsense") == []

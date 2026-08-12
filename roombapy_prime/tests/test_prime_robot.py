@@ -2057,3 +2057,56 @@ class TestACorrectCommandCanStillDoNothing:
         doc = inspect.getdoc(PrimeRobot.send_simple_command)
 
         assert "VERBS CONFIRMED" in doc
+
+
+class TestAnIdleRobotDoesNotAnswerATimelineRequest:
+    """@jouwdan watched for a report on a single MQTT connection —
+    subscription and request on the same client, so no second client to
+    evict — with the phone app closed and Home Assistant stopped.
+
+    The publish was accepted. **No report arrived in 35 seconds** on a
+    robot that was idle and stayed idle.
+
+    A clean negative rather than an inconclusive one: it points at
+    reports being tied to a mission rather than available on demand.
+    """
+
+    def test_the_expectation_is_recorded_where_it_is_raised(self):
+        """The docstring previously said a report *should* follow. It
+        does not, at rest, and somebody watching for one deserves to
+        know before they spend a session on it."""
+        import inspect
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        doc = inspect.getdoc(PrimeMqttClient.request_mission_timeline)
+
+        assert "IDLE ROBOT DOES NOT ANSWER" in doc
+        assert "35 seconds" in doc
+
+    def test_the_open_half_is_named(self):
+        """Whether a request during a mission pulls a report earlier is
+        untested, and is a different question from whether one arrives
+        at all."""
+        import inspect
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        doc = inspect.getdoc(PrimeMqttClient.request_mission_timeline)
+
+        assert "during a mission" in doc
+
+    def test_the_request_still_works(self):
+        """The negative is about the answer, not the asking."""
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        robot = object.__new__(PrimeRobot)
+        robot._mqtt = MagicMock()
+        robot._irbt_topic_prefix = "irbt"
+        robot._timeline_request_id = 0
+
+        import asyncio
+
+        assert asyncio.run(PrimeRobot.request_mission_timeline(robot)) == 1

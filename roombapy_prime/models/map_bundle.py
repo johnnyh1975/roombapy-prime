@@ -3,7 +3,21 @@
 Part of roombapy_prime.models (split into a package for navigability,
 session 55). See roombapy_prime/models/__init__.py for the full
 picture and docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
-evidence trail behind any individual field."""
+evidence trail behind any individual field.
+PARSER ROBUSTNESS. Every `from_json` here returns an empty instance
+rather than raising when handed something that is not a mapping -- a
+truncated download, a server error body, a `None` where a feature was
+expected.
+
+The exception is the classes with REQUIRED fields (`CleanZoneFeature`,
+`BorderFeature` and the other GeoJSON features): they cannot construct
+an empty instance, and inventing one would put a feature with no id and
+no geometry into a render list. Those still raise, which is the honest
+answer -- a feature that is nothing is not an empty feature.
+
+Nothing in this library calls those directly; they are reachable only
+by a caller unpacking a bundle itself.
+"""
 from __future__ import annotations
 
 import json
@@ -93,6 +107,8 @@ class RoomFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoomFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         simplified = data.get("simplifiedGeometry")
         return cls(
             name=data.get("name"),
@@ -119,6 +135,8 @@ class RoomFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoomFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_polygon_from_geojson(data.get("geometry") or {}),
@@ -140,6 +158,8 @@ class BorderFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BorderFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_multipolygon_from_geojson(data.get("geometry") or {}),
@@ -156,6 +176,8 @@ class TrajectoryFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TrajectoryFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(index=data.get("index"), operating_modes=data.get("operatingModes") or [])
 
 
@@ -171,6 +193,8 @@ class TrajectoryFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TrajectoryFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_linestring_from_geojson(data.get("geometry") or {}),
@@ -187,6 +211,8 @@ class CoverageFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CoverageFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(operating_modes=data.get("operatingModes") or [])
 
 
@@ -202,6 +228,8 @@ class CoverageFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CoverageFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_multipolygon_from_geojson(data.get("geometry") or {}),
@@ -218,6 +246,8 @@ class DockFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(orientation=data.get("orientation"))
 
 
@@ -234,6 +264,8 @@ class DockFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_point_from_geojson(data.get("geometry") or {}),
@@ -250,6 +282,8 @@ class HazardFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HazardFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(hazard_type=_enum_or_none(HazardType, data.get("type")))
 
 
@@ -266,6 +300,8 @@ class HazardFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HazardFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_point_from_geojson(data.get("geometry") or {}),
@@ -290,6 +326,8 @@ class FurnitureFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> FurnitureFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         cleaning_area = data.get("cleaningArea")
         raw_type = data.get("type")
         furniture_type = FurnitureType(raw_type) if isinstance(raw_type, int) else raw_type
@@ -313,6 +351,8 @@ class FurnitureFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> FurnitureFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_polygon_from_geojson(data.get("geometry") or {}),
@@ -331,6 +371,8 @@ class FloorPlanFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> FloorPlanFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(floor_type=data.get("type"), room_id=data.get("roomId"))
 
 
@@ -346,6 +388,8 @@ class FloorPlanFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> FloorPlanFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_polygon_from_geojson(data.get("geometry") or {}),
@@ -390,6 +434,8 @@ class PolicyZoneFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PolicyZoneFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(zone_type=data.get("type"), threshold_type=data.get("threshold_type"))
 
 
@@ -447,6 +493,8 @@ class PolicyZoneFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PolicyZoneFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_policy_zone_geometry_from_geojson(data.get("geometry") or {}),
@@ -485,6 +533,8 @@ class CleanZoneFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleanZoneFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(name=data.get("name"))
 
 
@@ -500,6 +550,8 @@ class CleanZoneFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleanZoneFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_polygon_from_geojson(data.get("geometry") or {}),
@@ -521,6 +573,8 @@ class AdHocCleanZoneFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> AdHocCleanZoneFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_polygon_from_geojson(data.get("geometry") or {}),
@@ -558,6 +612,8 @@ class FloorTypeFeatureProperties:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> FloorTypeFeatureProperties:
+        if not isinstance(data, dict):
+            return cls()
         return cls(floor_type=data.get("type"))
 
 
@@ -575,6 +631,8 @@ class FloorTypeFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> FloorTypeFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             feature_id=data.get("id", ""),
             geometry=_polygon_from_geojson(data.get("geometry") or {}),
@@ -598,6 +656,8 @@ class ManifestFeature:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ManifestFeature:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             content_type=data.get("type"),
             filepath=data.get("filepath"),
@@ -618,6 +678,8 @@ class BundleMetadataSource:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BundleMetadataSource:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             mission_start_time=data.get("missionStartTime"),
             map_upload_time=data.get("mapUploadTime"),
@@ -652,6 +714,8 @@ class BundleManifest:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BundleManifest:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             metadata=data.get("metadata"),
             features=[ManifestFeature.from_json(f) for f in (data.get("features") or [])],

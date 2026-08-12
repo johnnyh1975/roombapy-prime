@@ -53,6 +53,8 @@ class CleaningProfile:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleaningProfile:
+        if not isinstance(data, dict):
+            return cls()
         params_data = data.get("params")
         return cls(
             profile=_enum_or_none(CleaningProfileType, data.get("profile")),
@@ -83,6 +85,8 @@ class HouseholdSettingOptions:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HouseholdSettingOptions:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             last_user_modified=data.get("last_user_modified"),
             hh_adults=data.get("hh_adults"),
@@ -114,6 +118,8 @@ class HouseholdSetting:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HouseholdSetting:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             setting_id=data.get("settingId"),
             setting_type=data.get("settingType"),
@@ -145,6 +151,8 @@ class Routine:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Routine:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             name=data.get("name"),
             command_defs=data.get("commanddefs") or [],
@@ -192,6 +200,8 @@ class OperatingModeProfile:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> OperatingModeProfile:
+        if not isinstance(data, dict):
+            return cls()
         params_raw = data.get("params")
         return cls(
             params=CommandParams.from_json(params_raw) if isinstance(params_raw, dict) else None,
@@ -221,6 +231,8 @@ class RegionDefaults:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RegionDefaults:
+        if not isinstance(data, dict):
+            return cls()
         raw_by_mode = data.get("by_operating_mode") or {}
         return cls(
             region_type=data.get("type"),
@@ -252,6 +264,8 @@ class RoutineBuilderDefaults:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoutineBuilderDefaults:
+        if not isinstance(data, dict):
+            return cls()
         raw_regions = data.get("regions") or {}
         return cls(regions={k: RegionDefaults.from_json(v) for k, v in raw_regions.items()})
 
@@ -270,6 +284,8 @@ class RoutinesDefaultsResponse:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoutinesDefaultsResponse:
+        if not isinstance(data, dict):
+            return cls()
         raw_defaults = data.get("routine_builder_defaults")
         return cls(
             routines=_parse_routines_list(data.get("routines")),
@@ -353,6 +369,8 @@ class RoomMetadataEntry:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoomMetadataEntry:
+        if not isinstance(data, dict):
+            return cls()
         meta = data.get("room_metadata") or {}
         defaults_raw = meta.get("operating_mode_defaults") or {}
         return cls(
@@ -408,6 +426,8 @@ class P2MapData:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> P2MapData:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             p2map_id=data.get("p2map_id"),
             entity_type=data.get("entity_type"),
@@ -442,6 +462,8 @@ class P2MapEditPartialSuccess:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> P2MapEditPartialSuccess:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             status=data.get("status"),
             p2mapv_id=data.get("p2mapv_id"),
@@ -467,6 +489,8 @@ class P2MapEditSuccessFallback:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> P2MapEditSuccessFallback:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             status=data.get("status"),
             map_url=data.get("map_url"),
@@ -496,6 +520,8 @@ class ResponseError:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ResponseError:
+        if not isinstance(data, dict):
+            return cls()
         return cls(code=data.get("code"), message=data.get("message"))
 
     @classmethod
@@ -538,6 +564,8 @@ class P2MapVersion:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> P2MapVersion:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             user_orientation_rad=data.get("user_orientation_rad"),
             p2map_id=data.get("p2map_id", ""),
@@ -624,6 +652,8 @@ class RobotSerialInfo:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotSerialInfo:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             robot_id=data.get("RobotID"),
             serial_number=data.get("SerialNumber"),
@@ -662,6 +692,8 @@ class RobotPart:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotPart:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             part_id=data.get("part_id", ""),
             counter=data.get("counter"),
@@ -686,6 +718,8 @@ class RobotPartsInfo:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotPartsInfo:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             robot_id=data.get("robot_id"),
             num_parts=data.get("num_parts"),
@@ -708,6 +742,8 @@ class HouseholdRobot:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HouseholdRobot:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             pmap_sharing=data.get("robot_pmap_sharing"),
             household_id=data.get("household_id"),
@@ -729,6 +765,8 @@ class HouseholdUser:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HouseholdUser:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             household_id=data.get("household_id"),
             entity_id=data.get("entity_id"),
@@ -754,6 +792,8 @@ class Household:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Household:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             household_id=data.get("household_id"),
             owner_cognito_id=data.get("owner_cognito_id"),
@@ -813,6 +853,8 @@ class RobotSettings:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotSettings:
+        if not isinstance(data, dict):
+            return cls()
         audio = data.get("audio") or {}
         # BORROWED FROM THE COMMAND DOMAIN, AND UNVERIFIED HERE.
         #
@@ -880,6 +922,8 @@ class DigiCap:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DigiCap:
+        if not isinstance(data, dict):
+            return cls()
         return cls(app_ver=data.get("appVer"), timeline=data.get("timeline"))
 
 
@@ -981,6 +1025,8 @@ class CapabilityFlags:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CapabilityFlags:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             wifi_5ghz=data.get("5ghz"),
             cmds=data.get("cmds"),
@@ -1061,6 +1107,8 @@ class ClassicShadowState:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ClassicShadowState:
+        if not isinstance(data, dict):
+            return cls()
         digi_cap = data.get("digiCap")
         cap = data.get("cap")
         return cls(
@@ -1099,6 +1147,8 @@ class ScheduleShadow:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ScheduleShadow:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             clean_schedule2_raw=data.get("cleanSchedule2") or [],
             nsmip=data.get("nsmip"),
@@ -1130,6 +1180,8 @@ class ConnectionStatusShadow:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ConnectionStatusShadow:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             connected=data.get("connected"),
             connected_v2=data.get("connectedv2"),
@@ -1177,6 +1229,8 @@ class SoftwareStatusShadow:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> SoftwareStatusShadow:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             deployment_id=data.get("deploymentId"),
             deployment_mpkg=data.get("deploymentMpkg"),
@@ -1273,6 +1327,8 @@ class BinStatus:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BinStatus:
+        if not isinstance(data, dict):
+            return cls()
         return cls(present=data.get("present"))
 
 
@@ -1331,6 +1387,8 @@ class CleanMissionStatus:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleanMissionStatus:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             cond_not_ready=data.get("condNotReady") or [],
             cycle=data.get("cycle"),
@@ -1495,6 +1553,8 @@ class DockCapabilities:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockCapabilities:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             evac=data.get("evac"),
             pad_dry=data.get("pd"),
@@ -1586,6 +1646,8 @@ class DockStatus:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockStatus:
+        if not isinstance(data, dict):
+            return cls()
         cap_data = data.get("cap")
         return cls(
             cap=DockCapabilities.from_json(cap_data) if cap_data else None,
@@ -1618,6 +1680,8 @@ class RuntimeStatsSummary:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RuntimeStatsSummary:
+        if not isinstance(data, dict):
+            return cls()
         return cls(hours=data.get("hr"), minutes=data.get("min"))
 
 
@@ -1635,6 +1699,8 @@ class P2MapRef:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> P2MapRef:
+        if not isinstance(data, dict):
+            return cls()
         return cls(p2map_id=data.get("p2map_id"), p2mapv_id=data.get("p2mapv_id"))
 
 
@@ -1650,6 +1716,8 @@ class RaasStatus:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RaasStatus:
+        if not isinstance(data, dict):
+            return cls()
         return cls(enabled=data.get("enabled"), exp=data.get("exp"))
 
 
@@ -1662,6 +1730,8 @@ class OdoaLiteStatus:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> OdoaLiteStatus:
+        if not isinstance(data, dict):
+            return cls()
         return cls(enabled=data.get("enabled"))
 
 
@@ -1731,6 +1801,8 @@ class CurrentStateShadow:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CurrentStateShadow:
+        if not isinstance(data, dict):
+            return cls()
         bin_data = data.get("bin")
         mission_data = data.get("cleanMissionStatus")
         dock_data = data.get("dock")
@@ -1780,6 +1852,8 @@ class BbChgStats:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BbChgStats:
+        if not isinstance(data, dict):
+            return cls()
         return cls(n_chg_ok=data.get("nChgOk"), n_chg_err=data.get("nChgErr"), raw_nested=data.get("bbchg"))
 
 
@@ -1809,6 +1883,8 @@ class BbChg3Stats:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BbChg3Stats:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             n_avail=data.get("nAvail"),
             hours_on_dock=data.get("hOnDock"),
@@ -1837,6 +1913,8 @@ class BbMssnStats:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BbMssnStats:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             n_mssn=data.get("nMssn"),
             n_mssn_canceled=data.get("nMssnC"),
@@ -1864,6 +1942,8 @@ class BbPauseStats:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BbPauseStats:
+        if not isinstance(data, dict):
+            return cls()
         pauses = data.get("pauses")
         return cls(
             pauses=list(pauses) if isinstance(pauses, list) else [],
@@ -1888,6 +1968,8 @@ class BbRstInfoStats:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BbRstInfoStats:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             n_nav_rst=data.get("nNavRst"),
             n_mob_rst=data.get("nMobRst"),
@@ -1929,6 +2011,8 @@ class BbSysStats:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BbSysStats:
+        if not isinstance(data, dict):
+            return cls()
         return cls(hours=data.get("hr"), minutes=data.get("min"), raw_nested=data.get("bbsys"))
 
 
@@ -1972,10 +2056,27 @@ class StatsShadow:
     bbrstinfo: BbRstInfoStats | None = None
     bbsys: BbSysStats | None = None
     runtimestats: RuntimeStatsSummary | None = None
+    #: A FAULT THE ROBOT ITSELF COULD NOT NAME.
+    #:
+    #: @jouwdan's Max 705 reported
+    #: `"picea unknown fault code:2105"` here while
+    #: `cleanMissionStatus.error` read 0 -- so the mission status was
+    #: clean and the stats shadow was not.
+    #:
+    #: Two things worth knowing. **"picea" is the app shell's own
+    #: vendor name**, not iRobot's, which places this string in the
+    #: platform layer rather than the robot's. And 2105 appears in
+    #: neither iRobot's 112-code catalogue nor ours -- the robot is
+    #: relaying a fault its own software stack could not resolve.
+    #:
+    #: Surfaced as the string it is. There is nothing to look up, and
+    #: turning it into None would hide the one place it appears.
     unprocessed_error: str | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> StatsShadow:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             bbchg=BbChgStats.from_json(data["bbchg"]) if isinstance(data.get("bbchg"), dict) else None,
             bbchg3=BbChg3Stats.from_json(data["bbchg3"]) if isinstance(data.get("bbchg3"), dict) else None,
@@ -2011,6 +2112,8 @@ class ServicesShadow:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ServicesShadow:
+        if not isinstance(data, dict):
+            return cls()
         opt_feats = data.get("optFeats")
         return cls(opt_feats=opt_feats if isinstance(opt_feats, dict) else None)
 
@@ -2036,6 +2139,8 @@ class HwPartsRev:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> HwPartsRev:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             aoa_serial_no=data.get("aoaSerialNo"),
             fan=data.get("fan"),
@@ -2071,6 +2176,8 @@ class ConfigInfoShadow:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ConfigInfoShadow:
+        if not isinstance(data, dict):
+            return cls()
         hw_parts_rev = data.get("hwPartsRev")
         return cls(
             hw_parts_rev=HwPartsRev.from_json(hw_parts_rev) if isinstance(hw_parts_rev, dict) else None,
@@ -2127,6 +2234,8 @@ class DockPadDryReport:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockPadDryReport:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             report_type=data.get("reportType"),
             robot_id=data.get("robotId"),
@@ -2155,6 +2264,8 @@ class DockControl:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockControl:
+        if not isinstance(data, dict):
+            return cls()
         return cls(control=data.get("control"), status=data.get("status"))
 
 
@@ -2170,6 +2281,8 @@ class RobotStatusButton:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotStatusButton:
+        if not isinstance(data, dict):
+            return cls()
         return cls(status=data.get("status"), action=data.get("action"))
 
 
@@ -2191,6 +2304,8 @@ class RobotStatusError:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotStatusError:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             error_id=data.get("error_id"),
             bucket=data.get("bucket"),
@@ -2224,6 +2339,8 @@ class RobotStatusV2:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RobotStatusV2:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             robot_state=data.get("robot_state"),
             battery_level=data.get("battery_level"),

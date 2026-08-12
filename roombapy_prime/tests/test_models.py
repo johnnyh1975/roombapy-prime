@@ -5083,3 +5083,163 @@ class TestTwoMapCommandsTheAppDropped:
         names = {f.name for f in dataclasses.fields(PolicyZoneFeatureProperties)}
 
         assert "threshold_type" in names
+
+
+class TestACorrectKeyIsNotAGuaranteedValue:
+    """@jouwdan's Max 705 returned 30 parsed missions on 0.3.0b1, with
+    the corrected readers in place, and **every `dirt` value was still
+    None** — along with zero room `coverage`, zero `map_id` and an empty
+    `covStrat` set. Timelines were populated, 2 to 68 events per
+    mission, so the parse itself works.
+
+    The fields are model- or firmware-dependent, and this project cannot
+    yet say which. **What changed is that reading them is no longer the
+    explanation.** Before, a correct robot and a wrong key looked
+    identical.
+    """
+
+    def test_the_reader_works_when_the_robot_sends_them(self):
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({
+            "missionId": "M1", "dirt": 7, "map_id": "MP1",
+            "timeline": {"covStrat": "deep"},
+        })
+
+        assert entry.number_of_dirt_detects == 7
+        assert entry.static_map_id == "MP1"
+        assert entry.coverage_strategy is not None
+
+    def test_absence_stays_absence(self):
+        """A robot that reports none of them produces an entry that says
+        so, rather than zeros that look like measurements."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({"missionId": "M1"})
+
+        assert entry.number_of_dirt_detects is None
+        assert entry.static_map_id is None
+        assert entry.coverage_strategy is None
+
+    def test_a_timeline_parses_without_them(self):
+        """His case: timelines full, these fields empty. One does not
+        depend on the other."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        entry = MissionHistoryEntry.from_json({
+            "missionId": "M1",
+            "timeline": {"finEvents": [{"type": "room"}, {"type": "travel"}]},
+        })
+
+        assert len(entry.timeline) == 2
+        assert entry.number_of_dirt_detects is None
+
+
+class TestAnEmptyRegionIdIsRefused:
+    """`Region.from_json` turns a server-sent `null` into `""` -- the
+    `.get(key, "")` shape that a default cannot distinguish from an
+    absent key. The result is a command that names a room and does not.
+
+    @Echovictor37 showed what an under-addressed command does: a missing
+    map id produced a PUBACK **and a whole-house clean**. This is the
+    same failure one field over.
+    """
+
+    def _region(self, region_id):
+        from roombapy_prime.models.mission_control import Region
+
+        return Region.from_json({"region_id": region_id, "type": "rid"})
+
+    def test_a_null_id_from_the_server_is_refused(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="names no room"):
+            self._region(None).to_json()
+
+    def test_an_empty_string_is_refused(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            self._region("").to_json()
+
+    def test_a_real_id_is_unaffected(self):
+        assert self._region("11").to_json()["region_id"] == "11"
+
+    def test_the_message_says_what_would_happen(self):
+        """"Empty" is half an answer. A command that is accepted and
+        does something else is the thing to warn about."""
+        import pytest
+
+        with pytest.raises(ValueError) as exc:
+            self._region(None).to_json()
+
+        assert "accepted by the robot" in str(exc.value)
+
+
+class TestParsersSurviveUnexpectedInput:
+    """A truncated download, a server error body, a `None` where a
+    feature was expected — a parser that raises on those turns a bad
+    response into a crash in the caller's own code.
+
+    91 of 113 models raised on at least one of `None`, a string, an int
+    or a list. They return an empty instance now.
+    """
+
+    def _models(self):
+        import dataclasses
+        import importlib
+        import inspect
+        import pkgutil
+
+        import roombapy_prime.models as M
+
+        for mod in pkgutil.iter_modules(M.__path__):
+            m = importlib.import_module(f"roombapy_prime.models.{mod.name}")
+            for name, cls in inspect.getmembers(m, dataclasses.is_dataclass):
+                if cls.__module__ == m.__name__ and hasattr(cls, "from_json"):
+                    yield name, cls
+
+    def _constructible(self, cls):
+        try:
+            cls()
+        except TypeError:
+            return False
+        return True
+
+    def test_every_optional_model_survives_rubbish(self):
+        """Models with all-optional fields must return an empty instance
+        rather than raising."""
+        broken = []
+        for name, cls in self._models():
+            if not self._constructible(cls):
+                continue
+            for junk in (None, "string", 42, []):
+                try:
+                    cls.from_json(junk)
+                except Exception as exc:
+                    broken.append(f"{name}({junk!r}): {type(exc).__name__}")
+                    break
+
+        assert not broken, broken
+
+    def test_required_field_models_raise_instead(self):
+        """The GeoJSON features cannot construct an empty instance, and
+        inventing one would put a feature with no id and no geometry into
+        a render list. Raising is the honest answer — a feature that is
+        nothing is not an empty feature."""
+        import pytest
+
+        from roombapy_prime.models.map_bundle import CleanZoneFeature
+
+        assert not self._constructible(CleanZoneFeature)
+        with pytest.raises((TypeError, AttributeError)):
+            CleanZoneFeature.from_json(None)
+
+    def test_a_real_payload_still_parses(self):
+        """The guard must not swallow valid input."""
+        from roombapy_prime.models.robot_info import CleanMissionStatus
+
+        status = CleanMissionStatus.from_json({"phase": "run", "error": 48})
+
+        assert status.phase == "run"
+        assert status.error == 48

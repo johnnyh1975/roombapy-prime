@@ -113,6 +113,8 @@ class TimeEstimate:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TimeEstimate:
+        if not isinstance(data, dict):
+            return cls()
         # `value` on the wire. `estimate` was the simulator's name and
         # is kept as a fallback -- it costs one `or` and covers the case
         # where the two shapes turn out to be per-account or

@@ -1,0 +1,116 @@
+# What values a setting accepts
+
+Six `rw-settings` keys are confirmed writable (@DaRealGuGu, 11 August: written and read
+back, all six `ok`). Building controls for them needs one more thing: **what may a user
+choose, and does choosing it write more than one field?**
+
+Both are now answered from iRobot's own code.
+
+## Where these values live
+
+App 3.0.0 is Flutter, and the settings logic sits in the Dart AOT snapshot — which this
+project twice recorded as unreadable. **It is readable**, with
+[blutter](https://github.com/worawit/blutter) and a locally built Dart 3.9.2 VM. Every
+enum below comes from the object pool with its index and its wire value.
+
+That correction matters beyond this document: `libapp.so` was treated as a wall for
+weeks, and it is not one.
+
+## The enums
+
+```
+ReturnByMode        pwReturn
+  evRoom          0    "Each Room"
+  byTime          1    "Cleaning Duration"
+  byArea          2    "Wash by Area"
+  mission       100    "Standard"    before and after the routine
+  refill        101    "Medium"      also on refills
+  refillAndRoom 102    "High"        also between rooms
+
+ReturnByArea        pwAreaInterval      6 · 8 · 10 · 15 · 20
+ReturnByTime        pwTimeInterval     10 · 15 · 20 · 25
+DryDurType          padDryDur           2 · 3 · 4 · 5 · 6   (hours, value = hours)
+HeatType            pwHeat              0 · 1 · 2
+
+ClearFreqType       autoevacFreq
+  evClean       0    After Every Routine
+  evClean2      1    After Every 2 Routines      ← writes 1, not 2
+  evClean3      2    After Every 3 Routines
+  evBackHome    4    Every time returning to the dock
+  ev10 … ev50   10 · 15 · 25 · 30 · 50           area-based
+```
+
+## One field per user action
+
+`wash_frequency_view_model` calls three setters, which looked like bundling. It is not:
+`_updateWashFreqByType` is a **type switch** on the value's class id.
+
+```
+value is ReturnByArea    -> setPwAreaInterval()   pwAreaInterval
+value is ReturnByTime    -> setPwTimeInterval()   pwTimeInterval
+otherwise (ReturnByMode) -> setWashFreq()         pwReturn
+```
+
+| the user taps | field written | value |
+|---|---|---|
+| Each Room / Cleaning Duration / Wash by Area | `pwReturn` | 0 / 1 / 2 |
+| Standard / Medium / High | `pwReturn` | 100 / 101 / 102 |
+| an area value | `pwAreaInterval` | 6 / 8 / 10 / 15 / 20 |
+| a time value | `pwTimeInterval` | 10 / 15 / 20 / 25 |
+
+**Nothing is bundled.** Picking a level writes `pwReturn = 101` and nothing else -- the
+101 *is* the complete statement, because mode and level share one field. `pwReturn = 2` is
+the mode, `pwReturn = 101` is the level; they are alternatives rather than a pair.
+
+So the thing @chairstacker warned about on issue #46 -- a control writing one field where
+the robot expects two -- does not apply. It was the right question, and the answer is no.
+
+The earlier reading here said the opposite, from counting the setter calls instead of
+reading the control flow.
+
+## Two earlier readings, both wrong
+
+**`pwAreaInterval = 8` is a valid option**, not a stray value the app cannot render.
+@DaRealGuGu holds it, his app shows "not set", and `ReturnByArea` contains 8. The earlier
+conclusion — "the list is a display constraint" — was built on that misreading.
+
+**The 2.2.4 per-series table does not describe 3.0.** `dock_controls.json` gives the 405
+series `[4, 6, 9, 12]` hours; @chairstacker's 405 offers **3, 4, 6**, and `DryDurType` is
+`[2, 3, 4, 5, 6]` with no series split at all. The screenshots were right and the table
+was stale.
+
+For the record, this document has now said four different things about these values:
+unsourced, then sourced from `dock_controls.json`, then contradicted by a screenshot, now
+read from the app's own enums. **The pattern each time was concluding "not found where I
+looked" meant "does not exist".**
+
+## Capability gating
+
+`CapAutoEvac` decides which auto-empty options a robot offers:
+
+```
+taskEndOnly           mission end only
+freqModes             routine counter
+freqWithArea          plus area-based
+taskEndOrDockReturn   mission end or dock return
+```
+
+So the option list is per robot, but the gate is a capability the robot reports — not a
+table we have to carry.
+
+## What this means for the controls
+
+| Setting | Control |
+|---|---|
+| `padDryDur` | picker, `[2, 3, 4, 5, 6]` hours, uniform across models |
+| `pwHeat` | picker, three levels |
+| `autoevacFreq` | picker, options gated on `CapAutoEvac` |
+| wash frequency | **mode first, then a value** — and the mode write is not optional |
+
+A picker is now defensible where it was not this morning: the sets come from the app's own
+enums rather than a stale resource file, and they do not vary by series.
+
+The wash frequency needs two controls rather than one, but neither is a compound write.
+`pwReturn` holds either a mode or a level; the interval fields are only meaningful when
+the matching mode is selected, which is a presentation question rather than a correctness
+one.

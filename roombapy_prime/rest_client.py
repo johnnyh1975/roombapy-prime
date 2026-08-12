@@ -416,17 +416,84 @@ class PrimeRestClient:
     # favorites section for the full derivation including which
     # HTTP methods are confirmed vs. assumed.
 
+    #: `app_edition=1` SELECTS WHICH FAVOURITES THE SERVER RETURNS, and
+    #: that is the prime suspect for favourites going missing.
+    #:
+    #: The parameter comes from 2.2.4's `FetchFavoriteRequest`. It does
+    #: not appear anywhere in the 3.0.0 analysis -- neither in the
+    #: request classes nor in the wire keys -- so either the newer app
+    #: omits it or it uses a different value.
+    #:
+    #: @chairstacker's two favourites appear as buttons on Roomba+
+    #: v3.5.1, which reads them from the CLASSIC cloud coordinator, and
+    #: not on the alpha, which calls this. His robot is on the Prime app
+    #: 3.0. A server segmenting favourites by app edition would produce
+    #: exactly that: the same account, two answers.
+    #:
+    #: UNPROVEN. Nothing here changes it, because a wrong edition value
+    #: could hide favourites just as effectively -- and one field report
+    #: is not enough to pick a new constant. What would settle it is a
+    #: single call without the parameter, or with `2`, on an account
+    #: whose favourites are known to exist.
     _FAVORITES_QUERY = {"app_edition": "1"}
 
-    async def get_favorites(self) -> list[FavoriteV1]:
+    async def get_favorites(
+        self, app_edition: str | None = "1"
+    ) -> list[FavoriteV1]:
         """GET /v1/user/favorites?app_edition=1 -- CONFIRMED (FetchFavoriteRequest,
         httpMethod = "GET")."""
         url = f"{self._http_base_auth}/v1/user/favorites"
-        data = await self._request("GET", url, query=self._FAVORITES_QUERY)
-        raw_list = data if isinstance(data, list) else []
+        query = {"app_edition": app_edition} if app_edition else {}
+        data = await self._request("GET", url, query=query)
+        # A NON-LIST RESPONSE RETURNS NOTHING, SILENTLY, and that is
+        # indistinguishable from an account with no favourites.
+        #
+        # @chairstacker has two favourites that appear as buttons on
+        # v3.5.1 and not on the alpha. Everything between this call and
+        # the entities is wired correctly, so if the buttons are missing
+        # the list is empty -- and this line is the one place an empty
+        # list can be manufactured from a perfectly good response.
+        #
+        # Logging it does not fix anything. It replaces "no favourites"
+        # with "the server sent a dict where a list was expected", which
+        # is the difference between a shrug and a next step.
+        # THE RESPONSE IS SOMETIMES AN OBJECT WRAPPING THE LIST.
+        #
+        # Roomba+ v3.5.1 calls this same endpoint through its Classic
+        # cloud client, which does:
+        #
+        #     result if isinstance(result, list) else result.get("favorites", [])
+        #
+        # This returned `[]` instead. So the same account, on the same
+        # endpoint, produced two favourites there and none here -- which
+        # is exactly what @chairstacker saw when he downgraded by
+        # accident and found his buttons.
+        #
+        # That unwrap has been in the Classic path since it was written,
+        # so the wrapped shape is not a new server behaviour. This side
+        # simply never handled it.
+        if isinstance(data, dict):
+            raw_list = data.get("favorites") or []
+            if not raw_list:
+                _LOGGER.debug(
+                    "roombapy-prime: favourites response was an object with "
+                    "no 'favorites' key -- keys were %s",
+                    sorted(data),
+                )
+        elif isinstance(data, list):
+            raw_list = data
+        else:
+            _LOGGER.warning(
+                "roombapy-prime: /v1/user/favorites returned %s -- neither a "
+                "list nor an object, treating as no favourites",
+                type(data).__name__,
+            )
+            raw_list = []
         return [self._favorite_from_json(item) for item in raw_list]
 
-    async def get_favorites_raw(self) -> list[dict[str, Any]]:
+    async def get_favorites_raw(
+        self, app_edition: str | None = "1"
+    ) -> list[dict[str, Any]]:
         """Same endpoint as get_favorites(), but returns the UNPARSED
         response. Added (this session) for a round-trip fidelity check:
         if a stored favorite carries fields our own models don't know
@@ -437,7 +504,8 @@ class PrimeRestClient:
         no effect, no error). Diagnostic use only; nothing in the
         library's normal path should need this."""
         url = f"{self._http_base_auth}/v1/user/favorites"
-        data = await self._request("GET", url, query=self._FAVORITES_QUERY)
+        query = {"app_edition": app_edition} if app_edition else {}
+        data = await self._request("GET", url, query=query)
         return data if isinstance(data, list) else []
 
     async def create_favorite(self, favorite: FavoriteV1) -> dict[str, Any]:
@@ -791,9 +859,19 @@ class PrimeRestClient:
         `expectedInstallationTime`, which is what somebody deciding
         whether to start an update at nine in the evening actually needs.
 
+        **THE METHOD QUESTION IS CLOSED AND A SMALLER ONE OPENED.**
+        @utkjmitch got a **403**, not a 404 or 405: the path exists, GET
+        resolves, and the consumer Cognito role has no
+        `execute-api:Invoke` on it.
+
+        So the app reaches its firmware information under some other
+        role or channel. What is unknown now is not the verb but whether
+        this endpoint is reachable by any credentials a consumer account
+        can hold -- and if it is not, this method has no future beyond
+        documenting that.
+
         RAW, AND THAT IS DELIBERATE. `FirmwareRequest` in app 3.0.0
-        declares the path and **no HTTP method** -- the verb is a guess,
-        GET being the only sensible one for a catalogue. The response
+        declares the path and no HTTP method, The response
         envelope is unknown too: `FirmwareItemDto` describes an item,
         not what wraps it.
 

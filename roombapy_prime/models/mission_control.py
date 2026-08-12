@@ -528,6 +528,8 @@ class PadWetnessParam:
         """NEW (session 32) -- confirmed from a real get_settings()
         response (chairstacker): {"disposable": 3, "reusable": 1,
         "padPlate": 1}."""
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             disposable=data.get("disposable"),
             pad_plate=data.get("padPlate"),
@@ -655,6 +657,8 @@ class CommandPolygonMetadata:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CommandPolygonMetadata:
+        if not isinstance(data, dict):
+            return cls()
         return cls(furniture_id=data["furniture_id"])
 
 
@@ -1084,6 +1088,8 @@ class CommandParams:
         automatically built from nested JSON (PadWetnessParam.from_json()
         didn't exist yet -- the three fields are simple enough to read
         directly inline here)."""
+        if not isinstance(data, dict):
+            return cls()
         pad_wetness_data = data.get("padWetness")
         pad_wetness = None
         if pad_wetness_data:
@@ -1182,6 +1188,23 @@ class Region:
         # The from-scratch command (stage 3), which still emitted "id",
         # was delivered with a PUBACK and did nothing at all. Same
         # robot, same map, same room, minutes apart.
+        # AN EMPTY REGION ID IS NOT A REGION.
+        #
+        # `from_json` turns a server-sent `null` into `""` -- a default
+        # that a `.get(key, "")` cannot distinguish from an absent key,
+        # which is a recurring shape in this codebase. The result is a
+        # command that names a room and does not.
+        #
+        # @Echovictor37 showed what an under-addressed command does: a
+        # missing map id produced a PUBACK and a WHOLE-HOUSE clean. This
+        # is the same failure one field over, and refusing is the only
+        # honest answer -- we cannot target a region we cannot name.
+        if not self.region_id:
+            raise ValueError(
+                "region_id is empty, so this command names no room. A "
+                "region command with no id is accepted by the robot and "
+                "does something other than what was asked."
+            )
         body: dict[str, Any] = {"region_id": self.region_id, "type": self.region_type.value}
         if self.region_label is not None:
             body["region_name"] = self.region_label
@@ -1195,6 +1218,8 @@ class Region:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Region:
+        if not isinstance(data, dict):
+            return cls()
         params_data = data.get("params")
         return cls(
             region_id=data.get("region_id") or data.get("id", ""),

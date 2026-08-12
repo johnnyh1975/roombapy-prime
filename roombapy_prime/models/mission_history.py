@@ -114,6 +114,8 @@ class MissionCommandRecord:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> MissionCommandRecord:
+        if not isinstance(data, dict):
+            return cls()
         params_data = data.get("params")
         return cls(
             clean_all=data.get("cleanAll"),
@@ -224,6 +226,8 @@ class MissionHistoryEntry:
         original guess happened to be right there or not; if that
         turns out to be wrong, another real example case with an
         actual error would be needed."""
+        if not isinstance(data, dict):
+            return cls()
         command_data = data.get("cmd") or data.get("command")
         timeline_data = data.get("timeline") or {}
         # `covStrat` IS THE VENDOR'S KEY, from `MissionTimelineDto`.
@@ -257,6 +261,20 @@ class MissionHistoryEntry:
             error_code=data.get("errorCode"),
             square_feet_covered=data.get("sqft"),
             number_of_evacuations=data.get("evacs"),
+            # AND A CORRECT KEY IS NOT A GUARANTEED VALUE.
+            #
+            # @jouwdan's Max 705 returned 30 parsed missions on 0.3.0b1
+            # with the corrected readers in place: **all 30 `dirt` values
+            # None, zero room `coverage`, zero `map_id`, empty
+            # `covStrat`.** Timelines were populated (2-68 events per
+            # mission), so the parse itself is working.
+            #
+            # So these fields are model-dependent, firmware-dependent, or
+            # both -- and this project cannot yet say which. What changed
+            # today is that reading them is no longer the reason they are
+            # absent. Before, a correct robot and a wrong key looked
+            # identical; now only one explanation is left.
+            #
             # `dirt` IS THE VENDOR'S KEY. `numberOfDirtDetects` was a
             # readable guess at what the field might be called, and no
             # robot has ever sent it -- so this counter has read None on
@@ -368,6 +386,8 @@ class CommandEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CommandEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(command=data.get("command"), initiator=data.get("initiator"), time=data.get("time"))
 
 
@@ -381,6 +401,8 @@ class DiscoveryEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DiscoveryEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(map_id=data.get("mapId"), map_version=data.get("mapVersion"), region_id=data.get("regionId"))
 
 
@@ -393,6 +415,8 @@ class ErrorEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ErrorEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(value=data.get("value"))
 
 
@@ -405,6 +429,8 @@ class EvacEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> EvacEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(error=data.get("error"), state=data.get("state"))
 
 
@@ -417,6 +443,8 @@ class LiveViewEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> LiveViewEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(event_id=data.get("eventId"), status=data.get("status"))
 
 
@@ -429,6 +457,8 @@ class PadDryEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PadDryEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(error=data.get("error"), pad_dry_state=data.get("padDryState"))
 
 
@@ -445,6 +475,8 @@ class PadWashEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PadWashEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             error=data.get("error"),
             fluid_amount=data.get("flAmt") or data.get("fluidAmount"),
@@ -467,6 +499,8 @@ class PanoramaEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PanoramaEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             event_id=data.get("eventId"),
             map_id=data.get("mapId"),
@@ -496,6 +530,8 @@ class PlanEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PlanEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             map_id=data.get("mapId"),
             map_version=data.get("mapVersion"),
@@ -537,6 +573,8 @@ class PolygonEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PolygonEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             area=data.get("area"),
             area_cleaned=data.get("areaCleaned"),
@@ -559,6 +597,8 @@ class RefillEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RefillEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             error=data.get("error"),
             fluid_amount=data.get("fluidAmount"),
@@ -612,11 +652,34 @@ class RoomEvent:
     pass_area: int | None = None
     pass_count: int | None = None
     region_id: str | None = None
+    #: WHAT THE NUMBERS MEAN, decoded from a household rather than from
+    #: source. @utkjmitch's 49-mission archive on a Y351020 shows
+    #: `{0: 111, 1: 53, 5: 12, 6: 10}`, and two of those were settled by
+    #: asking the person who opens the doors:
+    #:
+    #:   5  blocked / never entered.  Region 11 appears in exactly ONE
+    #:      room event across 49 missions. That room is the playroom and
+    #:      its door is kept shut -- the dog steals the toys.
+    #:
+    #:   6  aborted in room.  Of 16 missions ending `stuck`, the last
+    #:      room event was region 12 nine times with this status.
+    #:      Region 12 is where he physically rescues the robot from the
+    #:      same corner, and the archive carries 24 `kidnap` events.
+    #:
+    #: 0 and 1 are the common values and presumably "clean" outcomes;
+    #: nothing here distinguishes them yet.
+    #:
+    #: NOT AN ENUM. Two values are inferred from one household, however
+    #: well the ground truth fits, and turning them into named constants
+    #: would present that as vendor-documented. The integer stays; the
+    #: reading is written down.
     status: int | None = None
     total_area: int | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RoomEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             area=data.get("area"),
             con_passes=data.get("conPasses"),
@@ -655,6 +718,8 @@ class SubRoomEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> SubRoomEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             area=data.get("area"),
             map_id=data.get("mapId"),
@@ -694,6 +759,8 @@ class TentativeLocationEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TentativeLocationEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             confirmed_map_id=data.get("confp2mapId") or data.get("confirmedMapId"),
             confirmed_map_version=data.get("confp2mapvId") or data.get("confirmedMapVersion"),
@@ -728,6 +795,8 @@ class TravelEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TravelEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             destination=_enum_or_none(TravelDestination, data.get("dest") or data.get("destination")),
             map_id=data.get("p2mapId") or data.get("mapId"),
@@ -757,6 +826,8 @@ class TraversalEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> TraversalEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             map_id=data.get("p2mapId") or data.get("mapId"),
             map_version=data.get("p2mapvId") or data.get("mapVersion"),
@@ -776,6 +847,8 @@ class WaypointEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> WaypointEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(map_id=data.get("mapId"), map_version=data.get("mapVersion"), waypoint_id=data.get("waypointId"))
 
 
@@ -788,6 +861,8 @@ class WetOutEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> WetOutEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(status=data.get("status"), wet_out_type=data.get("type"))
 
 
@@ -811,6 +886,8 @@ class ZoneEvent:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ZoneEvent:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             area=data.get("area"),
             map_id=data.get("p2mapId") or data.get("mapId"),
@@ -872,6 +949,8 @@ class MissionTimelineEvent:
         until now only "relocalizing"/"tentativeLocation" had been
         tried, neither of which is correct; "reloc" now added and
         populates the same "relocalizing" attribute."""
+        if not isinstance(data, dict):
+            return cls()
 
         # THE VENDOR'S SHORT NAMES, added beside the long ones.
         #
@@ -951,6 +1030,8 @@ class MissionTimelineReport:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> MissionTimelineReport:
+        if not isinstance(data, dict):
+            return cls()
         cmd = data.get("cmd") or {}
         return cls(
             command=cmd.get("command"),

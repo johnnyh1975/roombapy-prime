@@ -28,6 +28,8 @@ class LiveMapStreamInit:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> LiveMapStreamInit:
+        if not isinstance(data, dict):
+            return cls()
         return cls(mqtt_topic=data["mqtt_topic"], initial_map_url=data.get("livemap_url"))
 
 
@@ -137,6 +139,8 @@ class MapUpdateMessage:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> MapUpdateMessage:
+        if not isinstance(data, dict):
+            return cls()
         update = data["map_update"]
         return cls(
             livemap_url=update["livemap_url"],

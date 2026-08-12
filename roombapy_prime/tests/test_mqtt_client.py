@@ -584,20 +584,17 @@ def test_reconnect_reconnects_and_restores_subscriptions() -> None:
     original_token = client._token
     client.reconnect(timeout=7.0)
 
-    # THE TOKEN IS THE SAME EXCEPT FOR ITS CLIENT ID, which reconnect()
-    # now rotates on purpose.
+    # THE TOKEN IS UNTOUCHED, and b2 proved why it has to be.
     #
-    # @DaRealGuGu's run showed the same id twice, four seconds apart,
-    # with the phone app closed and Home Assistant stopped -- so the
-    # eviction, if that is what it is, had nobody left to blame but us.
-    # `disconnect()` closes our socket; it does not guarantee the broker
-    # released the session.
+    # b2 rotated the client id on reconnect, on the theory that we were
+    # evicting ourselves. @DaRealGuGu's run made it worse in a way that
+    # was more useful than a success: the connection stopped being
+    # dropped after a subscribe and started FAILING OUTRIGHT --
+    # "Connect timed out after 8.0s", every time.
     #
-    # Everything else must survive: swapping the credentials here would
-    # be `replace_token()`'s job, not this one.
-    assert client._token.iot_authorizer_name == original_token.iot_authorizer_name
-    assert client._token.client_id.startswith(original_token.client_id)
-    assert client._token.client_id != original_token.client_id
+    # The id comes from iRobot's login response, and the broker's policy
+    # evidently expects that one. It is issued, not chosen.
+    assert client._token is original_token  # NOT swapped, unlike replace_token()
     assert reconnect_calls == [7.0]
     assert set(new_fake.subscribed) == {"topic/a", "topic/b"}
 

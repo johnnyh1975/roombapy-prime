@@ -50,6 +50,8 @@ class ScheduleTime:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ScheduleTime:
+        if not isinstance(data, dict):
+            return cls()
         return cls(day=data.get("day") or [], hour=data.get("hour"), min=data.get("min"))
 
 
@@ -67,6 +69,8 @@ class ScheduleDateEntry:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ScheduleDateEntry:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             day_of_month=data.get("dayOfMonth"),
             hour=data.get("hour"),
@@ -258,6 +262,8 @@ class ScheduleOptions:
         params/regions/id_multipolys fields). Safe for an unchanged
         round-trip specifically because nothing here needs to be
         understood, only preserved byte-for-byte."""
+        if not isinstance(data, dict):
+            return cls()
         # The sixteen `@SerialName` keys of ScheduleOptions, confirmed
         # from the app's own `$$serializer` `<clinit>` block. Anything
         # else the server sends is carried through untouched.
@@ -313,6 +319,8 @@ class HouseholdSchedule:
         """NEW -- see ScheduleOptions.from_json()'s own entry in docs/internal/EVIDENCE_TRAIL.md for
         why commands/end_commands round-trip as raw dicts rather than
         parsed RoutineCommand objects."""
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             # 3.0.0 MOVED THE ID INSIDE THE OPTIONS.
             #
@@ -364,6 +372,8 @@ class SchedulesList:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> SchedulesList:
+        if not isinstance(data, dict):
+            return cls()
         # `schedules` is checked for being a list for the same reason
         # SchedulesResponse.from_json() checks its own -- see there.
         schedules = data.get("schedules")
@@ -427,6 +437,8 @@ class DNDStatusResponse:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DNDStatusResponse:
+        if not isinstance(data, dict):
+            return cls()
         return cls(
             daily_start=data.get("dailyStart"),
             daily_end=data.get("dailyEnd"),

@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import replace
 import ssl
 import threading
 import time
@@ -626,10 +625,11 @@ class PrimeMqttClient:
             self._token = new_token
             # The caller just handed us a token; its client id is the one
             # to use. Rotating it here would discard what they chose.
-            self.reconnect(timeout=timeout, fresh_client_id=False)
+            self.reconnect(timeout=timeout)
 
-    def reconnect(self, timeout: float = 10.0, fresh_client_id: bool = True) -> None:
-        """Reconnects, **with a new client id by default.**
+    def reconnect(self, timeout: float = 10.0) -> None:
+        """Reconnects with the same client id, which is the only one
+        that works -- see the note in the body.
 
         THE EVICTION MAY BE OURS. @DaRealGuGu's 0.3.0b1 run, with the
         phone app closed and Home Assistant stopped, still failed -- and
@@ -646,8 +646,7 @@ class PrimeMqttClient:
 
         A fresh id per reconnect costs nothing -- the id is ours to
         choose, and nothing depends on it staying the same across a
-        reconnect. `fresh_client_id=False` keeps the old behaviour for
-        anyone who needs to reproduce the failure.
+        reconnect.
         """
         """NEW (this session, reconnect-after-drop hardening). Same-
         token counterpart to replace_token() -- extracted from it,
@@ -682,22 +681,25 @@ class PrimeMqttClient:
 
         self.disconnect()
         self._connected = False
-        if fresh_client_id:
-            # A NEW ID SO THE BROKER CANNOT CONFUSE US WITH OURSELVES.
-            #
-            # `disconnect()` closes our socket; it does not guarantee
-            # the broker has released the session. Reconnecting under
-            # the same id while it still holds one is the eviction case
-            # -- with us on both ends of it.
-            #
-            # @DaRealGuGu's 0.3.0b1 run showed the same id twice, four
-            # seconds apart, with the phone app closed and Home
-            # Assistant stopped. Nothing external was left to blame.
-            self._token = replace(
-                self._token,
-                client_id=f"{self._token.client_id}-r{self._reconnects}",
-            )
-            self._reconnects += 1
+        # THE CLIENT ID IS NOT OURS TO CHOOSE. Tried in b2, reverted in
+        # b3, and the failure was informative.
+        #
+        # b2 rotated it on every reconnect on the theory that we were
+        # evicting ourselves. @DaRealGuGu's run made things worse in a
+        # specific way: the connection stopped being dropped after a
+        # subscribe and started **failing outright** --
+        # "Connect timed out after 8.0s", every time, on ids like
+        # `...-r1-r2-r3-r4-r5-r6`.
+        #
+        # Two things were wrong. The id accumulated rather than being
+        # replaced, which is a plain bug. But the useful part is that a
+        # derived id does not connect AT ALL: the id comes from iRobot's
+        # login response, and the broker's policy evidently expects that
+        # one. It is issued, not chosen.
+        #
+        # So the eviction theory is not disproven -- but rotating the id
+        # is not the way to test it, and cannot be the fix.
+        self._reconnects += 1
         self._connect_error = None
         self.connect(timeout=timeout)
 
@@ -870,10 +872,23 @@ class PrimeMqttClient:
         arrived, which meant a caller wanting the current mission's
         progress waited for the robot to volunteer it.
 
-        **THE REQUEST IS ACCEPTED**, confirmed on an N185240
-        (@DaRealGuGu): the publish went through and returned immediately.
-        Whether a report follows on the matching topic is the next
-        question and needs a watcher running alongside.
+        **THE REQUEST IS ACCEPTED AND AN IDLE ROBOT DOES NOT ANSWER.**
+
+        @DaRealGuGu confirmed the publish goes through. @jouwdan then
+        watched for one: a single MQTT connection carrying both the
+        subscription and the request -- so no second client to evict --
+        with the phone app closed and Home Assistant stopped. The
+        publish was accepted; **no report arrived in 35 seconds** on a
+        robot that was idle and stayed idle.
+
+        That is a clean negative, not an inconclusive one. It points at
+        reports being tied to a mission: published during one, or after
+        it, rather than on demand at rest.
+
+        WHAT IT DOES NOT SETTLE: whether a request during a mission
+        pulls a report earlier than the robot would have sent one
+        anyway. That needs a watcher running while the robot drives, and
+        nobody has done it.
 
         `MissionTimelineManager.getEncodedRequest()` publishes
         `{"timelineRequestId": <n>}` to the matching `request` topic, and

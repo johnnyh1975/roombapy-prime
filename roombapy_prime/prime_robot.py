@@ -673,16 +673,26 @@ class PrimeRobot:
 
     # --- Favorites (FavoriteV1) ------------------------------------------
 
-    async def get_favorites(self) -> list[FavoriteV1]:
+    async def get_favorites(
+        self, app_edition: str | None = "1"
+    ) -> list[FavoriteV1]:
         """See rest_client.py::get_favorites() -- the only one of the
         five favorite endpoints whose HTTP method AND response shape
         are both fully confirmed."""
-        return await self._rest.get_favorites()
+        # Only forwarded when it differs from the client's own default,
+        # so the plain call stays a plain call.
+        if app_edition == "1":
+            return await self._rest.get_favorites()
+        return await self._rest.get_favorites(app_edition)
 
-    async def get_favorites_raw(self) -> list[dict]:
+    async def get_favorites_raw(
+        self, app_edition: str | None = "1"
+    ) -> list[dict]:
         """See rest_client.py::get_favorites_raw() -- diagnostic
         round-trip fidelity check, not part of the normal path."""
-        return await self._rest.get_favorites_raw()
+        if app_edition == "1":
+            return await self._rest.get_favorites_raw()
+        return await self._rest.get_favorites_raw(app_edition)
 
     async def create_favorite(self, favorite: FavoriteV1) -> dict:
         """See rest_client.py::create_favorite() -- HTTP method

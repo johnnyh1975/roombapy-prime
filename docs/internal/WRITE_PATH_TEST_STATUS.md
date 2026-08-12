@@ -114,6 +114,40 @@ is readable but not among the 24 keys `settingFromKey` writes. Asking
 for a key the vendor never writes, and calling the silence a bug, is how
 three testers spent a week on this check.
 
+## RESOLVED: the wall was a second connection, and it was Home Assistant
+
+**11 August 2026.** @DaRealGuGu's `settings_roundtrip` completed on his N185240 — six settings
+written and read back, every one `ok`. The difference from the failing run twenty minutes earlier
+was that Home Assistant's integration was still running the first time.
+
+So the eviction theory holds and the culprit was external after all. **The client-id rotation added
+in b2 was not what fixed this** — his successful run used the same id as always. That change is
+worth keeping as a defence, but it should not be credited with the result.
+
+Six controls become buildable: `padDryDur`, `pwAreaInterval`, `autoevacFreq`, `padWashAllowed`,
+`pwReturn`, `pwTimeInterval`. Issue #46 is unblocked.
+
+### And the caveat this check exists for did its job
+
+`pwAreaInterval` wrote as `8`, read back as `8` — and the iRobot app shows the setting as **"not
+set"**, which it also did before the run. So the value is genuinely on the robot and the app cannot
+render it.
+
+`8` is not in the `[5, 10, 15]` set iRobot publishes for the 405 series. It **is** in the
+`[6, 8, 10]` set they publish for the 410 and 510. His `padDryDur: 3` is likewise outside the 405's
+`[4, 6, 9, 12]` and inside the 505's `[3, 4, 5]`.
+
+**Two things follow, and they matter for any control built on these:**
+
+1. A robot can hold a value its own app cannot display. "Not set" in the app is not proof that a
+   write failed — it may mean the app has no label for what is there.
+2. Any control must read its valid values from the robot's own model rather than a table. A picker
+   offering `[4, 6, 9, 12]` to a robot whose set is `[3, 4, 5]` would look like our bug when the
+   robot rejected or ignored it.
+
+That second point was @DaRealGuGu's own argument on issue #46 a week before this run produced the
+evidence for it.
+
 ## The wall has three faces and one likely cause
 
 ```
