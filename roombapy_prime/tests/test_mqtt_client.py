@@ -957,20 +957,16 @@ class TestSubscribeAndWaitRejectionDetection:
 
         assert "restricted/topic" in str(exc_info.value)
 
-    def test_unconfirmed_suback_raises_without_registering_callback(self):
-        from roombapy_prime.mqtt_client import (
-            PrimeMqttClient,
-            SubscriptionUnconfirmedError,
-        )
+    def test_unconfirmed_suback_is_recorded_without_failing_the_session(self):
+        from roombapy_prime.mqtt_client import PrimeMqttClient
 
         client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
         client._client = _FakeMqttClient()
         client._connected = True
 
-        with pytest.raises(SubscriptionUnconfirmedError):
-            client.subscribe("silent/topic", lambda _msg: None)
+        client._subscribe_and_wait(["silent/topic"], timeout=0.01)
 
-        assert "silent/topic" not in client._persistent
+        assert client.last_subscribe_unconfirmed == ["silent/topic"]
 
     def test_mixed_success_and_rejection_across_multiple_topics_reports_only_the_rejected_one(self):
         """_subscribe_and_wait() takes a list of topics -- confirms the
