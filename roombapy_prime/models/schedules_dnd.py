@@ -197,6 +197,19 @@ class ScheduleOptions:
     # `is_smart_clean_fav` arrives on real schedules and appears nowhere
     # in APK 2.2.4, neither in Kotlin nor natively (APK research 10).
     #
+    # APP 3.0.0 HAS CAUGHT UP: `ScheduleOptionsDto` now declares
+    # `is_smart_clean_fav` as one of its thirteen fields. The server was
+    # not ahead by accident -- the app has since been rebuilt around it.
+    #
+    # Not promoted to a named field. It arrives, round-trips and is
+    # returned unchanged either way, and naming it would mean deciding a
+    # type and a default for something nothing here reads. If a caller
+    # ever needs it, the confirmation to build on is in place.
+    #
+    # THE MECHANISM IS WHAT MATTERED, and it held: a field the model did
+    # not know survived a read-modify-write cycle for as long as it took
+    # the vendor's own client to declare it.
+    #
     # Writing a schedule is read-modify-write. Without this, every write
     # silently drops whatever the server knows and the app does not --
     # and the loss is invisible, because the request is accepted and the

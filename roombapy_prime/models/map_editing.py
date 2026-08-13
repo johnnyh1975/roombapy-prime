@@ -15,30 +15,54 @@ published to `{irbt_prefix}/things/{blid}/editv3_req`, with answers on
 transport channel and nothing more -- which means the payloads inside it
 are not discoverable from this APK at all.
 
-**V3 CARRIES EXACTLY ONE OPERATION TODAY.** `MapServiceHandler` has 34
-methods and only two mention V3: `deleteCleanZonesV3` and
-`observeV3EditResponses`. Everything else -- `setCleanZones`,
-`setFurniture`, `setMapName`, `setRenameRoom`, `setVirtualWall`,
-`updateKeepOutZones` -- goes through the paths this module already
-implements.
+**V3 CARRIES NINE OPERATIONS, NOT ONE.** An earlier reading here said
+"exactly one operation today", counting `MapServiceHandler`: 34 methods,
+of which only `deleteCleanZonesV3` and `observeV3EditResponses` name V3.
 
-So V3 is not a replacement waiting to obsolete V1 and V2. It is one
-operation the app moved to a different channel, plus the channel itself.
-A caller losing sleep over "should we support V3" is worrying about a
-single delete.
+That counted the Kotlin BRIDGE, and the bridge is not where V3 lives.
+`P2MapEditCommandType` in the Dart layer declares the operations, and
+`map_service.dart` declares their answers:
 
-TWO COMMANDS HERE NO LONGER EXIST IN THE APP.
+    setRenameRoomReq     -> setRenameRoomRsp
+    setVirtualWallReq    -> setVirtualWallRsp
+    setPermanentAreaReq  -> setPermanentAreaRsp
+    delPermanentAreaReq  -> delPermanentAreaRes   <- "Res", not "Rsp"
+    setFurnitureReq      -> setFurnitureRsp
+    setSillReq           -> setSillRsp
+    setCarpetReq         -> setCarpetRsp
+    getSchemDataReq      -> getSchemDataRsp
+    setSchemDataReq      -> setSchemDataRsp
+
+`delPermanentAreaRes` is the vendor's own typo; eight of nine end `Rsp`.
+Anything matching responses has to accept both spellings.
+
+TWO OF THEM HAVE NO V1 OR V2 EQUIVALENT AT ALL: `setSillReq`
+(thresholds) and `setCarpetReq` (carpets). That inverts the note below
+about `SetThresholds` being "gone from 3.0.0" -- thresholds did not
+vanish, they MOVED to a channel this module does not speak. Carpets are
+new outright.
+
+So the earlier conclusion was wrong in both directions: V3 is more than
+a single delete, and it is the only way to reach two map features.
+
+WHAT HAS NOT CHANGED: nothing here sends V3, and the reason stands --
+`data.value` is a generic `JsonElement` the Kotlin layer never
+interprets, so the payload shapes are not discoverable from the
+serialisers. The nine names are the operations; their bodies are not
+known. That is a smaller gap than it was, not a closed one.
+
+TWO COMMANDS HERE NO LONGER EXIST IN THE APP'S V2 PATH.
 `EditMapV2Request$CommandV2$SetFloorTypes` and `$SetThresholds` are in
 2.2.4 and gone from 3.0.0 -- only the READ side survives
-(`FloorTypeFeature$Properties`); thresholds vanish entirely, including
-`PolicyZoneFeature$Properties.threshold_type`.
+(`FloorTypeFeature$Properties`), and
+`PolicyZoneFeature$Properties.threshold_type` is gone too.
 
 `SetFloorTypes` and `SetThresholds` below are kept. The app dropping a
 command does not prove the robot rejects it, and neither has ever been
 sent from here -- so removing them would trade an untested path for an
 untested absence. What has changed is the expectation: if either fails
-in the field, "the app no longer sends this" is the first explanation to
-consider, not the last.
+in the field, "the app moved this to V3" is now the first explanation to
+consider.
 
 Nothing in this module speaks V3. The V1 and V2 commands below are
 verified against their own serialisers and are what this library sends.

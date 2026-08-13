@@ -106,9 +106,16 @@ class TimeEstimate:
         # would discard every estimate a real robot returns.
         if not self.confidence:
             return True
+        # BOTH VOCABULARIES. App 3.0.0's wire values are `good` /
+        # `partial` / `poor`; 2.2.4's constant names were
+        # `GOOD_CONFIDENCE` and so on. Comparing against only the second
+        # meant a robot sending `"good"` had its estimate discarded as
+        # low-confidence -- the exact opposite of what it reported.
         return str(self.confidence).upper() in (
             TimeEstimateConfidence.GOOD_CONFIDENCE.value.upper(),
             TimeEstimateConfidence.PARTIAL_CONFIDENCE.value.upper(),
+            TimeEstimateConfidence.GOOD.value.upper(),
+            TimeEstimateConfidence.PARTIAL.value.upper(),
         )
 
     @classmethod

@@ -1482,3 +1482,112 @@ class TestTheBrokersReasonIsCarriedIntoTheError:
 
         assert "the socket is" in source
         assert "probably still open" in source
+
+
+class TestAFailedSubscribeLeavesNoPoisonedTopic:
+    """@jouwdan's Max 705 stayed broken across retries rather than
+    failing once, and the ordering in subscribe() is why (PR #62).
+
+    The callback was appended to `_persistent` BEFORE the broker-level
+    subscribe was attempted. A failing subscribe therefore left the
+    topic registered with a callback and no subscription -- and the next
+    subscribe() for that topic read `is_new_topic = False` and skipped
+    the broker call entirely.
+
+    Permanently unsubscribed, permanently registered, and
+    indistinguishable from a robot that says nothing. No test covered
+    it: 925 passed with the bug in place.
+    """
+
+    @staticmethod
+    def _client():
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = PrimeMqttClient.__new__(PrimeMqttClient)
+        client._client = MagicMock()
+        client._connected = True
+        client._persistent = {}
+        return client
+
+    def test_a_rejected_subscribe_registers_nothing(self):
+        from unittest.mock import MagicMock
+
+        import pytest
+
+        from roombapy_prime.mqtt_client import SubscriptionRejectedError
+
+        client = self._client()
+        client._subscribe_and_wait = MagicMock(
+            side_effect=SubscriptionRejectedError("broker denied")
+        )
+
+        with pytest.raises(SubscriptionRejectedError):
+            client.subscribe("things/x/shadow", MagicMock())
+
+        assert "things/x/shadow" not in client._persistent
+
+    def test_a_later_attempt_subscribes_again(self):
+        """The recovery the old ordering made impossible. This is the
+        assertion that matters -- failing once is tolerable, failing
+        forever is not."""
+        from unittest.mock import MagicMock
+
+        import pytest
+
+        from roombapy_prime.mqtt_client import SubscriptionRejectedError
+
+        client = self._client()
+        client._subscribe_and_wait = MagicMock(
+            side_effect=SubscriptionRejectedError("broker denied")
+        )
+        with pytest.raises(SubscriptionRejectedError):
+            client.subscribe("things/x/shadow", MagicMock())
+
+        client._subscribe_and_wait.reset_mock(side_effect=True)
+        client.subscribe("things/x/shadow", MagicMock())
+
+        assert client._subscribe_and_wait.called
+        assert len(client._persistent["things/x/shadow"]) == 1
+
+    def test_a_successful_subscribe_still_registers(self):
+        """The fix must not cost the normal path."""
+        from unittest.mock import MagicMock
+
+        client = self._client()
+        client._subscribe_and_wait = MagicMock()
+        callback = MagicMock()
+
+        client.subscribe("things/x/shadow", callback)
+
+        assert client._persistent["things/x/shadow"] == [callback]
+
+    def test_a_second_callback_does_not_resubscribe(self):
+        """Multiple watchers on one topic still share a single
+        broker-level subscription."""
+        from unittest.mock import MagicMock
+
+        client = self._client()
+        client._subscribe_and_wait = MagicMock()
+
+        client.subscribe("things/x/shadow", MagicMock())
+        client.subscribe("things/x/shadow", MagicMock())
+
+        assert client._subscribe_and_wait.call_count == 1
+        assert len(client._persistent["things/x/shadow"]) == 2
+
+    def test_an_unconfirmed_subscription_is_not_a_failure(self):
+        """Both the PR summary and the report behind it describe a
+        missing SUBACK as fatal. It is not, and has not been since b3 --
+        it is recorded and warned about. Worth asserting, because the
+        stale docstring that said otherwise is what made the claim
+        plausible."""
+        import inspect
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        source = inspect.getsource(PrimeMqttClient._subscribe_and_wait)
+
+        assert "last_subscribe_unconfirmed" in source
+        assert "RECORDED AS UNCONFIRMED" in source

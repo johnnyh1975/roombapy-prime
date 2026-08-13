@@ -527,7 +527,41 @@ class PolicyZoneFeature:
 @dataclass(frozen=True)
 class CleanZoneFeatureProperties:
     """CONFIRMED (session 47): name (the one field that distinguishes
-    this from AdHocCleanZoneFeature, which has none)."""
+    this from AdHocCleanZoneFeature, which has none).
+
+    FIVE MORE FIELDS EXIST ON THE SDK'S OWN ZONE MODEL, and they are
+    deliberately not added here yet.
+
+    `models/map_data/map_contents/p2_map_zone_info` (app 3.0.0) declares
+    `detected`, `detectedAccepted`, `detectedDeleted`, `detected_viewed`
+    and `user_created` beside `geometry`, `id` and `status`. Together
+    they are the keep-out-zone RECOMMENDATION mechanism gated by
+    `digiCap.kozRecommendations`: whether the robot proposed a zone,
+    whether the user accepted, rejected or merely saw it, and whether
+    the user drew it themselves.
+
+    WHY THEY MIGHT BE WIRE KEYS: `p2_map_zone_info` is the SDK's model
+    for the same object this class parses, and its five extra fields
+    have no counterpart here.
+
+    AN EARLIER VERSION OF THIS NOTE ARGUED FROM THE CASING -- that
+    `detectedAccepted` beside `detected_viewed` inside one class proved
+    these were serialisation names, since a Dart property list would be
+    uniformly camelCase. **That argument does not hold.**
+    `message_center_models.dart` carries 53 fields in BOTH spellings at
+    once, camelCase for the Dart property and snake_case for the wire,
+    and the vendor's generated code keeps both. Mixed casing inside one
+    model is that pairing maintained incompletely -- not evidence of
+    anything. Where it means anything at all, snake_case is the wire
+    form.
+
+    So the casing says nothing either way, and the reason for caution is
+    unchanged: this class is built from the GeoJSON bundle, whose
+    serialiser (`CleanZoneFeature$Properties`) declares `name` and
+    nothing else. The SDK model and the bundle feature are not confirmed
+    to be the same object, and adding five fields to the wrong one is
+    how a permanent None gets created. A real bundle carrying any of
+    them settles it in one look."""
 
     name: str | None = None
 

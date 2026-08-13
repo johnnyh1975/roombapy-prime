@@ -506,8 +506,33 @@ class RobotDigitalCapabilities:
 # exactly the pair this check has to tell apart), Y41 (arielgr, sku
 # Y414040). The rest come from SkuUtils.java's table directly and have
 # not been seen in the field.
+# FOUR PREFIXES ADDED FROM APP 3.0.0, which carries a table this list
+# predates.
+#
+# `ProductMode::getModeBySku` maps eighteen two-character SKU prefixes to
+# UI variants -- the same prefix logic as `SkuUtils.java`, but current.
+# Four of its entries were missing here:
+#
+#     U1  robot_205_vac        W2  robot_715_vac
+#     V1  robot_615_combo      Z1  robot_875
+#
+# WHY THAT MATTERED: `is_prime_sku()` returning False routes a robot
+# down the path for devices this library does not know, and for a Prime
+# robot that means being set up as something it is not. The docstring
+# already warns that False is not a Classic confirmation; these four
+# were cases where it silently was one.
+#
+# COLLISION-CHECKED BEFORE ADDING, because the whole two-character
+# design rests on the Prime and Classic sets staying disjoint: none of
+# U1/V1/W2/Z1 appears among the Classic prefixes, and the assertion
+# below still holds.
+#
+# NONE FIELD-CONFIRMED. Like most of the entries above they come from a
+# vendor table, not from a robot. The 3.0.0 table is the newer of the
+# two sources, which is the whole reason to prefer it here.
 PRIME_SKU_PREFIXES: frozenset[str] = frozenset(
-    "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 W15 X18 X28 F15".split()
+    "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 W15 X18 X28 F15 "
+    "U10 V10 W20 Z10".split()
 )
 
 

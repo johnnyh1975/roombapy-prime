@@ -17,12 +17,34 @@ from .mission_control import CommandParams, PadWetnessParam, RegionType
 
 
 class CleaningProfileType(StrEnum):
-    """Confirmed (androguard, CleaningProfile$ProfileType): 4 values."""
+    """CORRECTED (APK 3.0.0, Dart `ProfileType`): the wire values are
+    lowercase -- `light`, `normal`, `deep`, `smart`.
 
-    DEEP = "DEEP"
-    LIGHT = "LIGHT"
-    NORMAL = "NORMAL"
-    SMART = "SMART"
+    The uppercase values this enum carried were the Kotlin CONSTANT
+    NAMES of `CleaningProfileType`, whose wire-value map is empty. The
+    androguard reading behind them was correct about what it read; it
+    was reading the wrong thing. Same mistake as the DND commands and
+    `RegionType.TID`, all three from the same root: a Kotlin enum
+    without `@SerialName` has no wire values to report, and its member
+    names are not a substitute.
+
+    The Dart layer states them outright, member by member:
+    `lightClean -> "light"`, `normalClean -> "normal"`,
+    `deepClean -> "deep"`, `smartClean -> "smart"`. A separate
+    `IrobotCleanProfileType` carries the ordinals 0-3 in the same order.
+
+    EFFECT OF THE OLD VALUES was read-side only, and quiet:
+    `_enum_or_none()` failed to match a real `"deep"` against `"DEEP"`
+    and fell through to the raw string, so `CleaningProfile.profile`
+    held a str where an enum was expected. Nothing raised, and any
+    caller comparing against the enum simply never matched.
+
+    Gated on `digiCap.cleaningProfiles`."""
+
+    DEEP = "deep"
+    LIGHT = "light"
+    NORMAL = "normal"
+    SMART = "smart"
 
 
 @dataclass(frozen=True)
@@ -813,6 +835,128 @@ def parse_user_households(data: list[dict[str, Any]] | None) -> list[Household]:
 
 
 @dataclass(frozen=True)
+class PrecheckStatus:
+    """NEW (app 3.0.0, `model/settings/precheck`) -- the robot's own
+    pre-mission readiness check.
+
+    `readiness` is the interesting field: it is the robot's verdict on
+    whether it can start, computed before a command is sent rather than
+    reported as a refusal afterwards. `readinessTm` timestamps it.
+
+    `weather` in a vacuum robot's settings is unexplained. Recorded as
+    the vendor spells it rather than dismissed -- a Braava deciding
+    whether to mop on a humid day is a guess, and so is anything else.
+
+    PLACEMENT CONFIRMED by the model path (`model/settings/…`), not
+    inferred. Types stay permissive: no capture here contains it."""
+
+    readiness: Any | None = None
+    readiness_time: Any | None = None
+    weather: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> PrecheckStatus:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            readiness=data.get("readiness"),
+            readiness_time=data.get("readinessTm"),
+            weather=data.get("weather"),
+        )
+
+
+@dataclass(frozen=True)
+class FilterPackStatus:
+    """NEW (app 3.0.0, `model/settings/filter_pack_status`) -- filter
+    life remaining as a percentage, plus when it was last reset.
+
+    THE ONLY PERCENTAGE-BASED CONSUMABLE FIGURE in this library. Every
+    other maintenance counter here counts upward (missions, evacs, pad
+    washes) and needs a threshold to mean anything; `pctLeft` is already
+    the answer.
+
+    `lastRstTm` is the reset timestamp, which pairs with
+    `resetAssetHealth(partId)` -- the app resets consumable counters
+    individually."""
+
+    pct_left: int | None = None
+    last_reset_time: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> FilterPackStatus:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(pct_left=data.get("pctLeft"), last_reset_time=data.get("lastRstTm"))
+
+
+@dataclass(frozen=True)
+class CutHeightStatus:
+    """NEW (app 3.0.0, `model/settings/cut_height_status`) -- current,
+    desired, minimum and maximum cutting height in millimetres.
+
+    NOT A VACUUM FIELD. A cutting height in millimetres with a desired
+    value alongside the current one belongs to a mower, and `cutHeight`
+    sits in the same property registry as every Roomba field. Modelled
+    because it is declared and costs nothing; nothing here suggests a
+    Roomba will ever send it."""
+
+    current_mm: int | None = None
+    desired_mm: int | None = None
+    min_mm: int | None = None
+    max_mm: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CutHeightStatus:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            current_mm=data.get("currentMM"),
+            desired_mm=data.get("desiredMM"),
+            min_mm=data.get("minMM"),
+            max_mm=data.get("maxMM"),
+        )
+
+
+@dataclass(frozen=True)
+class Langs2Status:
+    """NEW (app 3.0.0, `model/settings/langs2`) -- the language pack
+    state, previously kept whole as `RobotSettings.languages_raw`.
+
+    Five of these eight keys are individually WRITABLE (`langs2.sLang`,
+    `langs2.uLangs`, `langs2.dLangs`, `langs2.aSlots`, `langs2.sVer`),
+    addressed with their dots intact -- so a caller changing the
+    selected language needs to know which sub-key holds it. Reading
+    them typed is what makes that possible.
+
+    `languages_raw` stays as it is: this parses the same object, and a
+    caller already relying on the raw dict keeps working."""
+
+    a_slots: Any | None = None
+    d_langs: Any | None = None
+    langs: Any | None = None
+    pack_id: Any | None = None
+    s_lang: Any | None = None
+    s_ver: Any | None = None
+    u_langs: Any | None = None
+    ver: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> Langs2Status:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            a_slots=data.get("aSlots"),
+            d_langs=data.get("dLangs"),
+            langs=data.get("langs"),
+            pack_id=data.get("packId"),
+            s_lang=data.get("sLang"),
+            s_ver=data.get("sVer"),
+            u_langs=data.get("uLangs"),
+            ver=data.get("ver"),
+        )
+
+
+@dataclass(frozen=True)
 class RobotSettings:
     """Confirmed (real live response, get_settings()): complete
     content of the named "rw-settings" shadow for a SMART-tier device.
@@ -821,6 +965,31 @@ class RobotSettings:
     "*Allowed" permission flags."""
 
     audio_volume: int | None = None
+    #: NINE VALID VALUES, AND `cap.autoevac` DECIDES WHICH APPLY.
+    #:
+    #: `ClearFreqType` (app 3.0.0) declares 0, 1, 2, 4, 10, 15, 25, 30,
+    #: 50 -- the first three are "every / every 2nd / every 3rd routine",
+    #: 4 is "on dock return", the rest are area-based.
+    #:
+    #: `CapAutoEvac` is the gate, and it is a LEVEL, not a flag:
+    #:
+    #:     0  taskEndOnly           no frequency choice at all
+    #:     1  freqModes             0, 1, 2
+    #:     2  freqWithArea          plus 10, 15, 25, 30, 50
+    #:     3  taskEndOrDockReturn   plus 4
+    #:
+    #: FIELD-CONFIRMED, AND THE TWO NUMBERS AGREE: chairstacker's robot
+    #: reports `cap.autoevac = 1` and `autoevacFreq = 1` -- level
+    #: `freqModes`, set to "every 2nd routine". Internally consistent.
+    #:
+    #: AN EARLIER NOTE HERE GOT THIS HALF RIGHT. It said the per-SKU
+    #: value list `[0, 10, 15, 25, 30]` was "a subset the app happens to
+    #: show" and the enum was the real option set. The list is not
+    #: arbitrary -- it is what `freqWithArea` offers. What was wrong was
+    #: treating the enum as one flat option set: a selector built from
+    #: all nine would offer area intervals to a robot that cannot do
+    #: them, and one built from the SKU list alone could not represent
+    #: this robot's actual setting. Read the cap, then pick the subset.
     autoevac_freq: int | None = None
     carpet_boost: bool | None = None
     child_lock: bool | None = None
@@ -836,6 +1005,25 @@ class RobotSettings:
     pad_dry_duration: int | None = None
     pad_wash_allowed: int | None = None
     pad_wash_area_interval: int | None = None
+    #: TWO RANGES IN ONE FIELD, AND THE SKU LIST COVERS ONE.
+    #:
+    #: `ReturnByMode` (app 3.0.0) declares six values across two ranges:
+    #:
+    #:     0   after each room        100  Standard
+    #:     1   after time interval    101  Medium
+    #:     2   after area interval    102  High
+    #:
+    #: Below 100 selects WHEN to return; 100 and above selects HOW
+    #: THOROUGHLY. The per-SKU value list gives only [100, 101, 102].
+    #:
+    #: FIELD-SETTLED: chairstacker's robot reports `pwReturn = 2` with
+    #: `pwAreaInterval = 10` -- wash by area, every 10 units, internally
+    #: consistent and outside the SKU list entirely.
+    #:
+    #: A selector must therefore span both ranges. Splitting them into
+    #: two entities would also be wrong: one write sets this one field,
+    #: and `_updateWashFreqByType` branches on the value's type rather
+    #: than writing a pair.
     pad_wash_return: int | None = None
     pad_wash_time_interval: int | None = None
     pad_wetness: PadWetnessParam | None = None
@@ -847,6 +1035,26 @@ class RobotSettings:
     two_pass: bool | None = None
     vac_high: bool | None = None
     languages_raw: dict[str, Any] | None = None
+    #: FIVE ADDITIONS, ALL WITH PLACEMENT CONFIRMED BY THE VENDOR'S OWN
+    #: MODEL PATHS (`model/settings/…`) rather than inferred.
+    #:
+    #: `pad_wash_heat` is the strongest of the five: it is the ONLY one
+    #: of the seventy-nine unread properties with a ShadowField entry of
+    #: its own -- `pwHeat`, shadow SETTINGS, kind Writing, type Integer
+    #: -- and it also appears in the twenty-four-key writable switch.
+    #: Two independent sources agreeing on both shadow and direction.
+    #:
+    #: It is also one of the six controls Issue #46 is waiting on, with
+    #: values 0/1/2.
+    #:
+    #: `precheck` and `filter_pack` are the two with real day-to-day
+    #: value: readiness before a mission, and the only percentage-based
+    #: consumable figure anywhere in this library.
+    pad_wash_heat: int | None = None
+    precheck: PrecheckStatus | None = None
+    filter_pack: FilterPackStatus | None = None
+    cut_height: CutHeightStatus | None = None
+    languages: Langs2Status | None = None
     """Raw "langs2" object (aSlots, dLangs.langs/ver, sLang, sVer) --
     deliberately not further broken down, little added value for a
     dedicated model."""
@@ -903,6 +1111,27 @@ class RobotSettings:
             two_pass=data.get("twoPass"),
             vac_high=data.get("vacHigh"),
             languages_raw=data.get("langs2"),
+            pad_wash_heat=data.get("pwHeat"),
+            precheck=(
+                PrecheckStatus.from_json(data["precheck"])
+                if isinstance(data.get("precheck"), dict)
+                else None
+            ),
+            filter_pack=(
+                FilterPackStatus.from_json(data["filterStatus"])
+                if isinstance(data.get("filterStatus"), dict)
+                else None
+            ),
+            cut_height=(
+                CutHeightStatus.from_json(data["cutHeight"])
+                if isinstance(data.get("cutHeight"), dict)
+                else None
+            ),
+            languages=(
+                Langs2Status.from_json(data["langs2"])
+                if isinstance(data.get("langs2"), dict)
+                else None
+            ),
         )
 
 
@@ -1144,6 +1373,18 @@ class ScheduleShadow:
 
     clean_schedule2_raw: list[Any] = field(default_factory=list)
     nsmip: int | None = None
+    #: ADDED (app 3.0.0, `model/schedule/clean_schedule`, which names
+    #: this shadow). The OLDER schedule format, one field: `cycle`.
+    #:
+    #: Not a typo for `cleanSchedule2` -- both are declared, separately.
+    #: A robot on older firmware may report this instead, and until now
+    #: it was dropped, leaving a genuinely scheduled robot looking
+    #: unscheduled.
+    #:
+    #: Kept raw for the same reason `cleanSchedule2` is: the inner
+    #: structure is parsed elsewhere, and duplicating it here would
+    #: diverge from that rather than reuse it.
+    clean_schedule_raw: Any | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ScheduleShadow:
@@ -1152,6 +1393,7 @@ class ScheduleShadow:
         return cls(
             clean_schedule2_raw=data.get("cleanSchedule2") or [],
             nsmip=data.get("nsmip"),
+            clean_schedule_raw=data.get("cleanSchedule"),
         )
 
 
@@ -1177,6 +1419,12 @@ class ConnectionStatusShadow:
     connected: bool | None = None
     connected_v2: bool | None = None
     echo: bool | None = None
+    #: ADDED (app 3.0.0, `model/connection_status` declares four fields,
+    #: not three). Kept raw: the vendor's own `model/current_state/
+    #: svc_endpoints` has a single `svcDeplId`, but the five
+    #: `svcEndpoints*` scalars in the property registry suggest a wider
+    #: shape, and nothing here settles which arrives on this shadow.
+    svc_endpoints: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ConnectionStatusShadow:
@@ -1186,7 +1434,82 @@ class ConnectionStatusShadow:
             connected=data.get("connected"),
             connected_v2=data.get("connectedv2"),
             echo=data.get("echo"),
+            svc_endpoints=(
+                data["svcEndpoints"] if isinstance(data.get("svcEndpoints"), dict) else None
+            ),
         )
+
+
+@dataclass(frozen=True)
+class SubModuleSwVersions:
+    """CONFIRMED FROM REAL DATA (chairstacker's raw_shadows.json, a
+    Combo 405): per-subsystem firmware versions, previously kept whole
+    as an untyped blob.
+
+        con    "sdk-v9.3.7"    connectivity SDK
+        linux  "4.9.84"        kernel
+        nav    "4.6.150"       navigation
+        mcu    "32"            microcontroller
+
+    THE VENDOR DECLARES TWELVE (`model/software/sub_mod_sw_ver`: aoa,
+    cam, con, eco, linux, mcu, mob, mobBtl, nav, parcels, pwr, sft); a
+    real robot sent four. Both are modelled -- the eight unseen ones
+    cost nothing and a different SKU may well report them.
+
+    THAT ASYMMETRY IS THE POINT OF THIS CLASS. Everything else added in
+    this round was declared-but-never-observed. These four are the
+    reverse: observed on real hardware and previously unread, because
+    the field arrived as a nested object and was stored as `Any`
+    without anyone opening it.
+
+    `deploymentMpkg` on the same shadow carries "sdk-v8.6.2" while
+    `con` here says "sdk-v9.3.7" -- the deployment package name records
+    the version it shipped as, not what is installed now. A caller
+    reporting firmware should prefer these."""
+
+    aoa: Any | None = None
+    cam: Any | None = None
+    con: Any | None = None
+    eco: Any | None = None
+    linux: Any | None = None
+    mcu: Any | None = None
+    mob: Any | None = None
+    mob_btl: Any | None = None
+    nav: Any | None = None
+    parcels: Any | None = None
+    pwr: Any | None = None
+    sft: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> SubModuleSwVersions:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            aoa=data.get("aoa"),
+            cam=data.get("cam"),
+            con=data.get("con"),
+            eco=data.get("eco"),
+            linux=data.get("linux"),
+            mcu=data.get("mcu"),
+            mob=data.get("mob"),
+            mob_btl=data.get("mobBtl"),
+            nav=data.get("nav"),
+            parcels=data.get("parcels"),
+            pwr=data.get("pwr"),
+            sft=data.get("sft"),
+        )
+
+
+def _ml(value: Any) -> Any:
+    """Both parcel-deployment objects wrap their content in a single
+    `ml` key (`model/software/parcel_deployment_id` and `…_state`).
+
+    Unwrapped rather than modelled as two one-field classes: a dataclass
+    per single scalar buys nothing, and a robot sending the bare value
+    instead of the wrapper still parses."""
+    if isinstance(value, dict):
+        return value.get("ml")
+    return value
 
 
 @dataclass(frozen=True)
@@ -1226,6 +1549,25 @@ class SoftwareStatusShadow:
     last_sw_update: str | None = None
     software_version: str | None = None
     submodule_sw_version: Any | None = None
+    #: THE SAME OBJECT, PARSED. `submodule_sw_version` above stays as
+    #: the raw blob it has always been so existing callers keep working;
+    #: this reads the four subsystem versions a real robot actually
+    #: sends. See SubModuleSwVersions.
+    sub_module_versions: SubModuleSwVersions | None = None
+    #: TWO OBJECTS THE VENDOR PLACES IN THIS SHADOW
+    #: (`model/software/parcel_deployment_id` and `…_state`), each
+    #: carrying a single `ml` field.
+    #:
+    #: A parcel deployment is a partial firmware update -- `sub_mod_sw_ver`
+    #: lists twelve subsystem versions, and these two track a deployment
+    #: to one of them rather than to the robot as a whole. That is a
+    #: different thing from `deployment_id`/`deployment_state` above,
+    #: which cover the full package.
+    #:
+    #: What `ml` abbreviates is not established. Kept as the vendor's
+    #: single key rather than expanded into a guess.
+    parcel_deployment_id: Any | None = None
+    parcel_deployment_state: Any | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> SoftwareStatusShadow:
@@ -1240,6 +1582,13 @@ class SoftwareStatusShadow:
             last_sw_update=data.get("lastSwUpdate"),
             software_version=data.get("softwareVer"),
             submodule_sw_version=data.get("subModSwVer"),
+            sub_module_versions=(
+                SubModuleSwVersions.from_json(data["subModSwVer"])
+                if isinstance(data.get("subModSwVer"), dict)
+                else None
+            ),
+            parcel_deployment_id=_ml(data.get("parcelDeploymentId")),
+            parcel_deployment_state=_ml(data.get("parcelDeploymentState")),
         )
 
 
@@ -1360,6 +1709,23 @@ class CleanMissionStatus:
     #: the same object and dropped them.
     expire_time: int | None = None
     recharge_time: int | None = None
+    #: THE SAME THREE QUANTITIES AS MINUTES, which the vendor declares
+    #: alongside the timestamps (`model/current_state/clean_mission_status`:
+    #: `mssnM`/`expireM`/`rechrgM` beside `mssnStrtTm`/`expireTm`/`rechrgTm`).
+    #:
+    #: Worth having both: the `*Tm` fields are absolute timestamps, so a
+    #: remaining-time display has to compute the difference and depends
+    #: on the robot's clock agreeing with the reader's. These are
+    #: already durations.
+    #:
+    #: WHETHER A ROBOT ACTUALLY FILLS THEM IS UNCONFIRMED -- no capture
+    #: this project holds contains any of the three, and the vendor
+    #: declaring a field is not the robot sending it. A caller wanting
+    #: remaining time should prefer these when present and fall back to
+    #: the timestamps, not the other way round.
+    mission_minutes: int | None = None
+    expire_minutes: int | None = None
+    recharge_minutes: int | None = None
     n_missions: int | None = None
     not_ready: int | None = None
     operating_mode: int | None = None
@@ -1398,6 +1764,9 @@ class CleanMissionStatus:
             mission_start_time=data.get("mssnStrtTm"),
             expire_time=data.get("expireTm"),
             recharge_time=data.get("rechrgTm"),
+            mission_minutes=data.get("mssnM"),
+            expire_minutes=data.get("expireM"),
+            recharge_minutes=data.get("rechrgM"),
             n_missions=data.get("nMssn"),
             not_ready=data.get("notReady"),
             operating_mode=data.get("operatingMode"),
@@ -1541,15 +1910,41 @@ class DockState(IntEnum):
 @dataclass(frozen=True)
 class DockCapabilities:
     """CONFIRMED LIVE (chairstacker, real ro-currentstate payload,
-    nested under dock.cap) -- meaning of each still a reasonable
-    guess from the name only, not further confirmed: evac (auto-evac
-    capable), pad_dry/pad_wash (self-explanatory), pad_wash_or (name
-    as reported, meaning genuinely unclear)."""
+    nested under dock.cap), and each key now resolved by name against
+    the vendor's own capability table rather than guessed from the
+    abbreviation:
+
+        evac  dock.cap.evac   auto-evacuation
+        pd    dock.cap.pd     pad drying
+        pw    dock.cap.pw     pad washing
+        pwo   dock.cap.pwo    pad wet-out
+        fr    dock.cap.fr     fluid refill      <- ADDED
+
+    `pwo` was carried here as "meaning genuinely unclear". The
+    capability mapping names it `dockPadWetOut`, which is what the
+    abbreviation says once the expansion is known.
+
+    `fr` WAS MISSING. It appears in the capability gate table AND in
+    `_initDockCap`, the app's own dock-capability builder, alongside the
+    four already modelled -- and `DockStatus` has carried `frState`, the
+    fluid-refill STATE, all along. A dock could report that it was
+    refilling while this model denied it could refill at all.
+
+    NOT HERE: `detergent`. `_initDockCap` builds it alongside these
+    five, which makes it easy to file under dock capabilities, but its
+    key path is top-level `detergent` -- a sibling of `dock`, not a
+    child of `dock.cap`. It is modelled on CurrentStateShadow, where it
+    actually arrives.
+
+    ALL OF THESE ARE INTEGERS, NOT BOOLEANS -- levels, not flags. A
+    caller gating a feature on presence alone will enable it at level 0.
+    """
 
     evac: int | None = None
     pad_dry: int | None = None
     pad_wash: int | None = None
     pad_wash_or: int | None = None
+    fluid_refill: int | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DockCapabilities:
@@ -1560,6 +1955,7 @@ class DockCapabilities:
             pad_dry=data.get("pd"),
             pad_wash=data.get("pw"),
             pad_wash_or=data.get("pwo"),
+            fluid_refill=data.get("fr"),
         )
 
 
@@ -1594,6 +1990,20 @@ class DockStatus:
     #:
     #: `fwVerSec`, `hwRev`, `varId` and `pn` are new in app 3.0.0;
     #: `dock_id` was in 2.2.4 and simply not taken.
+    #: TWO SOURCES DISAGREE ABOUT WHERE `detergent` LIVES, so it is read
+    #: in both places.
+    #:
+    #: The capability gate table gives its key path as top-level
+    #: `detergent`; `model/current_state/dock_status` lists `detergent`
+    #: among the dock's own fields. Both are the vendor's, and nothing
+    #: available here settles which the robot actually sends -- possibly
+    #: both, since the gate table also abbreviates paths elsewhere.
+    #:
+    #: Picking one and being wrong costs a permanent None, which is the
+    #: failure mode this library keeps finding after the fact. Reading
+    #: both costs a dict lookup. See CurrentStateShadow.detergent for
+    #: the other half.
+    detergent: int | None = None
     fr_state: int | None = None
     fw_version_secondary: str | None = None
     hardware_revision: int | None = None
@@ -1653,6 +2063,7 @@ class DockStatus:
             cap=DockCapabilities.from_json(cap_data) if cap_data else None,
             error=data.get("error"),
             fw_version=data.get("fwVer"),
+            detergent=data.get("detergent"),
             fr_state=data.get("frState"),
             fw_version_secondary=data.get("fwVerSec"),
             hardware_revision=data.get("hwRev"),
@@ -1677,12 +2088,22 @@ class RuntimeStatsSummary:
 
     hours: int | None = None
     minutes: int | None = None
+    #: ADDED (app 3.0.0, `model/current_state/runtime_stats` declares
+    #: hr/min/sqft). Lifetime area cleaned. Absent from every capture
+    #: this project holds, which is why it was never modelled -- the
+    #: model was built from real payloads, and a key the robot does not
+    #: send cannot be discovered that way.
+    #:
+    #: UNIT NOT CONFIRMED BEYOND THE NAME. Whether a robot in a metric
+    #: locale reports square feet under this key or converts is unknown;
+    #: nothing here converts it.
+    sqft: int | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RuntimeStatsSummary:
         if not isinstance(data, dict):
             return cls()
-        return cls(hours=data.get("hr"), minutes=data.get("min"))
+        return cls(hours=data.get("hr"), minutes=data.get("min"), sqft=data.get("sqft"))
 
 
 @dataclass(frozen=True)
@@ -1733,6 +2154,106 @@ class OdoaLiteStatus:
         if not isinstance(data, dict):
             return cls()
         return cls(enabled=data.get("enabled"))
+
+
+@dataclass(frozen=True)
+class TeamingStatus:
+    """NEW (app 3.0.0, `model/current_state/teaming_status`) -- two
+    robots cleaning one home together.
+
+    `teamId` groups them, `teamingType` says how they divide the work,
+    `state` is where the arrangement currently stands, and `nMssn` is a
+    team mission counter separate from the robot's own.
+
+    Relevant to any household with two Prime robots, which several of
+    this project's testers have."""
+
+    n_missions: int | None = None
+    state: Any | None = None
+    team_id: Any | None = None
+    teaming_type: Any | None = None
+    ts: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> TeamingStatus:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            n_missions=data.get("nMssn"),
+            state=data.get("state"),
+            team_id=data.get("teamId"),
+            teaming_type=data.get("teamingType"),
+            ts=data.get("ts"),
+        )
+
+
+@dataclass(frozen=True)
+class PmapShareStatus:
+    """NEW (app 3.0.0, `model/current_state/pmap_share`) -- whether this
+    robot's maps may be copied, shared, or used natively.
+
+    Household map sharing between robots. Note the neighbouring
+    properties `pmapCL` and `pmapLearningAllowed` are NOT part of this
+    object -- they are separate scalars with no model and no confirmed
+    shadow, so they stay unread rather than guessed into this class."""
+
+    copy: Any | None = None
+    native: Any | None = None
+    share: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> PmapShareStatus:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(copy=data.get("copy"), native=data.get("native"), share=data.get("share"))
+
+
+@dataclass(frozen=True)
+class HwDebugStatus:
+    """NEW (app 3.0.0, `model/current_state/hw_dbgr`) -- a hardware
+    debugger's identity, status and software version.
+
+    Meaning beyond the field names is not established. Modelled because
+    the placement is confirmed and an unmodelled key is dropped
+    silently; nothing here claims to know what it is for."""
+
+    hw: Any | None = None
+    id: Any | None = None
+    status: Any | None = None
+    sw_version: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> HwDebugStatus:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            hw=data.get("hw"),
+            id=data.get("id"),
+            status=data.get("status"),
+            sw_version=data.get("swVer"),
+        )
+
+
+@dataclass(frozen=True)
+class StreamingVideoStatus:
+    """NEW (app 3.0.0, `model/current_state/streaming_video_status`) --
+    channel and code for a robot with a camera stream.
+
+    PRIVACY NOTE: this is a status object, not a stream. It says whether
+    a channel is open; it carries no image data, and this library has no
+    path to any. Neighbouring properties `imgUpload`, `peopleFilter` and
+    `privacy` are separate scalars, deliberately left unread -- they
+    have no confirmed shadow, and guessing at privacy-relevant fields is
+    the wrong place to be approximately right."""
+
+    channel: Any | None = None
+    code: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> StreamingVideoStatus:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(channel=data.get("channel"), code=data.get("code"))
 
 
 @dataclass(frozen=True)
@@ -1799,6 +2320,29 @@ class CurrentStateShadow:
     tz: dict[str, Any] | None = None
     svc_endpoints: dict[str, Any] | None = None
 
+    #: ADDED from the vendor's capability gate table, which lists
+    #: `dockDetergent` with the key path `detergent` -- top level, NOT
+    #: under `dock.cap` where the app's own `_initDockCap` builds it
+    #: alongside evac/pd/pw/pwo/fr. Grouped by meaning there, addressed
+    #: by path here; the path is what arrives on the wire.
+    #:
+    #: An INTEGER, like the rest of the capability values: a level, not
+    #: a flag. `detergent` is also one of the 24 individually writable
+    #: settings, so a robot can report a level here and take a new one
+    #: through set_setting("detergent", ...).
+    #:
+    #: ALSO READ ON DockStatus. `model/current_state/dock_status` lists
+    #: `detergent` among the dock's own fields while the gate table puts
+    #: it at top level -- two vendor sources, no way here to settle which
+    #: the robot sends. Both are read; see DockStatus.detergent.
+    detergent: int | None = None
+    #: FOUR MORE OBJECTS THE VENDOR PLACES IN THIS SHADOW
+    #: (`model/current_state/…`), each previously dropped whole.
+    teaming: TeamingStatus | None = None
+    pmap_share: PmapShareStatus | None = None
+    hw_debugger: HwDebugStatus | None = None
+    streaming_video: StreamingVideoStatus | None = None
+
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CurrentStateShadow:
         if not isinstance(data, dict):
@@ -1826,6 +2370,27 @@ class CurrentStateShadow:
             google_control=data.get("googleControl"),
             tz=data.get("tz"),
             svc_endpoints=data.get("svcEndpoints"),
+            detergent=data.get("detergent"),
+            teaming=(
+                TeamingStatus.from_json(data["teaming"])
+                if isinstance(data.get("teaming"), dict)
+                else None
+            ),
+            pmap_share=(
+                PmapShareStatus.from_json(data["pmapShare"])
+                if isinstance(data.get("pmapShare"), dict)
+                else None
+            ),
+            hw_debugger=(
+                HwDebugStatus.from_json(data["hwdbgr"])
+                if isinstance(data.get("hwdbgr"), dict)
+                else None
+            ),
+            streaming_video=(
+                StreamingVideoStatus.from_json(data["streamingVideoStatus"])
+                if isinstance(data.get("streamingVideoStatus"), dict)
+                else None
+            ),
         )
 
 
@@ -1848,13 +2413,39 @@ class BbChgStats:
 
     n_chg_ok: int | None = None
     n_chg_err: int | None = None
+    #: SIX MORE FIELDS THE MODEL DECLARES (app 3.0.0,
+    #: `model/stats/bbchg`): aborts, chgErr, nChatters, nKnockoffs,
+    #: nLithF, smberr. None appears in the one real capture -- the model
+    #: was built from that capture, so anything the robot did not send
+    #: could not be found this way.
+    #:
+    #: `chgErr` alongside `nChgErr` is worth noting: a count and
+    #: something else, not two spellings. Which is which is not
+    #: confirmed; the names suggest the last error code beside the
+    #: running total, but nothing here relies on that.
+    aborts: int | None = None
+    chg_err: int | None = None
+    n_chatters: int | None = None
+    n_knockoffs: int | None = None
+    n_lith_f: int | None = None
+    smberr: int | None = None
     raw_nested: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BbChgStats:
         if not isinstance(data, dict):
             return cls()
-        return cls(n_chg_ok=data.get("nChgOk"), n_chg_err=data.get("nChgErr"), raw_nested=data.get("bbchg"))
+        return cls(
+            n_chg_ok=data.get("nChgOk"),
+            n_chg_err=data.get("nChgErr"),
+            aborts=data.get("aborts"),
+            chg_err=data.get("chgErr"),
+            n_chatters=data.get("nChatters"),
+            n_knockoffs=data.get("nKnockoffs"),
+            n_lith_f=data.get("nLithF"),
+            smberr=data.get("smberr"),
+            raw_nested=data.get("bbchg"),
+        )
 
 
 @dataclass(frozen=True)
@@ -1879,6 +2470,10 @@ class BbChg3Stats:
     avg_minutes: int | None = None
     n_lith_chrg: int | None = None
     n_nimh_chrg: int | None = None
+    #: ADDED (app 3.0.0, `model/stats/bbchg3`). Dock count, the seventh
+    #: field this model declares and the only one that was missing
+    #: outright rather than merely absent from the capture.
+    n_docks: int | None = None
     raw_nested: dict[str, Any] | None = None
 
     @classmethod
@@ -1892,6 +2487,7 @@ class BbChg3Stats:
             avg_minutes=data.get("avgMin"),
             n_lith_chrg=data.get("nLithChrg"),
             n_nimh_chrg=data.get("nNimhChrg"),
+            n_docks=data.get("nDocks"),
             raw_nested=data.get("bbchg3"),
         )
 
@@ -1909,6 +2505,12 @@ class BbMssnStats:
     n_mssn_canceled: int | None = None
     n_mssn_failed: int | None = None
     n_mssn_ok: int | None = None
+    #: ADDED (app 3.0.0, `model/stats/bbmssn`). Average cycle and
+    #: average mission length in minutes -- the two non-counter fields
+    #: in an otherwise all-counter model, which is why the sum check
+    #: above still holds without them.
+    avg_cycle_minutes: int | None = None
+    avg_mission_minutes: int | None = None
     raw_nested: dict[str, Any] | None = None
 
     @classmethod
@@ -1920,6 +2522,8 @@ class BbMssnStats:
             n_mssn_canceled=data.get("nMssnC"),
             n_mssn_failed=data.get("nMssnF"),
             n_mssn_ok=data.get("nMssnOk"),
+            avg_cycle_minutes=data.get("aCycleM"),
+            avg_mission_minutes=data.get("aMssnM"),
             raw_nested=data.get("bbmssn"),
         )
 
@@ -1964,6 +2568,17 @@ class BbRstInfoStats:
     n_mob_rst: int | None = None
     n_saf_rst: int | None = None
     saf_causes: Any | None = None
+    #: ADDED (app 3.0.0, `model/stats/bbrstinfo`). `causes` sits beside
+    #: the existing `safCauses`, and `nMapLoadRst`/`nOomRst` name two
+    #: reset kinds the model had no field for: map-load failure and
+    #: out-of-memory.
+    #:
+    #: An OOM reset counter is the interesting one -- it distinguishes
+    #: "the robot rebooted" from "the robot ran out of memory and
+    #: rebooted", which no other field here separates.
+    causes: Any | None = None
+    n_map_load_rst: int | None = None
+    n_oom_rst: int | None = None
     raw_nested: dict[str, Any] | None = None
 
     @classmethod
@@ -1975,6 +2590,9 @@ class BbRstInfoStats:
             n_mob_rst=data.get("nMobRst"),
             n_saf_rst=data.get("nSafRst"),
             saf_causes=data.get("safCauses"),
+            causes=data.get("causes"),
+            n_map_load_rst=data.get("nMapLoadRst"),
+            n_oom_rst=data.get("nOomRst"),
             raw_nested=data.get("bbrstinfo"),
         )
 
@@ -2017,6 +2635,238 @@ class BbSysStats:
 
 
 @dataclass(frozen=True)
+class BbRunStats:
+    """NEW (app 3.0.0, `model/stats/bbrun`) -- sixteen lifetime fault
+    and event counters, none of which this library could read before.
+
+    The largest of the blackbox models and the one closest to a wear
+    report: stalls per motor (main brush, side brush, drive, wheel),
+    cliff sensor triggers front and rear, pickups, slips, overtemps,
+    panics, and two dirt-detect counters (`nOpticalDD`, `nPiezoDD`)
+    that distinguish the two sensor kinds.
+
+    NOT FROM A CAPTURE. Unlike the models above, no real payload this
+    project holds has ever carried `bbrun` -- this comes from the app's
+    own declaration. The field names are the vendor's; what each one
+    counts is read off the name and not confirmed.
+
+    THE ONE CROSS-CHECK AVAILABLE: ha_roomba_plus reads Classic-tier
+    `bbrun` already and its field vocabulary matches (see
+    MISSIONSTORE_FIELD_REGISTRY.md) -- the same blackbox subsystem over
+    a different transport, which is the pattern `bbchg3` and
+    `bbrstinfo` already showed."""
+
+    n_c_bump: int | None = None
+    n_cliffs_f: int | None = None
+    n_cliffs_r: int | None = None
+    n_d_stll: int | None = None
+    n_lb_stll: int | None = None
+    n_mb_stll: int | None = None
+    n_optical_dd: int | None = None
+    n_overtemps: int | None = None
+    n_panics: int | None = None
+    n_picks: int | None = None
+    n_piezo_dd: int | None = None
+    n_rb_stll: int | None = None
+    n_scrubs: int | None = None
+    n_slips: int | None = None
+    n_stuck: int | None = None
+    n_w_stll: int | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbRunStats:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            n_c_bump=data.get("nCBump"),
+            n_cliffs_f=data.get("nCliffsF"),
+            n_cliffs_r=data.get("nCliffsR"),
+            n_d_stll=data.get("nDStll"),
+            n_lb_stll=data.get("nLBStll"),
+            n_mb_stll=data.get("nMBStll"),
+            n_optical_dd=data.get("nOpticalDD"),
+            n_overtemps=data.get("nOvertemps"),
+            n_panics=data.get("nPanics"),
+            n_picks=data.get("nPicks"),
+            n_piezo_dd=data.get("nPiezoDD"),
+            n_rb_stll=data.get("nRBStll"),
+            n_scrubs=data.get("nScrubs"),
+            n_slips=data.get("nSlips"),
+            n_stuck=data.get("nStuck"),
+            n_w_stll=data.get("nWStll"),
+            raw_nested=data.get("bbrun"),
+        )
+
+
+@dataclass(frozen=True)
+class BbSwitchStats:
+    """NEW (app 3.0.0, `model/stats/bbswitch`) -- eight lifetime button
+    and switch counters: Clean, Dock and Spot presses, bumper hits, lid
+    openings, lifts, drops, and a generic key count.
+
+    NOT FROM A CAPTURE; see BbRunStats. `nBumper` here and `nCBump` in
+    `bbrun` both look like bumper counts and are not confirmed to mean
+    the same thing -- they belong to different models, so nothing here
+    treats them as interchangeable."""
+
+    n_bumper: int | None = None
+    n_clean: int | None = None
+    n_dock: int | None = None
+    n_drops: int | None = None
+    n_key: int | None = None
+    n_lid: int | None = None
+    n_lifts: int | None = None
+    n_spot: int | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbSwitchStats:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            n_bumper=data.get("nBumper"),
+            n_clean=data.get("nClean"),
+            n_dock=data.get("nDock"),
+            n_drops=data.get("nDrops"),
+            n_key=data.get("nKey"),
+            n_lid=data.get("nLid"),
+            n_lifts=data.get("nLifts"),
+            n_spot=data.get("nSpot"),
+            raw_nested=data.get("bbswitch"),
+        )
+
+
+@dataclass(frozen=True)
+class BbNavStats:
+    """NEW (app 3.0.0, `model/stats/bbnav`) -- four navigation figures:
+    average camera exposure and gain, motion-track quality, and a count
+    of good landmarks.
+
+    NOT FROM A CAPTURE; see BbRunStats. These are VSLAM health
+    indicators rather than user-facing counts -- `nGoodLmrks` in
+    particular says whether the robot can still localise, not how much
+    it has cleaned."""
+
+    a_expo: int | None = None
+    a_gain: int | None = None
+    a_mtrack: int | None = None
+    n_good_lmrks: int | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbNavStats:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            a_expo=data.get("aExpo"),
+            a_gain=data.get("aGain"),
+            a_mtrack=data.get("aMtrack"),
+            n_good_lmrks=data.get("nGoodLmrks"),
+            raw_nested=data.get("bbnav"),
+        )
+
+
+@dataclass(frozen=True)
+class BbPanicStats:
+    """NEW (app 3.0.0, `model/stats/bbpanic`) -- a single `panics`
+    field.
+
+    SHAPE DELIBERATELY PERMISSIVE. `bbpause` is the only structurally
+    comparable model with a real capture behind it, and its single
+    field turned out to carry a LIST, not a count -- so assuming an int
+    here would be assuming the opposite of the one nearby precedent.
+    `bbrun.nPanics` already provides a count if a count is wanted."""
+
+    panics: Any | None = None
+    raw_nested: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BbPanicStats:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(panics=data.get("panics"), raw_nested=data.get("bbpanic"))
+
+
+@dataclass(frozen=True)
+class MssnNavStats:
+    """NEW (app 3.0.0, `model/stats/mssn_nav_stats`) -- seventeen
+    per-mission navigation diagnostics, and the only model here scoped
+    to a single mission rather than the robot's lifetime: it carries
+    its own `missionId`.
+
+    NOT FROM A CAPTURE; see BbRunStats. Most names do not resolve from
+    the name alone -- `kdp`, `sfkdp`, `nmc`, `nmmc`, `nrmc`, `reLc`,
+    `mpSt` are recorded as the vendor spells them rather than guessed
+    at. `h_drift`/`l_drift` and `h_squal`/`l_squal` pair high and low
+    variants of drift and signal quality; `lmk`/`gLmk` look like
+    landmark counts beside `bbnav.nGoodLmrks`.
+
+    THE CASING IS AMBIGUOUS, so both spellings are read.
+
+    An earlier note here claimed the mix of snake_case (`h_drift`,
+    `l_squal`) and camelCase (`plnErr`, `missionId`) was "not a
+    transcription slip -- the vendor's own field list does". The vendor's
+    field list does, but that proves less than it looks:
+    `message_center_models.dart` carries 53 fields in BOTH spellings,
+    camelCase for the Dart property and snake_case for the wire. Mixed
+    casing in one model is that pairing maintained incompletely.
+
+    Where the pairing means anything, SNAKE_CASE IS THE WIRE FORM. That
+    would make `plnErr` a Dart name whose wire key is `pln_err`. Nothing
+    here confirms it either way, and no capture contains this object at
+    all -- so each field is read under both spellings. Two dict lookups
+    against a permanent None."""
+
+    mission_id: str | None = None
+    n_mssn: int | None = None
+    g_lmk: Any | None = None
+    lmk: Any | None = None
+    h_drift: Any | None = None
+    l_drift: Any | None = None
+    h_squal: Any | None = None
+    l_squal: Any | None = None
+    kdp: Any | None = None
+    sfkdp: Any | None = None
+    m_trk: Any | None = None
+    mp_st: Any | None = None
+    nmc: Any | None = None
+    nmmc: Any | None = None
+    nrmc: Any | None = None
+    pln_err: Any | None = None
+    re_lc: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> MssnNavStats:
+        if not isinstance(data, dict):
+            return cls()
+
+        def either(camel: str, snake: str) -> Any:
+            value = data.get(camel)
+            return data.get(snake) if value is None else value
+
+        return cls(
+            mission_id=either("missionId", "mission_id"),
+            n_mssn=either("nMssn", "n_mssn"),
+            g_lmk=either("gLmk", "g_lmk"),
+            lmk=data.get("lmk"),
+            h_drift=either("hDrift", "h_drift"),
+            l_drift=either("lDrift", "l_drift"),
+            h_squal=either("hSqual", "h_squal"),
+            l_squal=either("lSqual", "l_squal"),
+            kdp=data.get("kdp"),
+            sfkdp=data.get("sfkdp"),
+            m_trk=either("mTrk", "m_trk"),
+            mp_st=either("mpSt", "mp_st"),
+            nmc=data.get("nmc"),
+            nmmc=data.get("nmmc"),
+            nrmc=data.get("nrmc"),
+            pln_err=either("plnErr", "pln_err"),
+            re_lc=either("reLc", "re_lc"),
+        )
+
+
+@dataclass(frozen=True)
 class StatsShadow:
     """CONFIRMED LIVE, STRUCTURE AND REAL VALUES (this session,
     chairstacker's raw_shadows.json capture) -- complete key list AND
@@ -2055,6 +2905,22 @@ class StatsShadow:
     bbpause: BbPauseStats | None = None
     bbrstinfo: BbRstInfoStats | None = None
     bbsys: BbSysStats | None = None
+    #: FIVE MORE THE VENDOR DECLARES AND THIS SHADOW NEVER READ.
+    #:
+    #: The six above were modelled from a real capture, so the list
+    #: stopped where that capture stopped. App 3.0.0 declares five more
+    #: under `model/stats/`: bbrun, bbswitch, bbnav, bbpanic and
+    #: mssn_nav_stats.
+    #:
+    #: None has ever appeared in a payload this project holds, which is
+    #: exactly why they were missing -- and also why nothing here claims
+    #: they will appear. If a robot sends them, they are now read
+    #: instead of dropped; if it does not, these stay None as before.
+    bbrun: BbRunStats | None = None
+    bbswitch: BbSwitchStats | None = None
+    bbnav: BbNavStats | None = None
+    bbpanic: BbPanicStats | None = None
+    mssn_nav_stats: MssnNavStats | None = None
     runtimestats: RuntimeStatsSummary | None = None
     #: A FAULT THE ROBOT ITSELF COULD NOT NAME.
     #:
@@ -2084,6 +2950,23 @@ class StatsShadow:
             bbpause=BbPauseStats.from_json(data["bbpause"]) if isinstance(data.get("bbpause"), dict) else None,
             bbrstinfo=BbRstInfoStats.from_json(data["bbrstinfo"]) if isinstance(data.get("bbrstinfo"), dict) else None,
             bbsys=BbSysStats.from_json(data["bbsys"]) if isinstance(data.get("bbsys"), dict) else None,
+            bbrun=BbRunStats.from_json(data["bbrun"]) if isinstance(data.get("bbrun"), dict) else None,
+            bbswitch=(
+                BbSwitchStats.from_json(data["bbswitch"])
+                if isinstance(data.get("bbswitch"), dict)
+                else None
+            ),
+            bbnav=BbNavStats.from_json(data["bbnav"]) if isinstance(data.get("bbnav"), dict) else None,
+            bbpanic=(
+                BbPanicStats.from_json(data["bbpanic"])
+                if isinstance(data.get("bbpanic"), dict)
+                else None
+            ),
+            mssn_nav_stats=(
+                MssnNavStats.from_json(data["mssnNavStats"])
+                if isinstance(data.get("mssnNavStats"), dict)
+                else None
+            ),
             runtimestats=(
                 RuntimeStatsSummary.from_json(data["runtimestats"])
                 if isinstance(data.get("runtimestats"), dict)
@@ -2109,13 +2992,30 @@ class ServicesShadow:
     ever been seen -- not enough evidence yet for a typed shape."""
 
     opt_feats: dict[str, Any] | None = None
+    #: ADDED (app 3.0.0, `model/services/smart_home`, which names this
+    #: shadow). One field: `homeMonitoringAllowed`.
+    #:
+    #: A permission flag, and the only one of the nine third-party
+    #: control properties (`alexaControl`, `siriControl`,
+    #: `iftttControl`, `privacy` and the rest) whose shadow the vendor
+    #: states. The other eight stay unread rather than filed here by
+    #: association.
+    home_monitoring_allowed: bool | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ServicesShadow:
         if not isinstance(data, dict):
             return cls()
         opt_feats = data.get("optFeats")
-        return cls(opt_feats=opt_feats if isinstance(opt_feats, dict) else None)
+        smart_home = data.get("smartHome")
+        return cls(
+            opt_feats=opt_feats if isinstance(opt_feats, dict) else None,
+            home_monitoring_allowed=(
+                smart_home.get("homeMonitoringAllowed")
+                if isinstance(smart_home, dict)
+                else None
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -2128,6 +3028,10 @@ class HwPartsRev:
     G185020). mob_board is an int, =0 in the real capture."""
 
     aoa_serial_no: str | None = None
+    #: ADDED (app 3.0.0, `model/configinfo/hw_parts_rev`, the tenth field
+    #: this model declares). Absent from the one real capture, like most
+    #: of its neighbours, which is why it was never noticed missing.
+    cssc_id: str | None = None
     fan: str | None = None
     imu_part_no: str | None = None
     lr_drv: str | None = None
@@ -2143,6 +3047,7 @@ class HwPartsRev:
             return cls()
         return cls(
             aoa_serial_no=data.get("aoaSerialNo"),
+            cssc_id=data.get("csscID"),
             fan=data.get("fan"),
             imu_part_no=data.get("imuPartNo"),
             lr_drv=data.get("lrDrv"),
@@ -2151,6 +3056,62 @@ class HwPartsRev:
             nav_serial_no=data.get("navSerialNo"),
             ui=data.get("ui"),
             wlan0_hw_addr=data.get("wlan0HwAddr"),
+        )
+
+
+@dataclass(frozen=True)
+class MiraSwVersion:
+    """NEW (app 3.0.0, `model/configinfo/mira_sw_ver`) -- a two-part
+    software version: `release` and `spec`."""
+
+    release: Any | None = None
+    spec: Any | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> MiraSwVersion:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(release=data.get("release"), spec=data.get("spec"))
+
+
+@dataclass(frozen=True)
+class BatInfo:
+    """NEW (app 3.0.0, `model/configinfo/bat_info`) -- the battery's
+    manufacturer details and wear counters.
+
+        mName        manufacturer name
+        mDate        manufacture date
+        mDaySerial   day serial from the same batch
+        mData        manufacturer data blob
+        mLife        rated life
+        cCount       charge cycles
+        afCount      unexplained; the vendor's name, kept as it is
+
+    Types are deliberately permissive: no capture this project holds
+    contains this object, so whether `mDate` is a string, a timestamp or
+    something else is unknown. Typing it `str` because the name says
+    "date" would be guessing at the very thing that is unverified."""
+
+    m_name: Any | None = None
+    m_date: Any | None = None
+    m_day_serial: Any | None = None
+    m_data: Any | None = None
+    m_life: Any | None = None
+    c_count: int | None = None
+    af_count: int | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> BatInfo:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            m_name=data.get("mName"),
+            m_date=data.get("mDate"),
+            m_day_serial=data.get("mDaySerial"),
+            m_data=data.get("mData"),
+            m_life=data.get("mLife"),
+            c_count=data.get("cCount"),
+            af_count=data.get("afCount"),
         )
 
 
@@ -2173,6 +3134,29 @@ class ConfigInfoShadow:
 
     hw_parts_rev: HwPartsRev | None = None
     password_hash: str | None = None
+    #: NEW: the battery's own identity and wear record.
+    #:
+    #: PLACEMENT IS CONFIRMED, not guessed -- the vendor's model path is
+    #: `model/configinfo/bat_info`, which names this shadow. That
+    #: mattered: this library has one field elsewhere marked "PLACEMENT
+    #: UNCONFIRMED", and a field parsed from the wrong shadow stays None
+    #: forever without any error to notice.
+    #:
+    #: `cCount` is the charge-cycle count and `mLife` the manufacturer's
+    #: rated life, which together are the closest thing here to a battery
+    #: health figure -- relevant to any robot old enough to have had its
+    #: battery replaced, aftermarket or otherwise.
+    bat_info: BatInfo | None = None
+    #: ADDED (app 3.0.0, `model/configinfo/mira_sw_ver`, which names this
+    #: shadow). Two fields, `release` and `spec` -- a version pair rather
+    #: than a single string, so a caller comparing firmware versions has
+    #: two things to compare.
+    #:
+    #: `mira` is unexplained. One of nine `*Ver`/`*SwVer` properties in
+    #: the registry (`navSwVer`, `uiSwVer`, `wifiSwVer`, `umiVer`,
+    #: `mobilityVer` and the rest); this is the only one whose shadow the
+    #: vendor states, so it is the only one added.
+    mira_sw_version: MiraSwVersion | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> ConfigInfoShadow:
@@ -2182,6 +3166,12 @@ class ConfigInfoShadow:
         return cls(
             hw_parts_rev=HwPartsRev.from_json(hw_parts_rev) if isinstance(hw_parts_rev, dict) else None,
             password_hash=data.get("passwordHash"),
+            bat_info=BatInfo.from_json(data["batInfo"]) if isinstance(data.get("batInfo"), dict) else None,
+            mira_sw_version=(
+                MiraSwVersion.from_json(data["miraSwVer"])
+                if isinstance(data.get("miraSwVer"), dict)
+                else None
+            ),
         )
 
 

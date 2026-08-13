@@ -404,9 +404,18 @@ class PrimeMqttClient:
         the race described in get_shadow()/update_shadow() -- publish()
         must only happen after this. `timeout` deliberately short
         (SUBACKs are usually very fast, unlike the actual shadow
-        response) -- if this timeout runs out, proceeds anyway (better
-        a small residual risk than a broken library, in case a broker
-        never sends a SUBACK for some reason).
+        response) -- if this timeout runs out, the subscription is
+        RECORDED AS UNCONFIRMED and warned about, but not treated as a
+        failure: some deployed Prime sessions deliver shadow traffic
+        without a visible SUBACK.
+
+        THIS PARAGRAPH WAS STALE (corrected via @jouwdan, PR #62). It
+        still read "proceeds anyway (better a small residual risk than a
+        broken library)", describing behaviour that had already been
+        replaced by the recording and warning below. A docstring that
+        describes the previous version of its own function is worse than
+        no docstring: it was read as current by at least one person
+        writing a fix against it.
 
         NOW RAISES SubscriptionRejectedError on a REJECTED subscription
         (this session) -- see _on_subscribe()'s own docstring for the
@@ -1144,7 +1153,25 @@ class PrimeMqttClient:
         if self._client is None or not self._connected:
             self.reconnect()
         is_new_topic = topic not in self._persistent
-        self._persistent.setdefault(topic, []).append(callback)
+        # SUBSCRIBE FIRST, REGISTER SECOND (@jouwdan, PR #62).
+        #
+        # The callback used to be appended before the broker-level
+        # subscribe was attempted, so a failing subscribe left the topic
+        # in `_persistent` with a callback and no subscription. The next
+        # subscribe() for that topic then read `is_new_topic = False` and
+        # skipped the broker call entirely -- permanently unsubscribed,
+        # permanently registered, and indistinguishable from a robot
+        # that simply says nothing.
+        #
+        # A session could not recover from that, which is why his
+        # Max 705 stayed broken across retries rather than failing once.
+        #
+        # NOTE WHAT THIS IS NOT. Both his PR summary and the report
+        # behind it describe a missing SUBACK as fatal. It is not, and
+        # has not been since b3: an unconfirmed subscription is recorded
+        # and warned about, never raised. What his broker hit was a real
+        # rejection or a local paho failure -- and then this ordering
+        # turned one failure into a dead session.
         if is_new_topic:
             # NEW (session 33): same confirmation as get_shadow()/
             # update_shadow(), for consistency -- the risk here is
@@ -1154,6 +1181,7 @@ class PrimeMqttClient:
             # bug type in two places just because the symptoms show up
             # differently.
             self._subscribe_and_wait([topic])
+        self._persistent.setdefault(topic, []).append(callback)
 
     def unsubscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
         """Removes exactly this callback. Reference-counted: only

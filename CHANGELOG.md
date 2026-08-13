@@ -8,6 +8,126 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b4] - 2026-08-13
+
+A full decode of iRobot app 3.0.0 was read against this library. Four wire
+values were wrong, one filter silently discarded good data, and four
+robot models were not recognised at all.
+
+### BREAKING
+
+Wire values only, and every one of them was wrong before. Code comparing
+against these enums by value must be re-checked.
+
+- **`MissionCommandType` lost four members and gained two.**
+  `STARTDONOTDISTURB`, `STOPDONOTDISTURB`, `POINTCLEAN_VENDOR` and
+  `FLUIDREFILL_VENDOR` never existed on the wire -- they were constant
+  names read off an enum that carries no wire values. Do Not Disturb is
+  `START_DND` / `STOP_DND`, sending `start_dnd` / `stop_dnd`.
+- **`RegionType.TID` is `"tid"` again**, not `"furniture"`. The earlier
+  correction cited an annotation that does not exist.
+- **`CleaningProfileType` values are lowercase** (`light`, `normal`,
+  `deep`, `smart`). The uppercase ones were constant names, and a real
+  `"deep"` never matched them.
+- **`mission_history.PadCategory` is gone**; `mission_control`'s is used
+  for the same field. Two classes, one name, seven values that differed
+  -- and the parser used the one whose own docstring said it was for a
+  different field.
+- **`RoutineCommand.command_type` may now be `None` or a plain `str`.**
+  It was constructed strictly, so one unknown command raised and took an
+  entire favourites list with it.
+
+### Fixed
+
+- **A favourites list was discarded whole when one entry failed to
+  parse.** The caller logs at debug and returns an empty list, so an
+  account with seven favourites looked like an account with none.
+  Each favourite is now parsed on its own, at warning with the id.
+- **`get_favorites_raw()` had the bug it exists to diagnose.** It
+  returned `[]` for a wrapped response, so every diagnostics download
+  taken to ask "did the server return anything?" answered no, whether
+  or not it had.
+- **Favourite ids spelled `favoriteId` were not found.** The lookup
+  accepted `favoriteid` and `favorite_id`; one capital letter was the
+  difference between seven favourites and an empty account.
+- **Time estimates reported as good were thrown away.** `is_confident`
+  compared against `GOOD_CONFIDENCE` while app 3.0.0 sends `good`.
+  Both vocabularies are accepted.
+- **Four Prime SKU prefixes were missing** -- `U1`, `V1`, `W2`, `Z1`.
+  `is_prime_sku()` returned False for them, which routes a robot down
+  the path for devices this library does not know.
+- **A failed subscribe left a topic permanently unsubscribed and
+  permanently registered** (@jouwdan, #62). The callback was recorded
+  before the broker call, so a retry skipped the subscribe and the
+  watcher reported nothing for the rest of the session.
+- **`legacy_map_keys` wrote only half its pair.** `pmap_id` was added
+  beside `p2map_id`; `user_pmapv_id` was not, though certain devices
+  require it.
+- **`DockCapabilities` dropped `fr`** (fluid refill) -- a dock could
+  report it was refilling while the capability model denied it could.
+
+### Added
+
+- **`vendor_reference.json` ships with the library**, plus
+  `vendor_reference.py` to read it: 480 enums, 35 capability gates, 24
+  writable settings, 20 command wire values. Value sets can now be
+  asserted against the vendor rather than recalled.
+- **Six timeline status enums** -- `RoomStatus`, `TravelReason`,
+  `TravelStatus`, `PadWashReason`, `WetOutStatus` and the zone
+  vocabulary. Timeline statuses were bare integers before.
+- **Five diagnostic stats models** (`bbrun`, `bbswitch`, `bbnav`,
+  `bbpanic`, `mssnNavStats`) and thirteen missing fields in four
+  existing ones.
+- **Fifteen shadow properties with confirmed placement**, including
+  `precheck`, `filterStatus.pctLeft`, `pwHeat` and battery details.
+- **`SubModuleSwVersions`** -- four real subsystem versions that arrived
+  in every capture and were stored as an untyped blob.
+
+### Changed
+
+- **`autoevacFreq` and `pwReturn` value sets documented against the
+  vendor's enums** rather than the per-SKU picker lists. A real robot
+  sits outside those lists, and a control built from them could not
+  represent its own setting.
+- **`verify-writes` described three settings as booleans that are not.**
+  `pwReturn` carries two ranges in one field, and the wrong hint led a
+  tester to report a correct value as stale.
+- **`verify-writes` reported dotted setting keys as absent on every
+  robot.** `audio.volume` is a write address, not a read key.
+- **Map-edit V3 is nine operations, not one.** Two of them
+  (`setSillReq`, `setCarpetReq`) have no V1 or V2 equivalent, so
+  thresholds moved rather than vanished.
+
+## [0.3.0b3] - 2026-08-12
+
+### Fixed
+- **Favourites arrive in two shapes and only one was handled.** The Classic path unwraps
+  `{"favorites": [...]}`; this one did not, and returned an empty list for the same account that
+  showed two favourites on Roomba+ v3.5.1.
+- **Around twenty-five silent wire-key errors**, found by checking every `$$serializer` `<clinit>`
+  block against what this library sends. Kotlin enum member names are not wire values.
+
+### Changed
+- Schedule editing confirmed reaching the server (@DaRealGuGu).
+
+## [0.3.0b2] - 2026-08-11
+
+### Fixed
+- Three fixes from @DaRealGuGu's first run on b1, including the first concrete lead on the
+  subscription wall: a second connection to the same robot evicts the first.
+
+## [0.3.0b1] - 2026-08-10
+
+Required by Roomba+ v4.0.0a31.
+
+### Changed
+- **Version jumps from `0.2.0`.** Seventeen beta iterations had stopped meaning anything.
+- Three wire keys read real values where they read `None` before. Code checking
+  `number_of_dirt_detects is None` and concluding "this robot does not report it" will start seeing
+  numbers.
+- `to_json()`, `get_time_estimates()` and `reset_robot_parts()` gained optional arguments.
+- `error_text` is a new concept beside `error`.
+
 ## [0.2.0b16] - 2026-08-09
 
 ### Fixed

@@ -257,6 +257,21 @@ methods (`subscribe`, `update_shadow`, `shadow_topic`, `replace_token` and the r
 but not part of the supported surface — read `mqtt_client.py` directly if you need them, and expect
 its docstrings to be more current than any table.
 
+## Two rules the parsers follow
+
+**A `from_json` returns an empty instance rather than raising** when handed something that is not a
+mapping — a truncated download, a server error body, a `None` where an object was expected. A
+parser that raises turns a bad response into a crash in the caller's own code.
+
+The exception is the GeoJSON map features, which have required fields and cannot construct an empty
+instance. Those raise, which is the honest answer: a feature with no id and no geometry is not an
+empty feature.
+
+**A command refuses to travel under-addressed.** `Region.to_json()` raises when the region id is
+empty — which happens when the server sends `null` and a `.get(key, "")` default fills in a blank.
+The result would be a command that names a room and does not, and a robot given a command it cannot
+target does something other than what was asked rather than erroring.
+
 ## Error text
 
 `CleanMissionStatus.error` and `DockStatus.error` are integers. Both now carry `error_text` beside

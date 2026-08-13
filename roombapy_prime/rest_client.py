@@ -37,6 +37,7 @@ import aiohttp
 
 from .auth import CloudCredentials, LoginResult
 from .aws_sigv4 import AwsSigV4Signer
+from .models.enums_common import _enum_or_none
 from .models import (
     DNDStatusResponse,
     FavoriteV1,
@@ -174,6 +175,21 @@ def _either(data: dict, *names: str) -> Any:
     for name in names:
         if name in data:
             return data[name]
+    # CASE-INSENSITIVE SECOND PASS, because the first one missed the
+    # spelling that matters most.
+    #
+    # This helper was written to accept `favoriteid` beside
+    # `favorite_id`. The vendor's own favourite model carries
+    # `favoriteId` -- capital I -- alongside the snake form, and an
+    # exact-match loop over lowercase candidates never sees it.
+    #
+    # A favourite whose id does not parse is dropped by the caller
+    # without an error, so one capital letter is the difference between
+    # seven favourites and an account that looks empty.
+    lowered = {k.lower(): v for k, v in data.items()}
+    for name in names:
+        if name.lower() in lowered:
+            return lowered[name.lower()]
     return None
 
 
@@ -489,7 +505,40 @@ class PrimeRestClient:
                 type(data).__name__,
             )
             raw_list = []
-        return [self._favorite_from_json(item) for item in raw_list]
+        # ONE UNPARSEABLE FAVOURITE USED TO COST ALL OF THEM.
+        #
+        # `_favorite_from_json` builds each command with
+        # `MissionCommandType(c["command"])` -- a hard constructor that
+        # raises ValueError on any value this enum does not know, and
+        # KeyError if a command def has no `command` key at all. Either
+        # exception escaped the whole list comprehension.
+        #
+        # The caller in ha_roomba_plus catches Exception, logs at DEBUG
+        # and returns []. So a single stored favourite carrying an
+        # unfamiliar command produced an account that looked empty, with
+        # nothing above DEBUG to say otherwise. @chairstacker has seven
+        # and saw none.
+        #
+        # Now each is parsed on its own and a failure costs exactly that
+        # one, at WARNING with the id and the reason.
+        parsed: list[FavoriteV1] = []
+        for item in raw_list:
+            try:
+                parsed.append(self._favorite_from_json(item))
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning(
+                    "roombapy-prime: skipping a favourite that failed to "
+                    "parse (id=%s): %s",
+                    (item or {}).get("favorite_id") if isinstance(item, dict) else None,
+                    err,
+                )
+        if raw_list and not parsed:
+            _LOGGER.warning(
+                "roombapy-prime: the server returned %d favourite(s) and none "
+                "could be parsed -- this looks like an empty account and is not",
+                len(raw_list),
+            )
+        return parsed
 
     async def get_favorites_raw(
         self, app_edition: str | None = "1"
@@ -506,7 +555,33 @@ class PrimeRestClient:
         url = f"{self._http_base_auth}/v1/user/favorites"
         query = {"app_edition": app_edition} if app_edition else {}
         data = await self._request("GET", url, query=query)
-        return data if isinstance(data, list) else []
+        # THE DIAGNOSTIC HAD THE BUG IT EXISTS TO DIAGNOSE.
+        #
+        # This returned `data if isinstance(data, list) else []`, so a
+        # wrapped `{"favorites": [...]}` response captured as an empty
+        # list -- the same shape that made get_favorites() report an
+        # empty account, in the one place built to reveal it.
+        #
+        # A diagnostics download taken to answer "does the server return
+        # anything?" therefore answered "no" whether or not it did.
+        return self._unwrap_favorites_payload(data)
+
+    @staticmethod
+    def _unwrap_favorites_payload(data: Any) -> list[dict[str, Any]]:
+        """The favourites list out of whatever wraps it.
+
+        THE OUTER KEYS ARE THE FINDING when there is no list, so an
+        object with no `favorites` key is handed back whole rather than
+        discarded -- that is precisely the case a download is taken to
+        investigate."""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            wrapped = data.get("favorites")
+            if isinstance(wrapped, list):
+                return wrapped
+            return [data]
+        return []
 
     async def create_favorite(self, favorite: FavoriteV1) -> dict[str, Any]:
         """POST /v1/user/favorites?app_edition=1 -- CONFIRMED (eighth
@@ -1309,7 +1384,21 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
             version=data.get("version"),
             command_defs=[
                 RoutineCommand(
-                    command_type=MissionCommandType(c["command"]),
+                    # TOLERANT, like every other enum read in this
+                    # library. A stored favourite is the server's data,
+                    # not ours, and it may carry a command a given
+                    # library version does not model -- `MissionCommandType`
+                    # lost two members today for being wrong, which is
+                    # exactly the kind of change that must not delete
+                    # somebody's favourites.
+                    #
+                    # `.get("command")` rather than `c["command"]`: a
+                    # command def with no command key raised KeyError
+                    # from a subscript, which read as a crash rather than
+                    # as missing data.
+                    command_type=_enum_or_none(
+                        MissionCommandType, c.get("command")
+                    ),
                     asset_id=c.get("robot_id", ""),
                     map_id=c.get("p2map_id"),
                     ordered=c.get("ordered", 0),

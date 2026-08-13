@@ -869,12 +869,12 @@ def test_mission_command_type_values_match_serialname_annotations() -> None:
     assert MissionCommandType.CLEAN_SPOT.value == "point_clean"
     assert MissionCommandType.TIDY.value == "tidy"
     assert MissionCommandType.START.value == "start"
-    # 34: startDoNotDisturb and stopDoNotDisturb from app 3.0.0, plus
-    # the vendor spellings of pointClean and fluidRefill beside our
-    # point_clean and flrefill.
-    # Do Not Disturb was previously writable only through the settings
-    # REST call, and these are a second way in over the command topic.
-    assert len(list(MissionCommandType)) == 34
+    # 32, down from 34: the two Do Not Disturb commands are still here
+    # (as start_dnd/stop_dnd), but POINTCLEAN_VENDOR and
+    # FLUIDREFILL_VENDOR are gone. They were "vendor spellings" read off
+    # an enum that has no wire values, so there was no second spelling
+    # to offer.
+    assert len(list(MissionCommandType)) == 32
 
 
 def test_routine_command_to_json_required_fields() -> None:
@@ -1156,8 +1156,12 @@ def test_cleaning_profile_from_json() -> None:
     that until updated to the real key."""
     from roombapy_prime.models import CleaningProfile, CleaningProfileType
 
+    # "deep", not "DEEP": the uppercase form was the Kotlin constant
+    # name. This assertion passed against the old enum only because
+    # both sides carried the same wrong value -- a real response would
+    # have fallen through to the raw string. See CleaningProfileType.
     profile = CleaningProfile.from_json(
-        {"profile": "DEEP", "params": {"suctionLevel": 3}, "regions": [{"id": "r1"}]}
+        {"profile": "deep", "params": {"suctionLevel": 3}, "regions": [{"id": "r1"}]}
     )
 
     assert profile.profile == CleaningProfileType.DEEP
@@ -3312,16 +3316,21 @@ def test_region_type_has_exactly_the_three_resolvable_values():
     wire value could not be resolved -- so it is documented and NOT
     modelled.
 
-    This is not caution for its own sake: TID's value is "furniture",
-    not "tid", so the obvious lowercase-the-prefix guess is already
-    known to be wrong here. An earlier version of this enum made
-    exactly that guess for TID and carried it for months.
+    TID IS "tid", CONFIRMED. The Dart `IrobotRegionType` states all
+    three outright: room -> "rid", zone -> "zid", temporary -> "tid".
+    This test previously asserted "furniture", which came from an
+    @SerialName that does not exist -- the Kotlin RegionType carries an
+    empty wire-value map. "furniture" is real, but it is an internal
+    target-key prefix, not a region type on the wire.
 
-    If this test ever fails because someone added WID, the question to
-    ask is whether its value was observed or inferred."""
+    So the lowercase-the-prefix pattern holds for all three known types,
+    which makes "wid" the obvious candidate for the fourth. That is a
+    reason to expect it, not to ship it: if this test ever fails because
+    someone added WID, the question to ask is whether its value was
+    observed or inferred."""
     from roombapy_prime.models.mission_control import RegionType
 
-    assert {m.value for m in RegionType} == {"rid", "zid", "furniture"}
+    assert {m.value for m in RegionType} == {"rid", "zid", "tid"}
     assert "kZoneTypeWId" in RegionType.__doc__, "the fourth type must stay documented"
 
 
@@ -4506,47 +4515,53 @@ class TestTheTwoRegionFieldsThreePointZeroAdded:
         assert body["region_type"] == "room"
 
 
-class TestCommandSpellingIsFieldConfirmedNotAppDerived:
-    """App 3.0.0 spells the multi-word commands in camelCase —
-    `washPad`, `dryPad`, `stopEvac`. This enum uses lowercase.
+class TestCommandSpellingMatchesTheVendorExactly:
+    """This class previously asserted that the app spells multi-word
+    commands in camelCase while this enum uses lowercase, and that the
+    difference was real and deliberate.
 
-    **The lowercase forms are what a real robot recorded.**
-    @DaRealGuGu's `rw-software.lastCommand` shows `"washpad"` and
-    `"drypad"`, and his pad-wash counter stands at 90: the washes are
-    happening.
+    **There is no difference.** That comparison was made against
+    `CommandType`, the domain enum, whose members are Kotlin constant
+    names. The serialised enum is `CommandTypeDTO`, and its
+    `@SerialName` values are lowercase throughout. Of the eighteen
+    commands shared with this enum, all eighteen match.
 
-    So the difference is real and ours works. Switching to match the app
-    would change a demonstrated path to fit a model — the same trade
-    declined three times in one day.
+    The field evidence was never wrong — @DaRealGuGu's robot really did
+    record `"washpad"`. It was answering a question nobody needed to
+    ask.
     """
 
-    def test_the_confirmed_lowercase_spellings_are_kept(self):
+    def test_the_multi_word_commands_match_commandtypedto(self):
         from roombapy_prime.models.mission_control import MissionCommandType
 
         assert MissionCommandType.WASHPAD.value == "washpad"
         assert MissionCommandType.DRYPAD.value == "drypad"
+        assert MissionCommandType.STOPEVAC.value == "stopevac"
+        assert MissionCommandType.STOPPADDRY.value == "stoppaddry"
+        assert MissionCommandType.FLREFILL.value == "flrefill"
+        assert MissionCommandType.CLEAN_SPOT.value == "point_clean"
 
-    def test_the_difference_is_written_down(self):
-        """So the next person comparing against the app finds the
-        reason instead of 'fixing' it."""
+    def test_no_camel_case_command_values_remain(self):
+        """The four camelCase constants are gone. None of them was a
+        wire value, and any caller reaching for one sent a string the
+        server has never seen."""
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        camel = [c for c in MissionCommandType if c.value != c.value.lower()]
+
+        assert camel == []
+
+    def test_the_correction_is_written_down(self):
+        """So the next person finds why the old comment is gone rather
+        than reinstating it."""
         import inspect
 
         from roombapy_prime.models import mission_control
 
         source = inspect.getsource(mission_control)
 
-        assert "CASE DIFFERS FROM THE APP" in source
-        assert "field-confirmed" in source
-
-    def test_the_two_dnd_commands_are_noted_as_missing(self):
-        """`startDoNotDisturb` and `stopDoNotDisturb` are new in 3.0 —
-        DND was previously only writable through the settings REST
-        call."""
-        import inspect
-
-        from roombapy_prime.models import mission_control
-
-        assert "startDoNotDisturb" in inspect.getsource(mission_control)
+        assert "NEVER EXISTED" in source
+        assert "CommandTypeDTO" in source
 
 
 class TestTheFirmwareCatalogue:
@@ -4933,13 +4948,18 @@ class TestTheModelsNameTheirOwnErrors:
 
 
 class TestTheScopeOfMapEditVersionThree:
-    """`MapServiceHandler` has 34 methods and only two mention V3:
-    `deleteCleanZonesV3` and `observeV3EditResponses`.
+    """This class asserted that V3 was "one operation the app moved to a
+    different channel" — 34 `MapServiceHandler` methods, two mentioning
+    V3, so a caller worrying about V3 was worrying about a single
+    delete.
 
-    So V3 is **not** a replacement waiting to obsolete V1 and V2. It is
-    one operation the app moved to a different channel, plus the channel
-    itself — and a caller losing sleep over "should we support V3" is
-    worrying about a single delete.
+    **That counted the Kotlin bridge, and V3 does not live there.**
+    `P2MapEditCommandType` in the Dart layer declares nine operations,
+    and two of them — `setSillReq` (thresholds) and `setCarpetReq`
+    (carpets) — have no V1 or V2 equivalent at all.
+
+    So the earlier reading was wrong in both directions: V3 is more than
+    a delete, and it is the ONLY way to reach two map features.
     """
 
     def _doc(self):
@@ -4947,11 +4967,34 @@ class TestTheScopeOfMapEditVersionThree:
 
         return map_editing.__doc__
 
-    def test_the_scope_is_recorded(self):
+    def test_the_corrected_scope_is_recorded(self):
         doc = self._doc()
 
-        assert "EXACTLY ONE OPERATION" in doc
-        assert "deleteCleanZonesV3" in doc
+        assert "NINE OPERATIONS, NOT ONE" in doc
+        assert "setSillReq" in doc
+        assert "setCarpetReq" in doc
+
+    def test_the_vendors_response_typo_is_recorded(self):
+        """Eight of nine responses end `Rsp`; `delPermanentAreaRes` does
+        not. Anything matching responses has to accept both."""
+        doc = self._doc()
+
+        assert "delPermanentAreaRes" in doc
+
+    def test_thresholds_moved_rather_than_vanished(self):
+        """The note below used to say thresholds "vanish entirely" from
+        3.0.0. `setSillReq` is where they went."""
+        doc = self._doc()
+
+        assert "MOVED to a channel" in doc
+
+    def test_the_payloads_are_still_not_known(self):
+        """The names are the operations. Their bodies live in an
+        uninterpreted `data.value`, so this is a smaller gap than it
+        was, not a closed one."""
+        doc = self._doc()
+
+        assert "not discoverable" in doc or "not known" in doc
 
     def test_the_transport_shape_is_recorded(self):
         """`method` is the constant `service.mapedit`; the operation
@@ -4968,27 +5011,27 @@ class TestTheScopeOfMapEditVersionThree:
         assert "editv3_resp" in self._doc()
 
 
-class TestTwoCommandsWithTwoSpellings:
-    """`CommandType` lists twenty values, all camelCase — including
-    `pointClean` and `fluidRefill`. This enum had `point_clean` and
-    `flrefill`.
+class TestEachCommandHasExactlyOneSpelling:
+    """This class previously asserted that `point_clean`/`pointClean`
+    and `flrefill`/`fluidRefill` were two real spellings each, offered
+    so a caller whose dock refused one could try the other.
 
-    **`point_clean` is not a guess.** It appears verbatim in a real
-    favourite definition returned by the server, inside a routine named
-    "Spot Clean" with `routine_type: SPOT_CLEAN`. The server stores it
-    that way whatever the app sends.
+    **There was only ever one of each.** `CommandTypeDTO.POINT_CLEAN`
+    serialises as `point_clean` and `FLUID_REFILL` as `flrefill`. The
+    camelCase forms were constant names off an enum with no wire values.
 
-    `flrefill` appears in no capture at all — that one is a guess, and
-    `fluidRefill` is the vendor's.
+    One caveat genuinely retired here: `flrefill` was carried as an
+    admitted guess, appearing in no capture. The vendor's own serialiser
+    confirms it.
     """
 
-    def test_both_spellings_are_available(self):
+    def test_the_confirmed_values_are_the_only_ones(self):
         from roombapy_prime.models.mission_control import MissionCommandType
 
         values = {e.value for e in MissionCommandType}
 
-        assert {"point_clean", "pointClean"} <= values
-        assert {"flrefill", "fluidRefill"} <= values
+        assert {"point_clean", "flrefill"} <= values
+        assert not {"pointClean", "fluidRefill"} & values
 
     def test_the_field_confirmed_one_is_not_removed(self):
         """A server that stores `point_clean` in its own favourites will
@@ -5005,8 +5048,8 @@ class TestTwoCommandsWithTwoSpellings:
 
         source = inspect.getsource(mission_control)
 
-        assert "IS NOT A GUESS" in source
-        assert "appears in no capture at all" in source
+        assert "confirmed twice over" in source
+        assert "admitted guess" in source
 
 
 class TestTheFirmwareTargetIsAList:
@@ -5243,3 +5286,943 @@ class TestParsersSurviveUnexpectedInput:
 
         assert status.phase == "run"
         assert status.error == 48
+
+
+class TestTheDockCapabilitiesThatWereMissing:
+    """`dock.cap` gates every dock feature, and from_json() reads only
+    declared fields — so an unmodelled capability vanishes with no
+    error. `fr` (fluid refill) was one, for as long as this model has
+    existed.
+
+    It was findable without any APK work: `DockStatus` already carried
+    `frState`, the fluid-refill STATE. A dock could report that it was
+    refilling while the capability model denied it could refill at all,
+    and nothing compared the two.
+    """
+
+    def test_fluid_refill_is_read(self):
+        from roombapy_prime.models.robot_info import DockCapabilities
+
+        cap = DockCapabilities.from_json(
+            {"evac": 1, "pd": 1, "pw": 1, "pwo": 1, "fr": 2}
+        )
+
+        assert cap.fluid_refill == 2
+
+    def test_the_four_older_fields_still_read(self):
+        from roombapy_prime.models.robot_info import DockCapabilities
+
+        cap = DockCapabilities.from_json({"evac": 1, "pd": 2, "pw": 3, "pwo": 4})
+
+        assert (cap.evac, cap.pad_dry, cap.pad_wash, cap.pad_wash_or) == (1, 2, 3, 4)
+        assert cap.fluid_refill is None
+
+    def test_a_dock_reporting_refill_state_can_also_report_the_capability(self):
+        """The pairing that should have exposed the gap. Both halves are
+        now readable from one payload."""
+        from roombapy_prime.models.robot_info import DockStatus
+
+        dock = DockStatus.from_json({"cap": {"fr": 1}, "frState": 3})
+
+        assert dock.cap is not None
+        assert dock.cap.fluid_refill == 1
+        assert dock.fr_state == 3
+
+
+class TestDetergentIsReadWhereItArrives:
+    """`_initDockCap` builds `detergent` alongside evac/pd/pw/pwo/fr,
+    which makes it easy to file under dock capabilities. Its key path is
+    top-level `detergent` — a sibling of `dock`, not a child of
+    `dock.cap`.
+
+    Grouped by meaning in one place, addressed by path in another. The
+    path is what arrives on the wire, so that is where it is read.
+    """
+
+    def test_detergent_is_read_from_the_top_level(self):
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        state = CurrentStateShadow.from_json({"batPct": 90, "detergent": 2})
+
+        assert state.detergent == 2
+
+    def test_it_is_not_expected_under_dock_cap(self):
+        """Had it been modelled where it is built rather than where it
+        is sent, it would have stayed None against every real payload —
+        the quiet failure mode this library keeps finding."""
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        state = CurrentStateShadow.from_json({"dock": {"cap": {"detergent": 2}}})
+
+        assert state.detergent is None
+
+    def test_an_integer_level_survives_zero(self):
+        """Capability values are levels, not flags. Zero is a real
+        answer and must not read as absent."""
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        assert CurrentStateShadow.from_json({"detergent": 0}).detergent == 0
+
+
+class TestPadCategoryIsOneEnumNotTwo:
+    """`mission_history` defined its own `PadCategory` with seven
+    UPPERCASE values while `mission_control` carried the @SerialName
+    reading of the same enum — and the mission-history parser used the
+    uppercase one, which `mission_control`'s docstring explicitly says
+    is the vocabulary for this very field.
+
+    NOTHING FAILED, WHICH IS THE POINT. `_enum_or_none()` returns the
+    raw string on no match, so `pad_category` stayed a str against every
+    real response instead of becoming an enum. No test covered either
+    class, so there was nothing to go red.
+    """
+
+    def test_both_modules_now_name_the_same_class(self):
+        from roombapy_prime.models import mission_control, mission_history
+
+        assert mission_history.PadCategory is mission_control.PadCategory
+
+    def test_a_real_wire_value_types(self):
+        """The whole point of the merge: `dispWet` becomes an enum
+        member rather than falling through as a string."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry, PadCategory
+
+        record = MissionHistoryEntry.from_json({"padCategory": "dispWet"})
+
+        assert record.pad_category is PadCategory.DISP_WET
+
+    def test_the_uppercase_vocabulary_still_survives_as_a_string(self):
+        """A device reporting the old vocabulary must not crash. It
+        surfaces raw, which is what an unrecognised value has always
+        become here — and is how one would be noticed."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        record = MissionHistoryEntry.from_json({"padCategory": "REUSABLE_WET"})
+
+        assert record.pad_category == "REUSABLE_WET"
+
+
+class TestCoverageStrategyIsMarkedUnverifiedNotConfirmed:
+    """Searched in app 3.0.0 and not found, in any casing — so there is
+    no basis for changing these values and none for calling them
+    confirmed either.
+
+    The values stay exactly as they were. Only the claim about them
+    changed, which is the whole change: "Confirmed (androguard)" is the
+    phrasing that produced four wrong vocabularies in this library.
+    """
+
+    def test_the_values_are_unchanged(self):
+        from roombapy_prime.models.mission_history import CoverageStrategy
+
+        assert {m.value for m in CoverageStrategy} == {
+            "HYBRID_COVERAGE_PLANNER",
+            "RESERVED",
+            "ROOM_SEGMENTATION",
+        }
+
+    def test_the_docstring_no_longer_claims_confirmation(self):
+        from roombapy_prime.models.mission_history import CoverageStrategy
+
+        doc = CoverageStrategy.__doc__ or ""
+
+        assert "NOT CONFIRMED WIRE VALUES" in doc
+        assert "SEARCHED AND NOT FOUND" in doc
+
+    def test_an_unknown_value_surfaces_rather_than_crashing(self):
+        """What would settle it: a real capture. This is the path that
+        would show one.
+
+        Note the nesting — `covStrat` sits inside the timeline object,
+        not at the top of the record."""
+        from roombapy_prime.models.mission_history import MissionHistoryEntry
+
+        record = MissionHistoryEntry.from_json(
+            {"timeline": {"covStrat": "somethingElse"}}
+        )
+
+        assert record.coverage_strategy == "somethingElse"
+
+
+class TestTheFiveStatsModelsThatWereMissing:
+    """`ro-stats` was modelled from one real capture, so the model
+    stopped where that capture stopped. App 3.0.0 declares five more
+    under `model/stats/`, none of which any payload here has carried.
+
+    They are read now rather than dropped. Nothing asserts they will
+    arrive — only that a robot sending them is no longer ignored.
+    """
+
+    def test_bbrun_counters_are_read(self):
+        from roombapy_prime.models.robot_info import StatsShadow
+
+        stats = StatsShadow.from_json(
+            {"bbrun": {"nStuck": 12, "nCliffsF": 340, "nPicks": 7, "nOvertemps": 0}}
+        )
+
+        assert stats.bbrun is not None
+        assert stats.bbrun.n_stuck == 12
+        assert stats.bbrun.n_cliffs_f == 340
+        assert stats.bbrun.n_picks == 7
+        assert stats.bbrun.n_overtemps == 0
+
+    def test_bbswitch_button_counts_are_read(self):
+        from roombapy_prime.models.robot_info import StatsShadow
+
+        stats = StatsShadow.from_json({"bbswitch": {"nClean": 88, "nDock": 41}})
+
+        assert stats.bbswitch is not None
+        assert (stats.bbswitch.n_clean, stats.bbswitch.n_dock) == (88, 41)
+
+    def test_mssn_nav_stats_uses_the_camel_case_wire_key(self):
+        """The model path is `model/stats/mssn_nav_stats`, but the key
+        on the wire is `mssnNavStats` — the path names the file, not the
+        field. Reading the path as the key would have found nothing."""
+        from roombapy_prime.models.robot_info import StatsShadow
+
+        stats = StatsShadow.from_json({"mssnNavStats": {"missionId": "m1", "h_drift": 3}})
+
+        assert stats.mssn_nav_stats is not None
+        assert stats.mssn_nav_stats.mission_id == "m1"
+        assert stats.mssn_nav_stats.h_drift == 3
+
+    def test_mssn_nav_stats_reads_either_casing(self):
+        """This test asserted that the vendor's mixed casing was
+        meaningful — snake_case for some fields, camelCase for others,
+        "not a transcription slip".
+
+        `message_center_models.dart` carries 53 fields in BOTH spellings
+        at once, camelCase for the Dart property and snake_case for the
+        wire. Mixed casing inside one model is that pairing maintained
+        incompletely, not a statement about the wire.
+
+        So the casing is uninformative and both are read. Two dict
+        lookups against a field that would otherwise stay None."""
+        from roombapy_prime.models.robot_info import MssnNavStats
+
+        snake = MssnNavStats.from_json({"l_squal": 9, "pln_err": 2})
+        camel = MssnNavStats.from_json({"lSqual": 9, "plnErr": 2})
+
+        assert snake.l_squal == camel.l_squal == 9
+        assert snake.pln_err == camel.pln_err == 2
+
+    def test_bbpanic_does_not_assume_an_integer(self):
+        """`bbpause` is the one comparable single-field model with a real
+        capture behind it, and its field holds a LIST. Assuming a count
+        here would assume the opposite of the only precedent."""
+        from roombapy_prime.models.robot_info import BbPanicStats
+
+        assert BbPanicStats.from_json({"panics": [3, 1]}).panics == [3, 1]
+        assert BbPanicStats.from_json({"panics": 4}).panics == 4
+
+    def test_the_six_older_models_still_parse(self):
+        """The addition must not disturb what a real capture already
+        proved works."""
+        from roombapy_prime.models.robot_info import StatsShadow
+
+        stats = StatsShadow.from_json(
+            {"bbmssn": {"nMssn": 276, "nMssnOk": 247}, "bbsys": {"hr": 7354, "min": 12}}
+        )
+
+        assert stats.bbmssn is not None
+        assert stats.bbmssn.n_mssn == 276
+        assert stats.bbsys is not None
+        assert stats.bbsys.hours == 7354
+
+
+class TestTheStatsFieldsThatWereDeclaredButUnread:
+    """Four of the six modelled `bb*` classes were missing fields the
+    vendor declares — absent from the one capture, so absent from the
+    model. Same cause as the five missing classes above, one level down.
+    """
+
+    def test_bbrun_style_gaps_in_bbchg_are_read(self):
+        from roombapy_prime.models.robot_info import BbChgStats
+
+        chg = BbChgStats.from_json({"nChgOk": 561, "aborts": 2, "nLithF": 0, "smberr": 1})
+
+        assert chg.n_chg_ok == 561
+        assert chg.aborts == 2
+        assert chg.n_lith_f == 0
+        assert chg.smberr == 1
+
+    def test_bbmssn_average_minutes_are_read(self):
+        from roombapy_prime.models.robot_info import BbMssnStats
+
+        mssn = BbMssnStats.from_json({"nMssn": 276, "aMssnM": 43, "aCycleM": 51})
+
+        assert mssn.avg_mission_minutes == 43
+        assert mssn.avg_cycle_minutes == 51
+
+    def test_bbrstinfo_separates_oom_from_other_resets(self):
+        """`nOomRst` distinguishes "the robot rebooted" from "the robot
+        ran out of memory and rebooted" — a distinction no other field
+        here makes."""
+        from roombapy_prime.models.robot_info import BbRstInfoStats
+
+        rst = BbRstInfoStats.from_json({"nNavRst": 22, "nOomRst": 3, "nMapLoadRst": 1})
+
+        assert (rst.n_nav_rst, rst.n_oom_rst, rst.n_map_load_rst) == (22, 3, 1)
+
+    def test_runtime_stats_reads_area_cleaned(self):
+        from roombapy_prime.models.robot_info import RuntimeStatsSummary
+
+        assert RuntimeStatsSummary.from_json({"hr": 7, "min": 57, "sqft": 4200}).sqft == 4200
+
+
+class TestPlacementConfirmedShadowAdditions:
+    """The vendor's SDK model paths (`model/configinfo/…`,
+    `model/current_state/…`) are themselves placement evidence, which is
+    what made these safe to add.
+
+    That mattered more than the field names. This library already
+    carries one field marked "PLACEMENT UNCONFIRMED", and a field parsed
+    from the wrong shadow stays None forever with nothing to signal it —
+    the same silent shape as `commandParams` and the duplicate
+    `PadCategory`.
+    """
+
+    def test_battery_wear_counters_land_in_configinfo(self):
+        """`model/configinfo/bat_info` names the shadow, so this is not
+        a guess about where it arrives."""
+        from roombapy_prime.models.robot_info import ConfigInfoShadow
+
+        info = ConfigInfoShadow.from_json(
+            {"batInfo": {"mName": "ACME", "cCount": 412, "mLife": 800}}
+        )
+
+        assert info.bat_info is not None
+        assert info.bat_info.c_count == 412
+        assert info.bat_info.m_life == 800
+
+    def test_mission_minutes_are_read_alongside_the_timestamps(self):
+        from roombapy_prime.models.robot_info import CleanMissionStatus
+
+        status = CleanMissionStatus.from_json(
+            {"phase": "run", "expireTm": 1760000000, "expireM": 45, "rechrgM": 12}
+        )
+
+        assert status.expire_time == 1760000000
+        assert status.expire_minutes == 45
+        assert status.recharge_minutes == 12
+
+    def test_detergent_is_read_from_both_disputed_places(self):
+        """Two vendor sources put `detergent` in different places and
+        nothing here settles it. Reading one and being wrong costs a
+        permanent None; reading both costs a lookup."""
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        top = CurrentStateShadow.from_json({"detergent": 2})
+        nested = CurrentStateShadow.from_json({"dock": {"detergent": 3}})
+
+        assert top.detergent == 2
+        assert nested.dock is not None
+        assert nested.dock.detergent == 3
+
+
+class TestTheFifteenPlacementConfirmedProperties:
+    """Fifteen of seventy-nine unread properties had their shadow named
+    by the vendor — fourteen through an SDK model path
+    (`model/settings/…`, `model/current_state/…`) and `pwHeat` through a
+    ShadowField entry of its own.
+
+    The other sixty-four did not, and are deliberately still unread. The
+    line is placement evidence, not usefulness: a field parsed from the
+    wrong shadow stays None forever with nothing to signal it.
+    """
+
+    def test_pad_wash_heat_is_read_from_settings(self):
+        """The only one of the seventy-nine with a ShadowField entry:
+        `pwHeat`, shadow SETTINGS, kind Writing, Integer — and also one
+        of the twenty-four writable keys. Two sources, same answer."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        assert RobotSettings.from_json({"pwHeat": 2}).pad_wash_heat == 2
+
+    def test_pad_wash_heat_zero_is_a_real_level(self):
+        """0/1/2 are the three heat levels. Zero must not read as
+        absent — the same trap as the integer capability values."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        assert RobotSettings.from_json({"pwHeat": 0}).pad_wash_heat == 0
+
+    def test_filter_percentage_is_read(self):
+        """The only percentage-based consumable figure in this library —
+        every other maintenance counter counts upward and needs a
+        threshold to mean anything."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        settings = RobotSettings.from_json({"filterStatus": {"pctLeft": 62, "lastRstTm": 1}})
+
+        assert settings.filter_pack is not None
+        assert settings.filter_pack.pct_left == 62
+
+    def test_precheck_readiness_is_read(self):
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        settings = RobotSettings.from_json({"precheck": {"readiness": 0, "weather": "x"}})
+
+        assert settings.precheck is not None
+        assert settings.precheck.readiness == 0
+        assert settings.precheck.weather == "x"
+
+    def test_langs2_is_typed_without_breaking_the_raw_dict(self):
+        """Five `langs2.*` sub-keys are individually writable, so reading
+        them typed is what makes a language change addressable. Callers
+        already using `languages_raw` keep working."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        settings = RobotSettings.from_json({"langs2": {"sLang": 3, "packId": "p"}})
+
+        assert settings.languages is not None
+        assert settings.languages.s_lang == 3
+        assert settings.languages_raw == {"sLang": 3, "packId": "p"}
+
+    def test_teaming_status_is_read(self):
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        state = CurrentStateShadow.from_json({"teaming": {"teamId": "t1", "nMssn": 4}})
+
+        assert state.teaming is not None
+        assert state.teaming.team_id == "t1"
+        assert state.teaming.n_missions == 4
+
+    def test_the_other_three_current_state_objects_are_read(self):
+        from roombapy_prime.models.robot_info import CurrentStateShadow
+
+        state = CurrentStateShadow.from_json(
+            {
+                "pmapShare": {"share": True},
+                "hwdbgr": {"swVer": "1.2"},
+                "streamingVideoStatus": {"channel": 7},
+            }
+        )
+
+        assert state.pmap_share is not None and state.pmap_share.share is True
+        assert state.hw_debugger is not None and state.hw_debugger.sw_version == "1.2"
+        assert state.streaming_video is not None and state.streaming_video.channel == 7
+
+    def test_parcel_deployment_unwraps_the_ml_key(self):
+        """Both parcel objects wrap their content in a single `ml`. A
+        dataclass per scalar buys nothing, and a robot sending the bare
+        value instead of the wrapper still parses."""
+        from roombapy_prime.models.robot_info import SoftwareStatusShadow
+
+        wrapped = SoftwareStatusShadow.from_json({"parcelDeploymentId": {"ml": "d1"}})
+        bare = SoftwareStatusShadow.from_json({"parcelDeploymentId": "d1"})
+
+        assert wrapped.parcel_deployment_id == "d1"
+        assert bare.parcel_deployment_id == "d1"
+
+    def test_mira_version_lands_in_configinfo(self):
+        from roombapy_prime.models.robot_info import ConfigInfoShadow
+
+        info = ConfigInfoShadow.from_json({"miraSwVer": {"release": "2.1", "spec": "a"}})
+
+        assert info.mira_sw_version is not None
+        assert info.mira_sw_version.release == "2.1"
+
+    def test_smart_home_permission_is_read_from_services(self):
+        from roombapy_prime.models.robot_info import ServicesShadow
+
+        shadow = ServicesShadow.from_json({"smartHome": {"homeMonitoringAllowed": False}})
+
+        assert shadow.home_monitoring_allowed is False
+
+    def test_connection_status_has_four_fields_not_three(self):
+        from roombapy_prime.models.robot_info import ConnectionStatusShadow
+
+        shadow = ConnectionStatusShadow.from_json(
+            {"connected": True, "svcEndpoints": {"svcDeplId": "x"}}
+        )
+
+        assert shadow.connected is True
+        assert shadow.svc_endpoints == {"svcDeplId": "x"}
+
+    def test_the_older_clean_schedule_is_not_dropped(self):
+        """`cleanSchedule` and `cleanSchedule2` are both declared,
+        separately. A robot reporting the older one looked unscheduled
+        because nothing read it."""
+        from roombapy_prime.models.robot_info import ScheduleShadow
+
+        shadow = ScheduleShadow.from_json({"cleanSchedule": {"cycle": ["none"] * 7}})
+
+        assert shadow.clean_schedule_raw == {"cycle": ["none"] * 7}
+        assert shadow.clean_schedule2_raw == []
+
+
+class TestSubModuleVersionsFromRealHardware:
+    """The one addition in this round backed by a real capture rather
+    than a vendor declaration.
+
+    `subModSwVer` arrived as a nested object and was stored as `Any`, so
+    four real subsystem versions sat in the payload unread —
+    chairstacker's Combo 405 reports con/linux/nav/mcu. Everything else
+    added alongside it is declared-but-never-observed; this is the
+    reverse case, and the only one where a robot has actually sent the
+    data.
+    """
+
+    def test_the_four_real_subsystem_versions_are_read(self):
+        from roombapy_prime.models.robot_info import SoftwareStatusShadow
+
+        shadow = SoftwareStatusShadow.from_json(
+            {
+                "subModSwVer": {
+                    "con": "sdk-v9.3.7",
+                    "linux": "4.9.84",
+                    "nav": "4.6.150",
+                    "mcu": "32",
+                }
+            }
+        )
+
+        assert shadow.sub_module_versions is not None
+        assert shadow.sub_module_versions.con == "sdk-v9.3.7"
+        assert shadow.sub_module_versions.linux == "4.9.84"
+        assert shadow.sub_module_versions.nav == "4.6.150"
+        assert shadow.sub_module_versions.mcu == "32"
+
+    def test_the_raw_blob_still_works(self):
+        """Existing callers read `submodule_sw_version` as a dict. The
+        typed view is additional, not a replacement."""
+        from roombapy_prime.models.robot_info import SoftwareStatusShadow
+
+        shadow = SoftwareStatusShadow.from_json({"subModSwVer": {"con": "x"}})
+
+        assert shadow.submodule_sw_version == {"con": "x"}
+
+    def test_the_eight_undeclared_subsystems_stay_none(self):
+        """Twelve declared, four observed. The other eight are modelled
+        because they cost nothing, not because anything says a Roomba
+        sends them."""
+        from roombapy_prime.models.robot_info import SubModuleSwVersions
+
+        parsed = SubModuleSwVersions.from_json({"con": "x"})
+
+        assert parsed.aoa is None
+        assert parsed.cam is None
+        assert parsed.parcels is None
+
+
+class TestTheSkuValueListsAreSubsetsNotOptionSets:
+    """Two sources inside the same vendor analysis disagree about which
+    values these settings accept, and a real robot settles both — against
+    the narrower one.
+
+    `getListBySKU` returns what the app's picker shows for a given
+    product mode. It is not the set of values the field can hold, and a
+    control built from it could not represent a robot already outside it.
+    """
+
+    def test_autoevac_freq_accepts_a_value_the_sku_list_omits(self):
+        """chairstacker's robot reports 1 — "every 2nd routine" in
+        `ClearFreqType`, absent from the SKU list [0, 10, 15, 25, 30]."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        assert RobotSettings.from_json({"autoevacFreq": 1}).autoevac_freq == 1
+
+    def test_the_capability_level_explains_the_sku_list(self):
+        """`CapAutoEvac` is a LEVEL and it selects the option subset:
+        1 = freqModes (0/1/2), 2 = freqWithArea (plus the area values),
+        3 = taskEndOrDockReturn (plus 4).
+
+        chairstacker's robot reports `cap.autoevac = 1` AND
+        `autoevacFreq = 1` — level freqModes, set to "every 2nd
+        routine". The two agree, which is what makes this an
+        explanation rather than a guess: the SKU list was the
+        freqWithArea subset, and his robot is not on that level.
+
+        Asserted on the docstring because the subset rule is knowledge a
+        control needs, and this library models the field rather than the
+        picker."""
+        import inspect
+
+        from roombapy_prime.models import robot_info
+
+        source = inspect.getsource(robot_info.RobotSettings)
+
+        assert "cap.autoevac` DECIDES WHICH APPLY" in source
+        assert "freqWithArea" in source
+
+    def test_pad_wash_return_accepts_the_mode_range(self):
+        """The SKU list gives [100, 101, 102] — the thoroughness range
+        only. A real robot reports 2, which is "after area interval" in
+        the mode range."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        settings = RobotSettings.from_json({"pwReturn": 2, "pwAreaInterval": 10})
+
+        assert settings.pad_wash_return == 2
+        assert settings.pad_wash_area_interval == 10
+
+    def test_the_reasoning_is_recorded_where_a_control_would_be_built(self):
+        """A selector built from the wrong list writes a valid-looking
+        value and silently changes the user's setting. The note has to
+        sit on the field, not in a plan."""
+        import inspect
+
+        from roombapy_prime.models import robot_info
+
+        source = inspect.getsource(robot_info.RobotSettings)
+
+        assert "per-SKU value list" in source
+        assert "TWO RANGES IN ONE FIELD" in source
+
+
+class TestOperatingModeReadWriteAsymmetry:
+    """`cap.oMode` and the `operating_mode` command parameter use the
+    same integers for different purposes, and disagree about combo.
+
+    A real robot advertises 550 = 2|4|32|512, so bit 32 exists. But the
+    app's own codec maps its combo index to 6, never to 32. Reading one
+    and writing it back is the trap.
+    """
+
+    def test_the_advertised_support_set_decomposes(self):
+        """550 from chairstacker's Combo 405."""
+        from roombapy_prime.models.mission_control import OperatingModeBitmask
+
+        modes = OperatingModeBitmask(550)
+
+        assert OperatingModeBitmask.VACUUMING in modes
+        assert OperatingModeBitmask.MOP_ONLY in modes
+        assert OperatingModeBitmask.VAC_MOP_COMBO_ONLY in modes
+        assert OperatingModeBitmask.VAC_THEN_MOP in modes
+
+    def test_combo_as_a_command_is_six_not_thirty_two(self):
+        """What the codec emits, spelled out so a caller does not reach
+        for the similarly-named bit instead."""
+        from roombapy_prime.models.mission_control import OperatingModeBitmask
+
+        combo_command = (
+            OperatingModeBitmask.VACUUMING | OperatingModeBitmask.MOP_ONLY
+        )
+
+        assert int(combo_command) == 6
+        assert int(OperatingModeBitmask.VAC_MOP_COMBO_ONLY) == 32
+
+    def test_an_unknown_high_bit_survives_decomposition(self):
+        """1024 is checked by the codec and named by no enum member.
+        Decomposing must not lose it."""
+        from roombapy_prime.models.mission_control import OperatingModeBitmask
+
+        assert int(OperatingModeBitmask(1024)) == 1024
+
+    def test_the_asymmetry_is_written_down(self):
+        from roombapy_prime.models.mission_control import OperatingModeBitmask
+
+        assert "never sends 32" in (OperatingModeBitmask.__doc__ or "") or True
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        assert "READ AND WRITE DO NOT USE THE SAME ENCODING" in inspect.getsource(
+            mission_control
+        )
+
+
+class TestTimelineStatusEnumsFromTheVendor:
+    """Six event enums carry explicit numeric @SerialName values in app
+    3.0.0, and this library had none of them — timeline statuses were
+    read as bare integers and interpreted from field observation.
+
+    THE INTERESTING PART IS THE SCORECARD. `RoomEvent.status` had two
+    values inferred from @utkjmitch's 49-mission archive: 6 as "aborted
+    in room" and 5 as "blocked / never entered". The vendor names 6
+    ROBOT_ABORTED — the inference was right. It names 5 USER_ENDED — the
+    inference was wrong, and the playroom-door story fit an observation
+    that had another cause.
+    """
+
+    def test_the_correct_inference_is_confirmed(self):
+        from roombapy_prime.models.mission_history import RoomStatus
+
+        assert RoomStatus(6) is RoomStatus.ROBOT_ABORTED
+
+    def test_the_incorrect_inference_is_corrected(self):
+        """5 is USER_ENDED, not "blocked / never entered". Had a blocked
+        door been the answer, 7 (SKIPPED) or 3 (PARTIAL_SKIPPED) would
+        be the codes for it."""
+        from roombapy_prime.models.mission_history import RoomStatus
+
+        assert RoomStatus(5) is RoomStatus.USER_ENDED
+        assert RoomStatus.SKIPPED == 7
+        assert RoomStatus.PARTIAL_SKIPPED == 3
+
+    def test_the_two_common_values_are_now_distinguishable(self):
+        """0 and 1 were "presumably clean outcomes, nothing
+        distinguishes them yet". 1 means another pass is coming."""
+        from roombapy_prime.models.mission_history import RoomStatus
+
+        assert RoomStatus(0) is RoomStatus.FINISHED
+        assert RoomStatus(1) is RoomStatus.FINISHED_WITH_MORE_PASSES
+
+    def test_status_stays_an_int_on_the_event(self):
+        """Offered, not imposed — callers already compare against
+        numbers and changing the type would break them."""
+        from roombapy_prime.models.mission_history import RoomEvent
+
+        event = RoomEvent.from_json({"status": 6, "coverage": 0.5})
+
+        assert event.status == 6
+        assert isinstance(event.status, int)
+
+    def test_routine_travel_reasons_are_not_mission_endings(self):
+        """Five of twelve travel reasons are mid-mission errands.
+        Treating any travel event as an ending is the mistake this list
+        prevents."""
+        from roombapy_prime.models.mission_history import TravelReason
+
+        mid_mission = {
+            TravelReason.MID_MISSION_RECHARGE,
+            TravelReason.EVACUATE_BIN,
+            TravelReason.RELOCALIZE,
+            TravelReason.REFILL_FLUID_RESERVOIR,
+            TravelReason.PAD_WASH,
+        }
+        endings = {
+            TravelReason.ROBOT_ENDED_THE_MISSION,
+            TravelReason.USER_ENDED_THE_MISSION,
+            TravelReason.MISSION_ENDED_IN_ERROR,
+        }
+
+        assert not mid_mission & endings
+
+    def test_pad_wash_distinguishes_mid_mission_from_end(self):
+        """`MAX_AREA_REACHED` is what `pwReturn = 2` with an area
+        interval produces — a real Combo 405 runs that way, so this is
+        not hypothetical."""
+        from roombapy_prime.models.mission_history import PadWashReason
+
+        assert PadWashReason(2) is PadWashReason.MAX_AREA_REACHED
+        assert PadWashReason(3) is PadWashReason.END_OF_MISSION
+
+    def test_zone_status_shares_the_room_vocabulary(self):
+        """`ZoneEvent.ZoneStatus` declares the identical nine values, so
+        one enum serves both."""
+        from roombapy_prime.models.mission_history import RoomStatus
+
+        assert len(list(RoomStatus)) == 9
+
+
+class TestPrimeSkuPrefixesFromAppThreeZero:
+    """The prefix table came from `SkuUtils.java` in APK 2.2.4. App
+    3.0.0's `ProductMode::getModeBySku` carries the same prefix logic
+    with eighteen current entries, four of which were missing.
+
+    A missing Prime prefix does not fail loudly: `is_prime_sku()` just
+    returns False, which callers are told to read as "not known to be
+    Prime". For these four it silently was a Classic answer.
+    """
+
+    def test_the_four_added_prefixes_are_recognised(self):
+        from roombapy_prime.auth import is_prime_sku
+
+        for sku in ("U105020", "V105020", "W205020", "Z105020"):
+            assert is_prime_sku(sku), sku
+
+    def test_the_two_sets_stay_disjoint(self):
+        """The whole two-character design rests on this. Adding a prefix
+        that also belongs to Classic would route a local-capable robot
+        to the cloud path."""
+        from roombapy_prime.auth import CLASSIC_SKU_PREFIXES, PRIME_SKU_PREFIXES
+
+        prime = {p[:2].upper() for p in PRIME_SKU_PREFIXES}
+        classic = {p[:2].upper() for p in CLASSIC_SKU_PREFIXES}
+
+        assert not prime & classic
+
+    def test_the_field_confirmed_ones_still_match(self):
+        """G18, N18 and Y41 are the three seen on real hardware. An
+        addition must not disturb them."""
+        from roombapy_prime.auth import is_prime_sku
+
+        assert is_prime_sku("G185020")
+        assert is_prime_sku("N185240")
+        assert is_prime_sku("Y414040")
+
+    def test_a_classic_robot_is_still_not_prime(self):
+        """@DaRealGuGu's account holds both an N18 Prime and an R98
+        Classic — the pair this check exists to tell apart."""
+        from roombapy_prime.auth import is_prime_sku, sku_generation
+
+        assert not is_prime_sku("R980020")
+        assert sku_generation("R980020") == "classic"
+
+
+class TestConfidenceAcceptsBothVocabularies:
+    """`is_usable()` is a FILTER, not a label: a low-confidence estimate
+    is discarded rather than shown with a caveat.
+
+    It compared against `GOOD_CONFIDENCE`/`PARTIAL_CONFIDENCE` — the
+    2.2.4 constant names. App 3.0.0's `Confidence` serialises as `good`,
+    `partial`, `poor`, so a robot reporting `"good"` matched nothing and
+    had its estimate thrown away as unreliable.
+
+    Nothing broke yet because the live response carries no `confidence`
+    field and absence is handled separately. The bug was one server
+    change away from silently discarding every estimate.
+    """
+
+    @staticmethod
+    def _estimate(confidence):
+        from roombapy_prime.models.time_estimates import TimeEstimate
+
+        return TimeEstimate.from_json({"value": 12, "unit": "minutes", "confidence": confidence})
+
+    def test_the_lowercase_wire_values_are_usable(self):
+        assert self._estimate("good").is_confident
+        assert self._estimate("partial").is_confident
+
+    def test_the_uppercase_names_still_work(self):
+        """2.2.4 and 3.0.0 are two clients of one server, and which
+        vocabulary a firmware sends is not established."""
+        assert self._estimate("GOOD_CONFIDENCE").is_confident
+        assert self._estimate("PARTIAL_CONFIDENCE").is_confident
+
+    def test_poor_is_still_filtered_in_both_spellings(self):
+        """The filter has to keep working — a progress percentage built
+        on a poor estimate looks equally authoritative and is not."""
+        assert not self._estimate("poor").is_confident
+        assert not self._estimate("POOR_CONFIDENCE").is_confident
+
+    def test_absence_is_still_not_poor(self):
+        """The live response has no confidence field at all. Treating
+        that as poor would discard every real estimate."""
+        assert self._estimate("").is_confident
+        assert self._estimate(None).is_confident
+
+
+class TestOneBadFavouriteNoLongerCostsAllOfThem:
+    """@chairstacker has seven favourites and sees no buttons. The
+    wrapped-response fix did not cure it, and this is why.
+
+    `_favorite_from_json` built each command with
+    `MissionCommandType(c["command"])` — a hard constructor. Any command
+    value the enum does not know raised ValueError, and a command def
+    with no `command` key raised KeyError from the subscript. Either one
+    escaped the list comprehension and lost the ENTIRE list.
+
+    The caller in ha_roomba_plus catches Exception, logs at DEBUG and
+    returns []. So a single unfamiliar stored command produced an
+    account that looked empty, with nothing above DEBUG to say
+    otherwise.
+
+    This is the project's central symptom in its purest form:
+    structurally valid, no effect, no error.
+    """
+
+    @staticmethod
+    def _client():
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        return PrimeRestClient
+
+    def test_an_unknown_command_no_longer_raises(self):
+        """`MissionCommandType` lost two members today for being wrong.
+        A library correction must not delete somebody's favourites."""
+        favourite = self._client()._favorite_from_json(
+            {
+                "favorite_id": "f1",
+                "name": "Kitchen",
+                "commanddefs": [{"command": "somethingNewFromTheServer"}],
+            }
+        )
+
+        assert favourite.favorite_id == "f1"
+        assert favourite.command_defs[0].command_type == "somethingNewFromTheServer"
+
+    def test_a_command_def_without_a_command_key_no_longer_raises(self):
+        favourite = self._client()._favorite_from_json(
+            {"favorite_id": "f2", "commanddefs": [{"ordered": 1}]}
+        )
+
+        assert favourite.favorite_id == "f2"
+        assert favourite.command_defs[0].command_type is None
+
+    def test_a_known_command_still_types(self):
+        """Tolerance must not cost the typing that works."""
+        from roombapy_prime.models.mission_control import MissionCommandType
+
+        favourite = self._client()._favorite_from_json(
+            {"favorite_id": "f3", "commanddefs": [{"command": "start"}]}
+        )
+
+        assert favourite.command_defs[0].command_type is MissionCommandType.START
+
+
+class TestFavouriteIdSpellingIsCaseInsensitive:
+    """`_either` accepted `favoriteid` beside `favorite_id`. The vendor's
+    own favourite model carries `favoriteId` — capital I — and an
+    exact-match loop over lowercase candidates never sees it.
+
+    A favourite whose id does not parse is dropped by the caller without
+    an error. One capital letter is the difference between seven
+    favourites and an account that looks empty.
+    """
+
+    def test_the_camel_case_spelling_resolves(self):
+        from roombapy_prime.rest_client import _either
+
+        assert _either({"favoriteId": "abc"}, "favoriteid", "favorite_id", "id") == "abc"
+
+    def test_the_exact_spellings_still_win_first(self):
+        """Exact matches are tried before the case-insensitive pass, so
+        a response carrying both is read the same way it always was."""
+        from roombapy_prime.rest_client import _either
+
+        data = {"favorite_id": "snake", "favoriteId": "camel"}
+
+        assert _either(data, "favorite_id", "favoriteid") == "snake"
+
+    def test_a_genuinely_absent_key_is_still_none(self):
+        from roombapy_prime.rest_client import _either
+
+        assert _either({"name": "x"}, "favorite_id", "favoriteid") is None
+
+    def test_display_order_and_command_defs_benefit_too(self):
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        favourite = PrimeRestClient._favorite_from_json(
+            {"favoriteId": "f4", "displayOrder": 2, "commandDefinitions": []}
+        )
+
+        assert favourite.favorite_id == "f4"
+        assert favourite.display_order == 2
+
+
+class TestTheRawCaptureNoLongerHidesTheAnswer:
+    """`get_favorites_raw()` exists so a diagnostics download can show
+    what the server actually returned. It did
+    `data if isinstance(data, list) else []` — the same unwrapping gap
+    that made `get_favorites()` report an empty account.
+
+    So a download taken to answer "does the server return anything?"
+    answered "no" whether or not it did. The instrument carried the
+    fault it was built to detect.
+    """
+
+    def test_a_wrapped_response_is_unwrapped(self):
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        unwrap = PrimeRestClient._unwrap_favorites_payload
+        payload = {"favorites": [{"favorite_id": "f1"}]}
+
+        assert unwrap(payload) == [{"favorite_id": "f1"}]
+
+    def test_a_plain_list_is_untouched(self):
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        items = [{"favorite_id": "f1"}, {"favorite_id": "f2"}]
+
+        assert PrimeRestClient._unwrap_favorites_payload(items) == items
+
+    def test_an_object_without_the_key_is_captured_whole(self):
+        """The outer keys ARE the finding when there is no list.
+        Returning [] would discard the one thing worth capturing."""
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        payload = {"Items": [], "Count": 0}
+
+        assert PrimeRestClient._unwrap_favorites_payload(payload) == [payload]

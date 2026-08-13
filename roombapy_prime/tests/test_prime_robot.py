@@ -111,6 +111,62 @@ async def test_set_setting_writes_named_shadow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_setting_addresses_a_dotted_key_directly() -> None:
+    """`padWetness.padPlate` and the five `langs2.*` keys appear in the
+    app's own key switch with their dots intact — the sub-key is the
+    address, not a path to walk. No read-modify-write of the enclosing
+    map."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    mqtt.update_shadow.return_value = ShadowResponse(topic="t", payload={})
+
+    await robot.set_setting("padWetness.padPlate", 1)
+
+    mqtt.get_shadow.assert_not_called()
+    mqtt.update_shadow.assert_called_once_with(
+        {"padWetness.padPlate": 1}, "rw-settings", 8.0
+    )
+
+
+class TestTheRegionOverrideCaveatIsNarrowedNotDropped:
+    """This library carried the caveat that a region's params override
+    the global value during a mission, naming `CommandParams.copyWith`
+    as the mechanism. That mechanism is gone in app 3.0.0, along with
+    `fillBlanksWith` and `onlyUserModifiableParams` — two separate
+    command builders now, neither merging.
+
+    THE CAVEAT DOES NOT SIMPLY EXPIRE. `params` is optional at region
+    level, so a command MAY still carry per-region parameters that
+    describe that region. What changed is the trigger: a global setting
+    is outranked by a command that actually sends them, not by the mere
+    presence of regions.
+
+    Asserting on the docstring rather than behaviour is deliberate —
+    the claim being guarded is a claim about the vendor, and the only
+    thing this library can keep honest is what it says.
+    """
+
+    def test_the_dead_mechanism_is_named_as_dead(self):
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        source = inspect.getsource(PrimeRobot.set_setting)
+
+        assert "THAT MECHANISM IS GONE IN 3.0" in source
+        assert "fillBlanksWith" in source
+
+    def test_what_survives_is_stated(self):
+        import inspect
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        source = inspect.getsource(PrimeRobot.set_setting)
+
+        assert "WHAT REMAINS" in source
+        assert "OPTIONAL" in source
+
+
+@pytest.mark.asyncio
 async def test_trigger_echo_via_shadow_writes_rw_constatus() -> None:
     """NEW (this session, prompted by a real bug report -- the existing
     REST-based locate action doesn't actually chime the robot). Tests
@@ -1834,23 +1890,28 @@ class TestTheDoNotDisturbCommands:
     `PUT /v1/households/{id}/settings/dnd`.
     """
 
-    def test_the_wire_values_are_camel_case(self):
-        """Verbatim from `CommandType`'s raw source:
-        `startDoNotDisturb("startDoNotDisturb")` — the value is in the
-        bracket, not inferred from the constant name."""
+    def test_the_wire_values_are_snake_case(self):
+        """CORRECTED. This test previously asserted camelCase, citing
+        `CommandType`'s source as `startDoNotDisturb("startDoNotDisturb")`
+        — "the value is in the bracket, not inferred from the constant
+        name".
+
+        The value really is in the bracket. It is also just the member
+        name repeated, which is what an unannotated enum looks like.
+        `mission_model.toPayload`, the function that builds the
+        published command body, sends `start_dnd`."""
         from roombapy_prime.models.mission_control import MissionCommandType
 
-        assert MissionCommandType.STARTDONOTDISTURB.value == "startDoNotDisturb"
-        assert MissionCommandType.STOPDONOTDISTURB.value == "stopDoNotDisturb"
+        assert MissionCommandType.START_DND.value == "start_dnd"
+        assert MissionCommandType.STOP_DND.value == "stop_dnd"
 
-    def test_they_differ_from_the_lowercase_neighbours_on_purpose(self):
-        """`washpad` and `drypad` are lowercase here because the field
-        confirmed them lowercase. Nobody has sent these two at all, so
-        the vendor's spelling stands unopposed."""
+    def test_they_match_their_lowercase_neighbours(self):
+        """No spelling split: `toPayload` carries all twenty commands
+        lowercase, these two among them."""
         from roombapy_prime.models.mission_control import MissionCommandType
 
         assert MissionCommandType.WASHPAD.value == "washpad"
-        assert MissionCommandType.STARTDONOTDISTURB.value != "startdonotdisturb"
+        assert MissionCommandType.START_DND.value == MissionCommandType.START_DND.value.lower()
 
     @pytest.mark.asyncio
     async def test_the_simple_command_path_carries_them(self):
@@ -1867,14 +1928,12 @@ class TestTheDoNotDisturbCommands:
         robot.blid = "B"
         robot._irbt_topic_prefix = "irbt"
 
-        await PrimeRobot.send_simple_command(
-            robot, MissionCommandType.STARTDONOTDISTURB.value
-        )
+        await PrimeRobot.send_simple_command(robot, MissionCommandType.START_DND.value)
 
         # publish_cmd takes the command as a string and builds the
         # envelope itself -- which is precisely why no new path was
         # needed for these two.
-        assert "startDoNotDisturb" in robot._mqtt.publish_cmd.call_args.args
+        assert "start_dnd" in robot._mqtt.publish_cmd.call_args.args
 
     def test_the_confirmed_shape_is_written_down(self):
         """So nobody adds a window parameter looking for one."""

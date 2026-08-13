@@ -14,30 +14,47 @@ from .enums_common import _enum_or_none
 from .geometry import Position
 
 
-#: CASE DIFFERS FROM THE APP, AND OURS IS THE CONFIRMED ONE.
+#: THE CASE CONFLICT THIS COMMENT USED TO DESCRIBE NEVER EXISTED.
 #:
-#: App 3.0.0's `CommandType` spells the multi-word commands in
-#: camelCase: `washPad`, `dryPad`, `stopEvac`, `stopPadDry`,
-#: `fluidRefill`, `pointClean`. This enum uses lowercase.
+#: An earlier revision recorded that app 3.0.0 spells the multi-word
+#: commands in camelCase (`washPad`, `dryPad`, `stopEvac`, `stopPadDry`,
+#: `fluidRefill`, `pointClean`) while this enum uses lowercase, and
+#: argued at length for keeping the field-confirmed lowercase forms.
 #:
-#: **The lowercase forms are field-confirmed.** @DaRealGuGu's robot
-#: recorded `"command": "washpad"` and `"command": "drypad"` in its own
-#: `rw-software.lastCommand`, and his pad-wash counter stands at 90 --
-#: the washes are happening.
+#: That comparison was made against `CommandType` -- a DOMAIN enum whose
+#: members mirror their own names (`dryPad -> "dryPad"`). Mirrored names
+#: are not wire values; they are what an enum looks like when nobody
+#: annotated it.
 #:
-#: So either the robot is case-insensitive here, or it accepts both.
-#: Switching to the app's spelling would change a path that demonstrably
-#: works, to match a model. That is the same trade this library has now
-#: declined three times in one day, and the answer has not changed: a
-#: confirmed shape outranks a plausible one.
+#: THE DECISIVE SOURCE IS `mission_model.toPayload` (Dart), the function
+#: that builds the command body actually published. It carries twenty
+#: string literals, and **all twenty are lowercase**: `washpad`,
+#: `drypad`, `stopevac`, `stoppaddry`, `flrefill`, `point_clean`,
+#: `start_dnd`, `stop_dnd` and the rest. `clean_control_util
+#: ._trackIrobotCleanCommandResult` carries the identical twenty.
 #:
-#: WHAT WOULD SETTLE IT: sending `washPad` on a robot whose counter can
-#: be watched. Until then, nothing here changes.
+#: Every command this enum and the vendor's share matches exactly.
+#: There was never anything to reconcile, and no robot ever accepted
+#: two spellings.
 #:
-#: Four commands the app has and this enum does not -- `fluidRefill`
-#: (ours is `flrefill`), `pointClean` (ours is `point_clean`),
-#: `startDoNotDisturb` and `stopDoNotDisturb`. The last two are new:
-#: DND was previously only writable through the settings REST call.
+#: WORTH KNOWING WHICH SOURCE SETTLED IT, because two disagreed: one
+#: extraction reported these as `CommandTypeDTO` `@SerialName` values,
+#: another reported that DTO's annotation map as empty. `toPayload`
+#: moots the question -- it is the code that sends, not a description of
+#: it.
+#:
+#: TWO CONSEQUENCES, both retiring a caveat rather than adding one:
+#:
+#: - `flrefill` was carried as an admitted guess ("appears in no capture
+#:   at all"). `CommandTypeDTO.FLUID_REFILL` serialises as exactly that.
+#:   It is confirmed.
+#: - `point_clean`, already confirmed from a real server-stored routine,
+#:   is confirmed a second time from the vendor's own serialiser.
+#:
+#: THE LESSON, which cost four wrong constants below: a Kotlin enum with
+#: an empty `wireValues` map has no wire values to offer. Reading its
+#: member names as if they were wire values invents a vocabulary the
+#: server has never seen.
 class MissionCommandType(StrEnum):
     """Confirmed from com.irobot.data.missioncommand.datamodels.
     CommandType -- values are the actual @SerialName strings, NOT the
@@ -79,14 +96,30 @@ class MissionCommandType(StrEnum):
     DRYPAD = "drypad"
     STOPPADDRY = "stoppaddry"
     FLUSHSLUICE = "flushsluice"
-    #: NEW IN APP 3.0.0's `CommandType`. Do Not Disturb was previously
+    #: DO NOT DISTURB, over the command topic. Previously DND was
     #: writable only through the settings REST call; these are a second
-    #: way in, over the command topic.
+    #: way in.
     #:
-    #: SPELLING TAKEN FROM THE APP, unlike the multi-word commands
-    #: above. Those are lowercase here because the field confirmed them
-    #: lowercase; nobody has sent these at all, so there is no confirmed
-    #: form to prefer over the vendor's.
+    #: CORRECTED (APK 3.0.0): the wire values are `start_dnd` and
+    #: `stop_dnd`. This enum previously carried
+    #: `startDoNotDisturb`/`stopDoNotDisturb`, read off `CommandType`'s
+    #: member names.
+    #:
+    #: THREE PLACES SEND THE SNAKE FORMS: `mission_model.toPayload`
+    #: (the command body builder), `clean_control_util
+    #: ._trackIrobotCleanCommandResult`, and
+    #: `device_list_view_model._parseFullLiveMapData`.
+    #:
+    #: THE CAMELCASE FORMS APPEAR EXACTLY ONCE EACH, as members of a
+    #: Dart enum whose every value is null -- names, not values. That
+    #: is the same shape that produced the mistake on the Kotlin side,
+    #: found again on the other side of the bridge.
+    #:
+    #: Removed alongside them: `POINTCLEAN_VENDOR = "pointClean"` and
+    #: `FLUIDREFILL_VENDOR = "fluidRefill"`, offered as vendor
+    #: alternatives "a caller with a dock that refuses one can try".
+    #: They were the same mistake and there was nothing to try -- see
+    #: the module comment above `MissionCommandType`.
     #:
     #: THEY CARRY NO WINDOW, confirmed from `BasicCommandBuilder`.
     #:
@@ -94,7 +127,7 @@ class MissionCommandType(StrEnum):
     #: emits `command`, `initiator` and `time` with every other position
     #: -- params, regions, point, map ids, ordered -- set to null:
     #:
-    #:     {"command": "startDoNotDisturb", "time": <unix>,
+    #:     {"command": "start_dnd", "time": <unix>,
     #:      "initiator": "rmtApp"}
     #:
     #: So these switch Do Not Disturb on and off **ad hoc**. The window
@@ -103,24 +136,12 @@ class MissionCommandType(StrEnum):
     #:
     #: That makes `send_simple_command()` the right path for both --
     #: they need nothing this library does not already send.
-    #: TWO SPELLINGS, BOTH REAL, AND THE FIELD DECIDES.
-    #:
-    #: `CommandType` in app 3.0.0 lists twenty values, all camelCase --
-    #: including `pointClean` and `fluidRefill`. This enum has
-    #: `point_clean` and `flrefill`.
-    #:
-    #: `point_clean` IS NOT A GUESS: it appears verbatim in a real
-    #: favourite definition returned by the server, inside a routine
-    #: named "Spot Clean" with `routine_type: SPOT_CLEAN`. The server
-    #: stores it that way whatever the app sends.
-    #:
-    #: `flrefill` appears in no capture at all, so it is a guess -- and
-    #: `fluidRefill` is the vendor's. Both are offered; a caller with a
-    #: dock that refuses one can try the other.
-    POINTCLEAN_VENDOR = "pointClean"
-    FLUIDREFILL_VENDOR = "fluidRefill"
-    STARTDONOTDISTURB = "startDoNotDisturb"
-    STOPDONOTDISTURB = "stopDoNotDisturb"
+    START_DND = "start_dnd"
+    STOP_DND = "stop_dnd"
+    #: `point_clean` is confirmed twice over: verbatim in a real
+    #: favourite definition returned by the server (a routine named
+    #: "Spot Clean" with `routine_type: SPOT_CLEAN`), and as
+    #: `CommandTypeDTO.POINT_CLEAN`'s own `@SerialName`.
     CLEAN_SPOT = "point_clean"
     START_CLEAN = "start_clean"
 
@@ -168,25 +189,23 @@ class RoutineCommand:
     #: another, and iRobot's own `BasicCommandBuilder` defaults to
     #: `RmtApp` rather than leaving it out.
     initiator: str | None = None
-    # Wire key "id". CONFIRMED to be written by the real app's own
-    # buildJsonFromCommandDef (parallel APK research) -- one of exactly
-    # seven fields it emits -- but its MEANING is unknown, and no
-    # capture this project has contains it.
+    # Wire key "id". CARRIED AS A PASSTHROUGH ONLY, and app 3.0.0
+    # weakens the case for it further.
     #
-    # Deliberately a PASSTHROUGH, never generated: if a stored favorite
-    # carries one, we preserve it; if it does not, we send nothing.
-    # Inventing a value would be worse than omitting the field, since
-    # we cannot know what it identifies. This exists so that our
-    # parse-then-reserialize round-trip stops silently DROPPING it --
-    # exactly the failure mode verify_region_commands' own fidelity
-    # check was built to catch.
+    # An earlier note here said this was "CONFIRMED to be written by the
+    # real app's own buildJsonFromCommandDef -- one of exactly seven
+    # fields it emits". The 2.2.4 reading says the opposite: `id`,
+    # `robot_id` and `select_all` were the three fields that function
+    # REMOVED unconditionally before sending. And `CommandDTO` in 3.0.0
+    # declares thirteen fields with no `id` among them.
+    #
+    # So no version of the vendor's client sends it. The field stays
+    # anyway, because it is never GENERATED here -- if a stored favorite
+    # carries one, the round-trip preserves it; if it does not, nothing
+    # is sent. That is the failure mode verify_region_commands' fidelity
+    # check exists to catch, and preserving an unknown key costs less
+    # than silently dropping it.
     command_id: str | None = None
-    """NEW (session 25) -- confirmed from real mission history
-    (chairstacker): wire key "initiator", observed values "cloud"
-    (schedule-triggered) and "rmtApp" (manually triggered via the
-    app). No @SerialName found -- property name directly. Left as
-    optional/None instead of a guessed default value, since it's
-    unclear what the server assumes when the field is missing."""
 
     def to_json(self, legacy_map_keys: bool = False) -> dict[str, Any]:
         """The command as JSON.
@@ -240,8 +259,22 @@ class RoutineCommand:
             #
             # The APK says why: `CommandDTO` has thirteen fields and
             # `select_all` is not one of them. iRobot's 2.2.4 code
-            # stripped it before sending; 3.0.0 does not model it. The
-            # robot never sees the key.
+            # stripped it before sending; the robot never sees the key.
+            #
+            # REFINED: "3.0.0 does not model it" was too strong. There
+            # are TWO command models with different field sets --
+            # Kotlin's `CommandDTO` (thirteen fields, no `select_all`,
+            # WITH `user_pmapv_id`) and Dart's `mission_model.toPayload`
+            # (thirteen fields, WITH `select_all`, no `user_pmapv_id`).
+            # So `select_all` is modelled in 3.0.0, just not on the path
+            # this library mirrors.
+            #
+            # That does not revive it. @Echovictor37 sent it twice on
+            # real hardware and it did nothing either time, which no
+            # model can outrank. What it does explain is where the
+            # second model is used: `publishRawFurnitureMissionCommand`
+            # sends a raw map bypassing `CommandDTO`, and furniture
+            # commands are the one path known to take that route.
             #
             # **SO THERE IS NO clean_all PAYLOAD TO FIND.** A whole-house
             # clean is `send_simple_command("start")`, which is confirmed
@@ -302,6 +335,19 @@ class RoutineCommand:
             body["regions"] = [r.to_json() if hasattr(r, "to_json") else r for r in self.regions]
         if self.pmap_version_id is not None:
             body["user_p2mapv_id"] = self.pmap_version_id
+            # THE LEGACY PAIR WAS HALF-WRITTEN. `legacy_map_keys` added
+            # `pmap_id` beside `p2map_id` but left `user_pmapv_id` out,
+            # even though the reasoning above is about all FOUR fields
+            # being separate and nullable.
+            #
+            # The enum name says why it matters:
+            # `MidCleanAdjustmentType.SUPPORTED_SKIP_DRC_AND_REQUIRES_USER_PMAPV_ID`
+            # -- certain devices REQUIRE `user_pmapv_id`, and that value
+            # exists precisely to mark them. A robot in that class got
+            # the legacy map id and the modern version id, which is
+            # neither convention.
+            if legacy_map_keys:
+                body["user_pmapv_id"] = self.pmap_version_id
         if self.spot_geometry is not None:
             body["geom"] = self.spot_geometry
         if self.favorite_id is not None:
@@ -346,28 +392,43 @@ class RegionType(StrEnum):
     A FOURTH TYPE EXISTS AND IS DELIBERATELY NOT LISTED HERE:
     kZoneTypeWId, found alongside kZoneTypeRId/ZId/TId in the same
     constant table (parallel APK research). Its wire value could not be
-    resolved, and guessing it would be worse than omitting it -- note
-    that TID is "furniture", NOT "tid", so the obvious lowercase-the-
-    prefix pattern is already known to be wrong here. An earlier
-    version of this enum did exactly that guess for TID and was wrong
-    for months.
+    resolved, and guessing it would be worse than omitting it.
+
+    The lowercase-the-prefix pattern now holds for all three known
+    types (`IrobotRegionType`: rid/zid/tid), so "wid" is the obvious
+    candidate -- which is a reason to expect it, not a licence to ship
+    it. `IrobotRegionType` lists exactly three members, so whatever WId
+    is, the Prime app does not send it.
 
     If a real capture ever shows a region type this enum does not
     recognise, that is very likely WID, and the observed value settles
     it. Until then it stays unmodelled rather than invented."""
 
     RID = "rid"
-    # CORRECTED (parallel native-analysis track, later session): the
-    # actual @SerialName is "furniture", NOT "tid". The earlier "tid"
-    # was an INFERENCE from the confirmed rid/zid lowercasing pattern,
-    # never observed in real data -- no TID region has ever appeared in
-    # any capture this project has (every real one is rid or zid).
-    # "furniture" is also semantically coherent for an ad-hoc region
-    # placed around an object. Practical blast radius was small:
-    # _is_safe_command_def() REJECTS TID regions outright, so only
+    # REVERTED TO "tid" (APK 3.0.0, Dart `IrobotRegionType`, which
+    # states its wire values outright: room -> "rid", zone -> "zid",
+    # temporary -> "tid").
+    #
+    # A previous session changed this to "furniture" and cited an
+    # @SerialName for it. There is no such annotation: the Kotlin
+    # `RegionDTO.RegionType` carries an EMPTY wire-value map, and its
+    # member names are `room`/`zone`/`adHoc` -- "furniture" is not
+    # among them either. The claim could not have come from where it
+    # said it did.
+    #
+    # "furniture" IS in the app, which is why it looked right: it
+    # appears in `targetKey`, `fromPrefix`, `debugLabel` and
+    # `isFurnitureAreaRoomKey` -- internal key composition and display
+    # labels. "tid" appears in `_createOneRegion` and
+    # `_resolveRegionType`, which build the command. Comparing an
+    # identifier where meaning was intended, one more time.
+    #
+    # The original inference from the rid/zid pattern was right, and the
+    # correction broke it. Blast radius stayed small in both directions:
+    # _is_safe_command_def() rejects TID regions outright, so only
     # stage 4 (--send-adhoc, never yet run by anyone) could have sent
-    # the wrong value.
-    TID = "furniture"
+    # either value.
+    TID = "tid"
     ZID = "zid"
 
 
@@ -725,17 +786,57 @@ class OperatingModeBitmask(IntFlag):
     MOPPING = 256
     VAC_THEN_MOP = 512
 
+    #: READ AND WRITE DO NOT USE THE SAME ENCODING FOR "COMBO", and this
+    #: enum describes the READ side.
+    #:
+    #: `cap.oMode = 550` decomposes to 2|4|32|512 on real hardware, so
+    #: bit 32 is genuinely advertised. But `IrobotOperatingModeCodec`
+    #: (app 3.0.0, decompiled) maps the UI's four mode indices to just
+    #: four command values:
+    #:
+    #:     0 -> 0    1 -> 2 (vacuuming)
+    #:     2 -> 4 (mop only)    3 -> 6 (combo)
+    #:
+    #: Combo as a COMMAND is 6 -- VACUUMING|MOP_ONLY -- not 32. The app
+    #: never sends 32.
+    #:
+    #: So a caller reading `VAC_MOP_COMBO_ONLY` out of `cap.oMode` and
+    #: sending it back as `operating_mode` would be sending a value the
+    #: vendor's own client never emits. It may well work; nothing here
+    #: has tested it, and that is the point.
+    #:
+    #: 512 AND 1024 ARE NOT COMBINED AS BITS. The codec compares them
+    #: with equality, not masking. 1024 has no member in `OperatingMode`
+    #: at all -- unmodelled here rather than named, since what it means
+    #: is unknown. A reader decomposing a raw int should expect a
+    #: leftover bit rather than assume the enum is complete.
+
 
 class PadCategory(StrEnum):
     """CONFIRMED @SerialName wire values (parallel native-analysis
     track) for the REST/mission-history pad field.
 
-    IMPORTANT SCOPE LIMIT, from this project's own real captures: these
-    are NOT confirmed to be the values ro-currentstate.detectedPad
-    uses. Real Classic data shows that field carrying simpler values
-    ("reusable", "wet"), and no Prime capture has pinned its value set
-    down yet. Treat this enum as the REST-side vocabulary, and compare
-    against detectedPad only as a hint, never as a strict match.
+    SCOPE LIMIT, NARROWED BY A REAL PRIME CAPTURE. This enum was
+    documented as the REST-side vocabulary only, with an explicit
+    warning that `ro-currentstate.detectedPad` was NOT confirmed to use
+    it -- real Classic data shows that field carrying simpler values
+    ("reusable", "wet"), and no Prime capture had pinned it down.
+
+    A Prime one now has: chairstacker's Combo 405 reports
+    `detectedPad: "padPlate"` on ro-currentstate, which is exactly
+    `PadCategory.PAD_PLATE`. So on Prime the two vocabularies agree, at
+    least for this value.
+
+    THE CLASSIC CAVEAT STANDS. "reusable" and "wet" are not members
+    here, so a Classic robot still needs the loose comparison. Treat a
+    match as informative on Prime and as a hint on Classic.
+
+    WORTH KNOWING WHAT THIS FIELD ANSWERS: `padPlate` means the plate
+    is fitted with no pad on it. App 3.0.0 infers the same state
+    indirectly, from fault code 287 ("Unable to vacuum: remove Pad
+    Plate") -- a state it derives from what the robot says is
+    impossible. `detectedPad` states it directly, which is the better
+    source where a robot sends it.
 
     Also worth recording: the same research suggested detectedPad might
     be an OBJECT mapping pad categories to ints (mirroring the
@@ -822,12 +923,21 @@ class RobotReadinessState(IntEnum):
 
 
 class RoutineTypeParam(StrEnum):
-    """CONFIRMED (parallel native-analysis track, this session). Wire
-    format is the enum constant NAME itself as a string (unlike most
-    other enums in this module, which lowercase or otherwise
+    """CONFIRMED, AND RE-CONFIRMED FROM THE SEND PATH (app 3.0.0).
+    Wire format is the enum constant NAME itself as a string (unlike
+    most other enums in this module, which lowercase or otherwise
     transform their names) -- matching real observed data directly:
     "REPLAY" and "CLEAN_ALL" have both been seen on real devices
     already (see CommandParams.routine_type's own field docstring).
+
+    ALL SIX APPEAR VERBATIM IN `routine.dart::toJson`, the function that
+    serialises a routine for sending. That matters more than the count:
+    uppercase values are exactly the shape that turned out wrong in four
+    other enums here, all of them read off constant names. This one is
+    uppercase AND correct, confirmed by the code that sends it.
+
+    So the rule is not "uppercase is suspicious". The rule is that the
+    send path decides, and it happens to say uppercase here.
     FIRST_RUN and CLEAN_DIRTY are confirmed to exist in the enum but
     have never actually been observed on a real device yet."""
 

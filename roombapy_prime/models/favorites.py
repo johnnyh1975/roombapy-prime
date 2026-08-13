@@ -14,11 +14,35 @@ from .mission_control import RoutineCommand
 
 
 class TimeEstimateConfidence(StrEnum):
-    """Confirmed from TimeEstimateConfidence, complete list."""
+    """TWO VOCABULARIES, BOTH REAL, and this enum had only one.
+
+    The UPPER_SNAKE members are the 2.2.4 constant names. App 3.0.0's
+    `Confidence` declares the wire values outright, and they are
+    lowercase words:
+
+        POOR -> poor    PARTIAL -> partial    GOOD -> good
+
+    THIS WAS A LIVE FILTER, NOT A LABEL. `TimeEstimate.is_usable()`
+    compares `confidence.upper()` against these members' values, so a
+    robot reporting `"good"` produced `"GOOD"`, matched nothing, and its
+    estimate was DISCARDED as low-confidence. Exactly backwards.
+
+    Nothing has broken yet only because the live response carries no
+    `confidence` field at all, and absence is handled separately. The
+    moment one arrives, every good estimate would have been dropped.
+
+    Both spellings are members so `is_usable()` keeps working whichever
+    a robot sends. Which vocabulary a given firmware uses is not
+    established -- 2.2.4 and 3.0.0 are two clients of one server, and
+    only the server decides."""
 
     GOOD_CONFIDENCE = "GOOD_CONFIDENCE"
     POOR_CONFIDENCE = "POOR_CONFIDENCE"
     PARTIAL_CONFIDENCE = "PARTIAL_CONFIDENCE"
+    #: App 3.0.0 `Confidence` @SerialName values.
+    GOOD = "good"
+    POOR = "poor"
+    PARTIAL = "partial"
 
 
 class TimeEstimateTimeUnit(StrEnum):

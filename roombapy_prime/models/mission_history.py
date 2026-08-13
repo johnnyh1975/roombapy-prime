@@ -7,11 +7,10 @@ evidence trail behind any individual field."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 from .enums_common import _enum_or_none
-from .mission_control import CommandParams, Region
 
 
 class DoneCode(StrEnum):
@@ -26,7 +25,20 @@ class DoneCode(StrEnum):
     individually confirmed. If any turn out to be wrong, please
     correct them individually once real data with that specific error
     code is available. `_enum_or_none()` catches any non-matching
-    value anyway and returns the raw string instead of crashing."""
+    value anyway and returns the raw string instead of crashing.
+
+    RE-CHECKED AGAINST APP 3.0.0 AND STILL UNSETTLED. None of the
+    nineteen values appears in the app's send path in a `done_code`
+    context, and the app has no `DoneCode` enum under any name. Five of
+    them do appear as bare literals -- `battery`, `cancel`, `empty`,
+    `full`, `none` -- but in a bin-status serialiser, a floor-editor
+    back action and a timeline view. Ordinary words colliding, not
+    evidence; a literal index cannot tell the difference and neither
+    could a count.
+
+    So the position is unchanged: "ok" confirmed from real data, the
+    rest inferred, and a real capture carrying any other done code
+    settles that one."""
 
     BATTERY = "battery"
     BATTERY_CANCEL = "battery_cancel"
@@ -49,16 +61,27 @@ class DoneCode(StrEnum):
     USER_SPOT = "user_spot"
 
 
-class PadCategory(StrEnum):
-    """Confirmed (androguard): 7 values."""
-
-    DRY = "DRY"
-    INVALID = "INVALID"
-    NO_PAD = "NO_PAD"
-    PLATE = "PLATE"
-    REUSABLE_DRY = "REUSABLE_DRY"
-    REUSABLE_WET = "REUSABLE_WET"
-    WET = "WET"
+#: REMOVED FROM HERE: a second `PadCategory`, seven UPPERCASE values
+#: (`DRY`, `WET`, `PLATE`, `NO_PAD`, `REUSABLE_DRY`, `REUSABLE_WET`,
+#: `INVALID`), documented as "Confirmed (androguard): 7 values".
+#:
+#: `mission_control` HAS CARRIED THE @SerialName READING OF THE SAME
+#: ENUM ALL ALONG, and says so in its own docstring: "CONFIRMED
+#: @SerialName wire values ... for the REST/mission-history pad field".
+#: That is this field. The two map one to one -- `DRY`/`dispDry`,
+#: `WET`/`dispWet`, `PLATE`/`padPlate` -- so they are one enum read
+#: twice: once off the constant names, once off the annotation.
+#:
+#: Two classes with the same name in one package, and the parser
+#: reached for the constant-name one while the annotated one sat unused
+#: next door. Nothing failed: `_enum_or_none()` returns the raw string
+#: on no match, so `pad_category` simply stayed a str against every real
+#: response instead of becoming an enum. The same silent shape as
+#: `commandParams`/`params`.
+#:
+#: A device reporting the uppercase vocabulary still parses -- as a raw
+#: string, which is what an unrecognised value has always become here.
+from .mission_control import CommandParams, PadCategory, Region
 
 
 class RankOverlap(StrEnum):
@@ -70,7 +93,30 @@ class RankOverlap(StrEnum):
 
 
 class CoverageStrategy(StrEnum):
-    """Confirmed (androguard): 3 values."""
+    """CONSTANT NAMES, NOT CONFIRMED WIRE VALUES.
+
+    Previously documented as "Confirmed (androguard): 3 values". The
+    androguard reading was accurate about what it read -- Kotlin enum
+    CONSTANT NAMES -- which is not the same as a wire value. That
+    phrasing has now produced four wrong vocabularies in this library
+    (the DND commands, `RegionType.TID`, `CleaningProfileType`, and the
+    duplicate `PadCategory` above), so it is no longer treated as a
+    confirmation on its own.
+
+    SEARCHED AND NOT FOUND: app 3.0.0 contains none of these three
+    strings, in any casing -- not `HYBRID_COVERAGE_PLANNER`, not
+    `hybridCoveragePlanner`, not `hybrid_coverage_planner`, and no
+    `coverageStrategy` key. So there is no second reading to compare
+    against and no basis for changing the values either.
+
+    That is a complete result, not a gap: unlike the four cases above,
+    nothing here says the current values are wrong. They are simply
+    unverified, and inventing a lowercase variant to match a pattern
+    would be the same mistake in the opposite direction.
+
+    `_enum_or_none()` returns the raw string on no match, so a real
+    capture carrying a different vocabulary will surface it rather than
+    crash -- and settles this the moment one arrives."""
 
     HYBRID_COVERAGE_PLANNER = "HYBRID_COVERAGE_PLANNER"
     RESERVED = "RESERVED"
@@ -355,9 +401,19 @@ class PlanUpcoming(StrEnum):
 class TravelDestination(StrEnum):
     """Confirmed (androguard for constant names), values CHANGED to
     lowercase (session 31) -- real data shows "dest": "dock"/"zone"/
-    "room" (lowercase), the same pattern as RegionType/DoneCode. Only
-    "dock"/"zone"/"room" directly observed, "poly"/"waypoint" changed
-    along with them following the same pattern."""
+    "room" (lowercase), the same pattern as RegionType/DoneCode.
+
+    FOUR OF FIVE NOW CONFIRMED FROM A SECOND SOURCE (app 3.0.0): "zone"
+    and "room" appear in `robot_meta_data.dart::_parseRobotCommandRing`
+    and "poly" in `_parseRobotCommandOuterRings` -- the timeline
+    parsers, reading the same field this enum types. "poly" had been
+    changed to lowercase by pattern alone; it is no longer a guess.
+
+    "waypoint" REMAINS INFERRED. It appears nowhere in app 3.0.0 in any
+    casing, so the lowercasing that four siblings confirm is the only
+    argument for it. Left as is rather than reverted -- there is no
+    evidence against it either, and `_enum_or_none()` surfaces a
+    mismatch as a raw string."""
 
     DOCK = "dock"
     POLY = "poly"
@@ -393,7 +449,22 @@ class CommandEvent:
 
 @dataclass(frozen=True)
 class DiscoveryEvent:
-    """Confirmed (jadx): mapId, mapVersion, regionId."""
+    """Confirmed (jadx): mapId, mapVersion, regionId.
+
+    TWO VALUES OF `mapVersion` ARE MARKERS, NOT VERSIONS.
+    `MapVersionType` (app 3.0.0, `map_to_pb.dart`) declares:
+
+        none         = 0
+        roomIdOffset = 99998
+        geoJson      = 99999
+
+    `99999` marks a map in iRobot's GeoJSON format, `99998` a special
+    handling of room ids. Both distinguish map ORIGINS inside a field
+    that otherwise carries version identifiers.
+
+    Nothing here compares or orders `mapVersion`, so no code changes.
+    Written down because a value in the 99000s is the kind of number a
+    reader treats as a very high version rather than as a flag."""
 
     map_id: str | None = None
     map_version: str | None = None
@@ -606,6 +677,98 @@ class RefillEvent:
         )
 
 
+class RoomStatus(IntEnum):
+    """How a room visit ended (app 3.0.0, `RoomEvent.RoomStatus`, whose
+    @SerialName values are the numbers themselves).
+
+    `ZoneEvent.ZoneStatus` declares the identical nine values, so this
+    enum serves both.
+
+    OFFERED, NOT IMPOSED. `RoomEvent.status` stays an int -- callers
+    already compare against numbers, and swapping the type would break
+    them for a naming convenience. Use `RoomStatus(event.status)` where
+    a name helps.
+
+    THE THREE THAT CHANGE WHAT A DISPLAY SHOULD SAY:
+    `FINISHED_WITH_MORE_PASSES` is not "done", `SKIPPED_WILL_RETURN` is
+    not "skipped", and `KIDNAPPED` means the robot was picked up rather
+    than that it failed."""
+
+    FINISHED = 0
+    FINISHED_WITH_MORE_PASSES = 1
+    PARTIAL_INCOMPLETE = 2
+    PARTIAL_SKIPPED = 3
+    KIDNAPPED = 4
+    USER_ENDED = 5
+    ROBOT_ABORTED = 6
+    SKIPPED = 7
+    SKIPPED_WILL_RETURN = 8
+
+
+class TravelReason(IntEnum):
+    """Why the robot left for somewhere else (app 3.0.0,
+    `TravelEvent.TravelReason`).
+
+    WORTH READING BEFORE INTERPRETING A TRAVEL EVENT: five of the twelve
+    are routine mid-mission errands -- recharge, evacuate, refill, pad
+    wash, relocalise -- and NOT signs that the mission ended. Treating
+    any travel event as an ending is the mistake this list prevents."""
+
+    MID_MISSION_RECHARGE = 0
+    ROBOT_ENDED_THE_MISSION = 1
+    EVACUATE_BIN = 2
+    RELOCALIZE = 3
+    MISSION_ENDED_IN_ERROR = 4
+    EMPTY_TANK = 5
+    USER_ENDED_THE_MISSION = 6
+    ROBOT_TRAPPED = 7
+    TRY_TO_PLAN_AROUND_BLOCKED_REGION = 8
+    UNKNOWN_REASON_ERROR = 9
+    REFILL_FLUID_RESERVOIR = 10
+    PAD_WASH = 11
+
+
+class TravelStatus(IntEnum):
+    """How a travel leg ended (app 3.0.0, `TravelEvent.TravelStatus`).
+
+    `REPLANNED` is the one that matters for progress tracking: the robot
+    changed its route rather than failing."""
+
+    SUCCESS = 0
+    FAILED = 1
+    USER_ENDED = 2
+    USER_SKIPPED = 3
+    REPLANNED = 4
+
+
+class PadWashReason(IntEnum):
+    """Why the robot went to wash its pad (app 3.0.0,
+    `PadWashEvent.PadWashReason`).
+
+    `MAX_AREA_REACHED` is the mid-mission one, and it is what
+    `pwReturn = 2` with `pwAreaInterval` produces -- a real Combo 405
+    runs in exactly that configuration. `END_OF_MISSION` is the other
+    common case. The two are worth telling apart: only the first happens
+    while cleaning is still in progress."""
+
+    RESERVED = 0
+    AFTER_REGION_COMPLETED = 1
+    MAX_AREA_REACHED = 2
+    END_OF_MISSION = 3
+
+
+class WetOutStatus(IntEnum):
+    """How a wet-out step ended (app 3.0.0,
+    `WetOutEvent.WetOutStatus`)."""
+
+    RESERVED = 0
+    SUCCESS = 1
+    ENDED_DUE_TO_OBSTACLES = 2
+    SOFTWARE_ERROR = 3
+    EXTERNAL_CAUSE = 4
+    PAD_DEPLOYMENT_FAILURE = 5
+
+
 @dataclass(frozen=True)
 class RoomEvent:
     """REVISED (session 31, programmatic full comparison): the most
@@ -652,27 +815,44 @@ class RoomEvent:
     pass_area: int | None = None
     pass_count: int | None = None
     region_id: str | None = None
-    #: WHAT THE NUMBERS MEAN, decoded from a household rather than from
-    #: source. @utkjmitch's 49-mission archive on a Y351020 shows
-    #: `{0: 111, 1: 53, 5: 12, 6: 10}`, and two of those were settled by
-    #: asking the person who opens the doors:
+    #: WHAT THE NUMBERS MEAN — NOW FROM THE VENDOR, and one earlier
+    #: reading was wrong.
     #:
-    #:   5  blocked / never entered.  Region 11 appears in exactly ONE
-    #:      room event across 49 missions. That room is the playroom and
-    #:      its door is kept shut -- the dog steals the toys.
+    #: `RoomEvent.RoomStatus` (app 3.0.0, explicit numeric @SerialName
+    #: values) names all nine:
     #:
-    #:   6  aborted in room.  Of 16 missions ending `stuck`, the last
-    #:      room event was region 12 nine times with this status.
-    #:      Region 12 is where he physically rescues the robot from the
-    #:      same corner, and the archive carries 24 `kidnap` events.
+    #:   0  FINISHED                    5  USER_ENDED
+    #:   1  FINISHED_WITH_MORE_PASSES   6  ROBOT_ABORTED
+    #:   2  PARTIAL_INCOMPLETE          7  SKIPPED
+    #:   3  PARTIAL_SKIPPED             8  SKIPPED_WILL_RETURN
+    #:   4  KIDNAPPED
     #:
-    #: 0 and 1 are the common values and presumably "clean" outcomes;
-    #: nothing here distinguishes them yet.
+    #: HOW THAT SCORES AGAINST THE FIELD-DERIVED READING this comment
+    #: used to carry, from @utkjmitch's 49-mission archive on a Y351020
+    #: (`{0: 111, 1: 53, 5: 12, 6: 10}`):
     #:
-    #: NOT AN ENUM. Two values are inferred from one household, however
-    #: well the ground truth fits, and turning them into named constants
-    #: would present that as vendor-documented. The integer stays; the
-    #: reading is written down.
+    #:   6  read as "aborted in room" -> ROBOT_ABORTED. **Right**, and
+    #:      derived from nothing but sixteen `stuck` missions and the
+    #:      knowledge that he rescues the robot from that corner.
+    #:
+    #:   5  read as "blocked / never entered" -> USER_ENDED. **Wrong.**
+    #:      The playroom-door story fit the observation and still fit a
+    #:      different cause: a mission the user stopped while that room
+    #:      was pending. Had a door-blocked state been the answer, 7 or 3
+    #:      would be the codes for it.
+    #:
+    #:   0/1 read as "presumably clean outcomes, nothing distinguishes
+    #:      them yet" -> FINISHED and FINISHED_WITH_MORE_PASSES. The gap
+    #:      is closed: 1 means the robot intends another pass.
+    #:
+    #: THE LESSON IS ABOUT THE HIT, NOT THE MISS. Both readings came
+    #: from the same method and the same quality of evidence, and one
+    #: was right. Ground truth from a household is real evidence — it
+    #: just cannot tell two causes apart when only one was considered.
+    #:
+    #: STILL AN INT. `_enum_or_none` is not used here: callers already
+    #: compare against numbers, and RoomStatus below is offered for
+    #: naming rather than imposed.
     status: int | None = None
     total_area: int | None = None
 

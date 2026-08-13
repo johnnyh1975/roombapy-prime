@@ -441,10 +441,27 @@ class PrimeRobot:
         # That retires the read-modify-write advice this project carried
         # for `padWetness`: it described the OLD app's behaviour.
         #
-        # WHAT IT DOES NOT RETIRE: a region's params override the global
-        # value during a mission (`CommandParams.copyWith`). A global
-        # wetness control is still questionable -- not because of how it
-        # is written, but because of what outranks it while cleaning.
+        # WHAT IT DOES NOT RETIRE, BUT DOES NARROW: this project carried
+        # the caveat that a region's params override the global value
+        # during a mission, and named `CommandParams.copyWith` as the
+        # mechanism.
+        #
+        # THAT MECHANISM IS GONE IN 3.0. `CommandParams.copyWith` has no
+        # counterpart there, and `fillBlanksWith` and
+        # `onlyUserModifiableParams` -- the other two halves of the
+        # merge -- appear nowhere in the extracted surface at all
+        # (1636 Kotlin files, 1193 Dart files, count-checked; the six
+        # surviving `copyWith` methods sit on unrelated models). Two
+        # separate command builders now, neither of which merges.
+        #
+        # WHAT REMAINS is narrower and still real: `params` is OPTIONAL
+        # at region level (`addElement("params", true)`), so a command
+        # MAY carry per-region parameters, and those describe that
+        # region. A global setting is outranked only by a command that
+        # actually sends them -- not by the mere existence of regions.
+        #
+        # So a global wetness control is tenable, provided the command
+        # sending it does not carry region-specific params of its own.
         return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
 
     async def trigger_echo_via_shadow(self, value: object = True, timeout: float = 8.0) -> ShadowResponse:
