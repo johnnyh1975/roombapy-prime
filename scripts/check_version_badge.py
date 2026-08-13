@@ -26,6 +26,44 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README_PATH = REPO_ROOT / "README.md"
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+INIT_PATH = REPO_ROOT / "roombapy_prime" / "__init__.py"
+CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
+
+
+def changelog_has_entry(version: str) -> bool:
+    """Whether CHANGELOG.md documents this version.
+
+    THREE RELEASES SHIPPED WITHOUT ONE. b1, b2 and b3 each had release
+    notes and no changelog entry, and nothing noticed, because nothing
+    looked -- the file simply stopped at 0.2.0b16 while the version
+    climbed past it.
+
+    Release notes and a changelog answer different questions. The notes
+    say what happened in one release; the changelog is where somebody
+    two versions behind finds out what breaks on the way up. A gap in it
+    is invisible until the moment it is needed.
+    """
+    return f"## [{version}]" in CHANGELOG_PATH.read_text(encoding="utf-8")
+
+
+def get_dunder_version() -> str | None:
+    """`__version__` from the package, or None if it is not declared.
+
+    THE PACKAGE DECLARES ITS VERSION TWICE and nothing compared them.
+    PR #62 arrived with `pyproject.toml` saying 0.3.0b5 and
+    `__init__.py` saying 0.3.0b4, and this script passed it: it checked
+    the README badge against pyproject and never looked at the module.
+
+    A consumer reading `roombapy_prime.__version__` and a consumer
+    reading the installed distribution's metadata would have disagreed
+    about which release they were on -- the kind of mismatch that makes
+    a field report unusable, because "which version are you running"
+    stops having one answer.
+    """
+    match = re.search(
+        r'^__version__\s*=\s*"([^"]+)"', INIT_PATH.read_text(encoding="utf-8"), re.M
+    )
+    return match.group(1) if match else None
 
 
 def get_pyproject_version() -> str:
@@ -126,6 +164,26 @@ def main() -> int:
         problems.append(
             f"README's version badge says {actual_badge!r}, but pyproject.toml's "
             f"version ({pyproject_version!r}) implies it should say {expected_badge!r}."
+        )
+
+    if not changelog_has_entry(pyproject_version):
+        problems.append(
+            f"CHANGELOG.md has no '## [{pyproject_version}]' entry. Three "
+            "releases already shipped without one because nothing checked."
+        )
+
+    dunder_version = get_dunder_version()
+    if dunder_version is None:
+        problems.append(
+            "roombapy_prime/__init__.py declares no __version__. It is part of "
+            "the package's public surface and must not silently disappear."
+        )
+    elif dunder_version != pyproject_version:
+        problems.append(
+            f"roombapy_prime.__version__ is {dunder_version!r} but "
+            f"pyproject.toml says {pyproject_version!r}. The package declares "
+            "its version twice and both must agree -- otherwise 'which version "
+            "are you running' has two answers."
         )
 
     actual_test_count = get_actual_test_count()

@@ -1784,3 +1784,81 @@ class TestTheNewCallsHaveChecks:
         from roombapy_prime_tools.verify_writes import CHECKS
 
         assert all(c.risk for c in CHECKS)
+
+
+class TestDottedProbeKeysResolveAgainstTheirParent:
+    """`audio.volume` and `padWetness.padPlate` are two of the vendor's
+    24 writable settings, but the shadow reports `audio` and
+    `padWetness` as MAPS — the dotted form never appears as a key of its
+    own.
+
+    A plain membership test therefore called both absent on every robot.
+    @chairstacker's run printed `not on this robot: chrgLrPtrn,
+    audio.volume, pwHeat, padWetness.padPlate` and then, a few lines
+    later, `audio = {'volume': 100}`.
+
+    411 tests passed throughout. Nothing here probed a dotted key, so
+    nothing could go red — the same shape as the orphaned constants and
+    the duplicate PadCategory.
+    """
+
+    @staticmethod
+    def _shadow():
+        return {
+            "audio": {"volume": 100},
+            "padWetness": {"disposable": 3, "reusable": 1, "padPlate": 4},
+            "carpetBoost": True,
+        }
+
+    def test_a_dotted_key_is_found_through_its_parent(self):
+        from roombapy_prime_tools.verify_writes import _resolve_probes
+
+        present, missing = _resolve_probes(self._shadow())
+        found = {key: value for key, _l, _n, value in present}
+
+        assert found.get("audio.volume") == 100
+        assert found.get("padWetness.padPlate") == 4
+        assert "audio.volume" not in missing
+        assert "padWetness.padPlate" not in missing
+
+    def test_a_genuinely_absent_setting_is_still_reported_absent(self):
+        """The fix must not turn every probe into a false positive —
+        absence is a real result here, and a mop-less robot has no pad
+        fields."""
+        from roombapy_prime_tools.verify_writes import _resolve_probes
+
+        _present, missing = _resolve_probes({"carpetBoost": True})
+
+        assert "audio.volume" in missing
+        assert "padWetness.padPlate" in missing
+        assert "pwHeat" in missing
+
+    def test_a_parent_that_is_not_a_map_counts_as_absent(self):
+        """A robot reporting `audio` as a scalar has no `audio.volume`
+        to write, and walking into it would raise."""
+        from roombapy_prime_tools.verify_writes import _resolve_probes
+
+        _present, missing = _resolve_probes({"audio": 100})
+
+        assert "audio.volume" in missing
+
+    def test_plain_keys_are_unaffected(self):
+        from roombapy_prime_tools.verify_writes import _resolve_probes
+
+        present, _missing = _resolve_probes(self._shadow())
+        found = {key: value for key, _l, _n, value in present}
+
+        assert found.get("carpetBoost") is True
+
+    def test_the_two_range_field_is_no_longer_called_a_boolean(self):
+        """`pwReturn` was described as "boolean" in the probe list.
+        @chairstacker read `pwReturn = 2` against that hint, saw the
+        app's three-option Mop Wash Frequency screen, and reported the
+        value as stale. It is neither boolean nor stale — `ReturnByMode`
+        has six values across two ranges and 2 is `byArea`."""
+        from roombapy_prime_tools.verify_writes import _SETTING_PROBES
+
+        notes = {key: note for key, _label, note in _SETTING_PROBES}
+
+        assert "boolean" not in notes["pwReturn"]
+        assert "TWO RANGES" in notes["pwReturn"]

@@ -690,12 +690,36 @@ _SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
     # among them; the picker lists live in the Dart layer, unreadable.
     # Sets this project once quoted per series are in no reachable
     # source -- see docs/internal/SETTING_VALUE_SETS.md.
+    # THREE OF THESE HINTS WERE WRONG, and one of them misled a tester
+    # into reporting a bug that was not there.
+    #
+    # @chairstacker read `pwReturn = 2` described as "boolean", saw the
+    # app's Mop Wash Frequency screen offering Standard/Medium/High, and
+    # concluded the value was stale. It is neither boolean nor stale --
+    # `ReturnByMode` (app 3.0.0) declares SIX values across two ranges,
+    # and 2 is `byArea`.
+    #
+    # Values from the vendor's own enums, not inferred:
+    #   ClearFreqType  0/1/2 = every / every 2nd / every 3rd routine,
+    #                  4 = on dock return, 10/15/25/30/50 = by area
+    #   ReturnByMode   0/1/2 = by room / by time / by area,
+    #                  100/101/102 = Standard / Medium / High
     ("padDryDur", "mop dry duration", "hours; no valid set is documented"),
-    ("pwAreaInterval", "pad wash frequency", "x10 sq ft; no valid set is documented"),
-    ("autoevacFreq", "auto-evacuation frequency", "integer"),
-    ("padWashAllowed", "pad washing allowed", "boolean"),
-    ("pwHeat", "pad wash heated water", "boolean"),
-    ("pwReturn", "return to dock for pad wash", "boolean"),
+    ("pwAreaInterval", "pad wash area interval", "integer; the unit is not documented"),
+    (
+        "autoevacFreq",
+        "auto-evacuation frequency",
+        "0/1/2 = every / every 2nd / every 3rd routine; 4 = on dock return; "
+        "10-50 = by area. Which subset applies depends on cap.autoevac",
+    ),
+    ("padWashAllowed", "pad washing allowed", "integer, not a flag"),
+    ("pwHeat", "pad wash heated water", "0/1/2, not a flag"),
+    (
+        "pwReturn",
+        "mop wash frequency",
+        "TWO RANGES IN ONE FIELD: 0/1/2 = by room / by time / by area; "
+        "100/101/102 = Standard / Medium / High",
+    ),
     ("pwTimeInterval", "pad wash time interval", "integer"),
     ("padWetness.padPlate", "pad plate wetness", "sub-key, not the whole map"),
     # PRESENT ON EVERY ROBOT SEEN SO FAR, which matters for the SKUs the
@@ -715,6 +739,58 @@ _SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
     ("audio", "audio settings", "a map: {\"volume\": n}"),
     ("padWetness", "pad wetness", "a map, not a scalar"),
 )
+
+
+def _resolve_probes(
+    current: dict[str, Any],
+) -> tuple[list[tuple[str, str, str, Any]], list[str]]:
+    """Split the probe list into present and absent, resolving dotted
+    keys against their parent map.
+
+    A DOTTED KEY IS A WRITE ADDRESS, NOT A READ KEY. `audio.volume` and
+    `padWetness.padPlate` are two of the vendor's 24 writable settings,
+    but the shadow reports `audio` and `padWetness` as maps -- the
+    dotted form never appears as a key of its own.
+
+    A plain `key in current` therefore reported both as "not on this
+    robot" on EVERY robot, including ones that plainly have them.
+    @chairstacker's run prints `not on this robot: chrgLrPtrn,
+    audio.volume, pwHeat, padWetness.padPlate` and then, a few lines
+    later, `audio = {'volume': 100}` and `padWetness = {..., 'padPlate':
+    4}`. Two of those four were false.
+
+    THAT IS WORSE THAN A COSMETIC SLIP. This tool's output is field
+    evidence, and "not on this robot" reads as a fact about somebody's
+    hardware. It is the third time in this file that a lookup error
+    became a wrong claim about a tester's robot -- the earlier two were
+    the guessed name `audioVolume` and a probe list that returned a key
+    list of exactly ["state"].
+
+    WHAT THE FIX EXPOSES: the dotted keys now get probed, which means
+    the DOTTED WRITE PATH gets exercised for the first time. That path
+    is confirmed from `settingFromKey` and has never been sent to a
+    robot. Resending `padWetness.padPlate` at its current value is the
+    same risk as every other resend here, with one extra unknown -- if
+    the robot does not understand the dotted address, it may store a
+    literal key by that name rather than updating the sub-key. The key
+    list printed above the probes is what would show it.
+    """
+    present: list[tuple[str, str, str, Any]] = []
+    missing: list[str] = []
+    for key, label, note in _SETTING_PROBES:
+        if "." in key:
+            parent, _, leaf = key.partition(".")
+            container = current.get(parent)
+            if isinstance(container, dict) and leaf in container:
+                present.append((key, label, note, container[leaf]))
+            else:
+                missing.append(key)
+            continue
+        if key in current:
+            present.append((key, label, note, current[key]))
+        else:
+            missing.append(key)
+    return present, missing
 
 
 def _reported_settings(raw: Any) -> dict[str, Any] | None:
@@ -828,8 +904,7 @@ async def _settings_roundtrip(robot: Any, args: Any) -> Any:
     print("   rw-settings keys on this robot:")
     print(_indent_json(sorted(current), indent=5))
 
-    present = [(k, label, note) for k, label, note in _SETTING_PROBES if k in current]
-    missing = [k for k, _l, _n in _SETTING_PROBES if k not in current]
+    present, missing = _resolve_probes(current)
     if missing:
         # Absent is a result: the profiles say which model gets which
         # dock setting, and a mop-less robot has no pad fields.
@@ -841,8 +916,7 @@ async def _settings_roundtrip(robot: Any, args: Any) -> Any:
         )
 
     results = []
-    for key, label, note in present:
-        value = current[key]
+    for key, label, note, value in present:
         print(f"\n   {key} = {value!r}   ({label}; {note})")
         if not confirm(f"Resend {key} at its current value {value!r}?"):
             print("      skipped")
