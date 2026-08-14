@@ -1862,3 +1862,79 @@ class TestDottedProbeKeysResolveAgainstTheirParent:
 
         assert "boolean" not in notes["pwReturn"]
         assert "TWO RANGES" in notes["pwReturn"]
+
+
+class TestTheCustomInitiatorProbe:
+    """`Initiator` lists 25 values, ten of them named third parties —
+    including openHAB and homey, which are home-automation platforms
+    exactly like this one. `homeassistant` is not among them.
+
+    Either iRobot never registered us, or the field is a free string the
+    server passes through. The difference decides whether this
+    integration can identify itself in a robot's own mission history
+    instead of impersonating the local iRobot app.
+    """
+
+    def test_the_check_is_registered_and_safe(self):
+        from roombapy_prime_tools.verify_writes import CHECKS
+
+        check = next(c for c in CHECKS if c.name == "custom_initiator")
+
+        assert check.risk == "safe"
+
+    def test_it_asks_for_both_observations(self):
+        """A broker acknowledgement says the publish left this machine.
+        The chirp says the robot accepted it, and the mission history
+        says the value survived the round trip — neither alone
+        answers the question."""
+        from roombapy_prime_tools.verify_writes import CHECKS
+
+        check = next(c for c in CHECKS if c.name == "custom_initiator")
+
+        assert "chirp" in check.verify_by
+        assert "history" in check.verify_by
+
+    @pytest.mark.asyncio
+    async def test_it_sends_find_under_the_claimed_initiator(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _initiator_probe
+
+        robot = SimpleNamespace(send_simple_command=AsyncMock(return_value=True))
+        result = await _initiator_probe(robot, SimpleNamespace(initiator=None))
+
+        robot.send_simple_command.assert_awaited_once_with(
+            "find", initiator="homeassistant"
+        )
+        assert result["initiator_sent"] == "homeassistant"
+
+    @pytest.mark.asyncio
+    async def test_the_value_can_be_overridden(self):
+        """If `homeassistant` is rejected, the next question is whether
+        the server rejects ANY unregistered value or only that one —
+        and `openHAB` is in the vendor's own list."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _initiator_probe
+
+        robot = SimpleNamespace(send_simple_command=AsyncMock(return_value=True))
+        await _initiator_probe(robot, SimpleNamespace(initiator="openHAB"))
+
+        robot.send_simple_command.assert_awaited_once_with(
+            "find", initiator="openHAB"
+        )
+
+    @pytest.mark.asyncio
+    async def test_it_uses_find_rather_than_a_real_command(self):
+        """`find` chirps and changes nothing else. A start command would
+        answer the same question and cost a cleaning run to undo."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes._initiator_probe)
+
+        assert '"find"' in source
+        assert '"start"' not in source

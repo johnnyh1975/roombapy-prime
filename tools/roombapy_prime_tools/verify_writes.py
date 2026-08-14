@@ -1354,6 +1354,45 @@ async def _time_estimates(robot: Any, args: argparse.Namespace) -> Any:
     return result
 
 
+async def _initiator_probe(robot: Any, args: Any) -> Any:
+    """Sends one harmless command under a made-up initiator.
+
+    THE QUESTION: does the server validate `initiator` at all?
+
+    `Initiator` (app 3.0.0) lists 25 values, and ten of them are named
+    third parties -- alexa, siri, google, ifttt, homey, openHAB, yonomi,
+    bosch, swisscom, alismart. Two of those are home-automation
+    platforms exactly like this one. `homeassistant` is not among them.
+
+    Either iRobot never registered us, or the field is a free string the
+    server passes through. Nobody knows which, and the difference
+    decides whether this integration can identify itself in a robot's
+    own mission history instead of impersonating the local iRobot app.
+
+    WHY `find` AND NOT A REAL COMMAND. It makes the robot chirp and
+    changes nothing else -- no mission starts, no setting moves, and the
+    tester can hear whether it arrived. A start command would answer the
+    same question and cost a cleaning run to undo.
+
+    WHAT SUCCESS LOOKS LIKE, and it takes two observations rather than
+    one: the robot chirps (the command was accepted) AND the mission
+    history afterwards carries `homeassistant` (the value survived the
+    round trip). Either half alone is inconclusive -- a broker
+    acknowledgement says the publish left, not that the robot honoured
+    the field.
+    """
+    initiator = getattr(args, "initiator", None) or "homeassistant"
+    accepted = await robot.send_simple_command("find", initiator=initiator)
+    return {
+        "initiator_sent": initiator,
+        "publish_acknowledged": accepted,
+        "note": (
+            "acknowledgement is the broker, not the robot -- listen for "
+            "the chirp, then check the mission history"
+        ),
+    }
+
+
 CHECKS: tuple[WriteCheck, ...] = (
     WriteCheck(
         name="schedules",
@@ -1398,6 +1437,25 @@ CHECKS: tuple[WriteCheck, ...] = (
             "there is nothing to check in the iRobot app"
         ),
         runner=lambda robot, args: _firmware_catalogue(robot, args),
+    ),
+    WriteCheck(
+        name="custom_initiator",
+        # Makes the robot chirp and changes nothing else. The `find`
+        # command is the one simple verb confirmed on Prime.
+        risk="safe",
+        summary="sends `find` claiming to be `homeassistant` instead of `localApp`",
+        verify_by=(
+            "TWO OBSERVATIONS, and one alone proves nothing. First: does "
+            "the robot chirp? If it stays silent, the server rejected an "
+            "unregistered initiator and this integration should keep "
+            "sending `localApp`. Second: open the iRobot app's cleaning "
+            "history -- if the entry names Home Assistant rather than the "
+            "app, the value survived the round trip and this integration "
+            "can stop impersonating the local iRobot app in your own "
+            "robot's records. A broker acknowledgement is neither: it "
+            "says the publish left this machine"
+        ),
+        runner=lambda robot, args: _initiator_probe(robot, args),
     ),
     WriteCheck(
         name="timeline_request",
@@ -1600,6 +1658,15 @@ def main() -> None:
                         help="in RADIANS (0 = unchanged for most maps)")
     parser.add_argument("--schedule-name", default="Roomba+ test schedule")
     parser.add_argument("--household-id", default=None)
+    # OVERRIDABLE so a second value can be tried without a code change.
+    # If `homeassistant` is rejected, the next question is whether the
+    # server rejects ANY unregistered value or only that one -- and the
+    # cheapest way to ask is to run the same check with `openHAB`, which
+    # the vendor's own enum does list.
+    parser.add_argument(
+        "--initiator", default="homeassistant",
+        help="the initiator string to claim (custom_initiator check)",
+    )
     parser.add_argument("--i-understand-this-writes-to-my-robot", action="store_true")
     args = parser.parse_args()
 
