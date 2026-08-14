@@ -55,6 +55,7 @@ from .models import (
     LiveMapStreamInit,
     MapEditCommand,
     MapEditCommandV1,
+    MapEditResult,
     MapUpdateMessage,
     P2MapData,
     PositionUpdateMessage,
@@ -643,6 +644,18 @@ class PrimeRobot:
         docstring for the full evidence trail."""
         return await self._rest.get_map_geojson_link(map_id, map_version)
 
+    async def get_map_raw_link(
+        self, map_id: str, map_version: str, response_type: str | None = "link"
+    ) -> dict:
+        """The same map version in the vendor's raw format -- see
+        rest_client.py::get_map_raw_link().
+
+        Wrapped at the same time as the REST method rather than a
+        release later: this project has twice shipped a REST call whose
+        wrapper was missing or dropped a parameter, and both times a
+        tester's whole run died before a request left the machine."""
+        return await self._rest.get_map_raw_link(map_id, map_version, response_type)
+
     async def download_map_bundle(self, url: str) -> bytes:
         """NEW (thirteenth session) -- was missing as a wrapper, even
         though the diagnostics script and parse_map_bundle() depend on
@@ -671,10 +684,43 @@ class PrimeRobot:
         cause" -- which was false, because nothing had been tested."""
         return await self._rest.edit_map(p2map_id, command, response_type=response_type)
 
+    async def edit_map_checked(
+        self, p2map_id: str, command: MapEditCommandV1,
+        response_type: str | None = "link",
+    ) -> MapEditResult:
+        """edit_map(), with the answer read instead of handed back raw.
+
+        SAME REQUEST, PARSED RESPONSE. edit_map() stays exactly as it
+        is -- callers relying on the raw dict keep working, and a first
+        real response can still be inspected whole through `.raw`.
+
+        WHY A SECOND METHOD RATHER THAN A CHANGED RETURN TYPE: nothing
+        here has ever sent a map edit outside a dry run, so the four
+        response shapes are documented and unobserved. Changing what
+        edit_map() returns would bet a working signature on that; adding
+        a method next to it does not.
+
+        The distinction worth having is partial success -- a new map
+        version with no URL, meaning the edit applied and the rendered
+        map did not follow. Raw JSON made that indistinguishable from
+        success, and a caller would have shown a stale map without
+        knowing."""
+        return MapEditResult.from_json(
+            await self._rest.edit_map(p2map_id, command, response_type=response_type)
+        )
+
     async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict:
         """The V2 path never called by the app itself -- see
         edit_map()'s docstring and rest_client.py::edit_map_v2()."""
         return await self._rest.edit_map_v2(p2map_id, command)
+
+    async def edit_map_v2_checked(
+        self, p2map_id: str, command: MapEditCommand
+    ) -> MapEditResult:
+        """edit_map_v2(), with the answer read. See edit_map_checked()."""
+        return MapEditResult.from_json(
+            await self._rest.edit_map_v2(p2map_id, command)
+        )
 
     async def get_live_map_stream(self) -> LiveMapStreamInit:
         """CORRECTED UNDERSTANDING (July 11, see
@@ -897,12 +943,21 @@ class PrimeRobot:
         UPDATED (session 53) -- now returns a parsed RobotPartsInfo."""
         return await self._rest.get_robot_parts(self.blid)
 
-    async def reset_robot_parts(self, part_ids: list[str] | None = None) -> dict:
-        """NEW (session 15) -- see rest_client.py::reset_robot_parts()."""
+    async def reset_robot_parts(
+        self,
+        part_ids: list[str] | None = None,
+        counters: dict[str, int] | None = None,
+    ) -> dict:
+        """NEW (session 15) -- see rest_client.py::reset_robot_parts().
+
+        `counters` maps a part id to the value to write; anything not
+        named resets to zero. Forwarded because the REST client gained
+        it and a wrapper that drops a parameter is how a tester's whole
+        run once died on `response_type`."""
         # Only forwarded when named, so the plain call stays plain.
         if part_ids is None:
             return await self._rest.reset_robot_parts(self.blid)
-        return await self._rest.reset_robot_parts(self.blid, part_ids)
+        return await self._rest.reset_robot_parts(self.blid, part_ids, counters)
 
     async def get_serial_number_data(self) -> RobotSerialInfo:
         """NEW (session 15) -- see rest_client.py::get_serial_number_data().
@@ -939,10 +994,22 @@ class PrimeRobot:
         }
         return await self._rest.get_time_estimates(self.blid, **narrowing)
 
-    async def reset_robot(self) -> dict:
+    async def reset_robot(
+        self,
+        robot_password: str | None = None,
+        synchronous: bool | None = None,
+        send_wipe: bool | None = None,
+    ) -> dict:
         """NEW (session 16) -- WARNING: likely a consequential action,
-        see rest_client.py::reset_robot()."""
-        return await self._rest.reset_robot(self.blid)
+        see rest_client.py::reset_robot().
+
+        The three body fields are forwarded because a wrapper that drops
+        a parameter is how a tester's whole run once died on
+        `response_type` -- and on this endpoint the dropped parameter
+        would be `send_wipe`."""
+        return await self._rest.reset_robot(
+            self.blid, robot_password, synchronous, send_wipe
+        )
 
     async def get_notifications(self, app_version: str = "2.2.4") -> dict:
         """NEW (session 16) -- see rest_client.py::get_notifications(). Default

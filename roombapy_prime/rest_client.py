@@ -267,6 +267,41 @@ class PrimeRestClient:
         url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(map_id)}/versions/{_path_segment(map_version)}/geojson"
         return await self._request("GET", url, query={"response_type": "link"})
 
+    async def get_map_raw_link(
+        self, map_id: str, map_version: str, response_type: str | None = "link"
+    ) -> dict[str, Any]:
+        """The same map version in the vendor's RAW format rather than
+        GeoJSON.
+
+        `P2MapRawDataRequest` (app 3.0.0) is `get_map_geojson_link()`'s
+        sibling: identical URL shape with `/raw` where the other has
+        `/geojson`, and the same `response_type` query parameter and
+        `DesiredResponseType` enum behind it.
+
+        FOUND BY DIFFING THE APP'S SERVICE CHANNELS against this client,
+        not by reading. `_MapFetcherServiceChannel` lists
+        `fetchMapRawData` beside `fetchMapGeoJson`, and only one of the
+        two had ever been implemented -- the GeoJSON one, because that
+        is the one a bundle search turned up.
+
+        WHAT IS IN IT IS NOT KNOWN. Nobody here has fetched a raw map,
+        and the format is the vendor's own rather than GeoJSON, so the
+        contents are unmodelled and the response is passed through. It
+        is offered because the endpoint exists and the caller who needs
+        it should not have to rediscover the URL.
+
+        WHY IT MIGHT MATTER: the GeoJSON bundle is a rendering of the
+        map, and this project has repeatedly found fields present in the
+        SDK's own map model that the bundle does not carry -- the zone
+        detection flags, `p2_map_room_info.value`. If any of those are
+        reachable at all, this is the endpoint that would carry them."""
+        url = (
+            f"{self._http_base_auth}/v1/p2maps/{_path_segment(map_id)}"
+            f"/versions/{_path_segment(map_version)}/raw"
+        )
+        query = {"response_type": response_type} if response_type else {}
+        return await self._request("GET", url, query=query)
+
     async def download_map_bundle(self, url: str) -> bytes:
         """NEW (July 11, fifth session). Downloads the raw tar.gz map
         bundle from a PRESIGNED URL (see get_map_geojson_link()).
@@ -867,7 +902,31 @@ class PrimeRestClient:
         Still a dict here rather than a typed parameter, because the
         two variants have no common base worth inventing for a
         two-field body -- but the two models exist and their to_json()
-        produces exactly what belongs on the wire."""
+        produces exactly what belongs on the wire.
+
+        BOTH VARIANTS ARE GONE FROM APP 3.0.0. A structural diff of
+        2.2.4 against 3.0.0 lists `DNDSchedule$DailySchedule` and
+        `DNDSchedule$EndsAt` under `only_224`, and neither appears among
+        3.0.0's serialisable classes. The 3.0.0 report still names this
+        endpoint and this structure -- by citing the 2.2.4 work, not by
+        re-deriving it.
+
+        WHAT THAT DOES AND DOES NOT MEAN. What a client stopped shipping
+        is a fact about that client; the endpoint is the server's, and
+        it has no reason to break older clients. This project holds the
+        counter-example in `ScheduleOptions`, where a field arrived on
+        real schedules while appearing nowhere in 2.2.4 -- the server
+        was ahead of the app then.
+
+        So the body shape stands, and the confidence behind it is one
+        step weaker than it reads: confirmed in 2.2.4, absent in 3.0.0,
+        never sent successfully by anyone. The one live attempt returned
+        HTTP 400, and it sent both variants at once -- which the sealed
+        class forbids and this docstring says to avoid, so that failure
+        does not test the shape.
+
+        A SINGLE SUCCESSFUL WRITE WOULD SETTLE IT, and nothing short of
+        one will."""
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/dnd"
         return await self._request("PUT", url, body=settings)
 
@@ -984,27 +1043,44 @@ class PrimeRestClient:
         return RobotPartsInfo.from_json(data)
 
     async def reset_robot_parts(
-        self, blid: str, part_ids: list[str] | None = None
+        self,
+        blid: str,
+        part_ids: list[str] | None = None,
+        counters: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """POST /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
         from the same configuration file (commandId "ResetRobotParts",
         httpMethod=POST, identical urlPath to get_robot_parts()).
-        Presumably resets consumable-part counters (e.g. after a part
-        replacement) -- body shape not investigated, raw JSON passed
-        through."""
+        Resets consumable-part counters, e.g. after a part replacement.
+
+        THE BODY IS TWO NESTED SHAPES, not one. `AssetHealthResetDto`
+        declares `robot_id`, `num_parts` and `parts`; `AssetPartResetDto`
+        declares what goes IN that list -- `part_id` AND `counter`.
+
+        An earlier fix supplied the outer shape and sent `parts` as a
+        list of bare id strings. That is the inner DTO ignored: the
+        server is declared to expect objects, and a list of strings is
+        neither a rejection nor a reset, just a request that cannot mean
+        what it says.
+
+        `counter` IS THE VALUE TO SET, and zero is an inference. The DTO
+        names the field and does not say what a reset writes; zero is
+        the only reading that makes "reset" mean reset, and a caller who
+        knows better can pass counters explicitly.
+
+        WHAT THIS METHOD STILL WILL NOT DO: reset everything when no
+        parts are named. An empty `parts` list is as likely to be
+        rejected as to mean "all", and guessing wrong here rewrites
+        somebody's maintenance history."""
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
-        # THE BODY IS NOW KNOWN. `AssetHealthResetDto` declares
-        # `robot_id`, `num_parts` and `parts` -- this sent a POST with no
-        # body at all, which is why the docstring above says the shape
-        # was never investigated.
-        #
-        # A reset with no parts named is not obviously "reset
-        # everything"; it is as likely to be rejected or to do nothing.
-        # Naming them is the only reading the DTO supports.
         body: dict[str, Any] = {"robot_id": blid}
         if part_ids:
-            body["parts"] = list(part_ids)
-            body["num_parts"] = len(body["parts"])
+            entries = [
+                {"part_id": part_id, "counter": (counters or {}).get(part_id, 0)}
+                for part_id in part_ids
+            ]
+            body["parts"] = entries
+            body["num_parts"] = len(entries)
         return await self._request("POST", url, body=body)
 
     async def get_serial_number_data(self, blid: str) -> RobotSerialInfo:
@@ -1278,7 +1354,13 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         url = f"{self._http_base_auth}/v1/user/automations"
         return await self._request("GET", url)
 
-    async def reset_robot(self, blid: str) -> dict[str, Any]:
+    async def reset_robot(
+        self,
+        blid: str,
+        robot_password: str | None = None,
+        synchronous: bool | None = None,
+        send_wipe: bool | None = None,
+    ) -> dict[str, Any]:
         """POST /v1/{blid}/reset -- NEW (session 16). CONFIRMED from
         base_roomba_config.json (commandId "ResetRobotCommand",
         httpMethod=POST, networkList contains both awsApiGateway and
@@ -1286,9 +1368,41 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         presumably a factory reset or at least a significant reset
         operation -- the name and "write": true suggest this triggers
         a REAL, potentially consequential action on the device. Never
-        live-tested. Don't call this lightly."""
+        live-tested. Don't call this lightly.
+
+        THE BODY IS DECLARED AND THIS SENT NONE. `ResetRequest$Body`
+        (app 3.0.0) carries three fields:
+
+            robot_password   the robot's own password
+            synchronous      wait for completion, or fire and forget
+            send_wipe        WHETHER TO WIPE
+
+        `send_wipe` is the field that decides how consequential this
+        is, and until now it was neither sent nor known to exist. A
+        bodyless POST leaves that decision to the server's default, and
+        nobody here knows what that default is -- which is a worse
+        position than choosing, and it was arrived at by not looking.
+
+        DEFAULT BEHAVIOUR IS DELIBERATELY UNCHANGED: with no arguments
+        this still sends no body, exactly as before. Nothing here has
+        ever called this endpoint, so switching an untested call to a
+        different untested call would trade one unknown for another on
+        an operation that may wipe somebody's robot.
+
+        What is new is that a caller CAN be explicit. `send_wipe=False`
+        is the conservative choice and the one worth trying first if
+        this is ever exercised."""
         url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/reset"
-        return await self._request("POST", url)
+        body: dict[str, Any] = {}
+        if robot_password is not None:
+            body["robot_password"] = robot_password
+        if synchronous is not None:
+            body["synchronous"] = synchronous
+        if send_wipe is not None:
+            body["send_wipe"] = send_wipe
+        if not body:
+            return await self._request("POST", url)
+        return await self._request("POST", url, body=body)
 
     async def get_notifications(self, blid: str, app_version: str = "2.2.4") -> dict[str, Any]:
         """GET /v1/robots/{blid}/timeline.

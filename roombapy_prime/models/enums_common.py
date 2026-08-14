@@ -87,4 +87,31 @@ def _enum_or_none(enum_cls: type, value: Any) -> Any:
     except ValueError:
         return value
 
+class RoomTypeValue(IntEnum):
+    """Room type as the SDK's map data model numbers it (app 3.0.0,
+    `IrobotP2MapRoomTypeValue`).
 
+    A THIRD NUMBERING FOR THE SAME NINE CATEGORIES. `RoomType` carries
+    2100-2120, which is what `SetRoomType` writes; the GeoJSON bundle
+    carries strings, which is what `RoomCategory` models; this is what
+    `p2_map_room_info.value` uses.
+
+    They correspond exactly -- 2101, 1 and "bedroom" are one room --
+    and confusing them is silent in both directions. A `1` looked up in
+    `RoomType` finds nothing, and an edit built from this space would
+    write 1 where 2101 was meant.
+
+    Not wired into a parser: no payload this project holds carries
+    `p2_map_room_info`. Named so that a small integer in a room-type
+    field is recognisable rather than mistaken for a truncated edit
+    code."""
+
+    UNKNOWN = 0
+    BEDROOM = 1
+    DINING_ROOM = 2
+    BATHROOM = 3
+    HALLWAY = 4
+    KITCHEN = 5
+    LIVING_ROOM = 6
+    BALCONY = 7
+    OTHER = 8

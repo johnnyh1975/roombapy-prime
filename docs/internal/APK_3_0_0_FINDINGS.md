@@ -122,12 +122,38 @@ firmware reads the key, a `True` beside regions is the one combination that coul
 - **Map edit V3 payloads.** `P2MapV3Editor` publishes `{"method": "service.mapedit", "msgId": ...,
   "params": {"map_id": ..., "data": {"value": <any JSON>}}}` over MQTT. `method` is a constant; the
   operation lives in an uninterpreted `JsonElement`. The channel is discoverable and its contents
-  are not. **Scope is smaller than it looks**: of 34 map service methods, exactly two mention V3.
+  are not.
+  **CORRECTED — the scope is NOT smaller than it looks.** An earlier version of this line said "of
+  34 map service methods, exactly two mention V3". That counted the Kotlin bridge, and V3 does not
+  live there. `P2MapEditCommandType` declares NINE operations, and two of them — `setSillReq`
+  (thresholds) and `setCarpetReq` (carpets) — have no V1 or V2 equivalent at all. V3 is the only
+  way to reach two map features. The payload shapes are still unreachable; the names are not.
+  A passive watcher on `editv3_resp` during an edit made in the iRobot app would capture one
+  without any write from here.
 - **Whether the server still sends fields the app dropped.** `after`, `until`, `append`, `exclude`
   and `reminder` existed in 2.2.4 and are gone from 3.0.0's schedule options. The app not writing
   them does not mean the server stops returning them.
 - **Whether a robot accepts more than its app sends.** Which is why the four "deliberately not
   changed" rows are decisions rather than oversights.
+
+## Corrections made on a second pass
+
+The first pass read the report in full and still built two controls from recall. These came from
+*measuring* what had been read rather than reading it again.
+
+- **Seventeen of the package's files had never been opened.** Coverage of the extracted DATA was
+  measured repeatedly — enums, classes, fields, endpoints — and coverage of the FILE LIST was not.
+  Two of the seventeen held findings: `v3_diff_224_300.json` (what the vendor removed) and
+  `v3_service_channels.json` (which surfaced a REST endpoint this library lacked).
+- **`v3_fault_scene_mapping.json` was not even in the count.** The package has 45 files, not the 40
+  first measured. That file gives five of twelve fault scenes as explicit conditions, after this
+  project had recorded them as "not written down".
+- **`nsmip*` and `svcEndpoints*` were never a protocol gap.** Twelve registry names carried as
+  unresolvable are one key each, suffixed with the shadow it lives on. A real dump confirms it: bare
+  `nsmip` on seven of nine shadows, absent from exactly the three with no registry entry. The names
+  were looked at and the shadows were not.
+- **Response shapes were called unmodellable on borrowed grounds.** V3's `data.value` genuinely is
+  opaque; that reason was extended to V1 and V2, where the extract carries all four shapes.
 
 ## Method notes
 

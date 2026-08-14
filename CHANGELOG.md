@@ -8,6 +8,123 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b5] - 2026-08-13
+
+The same app 3.0.0 decode, read a second time — this time by measuring
+what had been read rather than trusting that it had been. Seventeen of
+the package's files had never been opened, and two of them held findings.
+
+No breaking changes.
+
+### Fixed
+
+- **`reset_robot_parts()` sent an unusable body.** `parts` went out as a
+  list of bare id strings; `AssetPartResetDto` declares objects carrying
+  `part_id` AND `counter`. Neither a rejection nor a reset — a request
+  that could not mean what it said. `counters` is now an optional
+  argument; the default of 0 is an inference, since the model names the
+  field without saying what a reset writes.
+
+### Added
+
+- **`edit_map_checked()` / `edit_map_v2_checked()`** return a parsed
+  `MapEditResult` instead of raw JSON. Both edit paths returned an
+  undecoded dict, documented as not modellable — true of V3's opaque
+  `data.value`, and wrongly applied to V1 and V2. Four response shapes
+  are in the extract. **`is_partial` is the reason to care**: a new map
+  version with no URL means the edit applied and the rendered map did
+  not follow, which raw JSON made indistinguishable from success.
+  `edit_map()` itself is unchanged.
+- **`MapEditingError`** — the robot's thirteen edit-failure codes,
+  grouped so a caller can tell "fix your request" from "re-read the map"
+  from "try again unchanged".
+- **`reset_robot()` accepts `robot_password`, `synchronous` and
+  `send_wipe`.** The body was declared and this sent none, leaving the
+  field that decides how destructive a reset is to an unknown server
+  default. Behaviour with no arguments is unchanged.
+- **`get_map_raw_link()`** — the same map version in the vendor's raw
+  format. The app's map-fetcher channel lists it beside the GeoJSON
+  call; only one had been implemented.
+- **The `dock.cap` levels are named.** `DockEvacuation`,
+  `DockPadDrying`, `DockPadWashing`, `DockPadWetOut`,
+  `DockFluidRefill`, `DockDetergent` — six fields previously described
+  in code as "levels, not flags" with no statement of what a level
+  meant. `DockFluidRefill` has three states, and the distinction
+  matters: `controllable` means the user can trigger a refill,
+  `automatic` means the dock decides.
+- **`ScrubSupport`, `PointCleanSupport`, `MidMissionAdjustments`** —
+  three more capability fields that were bare integers.
+- **`Initiator`** — 25 values for who started a mission. This library
+  knew two. `dockBtn`, `alexa`, `siri`, `schedule` and `manual` answer a
+  question people actually ask.
+- **`FaultScene` and `FaultScene.scene_for()`** — the same error code
+  means different things per running task, and the scene is DERIVED from
+  mission status and command rather than sent. Five of twelve scenes
+  have stated conditions and are derived; the other seven have none and
+  return `None` rather than a plausible default.
+- **`MopInstallDetails`** — four states, not on and off. `onlyLeft` and
+  `onlyRight` mean one of two pads is fitted.
+- **`FaultScene` and `FaultScene.scene_for()`** — the same error code means
+  different things per running task, and the scene is DERIVED from mission
+  status and command rather than sent. Five of twelve have stated conditions
+  and are derived; the other seven return `None` rather than a plausible
+  default.
+- **`MopInstallDetails`** — four states, not on and off. `onlyLeft` and
+  `onlyRight` mean one of two pads is fitted.
+- **`RoomStatus`, `TravelReason`, `TravelStatus`, `PadWashReason`,
+  `WetOutStatus`, `TimelineEventPhase`, `MissionType`,
+  `MapEditStatus`, `MapVerifyResult`, `MapEditRejectionReason`,
+  `RoomTypeValue`, `RoomTypeSourceValue`, `SubModuleSwVersions`** and
+  the remaining `bb*` statistics models.
+- **`verify-writes custom_initiator`** — sends `find` claiming to be
+  `homeassistant` rather than `localApp`, to establish whether the server
+  validates the field at all. `Initiator` lists ten named third parties
+  including openHAB and homey; `homeassistant` is not among them.
+
+### Changed
+
+- **`get_favorites()` no longer loses the whole list to one bad entry.**
+  Each favourite is parsed on its own, and an unknown command value is
+  tolerated rather than fatal.
+- **`_either()` is case-insensitive**, so `favoriteId` resolves beside
+  `favorite_id`. One capital letter was the difference between seven
+  favourites and an account that looks empty.
+- **`get_favorites_raw()` unwraps the response.** The diagnostic built
+  to reveal an unwrapping bug carried the same bug, so every download
+  taken to answer "does the server return anything?" answered no.
+
+### Documented
+
+- **`nsmip*` and `svcEndpoints*` were never a gap.** Twelve registry
+  names carried as unresolvable are one key each, suffixed with the
+  shadow it lives on. A real dump confirms it exactly.
+- **Three concepts have more than one encoding**: room type (three),
+  room-type source (two), routine type (two). Confusing them is silent
+  in both directions.
+- **`langs2.sLang` carries BCP-47**, not `DeviceLanguageType`'s ids. A
+  selector built from the vendor enum would have written `2` where
+  `"en-US"` is expected — caught by a real capture, not a second enum.
+- **`poll_echo_value()` does not locate the robot**, field-disproven
+  twice. `send_simple_command("find")` is the working mechanism.
+- **The DND write shape is one step less certain than it read.**
+  `DNDSchedule$DailySchedule` and `DNDSchedule$EndsAt` are in APK 2.2.4 and
+  absent from 3.0.0. What a client stops shipping is a fact about that
+  client -- but the honest standing is now "confirmed in 2.2.4, absent in
+  3.0.0, never sent successfully by anyone".
+
+### Tooling
+
+- **`vendor_reference.json`** now carries the 223 serialiser classes and
+  89 SDK models beside the enums.
+- **`scripts/check_vendor_value_sets.py`** asserts every value set
+  either matches a declared vendor enum or states why none exists.
+  Reading the research did not stop two controls being built from
+  recall; not looking is now a test failure.
+- **`scripts/vendor_gap_report.py`** reports what the vendor knows and
+  this library does not use, for enums and classes alike. Every entry
+  needs a disposition; "not relevant" is a valid one, unreviewed is not.
+
+
 ## [0.3.0b4] - 2026-08-13
 
 A full decode of iRobot app 3.0.0 was read against this library. Four wire

@@ -96,8 +96,268 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from enum import IntEnum, StrEnum
+
 from .enums_common import FurnitureType, RoomCategory, RoomType
 from .geometry import LineString, Polygon, Position
+
+
+class MapEditingError(IntEnum):
+    """Why the robot refused a map edit (app 3.0.0,
+    `P2MapEditingErrorCode`).
+
+    THE ONE VOCABULARY HERE THIS LIBRARY DOES NOT CONTROL. Everything
+    else in this module is a command shape -- something we send, and can
+    check before sending. These thirteen come BACK, and until now a
+    failed edit was an unnamed integer in raw JSON.
+
+    They fall into three groups, and the grouping is the useful part:
+
+        NOT FOUND -- the thing you asked to change is gone. Someone
+        else edited the map, or a stale id was reused.
+            keepOutZoneNotFound · noMopZoneNotFound · virtualWallNotFound
+            cleanZoneNotFound · furnitureNotFound
+
+        INVALID -- the shape or type you sent is not acceptable.
+            invalidRoomSplit · unexpectedRoomType · invalidVirtualWall
+            invalidPermanentArea
+
+        NOT NOW -- the request was fine and the robot could not act.
+            editAppliedMapNotReady · emptyModifyRequest
+            noAvailableIdentifier · unexpectedResponse
+
+    WHY THAT MATTERS FOR A CALLER: only the middle group means "fix your
+    request". A not-found is a race worth re-reading the map for, and a
+    map-not-ready is worth retrying unchanged. Treating all three the
+    same turns a transient refusal into a permanent failure.
+
+    NOT WIRED INTO A RESPONSE PARSER, because neither edit path models
+    its response at all -- both return raw JSON, and inventing a
+    response envelope to hold this would be guessing at a shape no
+    capture has shown. This names the codes so a caller reading that
+    raw JSON has something better than a number."""
+
+    UNEXPECTED_RESPONSE = 0
+    INVALID_ROOM_SPLIT = 1
+    UNEXPECTED_ROOM_TYPE = 2
+    INVALID_VIRTUAL_WALL = 3
+    INVALID_PERMANENT_AREA = 4
+    KEEP_OUT_ZONE_NOT_FOUND = 5
+    NO_MOP_ZONE_NOT_FOUND = 6
+    VIRTUAL_WALL_NOT_FOUND = 7
+    NO_AVAILABLE_IDENTIFIER = 8
+    CLEAN_ZONE_NOT_FOUND = 9
+    FURNITURE_NOT_FOUND = 10
+    EMPTY_MODIFY_REQUEST = 11
+    EDIT_APPLIED_MAP_NOT_READY = 12
+
+
+@dataclass(frozen=True)
+class MapEditResult:
+    """What came back from a map edit, in whichever of four shapes.
+
+    THIS WAS RAW JSON, AND THE REASON GIVEN FOR THAT WAS WRONG. Both
+    edit paths returned an undecoded dict, documented here as "response
+    shape not modelled" and, later, as not modellable at all -- the
+    payloads were said to be undiscoverable. That was a claim about
+    V3's `data.value`, applied to V1 and V2 where it does not hold.
+
+    The serialiser extract carries all four:
+
+        P2MapURL                  map_url
+        P2MapEditSuccessFallback  status · map_url · p2mapv_id ·
+                                  p2map_metadata
+        P2MapEditPartialSuccess   status · p2mapv_id · p2map_metadata
+        P2MapError                code · message
+
+    PARTIAL SUCCESS IS THE ONE WORTH HAVING. It carries a new map
+    version and no URL -- the edit took, the rendered map did not
+    follow. A caller treating any non-error as done would show a stale
+    map and never know; a caller treating it as failure would retry an
+    edit that already applied.
+
+    `code` CARRIES `MapEditingError`, which is what connects those
+    thirteen names to a field a robot actually fills.
+
+    THE MESSAGE ARRIVES TWO WAYS. `P2MapError.message` is the plain
+    one; `P2MapError$MessageContainer` wraps a capital-M `Message`,
+    which is AWS API Gateway's shape -- the same envelope the
+    firmware-catalogue 403 came back in. Both are read.
+
+    NOT FIELD-CONFIRMED. No capture this project holds contains a map
+    edit response of any shape, because nothing here has ever sent one
+    outside a dry run. Every field is permissively typed for that
+    reason, and `raw` keeps the whole payload so a first real response
+    can be compared against this rather than lost."""
+
+    map_url: str | None = None
+    #: The vendor's `MapEditResult` enum -- success, fail, cancel -- is
+    #: the likeliest content, and `MapEditStatus` names it. Left `Any`
+    #: because no capture has shown a `status` value, and typing a field
+    #: on a guess is how `pad_category` silently became a string.
+    status: Any | None = None
+    map_version_id: str | None = None
+    map_metadata: Any | None = None
+    error_code: int | None = None
+    error_message: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_error(self) -> bool:
+        return self.error_code is not None or self.error_message is not None
+
+    @property
+    def is_partial(self) -> bool:
+        """A new map version without a URL: the edit applied and the
+        rendered map did not follow."""
+        return (
+            not self.is_error
+            and self.map_version_id is not None
+            and self.map_url is None
+        )
+
+    @property
+    def error(self) -> MapEditingError | None:
+        """The vendor's name for `code`, where it recognises one.
+
+        None for an unknown code rather than raising: the server may add
+        one, and losing the whole result over an unfamiliar number would
+        be the same mistake that emptied an account's favourites."""
+        if self.error_code is None:
+            return None
+        try:
+            return MapEditingError(self.error_code)
+        except ValueError:
+            return None
+
+    @classmethod
+    def from_json(cls, data: Any) -> MapEditResult:
+        """DELEGATES TO THE EXISTING SHAPE CLASSES rather than re-reading
+        the payload.
+
+        `P2MapEditPartialSuccess` and `P2MapEditSuccessFallback` have
+        been in robot_info.py since session 51, added as "three
+        separately-found response classes, not a resolved discriminated
+        union" for callers willing to guess which one applied. Nothing
+        ever called them, and nothing decided between them.
+
+        The first version of this method parsed the same four fields
+        again -- a second parsing site for one payload, which is
+        precisely the duplicate that made `pad_category` silently stay a
+        string for months. What was actually missing was the
+        DISCRIMINATION and the wiring, so that is all this adds.
+
+        The error shape has no class: `P2MapError` was named in the
+        extract but never modelled, so its two fields are read here."""
+        from .robot_info import (  # noqa: PLC0415
+            P2MapEditPartialSuccess,
+            P2MapEditSuccessFallback,
+        )
+
+        if not isinstance(data, dict):
+            return cls()
+
+        # The fallback shape is the wider of the two and reads every
+        # field the partial one does, so it parses both.
+        success = (
+            P2MapEditSuccessFallback.from_json(data)
+            if "map_url" in data
+            else P2MapEditPartialSuccess.from_json(data)
+        )
+        message = data.get("message")
+        if message is None:
+            container = data.get("Message")
+            message = container if isinstance(container, str) else None
+        return cls(
+            map_url=getattr(success, "map_url", None) or data.get("map_url"),
+            status=success.status,
+            map_version_id=success.p2mapv_id,
+            map_metadata=success.p2map_metadata,
+            error_code=data.get("code"),
+            error_message=message,
+            raw=dict(data),
+        )
+
+
+class MapEditStatus(StrEnum):
+    """The vendor's `MapEditResult` (app 3.0.0): success, fail, cancel.
+
+    THE LIKELIEST CONTENT OF `MapEditResult.status`, which this library
+    types as `Any` because no capture has shown one. Three plain words,
+    and `cancel` is the interesting third: an edit neither applied nor
+    rejected, which a two-way success/failure reading would have to
+    force into one or the other.
+
+    NAMED `MapEditStatus`, NOT `MapEditResult`. The vendor calls this
+    enum `MapEditResult`, and the response class in this module already
+    carries that name -- chosen before this enum was read, and it means
+    something different: the whole parsed response rather than its
+    outcome word. Two things called the same name in one module would
+    be exactly the confusion `PadCategory` caused.
+
+    Not applied to the field. A capture carrying `status` would settle
+    whether these three are what arrives there; until then the raw value
+    passes through and this names the candidate."""
+
+    SUCCESS = "success"
+    FAIL = "fail"
+    CANCEL = "cancel"
+
+
+class MapVerifyResult(IntEnum):
+    """Why a map edit failed verification before sending (app 3.0.0).
+
+    A SIXTH CLIENT-SIDE CHECK, alongside the six `*InvalidReason` enums
+    merged into MapEditRejectionReason -- and this one is numeric rather
+    than snake_case strings, so it could not be merged with them.
+
+    `overlapWithVirtual` names something the string reasons do not: an
+    area overlapping a VIRTUAL WALL specifically, as opposed to the
+    generic `overlap`."""
+
+    SUCCESS = 0
+    AREA_WITHIN_MAP_SMALL = 1
+    OUT_MAP = 2
+    EMPTY = 4
+    OVERLAP_WITH_VIRTUAL = 5
+
+
+class MapEditRejectionReason(StrEnum):
+    """Why the APP declines to send a map edit, before the robot sees it
+    (app 3.0.0, six `*InvalidReason` enums merged).
+
+    DELIBERATELY NOT ENFORCED HERE, and the distinction from
+    MapEditingError above is the whole point: those come back from the
+    robot, these are the vendor's own client-side validations.
+
+    Enforcing them would mean geometry this library does not do --
+    overlap tests, minimum areas, room adjacency. Doing that badly would
+    reject valid edits, which is worse than forwarding one the robot
+    declines.
+
+    So they are documented rather than implemented, as the list of what
+    a robot is expected to refuse:
+
+        outside_map · overlap · overlap_invalid_area · overlap_with_dock
+        zone_too_small · room_too_small · threshold_too_short
+        invalid_room_shape · rooms_not_adjacent · less_than_two_rooms
+        map_not_ready
+
+    `map_not_ready` appears in three of the six source enums and is the
+    only one that is purely temporal -- worth retrying rather than
+    fixing."""
+
+    OUTSIDE_MAP = "outside_map"
+    OVERLAP = "overlap"
+    OVERLAP_INVALID_AREA = "overlap_invalid_area"
+    OVERLAP_WITH_DOCK = "overlap_with_dock"
+    ZONE_TOO_SMALL = "zone_too_small"
+    ROOM_TOO_SMALL = "room_too_small"
+    THRESHOLD_TOO_SHORT = "threshold_too_short"
+    INVALID_ROOM_SHAPE = "invalid_room_shape"
+    ROOMS_NOT_ADJACENT = "rooms_not_adjacent"
+    LESS_THAN_TWO_ROOMS = "less_than_two_rooms"
+    MAP_NOT_READY = "map_not_ready"
 from .map_bundle import PolicyZoneFeature
 
 

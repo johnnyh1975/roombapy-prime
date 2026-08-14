@@ -123,6 +123,177 @@ class CoverageStrategy(StrEnum):
     ROOM_SEGMENTATION = "ROOM_SEGMENTATION"
 
 
+class MissionType(StrEnum):
+    """What a mission was asked to do (app 3.0.0, `MissionType`).
+
+    Three wire strings, none of them read anywhere in this library. The
+    distinction is not derivable from the command: a room clean and a
+    zone clean both arrive as `start` with regions, and only the region
+    types tell them apart -- which is a reconstruction where the server
+    states it outright."""
+
+    FULL_HOME = "full_home"
+    ROOM_CLEANING = "room_cleaning"
+    ZONE_CLEANING = "zone_cleaning"
+
+
+class TimelineEventPhase(IntEnum):
+    """Whether a timeline event has happened, is happening, or is
+    planned (app 3.0.0, `RobotTimelineEventPhase`).
+
+    NAMES A SPLIT THIS LIBRARY ALREADY PARSES. `MissionTimeline` reads
+    `finEvents` (done) and `futureEvents` (intended) into separate
+    lists, which is the same distinction arrived at from the field
+    names. `current` is the third value and has no list of its own --
+    the event in progress presumably sits at the head of one of them,
+    and nothing here has seen a live timeline to say which.
+
+    Not wired into the parser: the two lists already carry the meaning.
+    Named so that an event object carrying an explicit phase is
+    readable rather than a number."""
+
+    PAST = 0
+    CURRENT = 1
+    FUTURE = 2
+
+
+class FaultScene(IntEnum):
+    """Which task was running when a fault was raised (app 3.0.0,
+    `FaultScene`).
+
+    THE SAME ERROR CODE MEANS DIFFERENT THINGS PER TASK, which is why
+    the app resolves a fault against a scene rather than showing one
+    text per code. A stall during `washTask` is a dock problem; the
+    same stall during `cleanTask` is a robot problem.
+
+    TWELVE SCENES, AND THE DOCK OWNS FIVE of them -- wash, dry, evac,
+    fluid refill and dock. This library's error catalogue is flat: 112
+    codes, one text each, no scene. That is not wrong, it is less than
+    the vendor has.
+
+    THERE IS NO SCENE FIELD, and saying "the field has not been
+    identified" was wrong -- it implied one exists to find.
+    `getFaultScene({cmStatus, command})` DERIVES the scene from the
+    mission status and the currently running command. The app computes
+    it; the robot never sends it.
+
+    THAT MAKES IT BUILDABLE RATHER THAN BLOCKED. Both inputs are
+    already read here -- `CleanMissionStatus` carries phase and cycle,
+    and `rw-software.lastCommand` carries the command. A scene could be
+    derived the same way the app derives it.
+
+    FIVE SCENES ARE FULLY SPECIFIED and `scene_for()` below derives
+    them. Saying the conditions were "only partly recorded" was another
+    thing looked for in the wrong place -- they are written out as code,
+    and as a data file this project had not opened.
+
+    THE DOCK SCENES CHECK COMMAND *OR* PHASE, which is the part worth
+    understanding rather than copying: a fault during `padWash` is a
+    wash fault whether the user asked for the wash or the robot started
+    it on its own. `evacTask` checks three sources -- command, cycle and
+    phase.
+
+    THE OTHER SEVEN STAY UNRESOLVED, and they are the ones with no
+    stated condition at all: cleanTask is the documented default, and
+    startTask, vacuumTask, mopTask, chargeTask, updateTask and
+    returnTask have empty condition sets in the vendor extract. Guessing
+    at those would put a wrong task name on a real error message."""
+
+    @staticmethod
+    def scene_for(
+        command: str | None = None,
+        cycle: str | None = None,
+        phase: str | None = None,
+    ) -> FaultScene | None:
+        """The scene for a fault, from the five specified rules.
+
+        Returns None rather than `CLEAN_TASK` when no rule matches.
+        `cleanTask` is documented as the default case, but defaulting
+        here would hide the seven unresolved scenes behind a plausible
+        answer -- a caller that wants the default can say so."""
+        if "evac" in (command, cycle, phase):
+            return FaultScene.EVAC_TASK
+        if command == "washpad" or phase == "padWash":
+            return FaultScene.WASH_TASK
+        if command == "drypad" or phase == "padDry":
+            return FaultScene.DRY_TASK
+        if command == "flrefill" or phase == "refill":
+            return FaultScene.FLUID_REFILL_TASK
+        if command == "dock" or cycle == "dock":
+            return FaultScene.DOCK_TASK
+        return None
+
+    CLEAN_TASK = 0
+    START_TASK = 1
+    VACUUM_TASK = 2
+    MOP_TASK = 3
+    RETURN_TASK = 4
+    DOCK_TASK = 5
+    EVAC_TASK = 6
+    WASH_TASK = 7
+    DRY_TASK = 8
+    FLUID_REFILL_TASK = 9
+    UPDATE_TASK = 10
+    CHARGE_TASK = 11
+
+
+class Initiator(StrEnum):
+    """Who started a mission (app 3.0.0, `Initiator`, 25 values).
+
+    THIS PROJECT KNEW TWO OF THEM. `initiator` has been read as a bare
+    string with a docstring recording the two values real captures
+    happened to contain -- `cloud` for schedule-triggered and `rmtApp`
+    for app-triggered. The vendor names twenty-five, and the interesting
+    ones are the ones no capture would have shown:
+
+        alexa · siri · google · ifttt · homey · openHAB · yonomi
+        bosch · swisscom · alismart          third-party assistants
+        dockBtn                              the physical dock button
+        manual                               the button on the robot
+        schedule · rmtAuto · loclAuto        automatic triggers
+        localApp · rmtApp                    the iRobot app
+        team                                 the other robot, teaming
+
+    WHY IT MATTERS BEYOND COMPLETENESS: "why did the robot start?" is a
+    question people actually ask, and `cloud` versus `dockBtn` versus
+    `alexa` answers it. A household with a voice assistant and a
+    schedule cannot tell them apart today.
+
+    OFFERED, NOT IMPOSED. `initiator` stays a str on the event: values
+    outside this list must survive, and a server that adds a
+    twenty-sixth integration should not break parsing. Use
+    `Initiator(event.initiator)` where a name helps.
+
+    FOUND BY vendor_gap_report.py, not by anyone looking. Nobody would
+    have searched for an enum called `Initiator` while reading a field
+    documented as having two values."""
+
+    ALEXA = "alexa"
+    ALISMART = "alismart"
+    BOSCH = "bosch"
+    CLOUD = "cloud"
+    DOCK_BUTTON = "dockBtn"
+    HOMEY = "homey"
+    IFTTT = "ifttt"
+    IFTTTC = "iftttc"
+    INTERNAL = "internal"
+    LOCAL_APP = "localApp"
+    LOCAL_AUTO = "loclAuto"
+    MANUAL = "manual"
+    OPENHAB = "openHAB"
+    REMOTE_APP = "rmtApp"
+    REMOTE_AUTO = "rmtAuto"
+    SCHEDULE = "schedule"
+    SHELL = "shell"
+    SIM_AUTO = "simAuto"
+    SIRI = "siri"
+    SWISSCOM = "swisscom"
+    TEAM = "team"
+    UNKNOWN = "unknown"
+    WIFI = "wifi"
+    YONOMI = "yonomi"
+
+
 @dataclass(frozen=True)
 class MissionCommandRecord:
     """CORRECTED (session 27): mapId/mapVersionId had been wrongly

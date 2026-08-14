@@ -102,13 +102,54 @@ table we have to carry.
 
 | Setting | Control |
 |---|---|
-| `padDryDur` | picker, `[2, 3, 4, 5, 6]` hours, uniform across models |
-| `pwHeat` | picker, three levels |
+| `padDryDur` | picker, `[2, 3, 4, 5, 6]` — **narrowed on five SKUs** |
+| `pwHeat` | picker, three levels, narrowed by `dock.cap.pw` (an inference, see below) |
 | `autoevacFreq` | picker, options gated on `CapAutoEvac` |
 | wash frequency | **mode first, then a value** — and the mode write is not optional |
 
-A picker is now defensible where it was not this morning: the sets come from the app's own
-enums rather than a stale resource file, and they do not vary by series.
+### CORRECTED: the sets DO vary by series
+
+An earlier version of this line said the sets "do not vary by series". They do.
+`getListBySKU` narrows five product modes:
+
+```
+G2  pwAreaInterval [6, 8, 10]     padDryDur [2,3,4]
+N2  pwAreaInterval [10, 15, 20]   padDryDur [2,3,4]
+R2  pwAreaInterval [10, 15, 20]   padDryDur [2,3,4]
+V1  pwTimeInterval [10, 15, 20]   padDryDur [4,5,6]
+Z1  pwTimeInterval [10, 15, 20]   padDryDur [4,5,6]
+```
+
+The report itself contradicts this in two places: an earlier note says `DryDurType` is not
+series-dependent and the 2.2.4 profiles no longer apply; a later one finds `getListBySKU`
+and confirms the mapping *by* agreement with those same profiles. **The later reading
+wins**, and its own caveat stands — the assembler does not separate the branches cleanly,
+so narrowing is applied only where both sources agree.
+
+**Why it matters despite no tester owning one:** `V1` and `Z1` were added to
+`PRIME_SKU_PREFIXES` in the same session as these controls. A robot that only just became
+recognisable would have been offered intervals its own app does not show.
+
+### `autoevacFreq` is the exception, and a screenshot proves it
+
+`getListBySKU` gives a standard `autoevacFreq` list of `[0, 10, 15, 25, 30]` — area values
+only. @chairstacker's G1 takes that standard list, and his Auto-Empty Frequency screen
+shows three options: every routine, every 2, every 3. That is `0/1/2`, and none of them is
+in the SKU list. His `cap.autoevac = 1` (`freqModes`) predicts exactly those three.
+
+So the capability decides this control and the SKU list does not.
+
+### `pwHeat`'s gate is an inference, not a reading
+
+`DockPadWashingType` names `dock.cap.pw` as notSupported / supported / heatedSupported /
+highHeatSupported, and the heat levels are narrowed accordingly. **Nobody has read what
+actually gates `pwHeat`** — and the research's own correction table records "gate über
+`dock.cap.pw`" as *wrong* for the neighbouring wash-frequency screen, where
+`ProductMode::getModeBySku()` decides.
+
+Kept because the risk points the safe way: offering high heat to a level-2 dock is
+accepted and silently not produced, while a wrong gate hides an option on a capable dock —
+and someone reports that.
 
 The wash frequency needs two controls rather than one, but neither is a compound write.
 `pwReturn` holds either a mode or a level; the interval fields are only meaningful when

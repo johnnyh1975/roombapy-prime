@@ -210,6 +210,39 @@ class ScheduleOptions:
     # not know survived a read-modify-write cycle for as long as it took
     # the vendor's own client to declare it.
     #
+    # FIVE FIELDS WENT THE OTHER WAY IN THE SAME RELEASE. A structural
+    # diff of 2.2.4 against 3.0.0 shows `ScheduleOptions` losing
+    # `after`, `append`, `exclude`, `reminder` and `until` while gaining
+    # `is_smart_clean_fav` and `schedule_id`. The vendor's current model
+    # declares thirteen fields and none of those five is among them.
+    #
+    # THEY ARE KEPT, AND THE DIFF SAYS LESS THAN IT LOOKS. What a client
+    # stopped sending is a fact about that client. The endpoint is the
+    # server's, and the server keeps accepting fields long after an app
+    # stops using them -- there is no reason for it to break its own
+    # older clients.
+    #
+    # THIS FILE CARRIES THE COUNTER-EXAMPLE, four paragraphs up.
+    # `is_smart_clean_fav` arrived on real schedules while appearing
+    # NOWHERE in 2.2.4. The server was ahead of the app then; assuming
+    # it now follows the app is the same error with the sign flipped.
+    #
+    # So the diff is a hint about where to look if something breaks, not
+    # a prediction that it will. Every one of the five is written only
+    # when a caller sets it explicitly, and nothing in this project
+    # does, so no request in the field carries any of them today.
+    #
+    # WHAT WOULD ACTUALLY SETTLE IT is a write that carries one and is
+    # accepted or refused. Nothing short of that is evidence about the
+    # server.
+    #
+    # HOW THIS WAS FOUND is worth recording too: not by reading the
+    # research prose, which was read in full, but by opening
+    # `v3_diff_224_300.json` -- one of seventeen files in the package
+    # nobody had opened at all. Coverage of the extracted DATA was
+    # measured repeatedly; coverage of the extract's own FILE LIST was
+    # not.
+    #
     # Writing a schedule is read-modify-write. Without this, every write
     # silently drops whatever the server knows and the app does not --
     # and the loss is invisible, because the request is accepted and the

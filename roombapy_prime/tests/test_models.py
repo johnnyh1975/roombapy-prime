@@ -5909,6 +5909,23 @@ class TestOperatingModeReadWriteAsymmetry:
 
         assert int(OperatingModeBitmask(1024)) == 1024
 
+    def test_a_field_observation_outranks_the_codec_reading(self):
+        """The codec emits 6 for combo, and ha_roomba_plus sends 32 and
+        gets `status 6` back. Both are true: the robot accepts a value
+        its own app does not send.
+
+        The first version of this note said "nothing here has tested
+        it", which was wrong at the time of writing -- the selector had
+        shipped with both mappings confirmed."""
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        source = inspect.getsource(mission_control)
+
+        assert "IT WORKS ANYWAY, AND THAT IS FIELD-OBSERVED" in source
+        assert "command 32 -> status 6" in source
+
     def test_the_asymmetry_is_written_down(self):
         from roombapy_prime.models.mission_control import OperatingModeBitmask
 
@@ -6226,3 +6243,627 @@ class TestTheRawCaptureNoLongerHidesTheAnswer:
         payload = {"Items": [], "Count": 0}
 
         assert PrimeRestClient._unwrap_favorites_payload(payload) == [payload]
+
+
+class TestTheDockCapabilityLevelsAreNamed:
+    """`dock.cap` was six integers documented as "levels, not flags"
+    with no statement of what any level meant. Every one is named in the
+    vendor's extract, and none was found by looking — the gap report
+    surfaced the whole family at once.
+
+    That is the difference the tooling makes. Three of these were found
+    by hand earlier the same day, one at a time, each after a control
+    had already been built wrong.
+    """
+
+    def test_pad_washing_distinguishes_heat_from_high_heat(self):
+        """The level that gates `pwHeat`. A level-2 dock can heat; only
+        level 3 can produce high heat."""
+        from roombapy_prime.models.robot_info import DockPadWashing
+
+        assert DockPadWashing.HEATED == 2
+        assert DockPadWashing.HIGH_HEAT == 3
+
+    def test_pad_drying_distinguishes_heated_from_unheated_air(self):
+        """chairstacker's dock reads 2 — unheated air. Offering a heated
+        drying option there would offer hardware he does not have."""
+        from roombapy_prime.models.robot_info import DockPadDrying
+
+        assert DockPadDrying(2) is DockPadDrying.UNHEATED_AIR
+        assert DockPadDrying(3) is DockPadDrying.HEATED_AIR
+
+    def test_fluid_refill_has_three_states_not_two(self):
+        """`controllable` means the user can trigger a refill;
+        `automatic` means the dock decides. A refill button belongs only
+        on the first."""
+        from roombapy_prime.models.robot_info import DockFluidRefill
+
+        assert DockFluidRefill.CONTROLLABLE == 1
+        assert DockFluidRefill.AUTOMATIC == 2
+
+    def test_pad_wet_out_is_no_longer_unexplained(self):
+        """Carried as "meaning genuinely unclear" for months."""
+        from roombapy_prime.models.robot_info import DockPadWetOut
+
+        assert DockPadWetOut(1) is DockPadWetOut.SUPPORTED
+
+    def test_a_real_dock_reads_as_words(self):
+        """chairstacker's `dock.cap`, end to end."""
+        from roombapy_prime.models.robot_info import (
+            DockCapabilities,
+            DockEvacuation,
+            DockPadDrying,
+            DockPadWashing,
+            DockPadWetOut,
+        )
+
+        cap = DockCapabilities.from_json({"evac": 1, "pd": 2, "pw": 1, "pwo": 1})
+
+        assert DockEvacuation(cap.evac) is DockEvacuation.AVAILABLE
+        assert DockPadDrying(cap.pad_dry) is DockPadDrying.UNHEATED_AIR
+        assert DockPadWashing(cap.pad_wash) is DockPadWashing.SUPPORTED
+        assert DockPadWetOut(cap.pad_wash_or) is DockPadWetOut.SUPPORTED
+
+
+class TestMapEditFailuresAreNamed:
+    """A failed map edit was an unnamed integer in raw JSON. Thirteen of
+    them have names, and the grouping decides what a caller should do.
+    """
+
+    def test_the_three_groups_are_distinguishable(self):
+        """Only "invalid" means fix the request. A not-found is a race
+        worth re-reading the map for; not-ready is worth retrying
+        unchanged. Treating all three alike turns a transient refusal
+        into a permanent failure."""
+        from roombapy_prime.models.map_editing import MapEditingError
+
+        not_found = {
+            MapEditingError.KEEP_OUT_ZONE_NOT_FOUND,
+            MapEditingError.NO_MOP_ZONE_NOT_FOUND,
+            MapEditingError.VIRTUAL_WALL_NOT_FOUND,
+            MapEditingError.CLEAN_ZONE_NOT_FOUND,
+            MapEditingError.FURNITURE_NOT_FOUND,
+        }
+        invalid = {
+            MapEditingError.INVALID_ROOM_SPLIT,
+            MapEditingError.UNEXPECTED_ROOM_TYPE,
+            MapEditingError.INVALID_VIRTUAL_WALL,
+            MapEditingError.INVALID_PERMANENT_AREA,
+        }
+        transient = {
+            MapEditingError.EDIT_APPLIED_MAP_NOT_READY,
+            MapEditingError.EMPTY_MODIFY_REQUEST,
+            MapEditingError.NO_AVAILABLE_IDENTIFIER,
+            MapEditingError.UNEXPECTED_RESPONSE,
+        }
+
+        assert not_found | invalid | transient == set(MapEditingError)
+        assert not not_found & invalid
+        assert not invalid & transient
+
+    def test_a_raw_code_resolves(self):
+        from roombapy_prime.models.map_editing import MapEditingError
+
+        assert MapEditingError(5) is MapEditingError.KEEP_OUT_ZONE_NOT_FOUND
+
+
+class TestClientSideRejectionsAreDocumentedNotEnforced:
+    """The six `*InvalidReason` enums are the APP's pre-send checks, not
+    the robot's answers. Enforcing them would need overlap tests,
+    minimum areas and room adjacency — geometry this library does not
+    do, and doing it badly would reject valid edits.
+    """
+
+    def test_the_merged_vocabulary_covers_all_six_sources(self):
+        from roombapy_prime.models.map_editing import MapEditRejectionReason
+
+        values = {m.value for m in MapEditRejectionReason}
+
+        assert {"outside_map", "overlap", "overlap_invalid_area"} <= values
+        assert {"zone_too_small", "room_too_small", "threshold_too_short"} <= values
+        assert {"rooms_not_adjacent", "less_than_two_rooms"} <= values
+
+    def test_map_not_ready_is_the_only_temporal_one(self):
+        """It appears in three of the six source enums and is worth
+        retrying rather than fixing — the same distinction the robot's
+        own error codes make."""
+        from roombapy_prime.models.map_editing import MapEditRejectionReason
+
+        assert MapEditRejectionReason.MAP_NOT_READY.value == "map_not_ready"
+
+
+class TestMapEditResponsesAreParsedNotHandedBackRaw:
+    """Both edit paths returned an undecoded dict, documented first as
+    "response shape not modelled" and later as not modellable at all.
+    The second claim was about V3's opaque `data.value` and was applied
+    to V1 and V2, where it does not hold — the serialiser extract
+    carries all four response shapes.
+
+    THE ONE THAT MATTERS IS PARTIAL SUCCESS: a new map version with no
+    URL. The edit applied and the rendered map did not follow. Raw JSON
+    made that indistinguishable from success, so a caller would have
+    shown a stale map and never known.
+    """
+
+    @staticmethod
+    def _parse(payload):
+        from roombapy_prime.models.map_editing import MapEditResult
+
+        return MapEditResult.from_json(payload)
+
+    def test_a_link_response_is_a_plain_success(self):
+        result = self._parse({"map_url": "https://example/map"})
+
+        assert result.map_url == "https://example/map"
+        assert not result.is_error
+        assert not result.is_partial
+
+    def test_partial_success_is_distinguishable_from_both(self):
+        result = self._parse(
+            {"status": "partial", "p2mapv_id": "v9", "p2map_metadata": {"n": 1}}
+        )
+
+        assert result.is_partial
+        assert not result.is_error
+        assert result.map_version_id == "v9"
+
+    def test_the_success_fallback_carries_both(self):
+        """A version AND a URL is complete, not partial."""
+        result = self._parse(
+            {"status": "ok", "map_url": "https://example/m", "p2mapv_id": "v9"}
+        )
+
+        assert not result.is_partial
+        assert result.map_url and result.map_version_id
+
+    def test_an_error_code_resolves_to_its_vendor_name(self):
+        from roombapy_prime.models.map_editing import MapEditingError
+
+        result = self._parse({"code": 12, "message": "not ready"})
+
+        assert result.is_error
+        assert result.error is MapEditingError.EDIT_APPLIED_MAP_NOT_READY
+
+    def test_the_aws_message_envelope_is_read_too(self):
+        """`P2MapError$MessageContainer` wraps a capital-M `Message` —
+        API Gateway's shape, the same envelope the firmware-catalogue
+        403 arrived in."""
+        result = self._parse({"code": 5, "Message": "gone"})
+
+        assert result.error_message == "gone"
+
+    def test_an_unknown_code_does_not_lose_the_result(self):
+        """The server may add one. Raising over an unfamiliar number is
+        the mistake that emptied an account's favourites."""
+        result = self._parse({"code": 999, "message": "new"})
+
+        assert result.is_error
+        assert result.error is None
+        assert result.error_code == 999
+
+    def test_the_whole_payload_survives(self):
+        """No capture contains a real map edit response. `raw` is how
+        the first one gets compared against this model rather than
+        lost."""
+        payload = {"code": 1, "somethingUnmodelled": [1, 2]}
+
+        assert self._parse(payload).raw == payload
+
+
+class TestOneParsingSitePerResponseShape:
+    """`P2MapEditPartialSuccess` and `P2MapEditSuccessFallback` were
+    added in session 51 and called by nothing but their own tests. The
+    first version of `MapEditResult` parsed the same four fields again
+    rather than using them.
+
+    Two parsers for one payload is the shape that let `pad_category`
+    stay a string for months. This asserts there is one.
+    """
+
+    def test_the_result_delegates_to_the_existing_classes(self):
+        import inspect
+
+        from roombapy_prime.models import map_editing
+
+        source = inspect.getsource(map_editing.MapEditResult.from_json)
+
+        assert "P2MapEditPartialSuccess" in source
+        assert "P2MapEditSuccessFallback" in source
+
+    def test_delegation_produces_the_same_fields(self):
+        from roombapy_prime.models.map_editing import MapEditResult
+        from roombapy_prime.models.robot_info import P2MapEditPartialSuccess
+
+        payload = {"status": "ok", "p2mapv_id": "v1", "p2map_metadata": {"a": 1}}
+        direct = P2MapEditPartialSuccess.from_json(payload)
+        via_result = MapEditResult.from_json(payload)
+
+        assert via_result.status == direct.status
+        assert via_result.map_version_id == direct.p2mapv_id
+        assert via_result.map_metadata == direct.p2map_metadata
+
+
+class TestThreeNumberingsForOneRoomType:
+    """Whether the read side reports room type as the edit codes or as
+    strings was recorded as unresolved. It is neither: the SDK's map
+    data model uses a third space, 0-8.
+
+    Nine categories, three encodings, and confusing them is silent both
+    ways — a `1` looked up in RoomType finds nothing, and an edit built
+    from the small space writes 1 where 2101 was meant.
+    """
+
+    def test_the_write_space_starts_at_2100(self):
+        from roombapy_prime.models.enums_common import RoomType
+
+        assert RoomType.BEDROOM == 2101
+
+    def test_the_map_data_space_starts_at_zero(self):
+        from roombapy_prime.models.enums_common import RoomTypeValue
+
+        assert RoomTypeValue.BEDROOM == 1
+
+    def test_the_two_spaces_do_not_overlap(self):
+        """Which is what makes the confusion detectable rather than
+        merely wrong."""
+        from roombapy_prime.models.enums_common import RoomType, RoomTypeValue
+
+        write = {int(m) for m in RoomType}
+        read = {int(m) for m in RoomTypeValue}
+
+        assert not write & read
+
+    def test_they_describe_the_same_nine_categories(self):
+        from roombapy_prime.models.enums_common import RoomType, RoomTypeValue
+
+        assert len(list(RoomType)) == len(list(RoomTypeValue)) == 9
+
+
+class TestCapabilityLevelsAreNamedNotCounted:
+    """Three `cap` fields were bare integers with no statement of what a
+    level meant. Both testers sit at the top level of two of them.
+    """
+
+    def test_scrub_distinguishes_per_room_from_software_only(self):
+        """The level that explains why there is no household scrub
+        switch: at perRoom the robot overrides per region, so a single
+        switch would write a value it ignores."""
+        from roombapy_prime.models.robot_info import ScrubSupport
+
+        assert ScrubSupport(3) is ScrubSupport.PER_ROOM
+        assert ScrubSupport(1) is ScrubSupport.SOFTWARE_ONLY
+
+    def test_point_clean_with_heat_is_a_different_command(self):
+        """Not a better one. Offering it on a level-1 robot sends
+        something it cannot do."""
+        from roombapy_prime.models.robot_info import PointCleanSupport
+
+        assert PointCleanSupport(2) is PointCleanSupport.POINT_CLEAN_WITH_HEATED_WATER
+
+    def test_mid_mission_levels_are_not_a_ladder(self):
+        """1 and 2 say WHICH missions allow skipping; 3 says WHAT can be
+        skipped. Reading 3 as "most capable" is the mistake the
+        numbering invites."""
+        from roombapy_prime.models.robot_info import MidMissionAdjustments
+
+        assert MidMissionAdjustments(3) is MidMissionAdjustments.SKIP_CURRENT_ROOM_ONLY
+
+
+class TestEveryConceptWithTwoEncodingsSaysSo:
+    """Room type has three encodings, room-type source has two, routine
+    type has two. Each pair is silent when confused — a small integer
+    looked up in the wrong space finds nothing or, worse, finds
+    something.
+    """
+
+    def test_room_type_source_has_a_confirmed_numeric_form(self):
+        """The string form was always a placeholder: enum names, no wire
+        string ever seen. The numbers are confirmed."""
+        from roombapy_prime.models.map_bundle import RoomTypeSourceValue
+
+        assert RoomTypeSourceValue.ROBOT == 1
+        assert RoomTypeSourceValue.USER == 0
+
+    def test_the_source_vocabularies_differ_too(self):
+        """The vendor says `robot`; this library says DETECTED. Not a
+        spelling anyone could have guessed."""
+        from roombapy_prime.models.map_bundle import RoomTypeSource
+
+        assert RoomTypeSource.DETECTED.value == "DETECTED"
+
+    def test_routine_type_records_its_second_encoding(self):
+        """`RoutineType` numbers the same six 0-5. Only the strings go
+        out, and a command built from the ordinals would send 1 where
+        CLEAN_ALL was meant."""
+        import inspect
+
+        from roombapy_prime.models import mission_control
+
+        source = inspect.getsource(mission_control)
+
+        assert "A SECOND ENCODING EXISTS AND IS NOT THIS ONE" in source
+
+
+class TestFaultsHaveASceneAndThisCatalogueDoesNot:
+    """The same error code means different things per running task,
+    which is why the app resolves a fault against a scene rather than
+    showing one text per code.
+
+    This library's catalogue is flat — 112 codes, one text each. That is
+    not wrong; it is less than the vendor has, and the dock owns five of
+    the twelve scenes.
+    """
+
+    def test_the_dock_owns_five_scenes(self):
+        from roombapy_prime.models.mission_history import FaultScene
+
+        dock = {
+            FaultScene.DOCK_TASK,
+            FaultScene.EVAC_TASK,
+            FaultScene.WASH_TASK,
+            FaultScene.DRY_TASK,
+            FaultScene.FLUID_REFILL_TASK,
+        }
+
+        assert len(dock) == 5
+        assert FaultScene.CLEAN_TASK not in dock
+
+    def test_a_raw_scene_resolves(self):
+        from roombapy_prime.models.mission_history import FaultScene
+
+        assert FaultScene(7) is FaultScene.WASH_TASK
+
+
+class TestMissionTypeAndTimelinePhase:
+    """Two vocabularies the server states outright and this library
+    reconstructs or ignores."""
+
+    def test_mission_type_is_not_derivable_from_the_command(self):
+        """A room clean and a zone clean both arrive as `start` with
+        regions; only the region types tell them apart. The server says
+        which it was."""
+        from roombapy_prime.models.mission_history import MissionType
+
+        assert MissionType.ROOM_CLEANING.value == "room_cleaning"
+        assert MissionType.ZONE_CLEANING.value == "zone_cleaning"
+
+    def test_the_timeline_phase_matches_the_two_lists_already_parsed(self):
+        """`finEvents` and `futureEvents` are past and future. `current`
+        is the third value and has no list — nothing here has seen a
+        live timeline to say where the in-progress event sits."""
+        from roombapy_prime.models.mission_history import TimelineEventPhase
+
+        assert TimelineEventPhase.PAST == 0
+        assert TimelineEventPhase.FUTURE == 2
+        assert TimelineEventPhase.CURRENT == 1
+
+
+class TestTheLanguageEncodingRealDataCaught:
+    """`DeviceLanguageType` numbers 27 languages — english=2, german=4.
+    The shadow carries none of that.
+
+    chairstacker's robot reports `sLang: "en-US"` and `dLangs.langs:
+    ["de-DE", "es-ES", "fr-CA", "en-US", "it-IT"]` — BCP-47 locale
+    strings. A selector built from the vendor enum would have written
+    `2` where `"en-US"` is expected.
+
+    This is the encoding trap for the fourth time today, and the only
+    one where a real capture rather than a second enum caught it.
+    """
+
+    def test_the_selected_language_is_a_locale_string(self):
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        settings = RobotSettings.from_json(
+            {"langs2": {"sLang": "en-US", "aSlots": 1}}
+        )
+
+        assert settings.languages is not None
+        assert settings.languages.s_lang == "en-US"
+
+    def test_the_option_set_comes_from_the_robot_not_a_table(self):
+        """`dLangs` is what a selector would offer, and it differs per
+        device — five on this one."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        settings = RobotSettings.from_json(
+            {"langs2": {"dLangs": {"langs": ["de-DE", "en-US"], "ver": ""}}}
+        )
+
+        assert settings.languages.d_langs == {"langs": ["de-DE", "en-US"], "ver": ""}
+
+    def test_the_cloud_environment_stays_a_string(self):
+        """`prod` matches the vendor's CloudEnvironment, and the field
+        is deliberately not typed: a CN robot with a fifth environment
+        must not fail to parse."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        assert RobotSettings.from_json({"cloudEnv": "prod"}).cloud_env == "prod"
+        assert RobotSettings.from_json({"cloudEnv": "future"}).cloud_env == "future"
+
+
+class TestTheNsmipFamilyWasNeverAGap:
+    """Twelve names — `nsmipThing`, `nsmipSettings`,
+    `svcEndpointsCurrentState` and the rest — were recorded as
+    unresolvable, with what `nsmip` stands for called an open question.
+
+    The suffixes are the shadow list. A flat property registry needs
+    distinct names for the same key on different shadows, so it appends
+    where the key lives. Both keys have been read all along.
+
+    The names were looked at and the shadows were not.
+    """
+
+    def test_the_bare_key_is_read_on_the_shadows_that_carry_it(self):
+        from roombapy_prime.models.robot_info import RobotSettings, ScheduleShadow
+
+        assert RobotSettings.from_json({"nsmip": 3}).nsmip == 3
+        assert ScheduleShadow.from_json({"nsmip": 3}).nsmip == 3
+
+    def test_no_suffixed_variant_is_read_because_none_exists(self):
+        """A robot sending `nsmipSettings` would be sending a registry
+        label, not a wire key. Nothing here should look for one."""
+        from roombapy_prime.models.robot_info import RobotSettings
+
+        assert RobotSettings.from_json({"nsmipSettings": 3}).nsmip is None
+
+    def test_the_reasoning_is_recorded_where_the_field_is(self):
+        import inspect
+
+        from roombapy_prime.models import robot_info
+
+        source = inspect.getsource(robot_info)
+
+        assert "NAMED ONCE PER SHADOW" in source
+
+
+class TestTheScheduleFieldsTheVendorDropped:
+    """A structural diff of APK 2.2.4 against 3.0.0 shows
+    `ScheduleOptions` losing `after`, `append`, `exclude`, `reminder`
+    and `until`. The current model declares thirteen fields and none of
+    those five is among them.
+
+    THE DIFF SAYS LESS THAN IT LOOKS. What a client stopped sending is
+    a fact about that client; the endpoint belongs to the server, which
+    has no reason to break its own older clients.
+
+    This project holds the counter-example: `is_smart_clean_fav` arrived
+    on real schedules while appearing nowhere in 2.2.4. The server was
+    ahead of the app then, and assuming it now follows the app is the
+    same error with the sign flipped.
+
+    So they are kept, and every one is written only when a caller sets
+    it. Nothing in this project does.
+
+    Found by opening `v3_diff_224_300.json`, one of seventeen files in
+    the research package nobody had opened. Coverage of the extracted
+    data was measured repeatedly; coverage of the file list was not.
+    """
+
+    def test_none_of_the_five_is_written_unasked(self):
+        from roombapy_prime.models.schedules_dnd import ScheduleOptions
+
+        body = ScheduleOptions(asset_id="r1", name="Morning").to_json()
+
+        for dropped in ("after", "append", "exclude", "reminder", "until"):
+            assert dropped not in body
+
+    def test_they_still_go_out_when_explicitly_set(self):
+        """Kept, not removed: the server may well still accept them."""
+        from roombapy_prime.models.schedules_dnd import ScheduleOptions
+
+        body = ScheduleOptions(asset_id="r1", append=True, reminder=5).to_json()
+
+        assert body["append"] is True
+        assert body["reminder"] == 5
+
+    def test_the_server_is_not_assumed_to_follow_the_app(self):
+        import inspect
+
+        from roombapy_prime.models import schedules_dnd
+
+        source = inspect.getsource(schedules_dnd)
+
+        assert "FIVE FIELDS WENT THE OTHER WAY" in source
+        assert "SAYS LESS THAN IT LOOKS" in source
+
+
+class TestMopInstallIsNotOnOrOff:
+    """`MopInstallDetails` has four states. `onlyLeft` and `onlyRight`
+    mean ONE of two pads is mounted — which only makes sense on a robot
+    with DualClean Mop Pads.
+
+    A different question from `PadCategory`: `detectedPad` says WHAT is
+    fitted, this says HOW MANY mounting points are occupied. A robot can
+    report `dispWet` and be running on one pad.
+    """
+
+    def test_a_single_pad_is_expressible(self):
+        from roombapy_prime.models.mission_control import MopInstallDetails
+
+        assert MopInstallDetails(1) is MopInstallDetails.ONLY_LEFT
+        assert MopInstallDetails(2) is MopInstallDetails.ONLY_RIGHT
+
+    def test_invalid_is_minus_one_not_the_unsigned_form(self):
+        """The extract reports 18446744073709551615 — an unsigned
+        reading of the same bits. A caller comparing against that would
+        never match."""
+        from roombapy_prime.models.mission_control import MopInstallDetails
+
+        assert MopInstallDetails.INVALID == -1
+
+
+class TestTheVendorAlsoHasAMapEditResult:
+    """The vendor's `MapEditResult` is a three-value enum — success,
+    fail, cancel. This module's `MapEditResult` is the parsed response.
+
+    Same name, different things, chosen before the enum was read. The
+    enum is therefore called `MapEditStatus` here: two things under one
+    name in one module is exactly the confusion `PadCategory` caused.
+    """
+
+    def test_the_two_names_do_not_collide(self):
+        from roombapy_prime.models.map_editing import MapEditResult, MapEditStatus
+
+        assert MapEditStatus.CANCEL.value == "cancel"
+        assert hasattr(MapEditResult, "from_json")
+
+    def test_cancel_is_the_third_outcome(self):
+        """Neither applied nor rejected — a two-way success/failure
+        reading would have to force it into one or the other."""
+        from roombapy_prime.models.map_editing import MapEditStatus
+
+        assert len(list(MapEditStatus)) == 3
+
+    def test_the_status_field_is_still_untyped(self):
+        """Named as the candidate, not applied: no capture has shown a
+        `status` value, and typing a field on a guess is how
+        `pad_category` silently became a string."""
+        from roombapy_prime.models.map_editing import MapEditResult
+
+        assert MapEditResult.from_json({"status": "somethingElse"}).status == "somethingElse"
+
+
+class TestFaultSceneIsDerivedNotReceived:
+    """`getFaultScene({cmStatus, command})` computes the scene from the
+    mission status and the running command. The robot never sends one,
+    so "the field has not been identified" was wrong — there is no
+    field.
+
+    Five of twelve scenes have stated conditions and are derived here.
+    The other seven have empty condition sets in the vendor extract, and
+    guessing at those would put a wrong task name on a real error.
+    """
+
+    def test_the_dock_scenes_match_on_command_or_phase(self):
+        """A fault during `padWash` is a wash fault whether the user
+        asked for the wash or the robot started it."""
+        from roombapy_prime.models.mission_history import FaultScene
+
+        assert FaultScene.scene_for(phase="padWash") is FaultScene.WASH_TASK
+        assert FaultScene.scene_for(command="washpad") is FaultScene.WASH_TASK
+        assert FaultScene.scene_for(phase="padDry") is FaultScene.DRY_TASK
+        assert FaultScene.scene_for(command="flrefill") is FaultScene.FLUID_REFILL_TASK
+
+    def test_evacuation_checks_three_sources(self):
+        from roombapy_prime.models.mission_history import FaultScene
+
+        for kwargs in ({"command": "evac"}, {"cycle": "evac"}, {"phase": "evac"}):
+            assert FaultScene.scene_for(**kwargs) is FaultScene.EVAC_TASK
+
+    def test_an_unmatched_state_returns_none_not_the_default(self):
+        """`cleanTask` is the documented default, and defaulting here
+        would hide the seven unresolved scenes behind a plausible
+        answer."""
+        from roombapy_prime.models.mission_history import FaultScene
+
+        assert FaultScene.scene_for(phase="run", cycle="clean") is None
+        assert FaultScene.scene_for() is None
+
+    def test_the_wire_values_are_the_lowercase_ones(self):
+        """`washpad`, not `washPad` — the vendor's mapping table names
+        the enum members, and the wire carries the lowercase forms."""
+        from roombapy_prime.models.mission_history import FaultScene
+
+        assert FaultScene.scene_for(command="washPad") is None
+        assert FaultScene.scene_for(command="washpad") is FaultScene.WASH_TASK

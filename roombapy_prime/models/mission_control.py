@@ -802,14 +802,60 @@ class OperatingModeBitmask(IntFlag):
     #:
     #: So a caller reading `VAC_MOP_COMBO_ONLY` out of `cap.oMode` and
     #: sending it back as `operating_mode` would be sending a value the
-    #: vendor's own client never emits. It may well work; nothing here
-    #: has tested it, and that is the point.
+    #: vendor's own client never emits.
+    #:
+    #: IT WORKS ANYWAY, AND THAT IS FIELD-OBSERVED. "Nothing here has
+    #: tested it" was wrong when written: ha_roomba_plus's cleaning-mode
+    #: selector sends 32 for vacuum-and-mop and records the robot's
+    #: answer -- `command 32 -> status 6`, alongside
+    #: `command 512 -> status 4`. Both were confirmed before the selector
+    #: shipped.
+    #:
+    #: So the robot accepts a value its own app does not send, and the
+    #: status field answers in a THIRD vocabulary. Three encodings for
+    #: one concept, which is the pattern this library keeps meeting.
+    #:
+    #: WHAT THAT CHANGES: not the reading above -- the codec really does
+    #: emit 6 -- but the conclusion drawn from it. A caller sending 32 is
+    #: not stepping outside what the server accepts, only outside what
+    #: the app does.
     #:
     #: 512 AND 1024 ARE NOT COMBINED AS BITS. The codec compares them
     #: with equality, not masking. 1024 has no member in `OperatingMode`
     #: at all -- unmodelled here rather than named, since what it means
     #: is unknown. A reader decomposing a raw int should expect a
     #: leftover bit rather than assume the enum is complete.
+
+
+class MopInstallDetails(IntEnum):
+    """How many mop pads are physically fitted (app 3.0.0,
+    `MopInstallDetails`).
+
+    FOUR STATES, NOT ON AND OFF. `onlyLeft` and `onlyRight` mean ONE of
+    two pads is mounted -- which only makes sense on a robot with
+    DualClean Mop Pads, and this project has one in its parts vocabulary
+    already.
+
+    THAT IS A DIFFERENT QUESTION FROM `PadCategory`. `detectedPad` says
+    WHAT is fitted -- a dry pad, a wet pad, the bare plate. This says
+    HOW MANY of the two mounting points are occupied. A robot can report
+    `dispWet` and still be running on one pad.
+
+    `invalid` IS -1, and arrives as 18446744073709551615 in the extract
+    -- an unsigned reading of the same bit pattern. Modelled as -1
+    because that is what the app means; a caller comparing against the
+    unsigned form would never match.
+
+    Not wired into a parser: no field has been identified that carries
+    it, and no capture contains one. Named because "one pad of two is
+    missing" is a real household state that a binary reading cannot
+    express."""
+
+    INVALID = -1
+    NONE = 0
+    ONLY_LEFT = 1
+    ONLY_RIGHT = 2
+    INSTALLED = 3
 
 
 class PadCategory(StrEnum):
@@ -938,6 +984,16 @@ class RoutineTypeParam(StrEnum):
 
     So the rule is not "uppercase is suspicious". The rule is that the
     send path decides, and it happens to say uppercase here.
+
+    A SECOND ENCODING EXISTS AND IS NOT THIS ONE. The vendor's
+    `RoutineType` numbers the same six: firstRun=0, cleanAll=1,
+    cleanDirty=2, replay=3, spotClean=4, unknown=5. That is the SDK's
+    internal ordinal, not what `routine.dart::toJson` writes.
+
+    Same trap as room type, which has three encodings: a caller meeting
+    a small integer in a routine-type field must not reach for these
+    strings, and a command built from the ordinals would send 1 where
+    "CLEAN_ALL" was meant. Only the strings go out.
     FIRST_RUN and CLEAN_DIRTY are confirmed to exist in the enum but
     have never actually been observed on a real device yet."""
 

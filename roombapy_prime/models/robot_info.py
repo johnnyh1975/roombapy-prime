@@ -473,10 +473,23 @@ class P2MapEditPartialSuccess:
     p2map_metadata -- one of (at least) three response shapes edit_map()
     might get back, alongside P2MapEditSuccessFallback and P2MapError.
     Which one actually comes back for a given request, and what
-    "status" values select each, is NOT confirmed -- these are three
-    separately-found response classes, not a resolved discriminated
-    union. edit_map() still returns raw JSON; these exist for callers
-    who want to attempt parsing a specific expected shape themselves."""
+    "status" values select each, is still NOT confirmed -- no capture
+    contains a real edit response of any shape.
+
+    THEY ARE NO LONGER LEFT TO THE CALLER TO GUESS BETWEEN.
+    `MapEditResult` (models/map_editing.py) discriminates on the fields
+    present and delegates the parsing here, and
+    `PrimeRobot.edit_map_checked()` returns it.
+
+    WHAT WAS WRONG WAS NOT THAT NOBODY CALLED THIS. A protocol library
+    models more of the wire than any one consumer reads, and a shape
+    class waiting for its caller is doing its job. The defect was that
+    `MapEditResult` first parsed these same four fields AGAIN -- two
+    parsing sites for one payload, which is the shape that let
+    `pad_category` stay a string for months.
+
+    edit_map() still returns raw JSON on purpose, so a first real
+    response can be inspected whole."""
 
     status: Any | None = None
     p2mapv_id: str | None = None
@@ -931,6 +944,23 @@ class Langs2Status:
     `languages_raw` stays as it is: this parses the same object, and a
     caller already relying on the raw dict keeps working."""
 
+    #: WHAT A LANGUAGE SELECTOR WOULD BE BUILT FROM, and it is not the
+    #: vendor's language enum.
+    #:
+    #: `DeviceLanguageType` numbers 27 languages -- english=2,
+    #: german=4 and so on. The shadow carries none of that:
+    #: chairstacker's robot reports `sLang: "en-US"` and
+    #: `dLangs.langs: ["de-DE", "es-ES", "fr-CA", "en-US", "it-IT"]`.
+    #: BCP-47 locale strings, not ids.
+    #:
+    #: So a selector built from `DeviceLanguageType` would write `2`
+    #: where `"en-US"` is expected -- accepted by nothing, and the sort
+    #: of mistake only real data catches. The option set is `dLangs`,
+    #: which the robot supplies per device.
+    #:
+    #: `aSlots` is 1 on that robot, which reads as the number of
+    #: language slots installed -- five available, one active. Not
+    #: confirmed.
     a_slots: Any | None = None
     d_langs: Any | None = None
     langs: Any | None = None
@@ -993,6 +1023,13 @@ class RobotSettings:
     autoevac_freq: int | None = None
     carpet_boost: bool | None = None
     child_lock: bool | None = None
+    #: `CloudEnvironment` (app 3.0.0) names the four: `prod`,
+    #: `int-test`, `prod-cn`, `stage-cn`. chairstacker's robot reports
+    #: `prod`, which confirms both the field and the vocabulary.
+    #:
+    #: Kept a str rather than typed: the value selects which AWS
+    #: deployment a robot talks to, and a CN robot appearing with a
+    #: fifth environment must not fail to parse.
     cloud_env: str | None = None
     country: str | None = None
     eco_charge: bool | None = None
@@ -1372,6 +1409,33 @@ class ScheduleShadow:
     so the data is still fully available to a caller who wants it."""
 
     clean_schedule2_raw: list[Any] = field(default_factory=list)
+    #: THE `nsmip*` AND `svcEndpoints*` FAMILIES ARE THIS ONE KEY,
+    #: NAMED ONCE PER SHADOW.
+    #:
+    #: Twelve names in app 3.0.0's property registry were carried in
+    #: this project as unresolvable -- `nsmipThing`, `nsmipSettings`,
+    #: `nsmipConfiginfo`, `nsmipSchedule`, `nsmipServices`,
+    #: `nsmipSoftware` and the matching `svcEndpoints*` set. What
+    #: `nsmip` stands for was called an open question and the family
+    #: was filed as a protocol gap.
+    #:
+    #: The suffixes are the shadow list: Thing, Settings, Configinfo,
+    #: Schedule, Services, Software, CurrentState. A flat registry needs
+    #: distinct names for one key on different shadows, so it appends
+    #: where the key lives. None of the twelve is a wire key.
+    #:
+    #: CONFIRMED AGAINST A REAL ROBOT: chairstacker's dump carries bare
+    #: `nsmip` on seven of nine shadows and bare `svcEndpoints` on all
+    #: nine -- and `nsmip` is absent from exactly constatus, currentstate
+    #: and stats, the three with no `nsmip*` registry entry.
+    #:
+    #: SO NOTHING WAS EVER MISSING. Both keys have been read all along.
+    #: What was unresolved was a naming convention, mistaken for a
+    #: protocol gap because the names were looked at and the shadows
+    #: were not.
+    #:
+    #: `scvEndpointsSettings` and `scvEndpointsThing` are the vendor's
+    #: own transposition, in two of the fourteen.
     nsmip: int | None = None
     #: ADDED (app 3.0.0, `model/schedule/clean_schedule`, which names
     #: this shadow). The OLDER schedule format, one field: `cycle`.
@@ -1905,6 +1969,127 @@ class DockState(IntEnum):
     PAD_DRY_HARDWARE_ISSUE_ERROR = 755
     PAD_DRY_NO_PAD_ATTACHED_ERROR = 756
     PAD_DRY_COMMUNICATION_FAILURE_ERROR = 757
+
+
+class ScrubSupport(IntEnum):
+    """`cap.scrub` (app 3.0.0, `ScrubSupport`).
+
+    FOUR LEVELS WHERE THIS PROJECT SAW A NUMBER. Both testers report 3,
+    the finest granularity the vendor defines, and nothing reads it.
+
+    `perRoom` IS WHY THERE IS NO HOUSEHOLD SCRUB SWITCH, and that turns
+    out to be right rather than an oversight. `swScrub` is writable in
+    rw-settings and ha_roomba_plus exposes no control for it; at level 3
+    scrubbing is a per-room property, so a single switch would write a
+    value the robot overrides per region. It IS carried as a per-region
+    parameter, which matches the capability.
+
+    At level 1 -- software-only -- a household switch would be exactly
+    right. Nobody has reported a level-1 robot, so the question has not
+    arisen; this enum is what would answer it."""
+
+    NONE = 0
+    SOFTWARE_ONLY = 1
+    SHADOW_AND_WHOLE_JOB = 2
+    PER_ROOM = 3
+
+
+class PointCleanSupport(IntEnum):
+    """`cap.dSpot` (app 3.0.0, `CapDSpot`).
+
+    Read by nothing today. chairstacker's robot reports 1.
+
+    `pointCleanWithHeatedWater` at level 2 is a different command, not
+    a better one -- a spot clean that also heats. A caller offering
+    heated point cleaning on a level-1 robot would send something it
+    cannot do."""
+
+    UNSUPPORTED = 0
+    POINT_CLEAN = 1
+    POINT_CLEAN_WITH_HEATED_WATER = 2
+
+
+class MidMissionAdjustments(IntEnum):
+    """`cap.mc` (app 3.0.0, `MidMissionCleanAdjustmentsType`).
+
+    Whether a room can be skipped while cleaning, and for which mission
+    kinds. Both testers report 3.
+
+    THE LEVELS ARE NOT A LADDER. `skipForDRCMissionsOnly` and
+    `skipForDRCAndCleanAllMissions` say WHICH missions allow it;
+    `skipCurrentRoomOnly` says WHAT can be skipped. Reading 3 as "the
+    most capable" is the obvious mistake and the numbering invites
+    it."""
+
+    UNSUPPORTED = 0
+    DRC_MISSIONS_ONLY = 1
+    DRC_AND_CLEAN_ALL_MISSIONS = 2
+    SKIP_CURRENT_ROOM_ONLY = 3
+
+
+class DockEvacuation(IntEnum):
+    """`dock.cap.evac` (app 3.0.0, `DockEvacuationType`)."""
+
+    NOT_AVAILABLE = 0
+    AVAILABLE = 1
+
+
+class DockPadDrying(IntEnum):
+    """`dock.cap.pd` (app 3.0.0, `DockPadDryingType`).
+
+    NOT A FLAG WITH EXTRA STEPS. `unheatedAir` and `heatedAir` are
+    different hardware, and a caller offering a heated-drying option to
+    a level-2 dock would be offering something it cannot do.
+    chairstacker's dock reads 2."""
+
+    NOT_SUPPORTED = 0
+    BASIC = 1
+    UNHEATED_AIR = 2
+    HEATED_AIR = 3
+
+
+class DockPadWashing(IntEnum):
+    """`dock.cap.pw` (app 3.0.0, `DockPadWashingType`).
+
+    THIS ONE GATES A SETTING. `pwHeat` accepts `HeatType` 0/1/2, but
+    only a level-3 dock can produce high heat and only level 2 and above
+    can heat at all. chairstacker's dock reads 1, which is why his robot
+    has no `pwHeat` key at all."""
+
+    NOT_SUPPORTED = 0
+    SUPPORTED = 1
+    HEATED = 2
+    HIGH_HEAT = 3
+
+
+class DockPadWetOut(IntEnum):
+    """`dock.cap.pwo` (app 3.0.0, `DockPadWetOutType`).
+
+    Resolves a field this library carried as "meaning genuinely
+    unclear" for months: pad wet-out, supported or not."""
+
+    NOT_SUPPORTED = 0
+    SUPPORTED = 1
+
+
+class DockFluidRefill(IntEnum):
+    """`dock.cap.fr` (app 3.0.0, `DockFluidRefillType`).
+
+    THREE STATES, NOT TWO, and the distinction matters for controls:
+    `controllable` means the user can trigger a refill, `automatic`
+    means the dock decides. A refill button belongs only on the
+    first."""
+
+    NOT_AVAILABLE = 0
+    CONTROLLABLE = 1
+    AUTOMATIC = 2
+
+
+class DockDetergent(IntEnum):
+    """`detergent` (app 3.0.0, `DockDetergentType`)."""
+
+    NOT_AVAILABLE = 0
+    CONTROLLABLE = 1
 
 
 @dataclass(frozen=True)

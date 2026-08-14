@@ -1314,9 +1314,15 @@ class TestThePartResetCarriesABody:
 
     A reset with no parts named is not obviously "reset everything"; it
     is as likely to be rejected or to do nothing.
+
+    THE FIRST FIX SUPPLIED ONLY THE OUTER SHAPE. `parts` went out as a
+    list of bare id strings, and `AssetPartResetDto` declares what
+    belongs in that list: `part_id` AND `counter`. A list of strings is
+    neither a rejection nor a reset — it is a request that cannot mean
+    what it says, which is harder to notice than an error.
     """
 
-    async def _body(self, part_ids=None):
+    async def _body(self, part_ids=None, counters=None):
         from unittest.mock import AsyncMock, patch
 
         from roombapy_prime.rest_client import PrimeRestClient
@@ -1326,7 +1332,9 @@ class TestThePartResetCarriesABody:
         with patch.object(
             client, "_request", AsyncMock(return_value={}), create=True
         ) as req:
-            await PrimeRestClient.reset_robot_parts(client, "BLID", part_ids)
+            await PrimeRestClient.reset_robot_parts(
+                client, "BLID", part_ids, counters
+            )
         return req.await_args.kwargs["body"]
 
     @pytest.mark.asyncio
@@ -1334,11 +1342,25 @@ class TestThePartResetCarriesABody:
         assert (await self._body())["robot_id"] == "BLID"
 
     @pytest.mark.asyncio
-    async def test_named_parts_are_sent_with_their_count(self):
+    async def test_named_parts_are_sent_as_objects_not_strings(self):
         body = await self._body(["67", "72"])
 
-        assert body["parts"] == ["67", "72"]
+        assert body["parts"] == [
+            {"part_id": "67", "counter": 0},
+            {"part_id": "72", "counter": 0},
+        ]
         assert body["num_parts"] == 2
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_counter_wins_over_the_default(self):
+        """Zero is an inference — the DTO names `counter` and does not
+        say what a reset writes. A caller who knows better says so."""
+        body = await self._body(["67", "72"], {"72": 5})
+
+        assert body["parts"] == [
+            {"part_id": "67", "counter": 0},
+            {"part_id": "72", "counter": 5},
+        ]
 
     @pytest.mark.asyncio
     async def test_no_parts_means_no_parts_key(self):
@@ -1403,3 +1425,96 @@ class TestFavouritesArriveInTwoShapes:
         """A string or a number is not "no favourites" -- it is a
         response nobody expected, and it should say so."""
         assert await self._favourites("nonsense") == []
+
+
+class TestTheResetBodyIsAvailableButNotForced:
+    """`ResetRequest$Body` declares `robot_password`, `synchronous` and
+    `send_wipe`. This endpoint sent no body at all, so `send_wipe` — the
+    field that decides how destructive a reset is — was left to a server
+    default nobody here knows.
+
+    Default behaviour is unchanged on purpose. Nothing has ever called
+    this endpoint, and switching an untested call to a different
+    untested one is a poor trade on an operation that may wipe a robot.
+    """
+
+    async def _sent(self, **kwargs):
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        client = object.__new__(PrimeRestClient)
+        client._http_base_auth = "https://x"
+        with patch.object(
+            client, "_request", AsyncMock(return_value={}), create=True
+        ) as req:
+            await PrimeRestClient.reset_robot(client, "BLID", **kwargs)
+        return req.await_args
+
+    @pytest.mark.asyncio
+    async def test_no_arguments_still_sends_no_body(self):
+        call = await self._sent()
+
+        assert "body" not in call.kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_wipe_false_is_expressible(self):
+        """The conservative choice, and the one worth trying first if
+        this is ever exercised."""
+        call = await self._sent(send_wipe=False)
+
+        assert call.kwargs["body"] == {"send_wipe": False}
+
+    @pytest.mark.asyncio
+    async def test_all_three_fields_go_out_when_given(self):
+        call = await self._sent(
+            robot_password="pw", synchronous=True, send_wipe=True
+        )
+
+        assert call.kwargs["body"] == {
+            "robot_password": "pw",
+            "synchronous": True,
+            "send_wipe": True,
+        }
+
+
+class TestTheRawMapEndpointWasNeverImplemented:
+    """`_MapFetcherServiceChannel` lists `fetchMapRawData` beside
+    `fetchMapGeoJson`, and only one of the two existed here — the
+    GeoJSON one, because that is the one a bundle search turned up.
+
+    Found by diffing the app's service channels against this client, a
+    comparison nobody had made. Reading the research prose did not
+    surface it; the channel list is data, and data can be diffed.
+    """
+
+    async def _url(self, **kwargs):
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        client = object.__new__(PrimeRestClient)
+        client._http_base_auth = "https://x"
+        with patch.object(
+            client, "_request", AsyncMock(return_value={}), create=True
+        ) as req:
+            await PrimeRestClient.get_map_raw_link(client, "m1", "v2", **kwargs)
+        return req.await_args
+
+    @pytest.mark.asyncio
+    async def test_it_is_the_geojson_url_with_raw(self):
+        call = await self._url()
+
+        assert call.args[1].endswith("/v1/p2maps/m1/versions/v2/raw")
+
+    @pytest.mark.asyncio
+    async def test_the_response_type_is_forwarded(self):
+        call = await self._url()
+
+        assert call.kwargs["query"] == {"response_type": "link"}
+
+    @pytest.mark.asyncio
+    async def test_it_can_be_asked_for_without_a_link(self):
+        call = await self._url(response_type=None)
+
+        assert call.kwargs["query"] == {}

@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import tarfile
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from io import BytesIO
 from typing import Any
 
@@ -42,13 +42,34 @@ from .geometry import (
 
 class RoomTypeSource(StrEnum):
     """Confirmed from P2MapRoomInfo$RoomType$Source -- HOW a room type
-    came about (detected vs. set by the user). Exact string values not
-    confirmed 1:1 (enum names yes, wire string serialization not
-    explicitly seen in the code) -- filled in here as a placeholder
-    with the enum names themselves, not as confirmed wire strings."""
+    came about (detected vs. set by the user).
+
+    STILL A PLACEHOLDER, and app 3.0.0 makes that worse rather than
+    better. The strings below are the enum NAMES; no wire string was
+    ever seen. The vendor's `IrobotP2MapRoomTypeSource` gives the SDK's
+    map data model INTEGERS instead -- `user=0`, `robot=1` -- so the
+    numbering exists and the strings still do not.
+
+    Note the vocabulary differs too: the vendor says `robot`, this says
+    `DETECTED`. Same idea, and not a spelling to guess from.
+
+    SEE RoomTypeValue for the same problem one field over: room type
+    itself has three encodings. Source has at least two, and only the
+    numeric one is confirmed."""
 
     DETECTED = "DETECTED"
     USER_SET = "USER_SET"
+
+
+class RoomTypeSourceValue(IntEnum):
+    """How a room type came about, as the SDK's map data model numbers
+    it (app 3.0.0, `IrobotP2MapRoomTypeSource`).
+
+    The confirmed half of the pair above. `robot` is what
+    RoomTypeSource calls DETECTED."""
+
+    USER = 0
+    ROBOT = 1
 
 
 class HazardType(StrEnum):
@@ -84,9 +105,31 @@ class RoomFeatureProperties:
     confirmed values are the numeric edit-side codes (2100-2120), not
     strings. Whether the read side actually reports room type as one
     of those same numeric codes, or as a human-readable string enum
-    of its own (not modeled here, no values confirmed), is unresolved
-    -- only the FIELD NAME ("type") is bytecode-confirmed, not which
-    value space it uses.
+    of its own, was recorded here as unresolved.
+
+    RESOLVED, AND THE ANSWER IS A THIRD SCHEME. App 3.0.0 declares
+    `IrobotP2MapRoomTypeValue` for the map data model:
+
+        unknown 0 · bedroom 1 · diningRoom 2 · bathroom 3 · hallway 4
+        kitchen 5 · livingRoom 6 · balcony 7 · other 8
+
+    Nine categories, matching the edit side's nine one for one -- and a
+    completely different numbering. 2101 and 1 are both "bedroom".
+
+    SO THREE VALUE SPACES DESCRIBE ONE CONCEPT:
+
+        2100-2120  what SetRoomType WRITES        (RoomType)
+        0-8        the SDK's map data model       (IrobotP2MapRoomTypeValue)
+        strings    what the GeoJSON bundle CARRIES, field-confirmed
+                   from real bundles and what RoomCategory models
+
+    THE DANGEROUS ONE IS THE SMALL INTEGER. A reader who meets a `1`
+    in a room-type field and reaches for `RoomType` finds nothing --
+    its space starts at 2100 -- and a reader who assumes the edit
+    codes would write 2101 where 1 was meant. `room_type` therefore
+    stays a raw value here: this class parses the GeoJSON bundle,
+    whose strings are confirmed, and nothing forces the other two
+    spaces through it.
 
     NEW FIELD, this session: visibility -- confirmed as a real key from
     a live map bundle (chairstacker, structure-only inspection: field

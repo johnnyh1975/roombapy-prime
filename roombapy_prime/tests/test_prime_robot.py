@@ -1220,8 +1220,12 @@ async def test_echo_time_estimates_reset_notifications_delegate() -> None:
     assert await robot.get_time_estimates() == {"minutes": 30}
     rest.get_time_estimates.assert_awaited_once_with(robot.blid)
 
+    # The three ResetRequest$Body fields are forwarded, None when not
+    # given -- so a bodyless reset stays bodyless and `send_wipe` is
+    # expressible. A wrapper that dropped them would drop the one
+    # parameter that decides how destructive this endpoint is.
     assert await robot.reset_robot() == {"reset": True}
-    rest.reset_robot.assert_awaited_once_with("BLID123")
+    rest.reset_robot.assert_awaited_once_with("BLID123", None, None, None)
 
     assert await robot.get_notifications() == {"events": []}
     rest.get_notifications.assert_awaited_once_with("BLID123", "2.2.4")

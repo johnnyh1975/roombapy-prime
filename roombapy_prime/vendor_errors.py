@@ -37,6 +37,28 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+#: PROVENANCE, CHECKED AGAINST THE PRIMARY SOURCE.
+#:
+#: The research package ships iRobot's own language packs -- 25 files
+#: under `locale/common/`, JSON despite the `.odt` extension, 1966
+#: strings each. `deviceFault_code<N>_title` and `_content` are where
+#: these texts come from.
+#:
+#: VERIFIED EXACTLY: 112 codes in the packs, 112 here, no code on either
+#: side that the other lacks. This table is a complete transcription of
+#: that source, not a sample of it.
+#:
+#: EIGHT LOCALES OF TWENTY-FIVE, deliberately. The packs carry Arabic,
+#: Hebrew, Japanese, Korean, Chinese, Russian, Turkish, Nordic and more.
+#: ha_roomba_plus ships translations for exactly de/en/es/fr/it/nl/pl/pt,
+#: so a ninth error locale would have no interface around it. Adding one
+#: is a decision about the integration, and this file follows rather
+#: than leads it.
+#:
+#: The packs were in the research package the whole time, in a `locale/`
+#: subdirectory that a top-level file listing does not show -- which is
+#: how a count of "45 files" was reported for a package holding 73.
+#:
 #: code -> locale -> {"title", "content"}. Generated from the app's
 #: locale files; not hand-edited. Regenerate rather than patch.
 VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'content': 'Bewegen Sie @val auf einen neuen, ebenen Untergrund. Wenn er sich bereits '
