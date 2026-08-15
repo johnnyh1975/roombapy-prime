@@ -929,7 +929,7 @@ async def _settings_roundtrip(robot: Any, args: Any) -> Any:
             continue
 
         after = _reported_settings(await robot.get_settings())
-        read_back = after.get(key) if after else None
+        read_back = _lookup_setting(after, key)
         agreed = read_back == value
         print(f"      write accepted; read back {read_back!r} "
               f"({'unchanged, as intended' if agreed else 'CHANGED -- unexpected'})")
@@ -938,6 +938,39 @@ async def _settings_roundtrip(robot: Any, args: Any) -> Any:
     if not results:
         return NoResult("every field was skipped")
     return results
+
+
+def _lookup_setting(settings: Any, key: str) -> Any:
+    """A settings value, resolving a dotted key through its parent map.
+
+    THE SAME BUG AS `_resolve_probes` HAD, one step later. That one was
+    fixed so dotted keys get probed at all; this one still did a flat
+    `settings.get("audio.volume")` on a document where `audio` is a
+    nested map and the dotted form is never a key of its own.
+
+    So a dotted write always read back `None` and always reported
+    `read_back_matches: False`. @chairstacker's run shows the signature
+    exactly: `audio.volume` and `padWetness.padPlate` both False, while
+    `audio` and `padWetness` written as whole maps both True. Two keys
+    failing and their parents passing is this bug, not the robot
+    refusing dotted addresses.
+
+    WHAT IT DOES NOT PROVE. With the comparison fixed, a dotted write
+    that genuinely does not stick will now say so. Nothing here has yet
+    seen a successful dotted write CONFIRMED -- the previous runs could
+    not have shown one.
+    """
+    if not settings:
+        return None
+    if key in settings:
+        return settings[key]
+    if "." not in key:
+        return None
+    parent, _, child = key.partition(".")
+    container = settings.get(parent)
+    if isinstance(container, dict):
+        return container.get(child)
+    return None
 
 
 async def _automations(robot: Any, args: Any) -> Any:
@@ -1359,6 +1392,13 @@ async def _initiator_probe(robot: Any, args: Any) -> Any:
 
     THE QUESTION: does the server validate `initiator` at all?
 
+    ANSWERED, ON ONE ROBOT. @chairstacker's G185020 chirped on a `find`
+    sent as `homeassistant`. The server accepts an initiator that is not
+    in the vendor's own list of 25, so the field is a free string rather
+    than a registry -- and this project can stop reporting itself as the
+    local iRobot app. One robot is not every robot, and the account may
+    matter, so this check stays.
+
     `Initiator` (app 3.0.0) lists 25 values, and ten of them are named
     third parties -- alexa, siri, google, ifttt, homey, openHAB, yonomi,
     bosch, swisscom, alismart. Two of those are home-automation
@@ -1445,15 +1485,18 @@ CHECKS: tuple[WriteCheck, ...] = (
         risk="safe",
         summary="sends `find` claiming to be `homeassistant` instead of `localApp`",
         verify_by=(
-            "TWO OBSERVATIONS, and one alone proves nothing. First: does "
-            "the robot chirp? If it stays silent, the server rejected an "
-            "unregistered initiator and this integration should keep "
-            "sending `localApp`. Second: open the iRobot app's cleaning "
-            "history -- if the entry names Home Assistant rather than the "
-            "app, the value survived the round trip and this integration "
-            "can stop impersonating the local iRobot app in your own "
-            "robot's records. A broker acknowledgement is neither: it "
-            "says the publish left this machine"
+            "DOES THE ROBOT CHIRP? That is the whole test, and a chirp "
+            "means the server accepted a command claiming to be "
+            "`homeassistant` -- so the field is not validated against a "
+            "registry and this project can identify itself instead of "
+            "impersonating the local iRobot app. Silence means the "
+            "opposite, and `--initiator openHAB` then separates 'iRobot "
+            "does not know us' from 'iRobot does not check'. "
+            "NOT THE CLEANING HISTORY: an earlier version of this text "
+            "asked for that too, and @chairstacker duly reported a chirp "
+            "with no history entry. `find` is not a mission and creates "
+            "no record -- the check was impossible, and his robot had "
+            "already answered the question"
         ),
         runner=lambda robot, args: _initiator_probe(robot, args),
     ),
