@@ -1181,16 +1181,66 @@ class DigiCap:
     timeline=1. "timeline" plausibly correlates with the already-
     confirmed mission/timeline/report topic (a per-device flag for
     whether this robot even sends timeline events at all) -- a
-    hypothesis, not confirmed by name alone."""
+    hypothesis, not confirmed by name alone.
+
+    
+
+    ELEVEN KEYS ARE DECLARED, TWO WERE MODELLED. `v3_capability_gates.json`
+    lists eleven `digiCap.*` gates and this class had the two that
+    happened to appear in one capture -- so nine capability gates the
+    vendor declares were unreadable through this library.
+
+    Modelled from the gate table rather than from a capture, which is
+    the opposite of this file's usual rule and deliberate here: a gate
+    that no robot in hand reports is exactly the one a reader cannot
+    discover by looking. `None` for all nine is the honest answer on
+    @chairstacker's robot, and distinguishes "not reported" from
+    "reported off" the same way every other capability does.
+
+    THE NAMES ARE THE VENDOR'S KEY PATHS, not guesses: `cwia`,
+    `cleaningProfiles`, `cte`, `digiSpot`, `ddAutomation`,
+    `petFurniture`, `kozRecommendations`, `perspective3DMap`,
+    `smartClean`.
+    """
 
     app_ver: int | None = None
     timeline: int | None = None
+    #: `digiCap.cwia` -- clean while away.
+    clean_while_away: Any | None = None
+    #: `digiCap.cleaningProfiles` -- the per-room profile system.
+    cleaning_profiles: Any | None = None
+    #: `digiCap.cte` -- cleaning time estimates.
+    cleaning_time_estimates: Any | None = None
+    #: `digiCap.digiSpot` -- digital spot clean.
+    digital_spot_clean: Any | None = None
+    #: `digiCap.ddAutomation` -- Dirt Detective automation.
+    dirt_detective_automation: Any | None = None
+    #: `digiCap.petFurniture` -- furniture and pet-object detection.
+    furniture: Any | None = None
+    #: `digiCap.kozRecommendations` -- suggested keep-out zones.
+    keep_out_zone_recommendations: Any | None = None
+    #: `digiCap.perspective3DMap` -- 3D map rendering.
+    rendering_3d_maps: Any | None = None
+    #: `digiCap.smartClean` -- Smart Clean.
+    smart_clean: Any | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DigiCap:
         if not isinstance(data, dict):
             return cls()
-        return cls(app_ver=data.get("appVer"), timeline=data.get("timeline"))
+        return cls(
+            app_ver=data.get("appVer"),
+            timeline=data.get("timeline"),
+            clean_while_away=data.get("cwia"),
+            cleaning_profiles=data.get("cleaningProfiles"),
+            cleaning_time_estimates=data.get("cte"),
+            digital_spot_clean=data.get("digiSpot"),
+            dirt_detective_automation=data.get("ddAutomation"),
+            furniture=data.get("petFurniture"),
+            keep_out_zone_recommendations=data.get("kozRecommendations"),
+            rendering_3d_maps=data.get("perspective3DMap"),
+            smart_clean=data.get("smartClean"),
+        )
 
 
 @dataclass(frozen=True)

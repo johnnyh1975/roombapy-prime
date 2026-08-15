@@ -39,6 +39,7 @@ Still NOT part of this draft:
 from __future__ import annotations
 
 import asyncio
+import time as _time
 from datetime import UTC, datetime
 import contextlib
 import logging
@@ -224,6 +225,9 @@ class PrimeRobot:
         # went out during a torn-down connection and never got a PUBACK,
         # which the script then reported as a possible policy block.
         self._reconnect_lock: asyncio.Lock | None = None
+        #: Timestamps of recent disconnections, for the eviction check.
+        #: A blip does not recur every few seconds; an eviction loop does.
+        self._recent_drops: list[float] = []
         self._reconnect_generation = 0
         self._rest = rest_client
         self._relogin = relogin
@@ -1274,6 +1278,70 @@ class PrimeRobot:
                     "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
                     reason, topic,
                 )
+
+                # DROPS ARE NORMAL. EVICTION IS ONE CAUSE OF MANY.
+                #
+                # AN EARLIER VERSION OF THIS NOTE NAMED EVICTION AS THE
+                # EXPLANATION, and @ratpic83 disproved that within a day:
+                # he force-quit the iRobot app on every phone in the
+                # household and the drops continued, roughly 82 and 55
+                # minutes apart. That spacing reads like a credential or
+                # session lifetime rather than a race, and the
+                # subscription recovered on its own each time -- his
+                # robot ran a full job and docked correctly during that
+                # window.
+                #
+                # So the useful question is not "who evicted whom" but
+                # "does the reconnect succeed", and on the evidence it
+                # does. A drop every hour with a recovery after it is
+                # working software.
+                #
+                # WHAT STILL POINTS AT EVICTION is FREQUENCY. A session
+                # lifetime does not expire every few seconds. Several
+                # drops inside five minutes is a different phenomenon
+                # from one an hour, and worth naming when it happens --
+                # but as the first thing to rule out, not as the answer.
+                #
+                # AWS IoT disconnects the OLDER connection when a second
+                # one arrives with the same client_id, and this server
+                # issues the client_id -- it is not ours to randomise.
+                # So a phone app and this library talking to one robot
+                # take turns evicting each other, and each side sees an
+                # unexplained "Normal disconnection".
+                #
+                # Three testers have now hit the same wall from
+                # different directions, and @ratpic83's case is the
+                # clearest: his Home Assistant received nothing for
+                # fifteen minutes while `roombapy-prime-validate`, run
+                # from a SEPARATE machine on the same account, passed 28
+                # checks on the first try. Authentication and the API
+                # were fine; the long-lived subscription was the only
+                # casualty. The iRobot app was open throughout.
+                #
+                # Repeated drops in quick succession are what
+                # distinguishes this from an ordinary network blip: a
+                # blip does not recur every few seconds, and an eviction
+                # loop does. Naming the suspicion in the log is the only
+                # thing this library can do about a client_id it does
+                # not choose -- and the remedy costs the reader nothing
+                # to try.
+                now = _time.monotonic()
+                recent = [t for t in self._recent_drops if now - t < 300.0]
+                recent.append(now)
+                self._recent_drops = recent
+                if len(recent) >= 3:
+                    _LOGGER.warning(
+                        "roombapy-prime: %d disconnections in five minutes on "
+                        "%s -- faster than a session lifetime, so something is "
+                        "cutting them short. Another client on the same "
+                        "account (the iRobot app, a second Home Assistant, a "
+                        "diagnostic script) is the first thing to rule out: "
+                        "AWS IoT evicts the older connection when a second one "
+                        "uses the same client_id, and this server assigns it. "
+                        "Each drop reconnects on its own; watch for the "
+                        "'watch resumed' line.",
+                        len(recent), topic,
+                    )
                 if self._reconnect_lock is None:
                     self._reconnect_lock = asyncio.Lock()
                 generation_seen = self._reconnect_generation
@@ -1366,7 +1434,22 @@ class PrimeRobot:
                         # that noticed the same drop resumes on it rather
                         # than tearing it down to build its own.
                         self._reconnect_generation += 1
-                        _LOGGER.info("roombapy-prime: MQTT reconnected, watch resumed for %s", topic)
+                        # WARNING, MATCHING THE DROP THAT PRECEDED IT.
+                        #
+                        # The drop is logged at WARNING and this used to
+                        # be INFO, so at Home Assistant's default level a
+                        # user saw the failure and never the recovery.
+                        # @ratpic83 read "nothing further from
+                        # roombapy_prime" as a dead reconnect and spent
+                        # two hours on it -- a reasonable reading of a
+                        # log that only ever reports bad news.
+                        #
+                        # A resolution belongs at the level of the
+                        # problem it resolves.
+                        _LOGGER.warning(
+                            "roombapy-prime: MQTT reconnected, watch resumed for %s",
+                            topic,
+                        )
                         backoff = 1.0
                         break
         finally:

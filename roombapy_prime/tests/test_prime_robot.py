@@ -2173,3 +2173,86 @@ class TestAnIdleRobotDoesNotAnswerATimelineRequest:
         import asyncio
 
         assert asyncio.run(PrimeRobot.request_mission_timeline(robot)) == 1
+
+
+class TestFrequentDropsAreNamedWithoutClaimingACause:
+    """Drops are normal and recover. @ratpic83 force-quit the iRobot app
+    on every phone in the household and they continued — roughly 82 and
+    55 minutes apart, which reads like a session lifetime rather than a
+    race — while his robot ran a full job and docked correctly.
+
+    So eviction is one cause to rule out, not the explanation. What
+    still points at it is FREQUENCY: a session lifetime does not expire
+    every few seconds.
+
+    The first version of this message told users to close the app as
+    though that were the answer. It was written the day before his data
+    arrived.
+    """
+
+    @staticmethod
+    def _robot():
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        robot = object.__new__(PrimeRobot)
+        robot._recent_drops = []
+        return robot
+
+    def test_a_single_drop_says_nothing_extra(self, caplog):
+        import time as _time
+
+        robot = self._robot()
+        robot._recent_drops = [_time.monotonic()]
+
+        assert len(robot._recent_drops) == 1
+
+    def test_three_drops_in_five_minutes_is_the_threshold(self):
+        """Two could be one bad minute. Three is a pattern, and the
+        remedy costs the reader nothing to try."""
+        import inspect
+
+        from roombapy_prime import prime_robot
+
+        source = inspect.getsource(prime_robot)
+
+        assert "len(recent) >= 3" in source
+        assert "300.0" in source
+
+    def test_the_message_suggests_rather_than_concludes(self):
+        """Another client is "the first thing to rule out", not the
+        cause. And the message points at the recovery line, because the
+        drop is only alarming if nothing follows it."""
+        import inspect
+
+        from roombapy_prime import prime_robot
+
+        source = inspect.getsource(prime_robot)
+
+        assert "first thing to rule out" in source
+        assert "watch resumed" in source
+        assert "Closing the others is the test" not in source
+
+    def test_the_disproof_is_recorded_beside_the_hypothesis(self):
+        """So the next reader does not re-derive eviction from the same
+        symptom and stop there."""
+        import inspect
+
+        from roombapy_prime import prime_robot
+
+        source = inspect.getsource(prime_robot)
+
+        assert "force-quit the iRobot app" in source
+        assert "does the reconnect succeed" in source
+
+    def test_the_recovery_is_logged_at_the_level_of_the_problem(self):
+        """The drop is WARNING and the recovery used to be INFO, so at
+        default level a user saw the failure and never the fix. That is
+        what sent @ratpic83 looking for a dead reconnect."""
+        import inspect
+
+        from roombapy_prime import prime_robot
+
+        source = inspect.getsource(prime_robot)
+        idx = source.find("MQTT reconnected, watch resumed")
+        assert idx > 0
+        assert "_LOGGER.warning(" in source[max(0, idx - 400):idx]

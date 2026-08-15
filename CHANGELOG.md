@@ -8,6 +8,52 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b6] - 2026-08-14
+
+Four corrections, three of which are to things this library told testers
+that were not true. No breaking changes.
+
+### Fixed
+
+- **`verify-writes settings_roundtrip` always reported dotted keys as not
+  read back.** `after.get("audio.volume")` on a document where `audio` is a
+  nested map returns nothing, so `audio.volume` and `padWetness.padPlate`
+  came back `read_back_matches: False` on every run while their parent maps
+  came back `True`. Two keys failing and their parents passing was this bug,
+  not a robot refusing dotted addresses. Same fix `_resolve_probes()` already
+  had, one step later.
+- **The MQTT reconnect logged its success at INFO while the drop logged at
+  WARNING**, so at Home Assistant's default level a user saw the failure and
+  never the recovery. @ratpic83 read "nothing further from roombapy_prime" as
+  a dead subscription and spent two hours on it — a reasonable reading of a
+  log that only reports bad news. A resolution now logs at the level of the
+  problem it resolves.
+
+### Changed
+
+- **The frequent-disconnect warning no longer asserts eviction as the
+  cause.** It named a same-`client_id` collision as the explanation;
+  @ratpic83 force-quit the iRobot app on every phone in his household and the
+  drops continued, roughly 82 and 55 minutes apart, recovering each time. That
+  spacing reads like a session lifetime rather than a race. Another client is
+  now "the first thing to rule out", and the message points at the recovery
+  line — a drop is only alarming if nothing follows it.
+- **`verify-writes custom_initiator` asked for an observation it could not
+  produce.** It wanted a chirp *and* a cleaning-history entry; `find` is not a
+  mission and creates no record. @chairstacker duly reported a chirp with no
+  history entry, having already answered the question: **the server accepts an
+  initiator that is not in the vendor's list of 25**, so the field is a free
+  string rather than a registry.
+
+### Added
+
+- **`DigiCap` gained its other nine fields.** `v3_capability_gates.json`
+  declares eleven `digiCap.*` gates and this class modelled the two that
+  happened to appear in one capture — so nine capability gates the vendor
+  declares were unreadable through this library. Modelled from the gate table
+  rather than from a capture, deliberately: a gate no robot in hand reports is
+  exactly the one a reader cannot discover by looking.
+
 ## [0.3.0b5] - 2026-08-13
 
 The same app 3.0.0 decode, read a second time — this time by measuring
