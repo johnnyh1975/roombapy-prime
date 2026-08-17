@@ -703,7 +703,7 @@ _SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
     #   ClearFreqType  0/1/2 = every / every 2nd / every 3rd routine,
     #                  4 = on dock return, 10/15/25/30/50 = by area
     #   ReturnByMode   0/1/2 = by room / by time / by area,
-    #                  100/101/102 = Standard / Medium / High
+    #                  100/101/102 = mission / refill / refillAndRoom
     ("padDryDur", "mop dry duration", "hours; no valid set is documented"),
     ("pwAreaInterval", "pad wash area interval", "integer; the unit is not documented"),
     (
@@ -718,7 +718,9 @@ _SETTING_PROBES: tuple[tuple[str, str, str], ...] = (
         "pwReturn",
         "mop wash frequency",
         "TWO RANGES IN ONE FIELD: 0/1/2 = by room / by time / by area; "
-        "100/101/102 = Standard / Medium / High",
+        "100/101/102 = mission / refill / refillAndRoom, and they are "
+        "CUMULATIVE: before+after routines / also during refills / also "
+        "between rooms (app 3.0.0's own subtitles, @chairstacker)",
     ),
     ("pwTimeInterval", "pad wash time interval", "integer"),
     ("padWetness.padPlate", "pad plate wetness", "sub-key, not the whole map"),
@@ -1433,6 +1435,59 @@ async def _initiator_probe(robot: Any, args: Any) -> Any:
     }
 
 
+async def _initiator_mission(robot: Any, args: Any) -> Any:
+    """Starts a REAL whole-house clean under a made-up initiator.
+
+    THE TIMELINE IS WHERE THE ANSWER IS. @chairstacker photographed the
+    iRobot app's Timeline for three missions and it names the initiator
+    each time:
+
+        HA start button      ->  LocalApp
+        favourite in the app ->  RmtApp
+        scheduled mission    ->  Cloud
+
+    So the app renders the field a mission was started with. `find`
+    never could have shown this -- it is not a mission and makes no
+    timeline entry, which is why the earlier version of the
+    `custom_initiator` check asked for something impossible.
+
+    THIS MOVES THE ROBOT, and that is the whole point: only a mission
+    produces a timeline entry to read.
+
+    AND NOBODY IS ASKED TO RUN IT. The question it answers changes
+    nothing: this integration's own "Started by" sensor already labels
+    `localApp` as "Home Assistant", so a user sees the right thing in
+    Home Assistant today. The only gain would be the label inside
+    iRobot's own app -- against `localApp`, which is field-confirmed
+    across several robots and commands.
+
+    Kept because it costs nothing until it is run, and somebody
+    curious about their own timeline should not have to build it.
+    An open question is not automatically worth closing.
+
+    WHAT TO LOOK FOR, in the app's Timeline for the run that follows:
+
+      - "Homeassistant" or similar  -> the field is a free string and
+        this project can identify itself instead of impersonating the
+        local iRobot app
+      - "LocalApp" or blank         -> the server normalised or dropped
+        an unregistered value; keep sending `localApp`
+      - no mission at all           -> the server refused the command
+        over the initiator, which is the one outcome that would settle
+        it negatively
+    """
+    initiator = getattr(args, "initiator", None) or "homeassistant"
+    accepted = await robot.send_simple_command("start", initiator=initiator)
+    return {
+        "initiator_sent": initiator,
+        "publish_acknowledged": accepted,
+        "note": (
+            "a clean should now be starting -- read the app's Timeline "
+            "entry for it, not the broker acknowledgement"
+        ),
+    }
+
+
 CHECKS: tuple[WriteCheck, ...] = (
     WriteCheck(
         name="schedules",
@@ -1608,6 +1663,27 @@ CHECKS: tuple[WriteCheck, ...] = (
         runner=_order_favorite,
     ),
     WriteCheck(
+        name="initiator_mission",
+        # Starts a real clean. Nothing else produces a timeline entry.
+        risk="risky",
+        summary=(
+            "starts a REAL whole-house clean claiming to be "
+            "`homeassistant` -- NOBODY IS BEING ASKED TO RUN THIS"
+        ),
+        verify_by=(
+            "OPEN THE APP'S TIMELINE for the mission that just started. It "
+            "names the initiator: @chairstacker's shows LocalApp for a Home "
+            "Assistant start, RmtApp for a favourite pressed in the app, and "
+            "Cloud for a schedule. If yours names Home Assistant, the field "
+            "is a free string and this project can stop impersonating the "
+            "local iRobot app. If it says LocalApp or nothing, the server "
+            "normalised an unregistered value. If no mission appears at "
+            "all, it refused the command -- and that is the answer too"
+        ),
+        runner=lambda robot, args: _initiator_mission(robot, args),
+        extra_args=("--initiator",),
+    ),
+    WriteCheck(
         name="schedule_create_delete",
         risk="risky",
         summary="creates a schedule, then offers to delete it again",
@@ -1669,8 +1745,61 @@ def _survive_a_narrow_console() -> None:
             pass
 
 
+#: This package's own version, for the skew check below.
+#:
+#: Read from installed metadata rather than hardcoded: a literal here
+#: would be a third place to forget on release, and the two that already
+#: exist are enforced by `scripts/check_version_pin.py`.
+try:
+    from importlib.metadata import version as _dist_version
+
+    TOOLS_VERSION = _dist_version("roombapy-prime-tools")
+except Exception:  # noqa: BLE001
+    TOOLS_VERSION = "unknown"
+
+
+def _warn_on_version_skew() -> None:
+    """Says so when the tools and the core they drive disagree.
+
+    THESE ARE TWO DISTRIBUTIONS. `pip install --upgrade roombapy-prime`
+    updates the library and leaves `roombapy-prime-tools` where it was,
+    so a tester can upgrade, run a check, and get output from the
+    previous release without a hint that anything is stale.
+
+    @chairstacker hit exactly that: he installed 0.3.0b6, ran
+    `custom_initiator`, and the prompt still asked him for a cleaning
+    history entry -- an instruction b6 had removed precisely because
+    `find` creates no history. He then reported the missing entry as a
+    result, which cost him a step and me a paragraph explaining it.
+
+    A warning rather than a refusal: an older tool against a newer core
+    usually works, and stopping someone mid-field-test over a version
+    string would be worse than the confusion it prevents.
+    """
+    try:
+        from roombapy_prime import __version__ as core_version  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    if core_version == TOOLS_VERSION:
+        return
+    print(
+        f"  NOTE: roombapy-prime-tools {TOOLS_VERSION} against "
+        f"roombapy-prime {core_version}.\n"
+        f"  These are separate packages -- upgrading the library does not "
+        f"upgrade this tool.\n"
+        f"  If a prompt below asks for something that makes no sense, that "
+        f"is why:\n"
+        f'    pip install --upgrade "roombapy-prime-tools@'
+        f'git+https://github.com/johnnyh1975/roombapy-prime.git'
+        f'@v{core_version}#subdirectory=tools"\n'
+    )
+
+
 def main() -> None:
     _survive_a_narrow_console()
+    # AFTER the console fix, never before: this prints, and the crash
+    # that fix exists for was in the very first status line.
+    _warn_on_version_skew()
     # DEBUG WITHOUT A DETOUR.
     #
     # Asking a tester for a debug log meant telling them to set an

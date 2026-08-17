@@ -1938,3 +1938,119 @@ class TestTheCustomInitiatorProbe:
 
         assert '"find"' in source
         assert '"start"' not in source
+
+
+class TestVersionSkewIsAnnounced:
+    """`roombapy-prime` and `roombapy-prime-tools` are two
+    distributions. Upgrading the library leaves the tools where they
+    were, and nothing said so.
+
+    @chairstacker installed 0.3.0b6, ran `custom_initiator`, and got a
+    prompt asking him to check the cleaning history — an instruction b6
+    had removed precisely because `find` creates no history entry. He
+    then reported the missing entry as a result.
+    """
+
+    def test_it_warns_rather_than_refusing(self):
+        """An older tool against a newer core usually works. Stopping
+        someone mid-field-test over a version string would be worse than
+        the confusion it prevents."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes._warn_on_version_skew)
+
+        assert "print(" in source
+        assert "raise" not in source
+        assert "sys.exit" not in source
+
+    def test_it_names_the_upgrade_command(self):
+        """"Versions differ" is not actionable. The command is."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes._warn_on_version_skew)
+
+        assert "roombapy-prime-tools@" in source
+        assert "subdirectory=tools" in source
+
+    def test_it_runs_after_the_console_fix(self):
+        """It prints, and the crash the console fix exists for was in
+        the very first status line."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes.main)
+        console = source.find("_survive_a_narrow_console()")
+        warn = source.find("_warn_on_version_skew()")
+
+        assert 0 < console < warn
+
+    def test_the_version_is_not_hardcoded(self):
+        """A literal would be a third place to forget on release; the
+        two that exist are already enforced by check_version_pin.py."""
+        import inspect
+
+        from roombapy_prime_tools import verify_writes
+
+        source = inspect.getsource(verify_writes)
+
+        assert 'TOOLS_VERSION = _dist_version("roombapy-prime-tools")' in source
+
+
+class TestTheInitiatorMissionCheck:
+    """@chairstacker photographed the iRobot app's Timeline for three
+    missions, and it names the initiator each time: LocalApp for a Home
+    Assistant start, RmtApp for a favourite pressed in the app, Cloud
+    for a schedule.
+
+    That is where the answer to "does the server keep our initiator"
+    lives, and `find` could never have shown it — it is not a mission
+    and makes no timeline entry, which is why the earlier check asked
+    for something impossible.
+    """
+
+    def test_it_is_marked_risky(self):
+        """It starts a real clean. `custom_initiator` sends `find` and
+        is safe; this one moves the robot around the house."""
+        from roombapy_prime_tools.verify_writes import CHECKS
+
+        check = next(c for c in CHECKS if c.name == "initiator_mission")
+
+        assert check.risk == "risky"
+        assert "REAL" in check.summary or "real" in check.summary
+
+    def test_it_points_at_the_timeline(self):
+        from roombapy_prime_tools.verify_writes import CHECKS
+
+        check = next(c for c in CHECKS if c.name == "initiator_mission")
+
+        assert "TIMELINE" in check.verify_by
+        assert "LocalApp" in check.verify_by
+
+    def test_it_names_all_three_outcomes(self):
+        """"No mission at all" is an answer too, and a tester who only
+        knows the positive case would report a failure instead."""
+        from roombapy_prime_tools.verify_writes import CHECKS
+
+        check = next(c for c in CHECKS if c.name == "initiator_mission")
+
+        assert "no mission appears" in check.verify_by
+        assert "normalised" in check.verify_by
+
+    @pytest.mark.asyncio
+    async def test_it_sends_start_not_find(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_writes import _initiator_mission
+
+        robot = SimpleNamespace(send_simple_command=AsyncMock(return_value=True))
+        await _initiator_mission(robot, SimpleNamespace(initiator=None))
+
+        robot.send_simple_command.assert_awaited_once_with(
+            "start", initiator="homeassistant"
+        )
