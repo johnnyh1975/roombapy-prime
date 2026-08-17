@@ -230,7 +230,26 @@ class RoutineCommand:
         or still raw dicts (backward compatibility/escape hatch for
         cases not covered by the typed models)."""
         body: dict[str, Any] = {
-            "command": self.command_type.value,
+            # TOLERANT ON THE WAY OUT TOO, matching the way in.
+            #
+            # `_favorite_from_json` reads this field through
+            # `_enum_or_none`, so a stored favourite carrying a command
+            # this library does not model parses to `None` rather than
+            # dropping the favourite. `to_json()` then raised
+            # AttributeError on that same None -- so a favourite that
+            # survived parsing crashed the moment somebody pressed its
+            # button.
+            #
+            # Three shapes reach here from real stored data: a modelled
+            # enum, a string the enum does not cover, and nothing at
+            # all. The first two are sent as they came; the third is a
+            # command def with no command, which the server stored and
+            # this library will not invent a value for.
+            "command": (
+                self.command_type.value
+                if hasattr(self.command_type, "value")
+                else self.command_type
+            ),
             # `robot_id` AND `select_all` ARE SENT AND SHOULD NOT BE.
             #
             # `CommandDTO` in app 3.0.0 has thirteen fields and neither

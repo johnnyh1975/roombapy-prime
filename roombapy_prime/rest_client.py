@@ -1479,9 +1479,28 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         would crash outright on c["command"] (subscripting a string
         by a non-integer key)."""
         command_defs_raw = _either(data, "commanddefs", "command_defs") or []
-        command_defs_raw = [
-            json.loads(c) if isinstance(c, str) else c for c in command_defs_raw
-        ]
+        # A STRING THAT IS NOT JSON DROPS THAT COMMAND, not the whole
+        # favourite. `json.loads` raised straight out of the parser, and
+        # the caller catches per favourite -- so one malformed command
+        # def deleted a working favourite from the user's list entirely.
+        #
+        # The rest of this function is deliberately tolerant: an unknown
+        # command parses to None rather than failing. This one line was
+        # not.
+        decoded: list[Any] = []
+        for entry in command_defs_raw:
+            if not isinstance(entry, str):
+                decoded.append(entry)
+                continue
+            try:
+                decoded.append(json.loads(entry))
+            except ValueError:
+                _LOGGER.warning(
+                    "roombapy-prime: skipping a command def that is not "
+                    "valid JSON on favourite %s",
+                    _either(data, "favoriteid", "favorite_id", "id"),
+                )
+        command_defs_raw = [c for c in decoded if isinstance(c, dict)]
         return FavoriteV1(
             favorite_id=_either(data, "favoriteid", "favorite_id", "id"),
             name=data.get("name"),
@@ -1523,6 +1542,24 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
                     clean_all=bool(c.get("select_all", False)),
                     spot_geometry=c.get("geom"),
                     favorite_id=c.get("favorite_id"),
+                    # READ, NOT DROPPED. The stored command def carries
+                    # `initiator` and this did not parse it, so
+                    # `to_json()` omitted the key entirely -- while the
+                    # one region command CONFIRMED working on hardware
+                    # (@Echovictor37) carries `initiator: "rmtApp"`.
+                    #
+                    # That is the only difference between the confirmed
+                    # payload and the one a favourite button sends, and
+                    # @chairstacker reports his button does nothing.
+                    # Not proof: a PUBACK with no effect has had several
+                    # causes in this project. But sending a field the
+                    # server stored, in a payload otherwise identical to
+                    # one that works, is the change worth making before
+                    # looking further.
+                    #
+                    # `localApp` when the record carries none, matching
+                    # every other command this library sends.
+                    initiator=c.get("initiator") or "localApp",
                     # Passthrough only -- see RoutineCommand.command_id's
                     # own comment. Preserving what the server sent beats
                     # dropping it, even while its meaning is unknown.

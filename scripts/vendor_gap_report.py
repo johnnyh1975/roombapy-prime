@@ -56,6 +56,26 @@ def _source_text() -> str:
     return "\n".join(parts)
 
 
+#: Private Flutter/Dart framework classes, never iRobot's.
+#:
+#: Every remaining unreviewed enum after the last pass began with an
+#: underscore -- `_ElementLifecycle`, `_GlowState`, `_HighlightType`,
+#: `_AndroidViewState`, `_DecorationSlot`. Those are widget internals
+#: from the UI toolkit the app is built with, and the extractor swept
+#: them up alongside the vendor's own types.
+#:
+#: Skipped as a CLASS rather than triaged one by one, because a leading
+#: underscore is the language's own marker for "not part of any public
+#: surface". Anything iRobot declares is public by construction: this
+#: library reaches it over a wire.
+#:
+#: The count they were inflating mattered. "Twenty unreviewed" reads
+#: like twenty decisions outstanding; twenty Flutter widget states read
+#: like none.
+def _is_framework_private(name: str) -> bool:
+    return name.startswith("_")
+
+
 def _triage(path: Path = TRIAGE) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -142,6 +162,8 @@ def main() -> int:
 
     used, triaged, unreviewed = [], [], []
     for name, values in sorted(enums.items()):
+        if _is_framework_private(name):
+            continue
         if name in triage:
             triaged.append(name)
         elif _referenced(name, source, values):

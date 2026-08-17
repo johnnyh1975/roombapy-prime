@@ -54,7 +54,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b6"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b7"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -65,8 +65,32 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b6#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b7#subdirectory=tools"
 ```
+
+### Upgrading, if you have the tools
+
+**Upgrade the tools, not the library.** They are two distributions, and
+upgrading the library on its own leaves the tools where they were:
+
+```bash
+# right -- brings the matching library with it
+pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b7#subdirectory=tools"
+
+# wrong, if you have the tools -- upgrades half of the pair
+pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b7"
+```
+
+This is not theoretical. @chairstacker upgraded the library to b6, ran
+`verify-writes custom_initiator`, and was asked for a cleaning-history
+entry — an instruction b6 had removed, because `find` creates no history
+entry. He reported the missing entry as a finding. The tool was still b5.
+
+`verify-writes` now says so at startup when the two disagree, and names
+the command above. That is a backstop rather than a fix: the reason the
+two can drift is that the tools are deliberately a separate
+distribution, so several commands that move a real robot stay off the
+PATH of a Home Assistant installation that only consumes the library.
 
 See [`tools/README.md`](tools/README.md) for what they do and how to use
 them safely.
@@ -167,7 +191,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b6#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b7#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its

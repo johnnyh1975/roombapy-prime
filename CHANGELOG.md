@@ -8,6 +8,61 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b7] - 2026-08-15
+
+Favourite buttons could not run their favourite. Four causes, all on the same
+path, all in this library.
+
+### Fixed
+
+- **A stored favourite's `initiator` was dropped.** `_favorite_from_json` read
+  eleven fields of each command def and not that one, so `to_json()` omitted
+  the key — while the one region command confirmed working on hardware carries
+  `initiator: "rmtApp"`. That was the only difference between the confirmed
+  payload and the one a favourite button sends. @chairstacker reported the
+  button doing nothing.
+- **A command def with no `command` key crashed on send.** The parser reads it
+  tolerantly and produces `None`; `to_json()` then raised `AttributeError` on
+  that same `None`. So a favourite that survived parsing died the moment
+  somebody pressed its button.
+- **A command carrying an unmodelled command string crashed the same way.** It
+  is now sent as it came — the server stored it, and this library does not
+  invent a replacement.
+- **One malformed command def deleted the whole favourite.** `json.loads`
+  raised straight out of the parser, and the caller catches per favourite. Now
+  the bad command def is skipped and the favourite survives.
+
+  Tolerant on the way in and strict on the way out is not tolerance.
+
+### Changed
+
+- **`verify-writes` warns when the tools and the library disagree.** They are
+  two distributions; upgrading the library leaves the tools where they were.
+  @chairstacker ran a b5 tool against a b6 core and was asked for a cleaning
+  history entry that b6 had removed. Warning rather than refusal, and it names
+  the upgrade command.
+- **`pwReturn`'s upper three are described as the vendor names them** —
+  `mission`, `refill`, `refillAndRoom` — and as **cumulative**: before and
+  after routines, also during refills, also between rooms. The tool still said
+  "Standard / Medium / High", which this project invented.
+- **A new `initiator_mission` check**, marked risky and asked of nobody. It
+  starts a real clean under a custom initiator, because only a mission produces
+  the app timeline entry that would answer whether the field survives.
+
+### Added
+
+- **`FloorPlanFeatureProperties.type` has a documented vocabulary.**
+  `P2MapFloorPlanSegmentType` declares `interior`, `exterior`, `door` and
+  `unknown`, so a floor-plan segment says whether it is a wall or a doorway.
+  Not typed — no capture shows whether the names or the integers arrive.
+
+### Internal
+
+- The vendor gap report ignores framework internals. Every remaining
+  "unreviewed" enum began with an underscore — Flutter widget states swept up
+  by the extractor, producing a number that never went down. Both vendor enums
+  and classes now report **zero unreviewed**.
+
 ## [0.3.0b6] - 2026-08-14
 
 Four corrections, three of which are to things this library told testers
@@ -22,6 +77,13 @@ that were not true. No breaking changes.
   came back `True`. Two keys failing and their parents passing was this bug,
   not a robot refusing dotted addresses. Same fix `_resolve_probes()` already
   had, one step later.
+- **`verify-writes` described `pwReturn` 100/101/102 as "Standard / Medium /
+  High".** Those are the vendor's `mission`, `refill` and `refillAndRoom`, and
+  they are cumulative rather than a scale — the integration's copy of the same
+  invention had already misled a tester into retracting a correct observation.
+- **The vendor gap report counted Flutter widget internals as unreviewed
+  enums**, producing a backlog number that could never reach zero. Both enums
+  and classes now report zero unreviewed.
 - **The MQTT reconnect logged its success at INFO while the drop logged at
   WARNING**, so at Home Assistant's default level a user saw the failure and
   never the recovery. @ratpic83 read "nothing further from roombapy_prime" as
@@ -47,6 +109,14 @@ that were not true. No breaking changes.
 
 ### Added
 
+- **`verify-writes` warns when the tools and the library disagree.** They are
+  two distributions and upgrading the library leaves the tools behind;
+  @chairstacker got a b5 prompt from a b6 install and reported its impossible
+  instruction as a result. Warns and names the upgrade command rather than
+  refusing.
+- **`FloorPlanFeatureProperties.type` documented against
+  `P2MapFloorPlanSegmentType`** — `interior`, `exterior`, `door`, `unknown`.
+  Not typed: no capture shows whether names or integers arrive.
 - **`DigiCap` gained its other nine fields.** `v3_capability_gates.json`
   declares eleven `digiCap.*` gates and this class modelled the two that
   happened to appear in one capture — so nine capability gates the vendor

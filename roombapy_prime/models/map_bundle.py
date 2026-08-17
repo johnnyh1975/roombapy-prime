@@ -407,7 +407,27 @@ class FurnitureFeature:
 @dataclass(frozen=True)
 class FloorPlanFeatureProperties:
     """NEW (session 47) -- not previously modeled at all. CONFIRMED:
-    type, roomId."""
+    type, roomId.
+
+    `type` NOW HAS A VOCABULARY. `P2MapFloorPlanSegmentType` (app 3.0.0)
+    declares four values for it:
+
+        interior 0 · exterior 1 · door 2 · unknown 3
+
+    So a floor-plan segment says whether it is an inner wall, an outer
+    wall, or a DOORWAY -- and a renderer drawing all three as one line
+    draws a door as a wall.
+
+    That matters more since ha_roomba_plus began drawing the floor plan
+    (@jouwdan, PR #76): doorways arrive as holes in the room polygons
+    AND as segments here, and only the first is currently distinguished.
+
+    LEFT AS `str`, and the name stays `floor_type`. No capture has shown
+    what this field actually contains -- the enum's member names or its
+    integers -- and typing it on the strength of a name match is how
+    `pad_category` silently became a string. `FloorTypeFeature` uses the
+    same field name for `carpet`, which is a second reason to keep the
+    raw value visible rather than coerce it."""
 
     floor_type: str | None = None
     room_id: str | None = None
