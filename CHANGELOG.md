@@ -8,6 +8,65 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b8] - 2026-08-17
+
+### Fixed
+
+- **The 55-minute disconnections were self-inflicted.** @ratpic83 logged
+  26 of them in one day, each exactly 55 minutes after the last,
+  identical while docked, cleaning and idle overnight. The ordering in
+  his log was the finding: authenticate, reconnect, *then* the drop is
+  reported.
+
+  `Normal disconnection` is paho's phrase for a clean, client-initiated
+  close — ours, from the proactive token refresh disconnecting the old
+  connection before opening the new one. The watcher warned about an
+  event it had scheduled itself and started a **second** reconnect
+  racing the one already running.
+
+  A deliberate disconnect is now marked as such. The watcher recognises
+  its own refresh and stays out of the way: no warning, no competing
+  reconnect, no log line. A scheduled refresh that works as designed is
+  not news.
+
+  Two earlier attempts had guessed at this. b2 rotated the `client_id`
+  on the eviction theory; b3 reverted it because a self-chosen id does
+  not connect at all. The code then settled on "the phone app and this
+  library evict each other" — which is why force-quitting the app on
+  every phone (@ratpic83's test in #78) changed nothing.
+
+- **`watch resumed` now means acknowledged.** @ratpic83 caught
+  `no SUBACK within 3.0s` and a success message one millisecond apart,
+  twice in a day. The restore path checked SUBACKs and then reported
+  success regardless — so an unacknowledged subscription, which
+  delivers nothing and looks exactly like a robot with nothing to say,
+  was announced as a working watch.
+
+  This is the mechanism by which a mission-end transition goes missing.
+  Unacknowledged subscriptions are now named, counted and retried with
+  backoff.
+
+- **A refresh timeout is a warning, not an ERROR with a traceback.** The
+  retry is the design — the refresh is scheduled five minutes before
+  expiry precisely so a failed attempt has room. @ratpic83's log
+  accumulated a dozen tracebacks a day for a condition that healed
+  itself in two seconds. A real failure (auth rejected, malformed
+  token) still gets the full stack, because there the stack is what
+  identifies it.
+
+### Changed
+
+- `roombapy-prime-validate` prints `digiCap`'s contents rather than only
+  noting that the key exists. @ricrog1135's W155020 is the first robot
+  observed reporting the field, and nine capability gates modelled from
+  iRobot's own table have never been seen on real hardware — the run
+  that carried the answer did not show it.
+
+- The frequent-drops warning no longer names the iRobot app first. Our
+  own refresh is excluded before the warning fires, so what remains is
+  genuinely another client — and the previous text sent people to check
+  something that could not have been the cause.
+
 ## [0.3.0b7] - 2026-08-15
 
 Favourite buttons could not run their favourite. Four causes, all on the same

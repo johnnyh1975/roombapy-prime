@@ -308,12 +308,38 @@ class PrimeRobot:
                 login_result = await self._relogin()
                 new_token = login_result.token_for_blid(self.blid)
                 await asyncio.to_thread(self._mqtt.replace_token, new_token)
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception(
-                    "roombapy-prime: proactive token refresh failed for %s -- "
-                    "will retry in %.0fs rather than giving up on future refreshes",
-                    self.blid, self._REFRESH_RETRY_SECONDS,
-                )
+            except Exception as exc:  # noqa: BLE001
+                # A CONNECT TIMEOUT HERE IS NOT AN ERROR, and logging it
+                # as one filled @ratpic83's log with a dozen tracebacks
+                # a day for something that healed itself in two seconds:
+                #
+                #   WARN   MQTT reconnect attempt failed (Connect timed out)
+                #   ERROR  proactive token refresh failed for <THING>
+                #   INFO   MQTT: reconnecting (4 subscriptions to restore)
+                #   WARN   MQTT reconnected, watch resumed
+                #
+                # The retry below is the design, not a fallback -- the
+                # refresh is scheduled five minutes before expiry
+                # precisely so a failed attempt has room to try again.
+                #
+                # So a timeout gets a warning with no traceback, and
+                # anything else keeps the full one: an auth rejection or
+                # a malformed token is a real failure and the stack is
+                # what identifies it.
+                if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+                    _LOGGER.warning(
+                        "roombapy-prime: token refresh for %s timed out -- "
+                        "retrying in %.0fs (the refresh runs %.0fs before "
+                        "expiry, so there is room for this)",
+                        self.blid, self._REFRESH_RETRY_SECONDS,
+                        self._mqtt.REFRESH_MARGIN_SECONDS,
+                    )
+                else:
+                    _LOGGER.exception(
+                        "roombapy-prime: proactive token refresh failed for %s -- "
+                        "will retry in %.0fs rather than giving up on future refreshes",
+                        self.blid, self._REFRESH_RETRY_SECONDS,
+                    )
                 await asyncio.sleep(self._REFRESH_RETRY_SECONDS)
 
     # --- Shadow-based operations (via mqtt_client.py) -----------------
@@ -593,7 +619,32 @@ class PrimeRobot:
                 "send_routine_command_via_cmd_topic() needs irbt_topic_prefix (from LoginResult) "
                 "-- missing here, so the correct topic can't be built."
             )
-        return await asyncio.to_thread(self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, command.to_json())
+        # WE ARE THE INITIATOR, not whoever created the favourite.
+        #
+        # @chairstacker (#67): pressing a favourite button in Home
+        # Assistant showed up as "iRobot app" in the Activity log, while
+        # the vacuum card's Start button showed "Home Assistant"
+        # correctly. Two entries wrong, two right, on the same day.
+        #
+        # The cause is b7's own fix. Favourites are created in the
+        # iRobot app, so the stored command carries `initiator:
+        # "rmtApp"` -- and restoring that field (which is what made the
+        # button work at all) replayed the app's identity along with it.
+        #
+        # `send_simple_command` has always defaulted to "localApp",
+        # which is why the vacuum card reads correctly. The server does
+        # not validate this field -- confirmed when a `find` sent as
+        # `homeassistant` was accepted and the robot chirped -- so
+        # sending ours is safe and truthful.
+        #
+        # The stored value stays on the parsed favourite: writing it
+        # back through create/update must not rewrite what the app
+        # recorded.
+        payload = command.to_json()
+        payload["initiator"] = "localApp"
+        return await asyncio.to_thread(
+            self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, payload
+        )
 
     async def send_umi_get_request(self, args: list[str], request_id: int = 1) -> None:
         """EXPERIMENTAL, UNCONFIRMED (this session) -- a well-reasoned
@@ -1274,6 +1325,35 @@ class PrimeRobot:
                 # Connection dropped -- reconnect with exponential backoff,
                 # unbounded retries.
                 reason = disconnect_task.result()
+
+                # OUR OWN DISCONNECT IS NOT A DROP.
+                #
+                # @ratpic83 (2026-08-16) logged 26 disconnects in a day,
+                # each exactly 55 minutes apart, and the ordering told
+                # the story: authenticate, reconnect, THEN the "drop".
+                # "Normal disconnection" is paho's phrase for a clean
+                # client-initiated close -- ours, from the proactive
+                # token refresh.
+                #
+                # So this warned about a planned event and then started
+                # a SECOND reconnect on top of the one already running.
+                # The b5 warning text told users to close the iRobot
+                # app, which explains why closing it changed nothing for
+                # anyone whose drops arrive on a fixed interval.
+                #
+                # The refresh restores the subscriptions itself, so
+                # there is nothing to do here but keep watching.
+                if self._mqtt.last_disconnect_was_deliberate:
+                    # NOT LOGGED AT ALL. A scheduled refresh is expected,
+                    # takes about a second, restores its own
+                    # subscriptions, and happens every 55 minutes -- 26
+                    # lines a day saying the thing worked as designed.
+                    #
+                    # A refresh that leaves subscriptions unacknowledged
+                    # IS worth saying, and the check further down says
+                    # it. That is where the log entry belongs.
+                    continue
+
                 _LOGGER.warning(
                     "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
                     reason, topic,
@@ -1333,13 +1413,15 @@ class PrimeRobot:
                     _LOGGER.warning(
                         "roombapy-prime: %d disconnections in five minutes on "
                         "%s -- faster than a session lifetime, so something is "
-                        "cutting them short. Another client on the same "
-                        "account (the iRobot app, a second Home Assistant, a "
-                        "diagnostic script) is the first thing to rule out: "
-                        "AWS IoT evicts the older connection when a second one "
-                        "uses the same client_id, and this server assigns it. "
-                        "Each drop reconnects on its own; watch for the "
-                        "'watch resumed' line.",
+                        "cutting them short. Our own token refresh is no "
+                        "longer a candidate: those are recognised and not "
+                        "reported here. Another client on the same account (a "
+                        "second Home Assistant, a diagnostic script, the "
+                        "iRobot app) is the thing to rule out -- AWS IoT "
+                        "evicts the older connection when a second one uses "
+                        "the same client_id, and this server assigns it. Each "
+                        "drop reconnects on its own; watch for the 'watch "
+                        "resumed' line.",
                         len(recent), topic,
                     )
                 if self._reconnect_lock is None:
@@ -1446,6 +1528,68 @@ class PrimeRobot:
                         #
                         # A resolution belongs at the level of the
                         # problem it resolves.
+                        # "RESUMED" HAS TO MEAN ACKNOWLEDGED.
+                        #
+                        # @ratpic83 (2026-08-16) caught these one
+                        # millisecond apart, twice in a day:
+                        #
+                        #   WARN  no SUBACK within 3.0s for [...]
+                        #   WARN  MQTT reconnected, watch resumed for ...
+                        #
+                        # The second line claimed success for a
+                        # subscription the first line said was never
+                        # acknowledged. An unacknowledged subscription
+                        # delivers nothing and looks exactly like a
+                        # robot with nothing to say -- which is how a
+                        # mission-end transition would go missing, the
+                        # failure he had been watching for.
+                        # ASK AGAIN BEFORE ACTING ON A DEADLINE.
+                        #
+                        # `last_subscribe_unconfirmed` is a snapshot of
+                        # the moment a 3-second wait expired, and paho
+                        # keeps filling `_confirmed_mids` afterwards --
+                        # a late SUBACK is still a SUBACK.
+                        #
+                        # @utkjmitch (second household, b7): EVERY
+                        # reconnect on his instance logs `no SUBACK
+                        # within 3.0s`, on the 55-minute cycle. Treating
+                        # that snapshot as failure would have put him
+                        # into a reconnect loop every cycle, for
+                        # subscriptions that were most likely
+                        # acknowledged a moment later. That would have
+                        # been worse than the silent watch it is meant
+                        # to prevent.
+                        await asyncio.sleep(1.0)
+                        recheck = getattr(
+                            self._mqtt, "resubscribe_still_unconfirmed", None
+                        )
+                        unconfirmed = (
+                            recheck() if callable(recheck)
+                            else getattr(
+                                self._mqtt, "last_subscribe_unconfirmed", None
+                            )
+                        )
+                        if unconfirmed:
+                            _LOGGER.warning(
+                                "roombapy-prime: MQTT reconnected for %s but %d "
+                                "subscription(s) were never acknowledged (%s) -- "
+                                "retrying rather than reporting a watch that may "
+                                "deliver nothing",
+                                topic, len(unconfirmed), unconfirmed,
+                            )
+                            # BACK OFF BEFORE TRYING AGAIN. This sits in
+                            # the `else` branch -- the connection came
+                            # up, only the subscriptions did not -- so
+                            # `continue` alone would retry immediately
+                            # and spin against a broker that is already
+                            # refusing or ignoring the subscribe.
+                            #
+                            # Same backoff the failure branch uses, for
+                            # the same reason.
+                            await asyncio.sleep(backoff)
+                            backoff = min(backoff * 2, max_reconnect_backoff)
+                            continue
+
                         _LOGGER.warning(
                             "roombapy-prime: MQTT reconnected, watch resumed for %s",
                             topic,

@@ -1230,6 +1230,10 @@ class TestARepeatReadDoesNotResubscribe:
         from roombapy_prime.mqtt_client import PrimeMqttClient
 
         client = object.__new__(PrimeMqttClient)
+        # `__new__` skips the constructor, so anything `_on_disconnect`
+        # reads has to be supplied here.
+        client._deliberate_disconnect = False
+        client._was_deliberate = False
         client._subscribed_topics = set()
         client._connected = True
         client._disconnect_loop = None
@@ -1365,6 +1369,10 @@ class TestACallbackCannotTakeDownTheConnection:
         from roombapy_prime.mqtt_client import PrimeMqttClient
 
         client = object.__new__(PrimeMqttClient)
+        # `__new__` skips the constructor, so anything `_on_disconnect`
+        # reads has to be supplied here.
+        client._deliberate_disconnect = False
+        client._was_deliberate = False
         client._pending = {}
         client._persistent = {}
         return client
@@ -1591,3 +1599,40 @@ class TestAFailedSubscribeLeavesNoPoisonedTopic:
 
         assert "last_subscribe_unconfirmed" in source
         assert "RECORDED AS UNCONFIRMED" in source
+
+
+class TestALateSubackIsStillASuback:
+    """@utkjmitch (second household, b7): EVERY reconnect on his
+    instance logs `no SUBACK within 3.0s`, on the 55-minute cycle.
+
+    `last_subscribe_unconfirmed` records which mids were missing when a
+    3-second wait expired — but paho keeps filling `_confirmed_mids`
+    from its own thread afterwards. Acting on that snapshot would have
+    put his instance into a reconnect loop every cycle, for
+    subscriptions acknowledged a moment later.
+    """
+
+    @staticmethod
+    def _client():
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = object.__new__(PrimeMqttClient)
+        client._confirmed_mids = set()
+        client._mid_to_topic = {1: "a/topic", 2: "b/topic"}
+        client._last_subscribe_mids = [1, 2]
+        return client
+
+    def test_a_suback_arriving_after_the_wait_clears_the_topic(self):
+        client = self._client()
+
+        assert client.resubscribe_still_unconfirmed() == ["a/topic", "b/topic"]
+
+        client._confirmed_mids.update({1, 2})      # late, but arrived
+
+        assert client.resubscribe_still_unconfirmed() == []
+
+    def test_one_that_never_arrives_is_still_reported(self):
+        client = self._client()
+        client._confirmed_mids.add(1)
+
+        assert client.resubscribe_still_unconfirmed() == ["b/topic"]

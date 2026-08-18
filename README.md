@@ -12,10 +12,14 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 > settings, and **region-based cleaning** — sending a robot to specific
 > rooms, both from a saved favorite and built from scratch.
 >
-> One write path is **known broken**: virtual walls and keep-out zones
-> read correctly but the write returns HTTP 500, cause not yet found.
-> See [Confidence & known gaps](#confidence--known-gaps) for the honest
-> per-area breakdown.
+> Virtual wall and keep-out zone writes **work**, on two independent
+> accounts, including the write / re-read / write round trip that
+> separates "accepted" from "stored". The HTTP 500 this section used to
+> describe was solved: `virwall` starts with a COUNT of the walls.
+>
+> One thing has still never been tried: a write carrying a **modified**
+> list. Every confirmed write resent zones unchanged. See
+> [Confidence & known gaps](#confidence--known-gaps).
 >
 > The diagnostic scripts live in a **separate distribution**
 > ([`tools/`](tools/README.md)) so that installing this library never puts
@@ -179,8 +183,13 @@ a description of the symptom.
 
 The most useful things right now:
 
-- **Virtual wall writes** — currently broken with HTTP 500 and the cause
-  unknown. The read side works, so stage 0 is safe and already useful.
+- **Virtual wall writes with a CHANGED list** — never attempted. Writes
+  themselves are confirmed on two accounts (@chairstacker resent four
+  zones of two types; @jayjay13011 wrote, re-read the new map version
+  and wrote again), but every one of them resent the existing zones
+  unchanged. Adding, moving or removing a zone is untested, and
+  `set_virtual_wall` **replaces the whole shared list** — a partial list
+  deletes everything omitted.
 - **Robot settings other than child lock** — they write and read back
   cleanly; whether they change anything is untested.
 - **Anything at all on hardware not listed above.** The capability set
@@ -255,14 +264,15 @@ regardless.
 
 ### Known broken
 
-- **Virtual wall / keep-out zone writes** return HTTP 500. Reading works.
-  Two causes have been ruled out by field testing: a duplicated closing
-  coordinate in the polygon (real, fixed, not the cause) and the request
-  envelope's `response_type`, which this project has flagged as
-  unverified since it was written. The next suspect is the discriminator
-  inside `edit_cmd`.
-
-### Accepted but ineffective
+- **A virtual wall write carrying a CHANGED list** — never attempted.
+  The HTTP 500 that used to sit here was solved: `virwall` starts with a
+  COUNT of the walls. Writes are confirmed on two accounts, including
+  the write / re-read / write round trip that separates "accepted" from
+  "stored" (#28, closed 30 July).
+  But every confirmed write **resent the existing zones unchanged**.
+  Adding, moving or removing one is untested, and `set_virtual_wall`
+  replaces the whole shared list — a partial list deletes everything
+  omitted. That hazard is guarded by a test, not by the server.
 
 - **`schedHold`** writes succeed and read back correctly, and the
   schedule stays active in the app. Writing it to `rw-settings` is

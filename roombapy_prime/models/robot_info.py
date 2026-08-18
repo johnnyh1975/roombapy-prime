@@ -1008,6 +1008,24 @@ class RobotSettings:
     #:     2  freqWithArea          plus 10, 15, 25, 30, 50
     #:     3  taskEndOrDockReturn   plus 4
     #:
+    #: LEVEL 2 FIELD-CONFIRMED, AND IT IS NARROWER THAN THE ENUM.
+    #: @ricrog1135's W155020 reports `cap.autoevac = 2` and its app
+    #: offers exactly three choices: **every 150 sq ft, every 250 sq ft,
+    #: after every routine**.
+    #:
+    #: So `freqWithArea` on this SKU means `{0, 15, 25}` -- not the full
+    #: `10, 15, 25, 30, 50`, and NOT with 1 and 2 alongside. A prediction
+    #: made from the enum alone ("area intervals on top of the
+    #: every/2nd/3rd choices") was wrong on both halves.
+    #:
+    #: It does confirm the encoding: 150 sq ft -> 15, 250 sq ft -> 25.
+    #: Value x 10 = square feet, the same scale `pwAreaInterval` uses.
+    #:
+    #: Which means the per-SKU list is authoritative for WHICH values
+    #: and the cap is authoritative for WHETHER area intervals apply at
+    #: all. A selector built from the cap alone would offer this robot
+    #: five area values where its app shows two.
+    #:
     #: FIELD-CONFIRMED, AND THE TWO NUMBERS AGREE: chairstacker's robot
     #: reports `cap.autoevac = 1` and `autoevacFreq = 1` -- level
     #: `freqModes`, set to "every 2nd routine". Internally consistent.

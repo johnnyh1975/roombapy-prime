@@ -315,6 +315,21 @@ def _report_device_info(report: Report, state: Any) -> None:
     detail += f" -- top-level keys: {top_level_keys}"
     if reported_keys:
         detail += f" -- state.reported keys: {reported_keys}"
+
+    # PRINT digiCap's CONTENTS, not just its name.
+    #
+    # Nine capability gates are modelled from iRobot's own table and
+    # not one has been observed on a real robot -- the standing ask in
+    # every status update for weeks. @ricrog1135's W155020 run showed
+    # `digiCap` present in state.reported and this report said only
+    # that the key exists, so the run that finally carried the answer
+    # did not show it.
+    #
+    # Small dict, no identifiers in it, and the whole point of running
+    # this tool is to see what a robot actually reports.
+    digi = reported.get("digiCap") if reported else None
+    if isinstance(digi, dict):
+        detail += f" -- digiCap: {digi}"
     report.add("Device info extracted from get_state()", "OK", detail)
 
 

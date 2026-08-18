@@ -326,6 +326,20 @@ class PrimeMqttClient:
         # already used for _on_delta/queue in watch_state().
         self._disconnect_loop: asyncio.AbstractEventLoop | None = None
         self._disconnect_event: asyncio.Event | None = None
+
+        #: Set while WE are taking the connection down on purpose.
+        #:
+        #: @ratpic83 (2026-08-16) logged 26 disconnects in one day, each
+        #: exactly 55 minutes after the last, and the ordering shows the
+        #: cause: authenticate, reconnect, THEN the drop is reported.
+        #: The "Normal disconnection" is paho's reason string for a
+        #: clean client-initiated close -- ours, from reconnect()'s own
+        #: disconnect() call.
+        #:
+        #: Without this flag the watcher in prime_robot.py sees a
+        #: planned disconnect as an unexplained drop, warns about it,
+        #: and starts a SECOND reconnect racing the one already running.
+        self._deliberate_disconnect = False
         self._disconnect_reason: str | None = None
         #: Counts reconnects so each gets its own client id.
         self._reconnects = 1
@@ -462,6 +476,9 @@ class PrimeMqttClient:
         # risk than a broken library". The residual risk is a watcher
         # that reports nothing for the rest of its life, and it is
         # indistinguishable from a quiet robot.
+        #: Kept so the caller can re-check after the wait expires --
+        #: see resubscribe_still_unconfirmed().
+        self._last_subscribe_mids = list(mids)
         unconfirmed = [
             self._mid_to_topic.get(m, "?") for m in mids
             if m not in self._confirmed_mids
@@ -583,7 +600,12 @@ class PrimeMqttClient:
         if not self._connected:
             raise ShadowError(f"Connect timed out after {timeout}s")
 
-    def disconnect(self) -> None:
+    def disconnect(self, deliberate: bool = True) -> None:
+        """`deliberate` marks this as our own close, so the watcher does
+        not report it as a drop and does not start a competing
+        reconnect. Defaults True: every caller of this method is
+        choosing to disconnect."""
+        self._deliberate_disconnect = deliberate
         if self._client is not None:
             self._client.loop_stop()
             self._client.disconnect()
@@ -739,9 +761,45 @@ class PrimeMqttClient:
         # disconnect would make the next read skip a subscription it no
         # longer has -- the exact silence this change exists to avoid.
         self._subscribed_topics.clear()
-        self._disconnect_reason = str(reason_code)
+        self._disconnect_reason = (
+            "deliberate: token refresh or reconnect"
+            if self._deliberate_disconnect
+            else str(reason_code)
+        )
+        self._was_deliberate = self._deliberate_disconnect
+        self._deliberate_disconnect = False
         if self._disconnect_loop is not None and self._disconnect_event is not None:
             self._disconnect_loop.call_soon_threadsafe(self._disconnect_event.set)
+
+    def resubscribe_still_unconfirmed(self) -> list[str]:
+        """Topics with no SUBACK, re-checked now rather than at the
+        moment the wait expired.
+
+        A SUBACK ARRIVING LATE IS STILL A SUBACK. `_confirmed_mids` is
+        filled by paho's callback thread and keeps filling after the
+        3-second wait gives up, so `last_subscribe_unconfirmed` is a
+        snapshot of a deadline, not a verdict.
+
+        @utkjmitch (b7, second household): every reconnect on his
+        instance logs `no SUBACK within 3.0s`, on a 55-minute cycle.
+        Treating that snapshot as failure would put him into a
+        reconnect loop every cycle -- for subscriptions that may well
+        have been acknowledged a moment later.
+
+        So the caller asks again before acting. Anything still missing
+        here really is missing.
+        """
+        mids = getattr(self, "_last_subscribe_mids", None) or []
+        return [
+            self._mid_to_topic.get(m, "?") for m in mids
+            if m not in self._confirmed_mids
+        ]
+
+    @property
+    def last_disconnect_was_deliberate(self) -> bool:
+        """True when the last disconnect was our own reconnect or token
+        refresh, rather than something the broker or network did."""
+        return self._was_deliberate
 
     async def wait_for_disconnect(self) -> str:
         """Resolves with the disconnect reason once this connection

@@ -25,6 +25,11 @@ from roombapy_prime.rest_client import PrimeRestClient
 
 def _robot_with_mocks() -> tuple[PrimeRobot, MagicMock, MagicMock]:
     mqtt = MagicMock()
+    # A bare MagicMock answers truthy to every attribute, so the watcher
+    # would read every drop as one of our own token refreshes and skip
+    # the reconnect entirely -- the loop then spins on a disconnect it
+    # never handles. These fixtures describe real drops.
+    mqtt.last_disconnect_was_deliberate = False
     rest = MagicMock()
     robot = PrimeRobot(
         blid="BLID123", mqtt_client=mqtt, rest_client=rest,
@@ -255,7 +260,20 @@ async def test_send_routine_command_via_cmd_topic_publishes_full_payload() -> No
 
     await robot.send_routine_command_via_cmd_topic(cmd)
 
-    mqtt.publish_cmd_payload.assert_called_once_with("irbt-fake-prefix", cmd.to_json())
+    # `initiator` IS ADDED BY THE SEND, not carried from the command.
+    #
+    # @chairstacker (#67): a favourite created in the iRobot app stores
+    # `initiator: "rmtApp"`, and replaying that made Home Assistant
+    # presses read as "iRobot app" in the Activity log. What we send is
+    # who we are.
+    expected = cmd.to_json()
+    expected["initiator"] = "localApp"
+    mqtt.publish_cmd_payload.assert_called_once_with("irbt-fake-prefix", expected)
+
+    assert cmd.to_json().get("initiator") != "localApp" or cmd.initiator is None, (
+        "the stored command must not be mutated -- writing a favourite "
+        "back through create/update has to preserve what the app recorded"
+    )
 
 
 @pytest.mark.asyncio
@@ -465,6 +483,10 @@ async def test_watch_topic_reconnect_uses_relogin_when_available() -> None:
     mqtt = MagicMock()
     rest = MagicMock()
     mqtt.seconds_until_token_refresh_due.return_value = 0.0  # token due for refresh
+    # A real drop, not one of our own token refreshes -- a bare
+    # MagicMock would answer truthy and the watcher would skip the
+    # reconnect this test is about.
+    mqtt.last_disconnect_was_deliberate = False
 
     fresh_token = ConnectionToken(
         client_id="c2", iot_token="fresh-token", iot_signature="s2",
@@ -1928,6 +1950,10 @@ class TestTheDoNotDisturbCommands:
 
         robot = object.__new__(PrimeRobot)
         robot._mqtt = MagicMock()
+        # A bare MagicMock answers truthy to every attribute, so
+        # the watcher would treat every drop as one of ours and
+        # skip the reconnect. These fixtures describe real drops.
+        robot._mqtt.last_disconnect_was_deliberate = False
         robot._mqtt.publish_cmd = MagicMock(return_value=True)
         robot.blid = "B"
         robot._irbt_topic_prefix = "irbt"
@@ -1969,6 +1995,10 @@ class TestTheTimelineCanBeAskedFor:
 
         robot = object.__new__(PrimeRobot)
         robot._mqtt = MagicMock()
+        # A bare MagicMock answers truthy to every attribute, so
+        # the watcher would treat every drop as one of ours and
+        # skip the reconnect. These fixtures describe real drops.
+        robot._mqtt.last_disconnect_was_deliberate = False
         robot._irbt_topic_prefix = "irbt"
         robot._timeline_request_id = 0
         return robot
@@ -2167,6 +2197,10 @@ class TestAnIdleRobotDoesNotAnswerATimelineRequest:
 
         robot = object.__new__(PrimeRobot)
         robot._mqtt = MagicMock()
+        # A bare MagicMock answers truthy to every attribute, so
+        # the watcher would treat every drop as one of ours and
+        # skip the reconnect. These fixtures describe real drops.
+        robot._mqtt.last_disconnect_was_deliberate = False
         robot._irbt_topic_prefix = "irbt"
         robot._timeline_request_id = 0
 
@@ -2255,4 +2289,105 @@ class TestFrequentDropsAreNamedWithoutClaimingACause:
         source = inspect.getsource(prime_robot)
         idx = source.find("MQTT reconnected, watch resumed")
         assert idx > 0
-        assert "_LOGGER.warning(" in source[max(0, idx - 400):idx]
+
+        # The nearest _LOGGER call BEFORE the message, rather than
+        # anything within 400 characters: comments in between used to
+        # move the match, so an unrelated edit could fail this test
+        # while the log level was still correct.
+        preceding = source[:idx]
+        last_call = max(
+            preceding.rfind("_LOGGER.warning("),
+            preceding.rfind("_LOGGER.info("),
+            preceding.rfind("_LOGGER.debug("),
+            preceding.rfind("_LOGGER.exception("),
+        )
+        assert preceding[last_call:].startswith("_LOGGER.warning("), (
+            "the recovery message must be WARNING: the drop is warned "
+            "about, so a user at default level would otherwise see the "
+            "failure and never the fix"
+        )
+
+
+class TestRatpic83sFiftyFiveMinuteClock:
+    """26 disconnects in one day, each exactly 55 minutes after the
+    last, on a robot that was docked, cleaning and idle across them.
+
+    The ordering in the log was the finding: authenticate, reconnect,
+    THEN the drop is reported. "Normal disconnection" is paho's phrase
+    for a clean client-initiated close — ours, from the proactive token
+    refresh calling disconnect() on the old connection.
+
+    So the watcher warned about a planned event and started a second
+    reconnect racing the one already running. The b5 warning text told
+    users to close the iRobot app, which is why closing it helped
+    nobody whose drops arrive on a fixed interval.
+    """
+
+    def test_a_deliberate_disconnect_is_flagged_as_such(self):
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = object.__new__(PrimeMqttClient)
+        client._deliberate_disconnect = False
+        client._was_deliberate = False
+        client._connected = True
+        client._subscribed_topics = set()
+        client._disconnect_loop = None
+        client._disconnect_event = None
+        client._client = MagicMock()
+
+        client.disconnect()
+        PrimeMqttClient._on_disconnect(
+            client, MagicMock(), None, None, "Normal disconnection"
+        )
+
+        assert client.last_disconnect_was_deliberate is True
+
+    def test_an_external_drop_is_not(self):
+        """The flag must not stick: the next real drop has to reconnect."""
+        from unittest.mock import MagicMock
+
+        from roombapy_prime.mqtt_client import PrimeMqttClient
+
+        client = object.__new__(PrimeMqttClient)
+        client._deliberate_disconnect = False
+        client._was_deliberate = True          # left over from a refresh
+        client._connected = True
+        client._subscribed_topics = set()
+        client._disconnect_loop = None
+        client._disconnect_event = None
+        client._client = MagicMock()
+
+        PrimeMqttClient._on_disconnect(
+            client, MagicMock(), None, None, "Unspecified error"
+        )
+
+        assert client.last_disconnect_was_deliberate is False
+        assert client._disconnect_reason == "Unspecified error"
+
+
+class TestAWatchIsNotResumedUntilItIsAcknowledged:
+    """@ratpic83 caught `no SUBACK within 3.0s` and `watch resumed` one
+    millisecond apart, twice in a day. An unacknowledged subscription
+    delivers nothing and looks exactly like a robot with nothing to
+    say — the mechanism by which a mission-end transition goes missing.
+    """
+
+    def test_the_resumed_message_is_guarded_by_the_suback_check(self):
+        import inspect
+
+        from roombapy_prime import prime_robot
+
+        source = inspect.getsource(prime_robot)
+        # The LAST occurrence: the message text also appears in a
+        # comment earlier in the module, quoting the log that prompted
+        # this. The guard belongs before the actual call.
+        idx = source.rfind('"roombapy-prime: MQTT reconnected, watch resumed')
+        assert idx > 0
+
+        preceding = source[:idx]
+        assert "last_subscribe_unconfirmed" in preceding, (
+            "the resumed message must be reached only after checking "
+            "that every restored subscription was acknowledged"
+        )
