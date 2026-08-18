@@ -56,6 +56,12 @@ This file only tracks what changed from a user's point of view.
 
 ### Changed
 
+- **`models` re-exports `TimeEstimate` and `TimeEstimates` explicitly.**
+  A `py.typed` package has to say so: under `mypy --strict` a consumer
+  importing them from `roombapy_prime.models` was told the attribute is
+  not exported. Invisible during development, because an editable
+  install lets mypy read the working tree instead of the built package.
+
 - `roombapy-prime-validate` prints `digiCap`'s contents rather than only
   noting that the key exists. @ricrog1135's W155020 is the first robot
   observed reporting the field, and nine capability gates modelled from
