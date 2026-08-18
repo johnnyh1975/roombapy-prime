@@ -24,4 +24,15 @@ from .schedules_dnd import *  # noqa: F401,F403
 from .mission_history import *  # noqa: F401,F403
 from .robot_info import *  # noqa: F401,F403
 
-from .time_estimates import TimeEstimate, TimeEstimates  # noqa: E402,F401
+# EXPLICIT RE-EXPORT, because a `py.typed` package has to say so.
+#
+# The star imports above carry each module's own `__all__` and are
+# re-exported implicitly. This line names two symbols, and under
+# `--strict` a consumer importing them from here gets "does not
+# explicitly export attribute TimeEstimates" -- which is what happened
+# to ha_roomba_plus in CI, on three call sites, while a local editable
+# install resolved them fine.
+from .time_estimates import (  # noqa: E402
+    TimeEstimate as TimeEstimate,
+    TimeEstimates as TimeEstimates,
+)
