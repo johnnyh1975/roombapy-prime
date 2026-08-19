@@ -1196,6 +1196,45 @@ class DigiCap:
     raw_shadows.json) -- a small, separate capability namespace from
     "cap" (see CapabilityFlags below), nested under the classic/
     unnamed shadow's own "digiCap" key. Real values seen: app_ver=1,
+    FIELD-OBSERVED AT LAST (@ricrog1135, W155020, 18 August 2026).
+    Nine gates were modelled from iRobot's own tables and not one had
+    ever been seen on hardware. His robot reports five:
+
+        {"appVer": 1, "cleaningProfiles": 2, "ddAutomation": 1,
+         "timeline": 1, "perspective3DMap": 1}
+
+    Every key maps to a field this class already declares, and every
+    one is read by from_json() below -- the modelling was right. What
+    the observation adds is that the block is **partial**: five of
+    eleven documented gates, so a robot's digiCap describes what it
+    has rather than enumerating everything with a 0.
+
+    `cleaningProfiles: 2` is the only value above 1 seen so far, which
+    suggests these are levels rather than flags, the same shape
+    `cap.autoevac` turned out to have.
+
+    STILL UNOBSERVED: cte, digiSpot, petFurniture, kozRecommendations,
+    smartClean, cleanWhileAway. Absent here rather than zero.
+
+    AND `digiSpot` IS NOT WHAT GATES SPOT CLEANING. @ricrog1135's app
+    offers "Spot Clean" as a routine, and he ran one -- a drawn box on
+    the map with the robot inside it -- on a robot whose `digiCap`
+    carries **no `digiSpot` at all**.
+
+    What his robot does carry is `cap.dSpot = 1` (POINT_CLEAN). So the
+    two are separate gates: `cap.dSpot` decides whether the robot can
+    point-clean, and `digiCap.digiSpot` gates something else that this
+    robot does not have while still spot cleaning perfectly well.
+
+    A caller reading `digiSpot` to decide whether to offer spot
+    cleaning would withhold it from a robot that does it. Read
+    `cap.dSpot` for that.
+
+    NOTE ALSO: a capability block describes what the robot IS, not what
+    it has done. Running a spot clean will not make `digiSpot` appear
+    on the next read -- @ricrog1135 wondered, reasonably, and it is
+    worth stating because the same question will occur to others.
+
     timeline=1. "timeline" plausibly correlates with the already-
     confirmed mission/timeline/report topic (a per-device flag for
     whether this robot even sends timeline events at all) -- a
@@ -1226,10 +1265,79 @@ class DigiCap:
     #: `digiCap.cwia` -- clean while away.
     clean_while_away: Any | None = None
     #: `digiCap.cleaningProfiles` -- the per-room profile system.
+    #: `digiCap.cleaningProfiles` -- THE APP DISCARDS THIS VALUE.
+    #:
+    #: @ricrog1135's W155020 reports **2**, the only digiCap value above
+    #: 1 anyone has seen. Four readings were tried and all four are
+    #: wrong, because the premise was:
+    #:
+    #: The Dart layer types this capability as
+    #: `Set<CleaningProfileType>?` and decodes it by iterating the
+    #: value, calling `toString()` on each entry and matching it against
+    #: the names `light`, `normal`, `deep`, `smart` -- with an `orElse`
+    #: fallback. It expects something like `["deep", "smart"]`.
+    #:
+    #: A bare `2` is not iterable in that sense. The decoder takes its
+    #: else-branch and stores **null**. The number is thrown away
+    #: without ever being interpreted.
+    #:
+    #: So there is no meaning to recover. The app does not read one,
+    #: and neither should we.
+    #:
+    #: WHAT THE APP SHOWS INSTEAD comes from the server:
+    #:
+    #:     GET /v1/profiles?robotId={assetId}
+    #:       p2map_id given  -> includeSmart per map
+    #:       p2map_id empty  -> includeSmart=false
+    #:     -> CleaningProfileResponseDto { profile, params, regions }
+    #:
+    #: @ricrog1135 is offered all four profiles on the robot reporting
+    #: 2, and there is no "cleaning profiles" screen anywhere in his
+    #: app -- they surface as a "Routine preferences" dropdown. Both
+    #: facts follow from the list coming from the endpoint rather than
+    #: from this field.
+    #:
+    #: STILL UNEXPLAINED: why the firmware sends an integer where the
+    #: app expects a list. Not answerable from the APK, and it does not
+    #: change what a consumer should do.
+    #:
+    #: DO NOT model this as a profile set, a count or a tier. Fetch
+    #: `/v1/profiles`.
     cleaning_profiles: Any | None = None
     #: `digiCap.cte` -- cleaning time estimates.
     cleaning_time_estimates: Any | None = None
     #: `digiCap.digiSpot` -- digital spot clean.
+    #: `digiCap.matter` -- SEPARATE FROM `cap.matter`, and a different
+    #: type.
+    #:
+    #: APK analysis of app 3.0.0:
+    #:
+    #:     matter         AnyCapability<int>   <- cap.matter
+    #:     matterDigital  AnyCapability<bool>  <- digiCap.matter
+    #:
+    #: This field was missing entirely although `matter` is in the
+    #: documented `digiCap` key list -- so a robot reporting it would
+    #: have had the value silently dropped. @ricrog1135's reports
+    #: `cap.matter: 1` and no `digiCap.matter`, which is why nothing
+    #: surfaced.
+    matter: Any | None = None
+
+    #: `digiCap.digiSpot` -- A BOOLEAN, and not the spot-clean gate.
+    #:
+    #: APK analysis of app 3.0.0, resolving @ricrog1135's case:
+    #:
+    #:     digitalSpotClean         AnyCapability<bool>  <- digiCap.digiSpot
+    #:     digitalSpotCleanMission  AnyCapability<int>   <- cap.dSpot
+    #:
+    #: Two separate capabilities. `DigitalSpotSupportType`
+    #: (NOT_SUPPORTED / SUPPORTED / SUPPORTED_WITH_HEATED_WATER) is a
+    #: Kotlin enum that **does not appear in the Dart layer at all** --
+    #: it belongs to `cap.dSpot`, not here.
+    #:
+    #: His robot: `cap.dSpot = 1`, `digiSpot` absent entirely, Spot
+    #: Clean working in the app. Anything reading this field to decide
+    #: whether to offer spot cleaning would withhold it from a robot
+    #: that does it.
     digital_spot_clean: Any | None = None
     #: `digiCap.ddAutomation` -- Dirt Detective automation.
     dirt_detective_automation: Any | None = None
@@ -1251,6 +1359,7 @@ class DigiCap:
             timeline=data.get("timeline"),
             clean_while_away=data.get("cwia"),
             cleaning_profiles=data.get("cleaningProfiles"),
+            matter=data.get("matter"),
             cleaning_time_estimates=data.get("cte"),
             digital_spot_clean=data.get("digiSpot"),
             dirt_detective_automation=data.get("ddAutomation"),

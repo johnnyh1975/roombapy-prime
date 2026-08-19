@@ -1410,6 +1410,22 @@ class Region:
             region_id=data.get("region_id") or data.get("id", ""),
             region_type=_enum_or_none(RegionType, data.get("type")) or RegionType.RID,
             name=data.get("name"),
+            # `region_name` IS WHERE ZONE NAMES ACTUALLY LIVE.
+            #
+            # We wrote this field and never read it back. APK 3.0.0:
+            # `IrobotTimelineRegionNameResolver` reads
+            # `cmd.regions[].region_name` -- the timeline events
+            # themselves carry no name (`RobotTimelineZone` has only
+            # `zid`).
+            #
+            # So a zone's label comes from the COMMAND that cleaned it,
+            # not from the map. @chairstacker's `--list-rooms` shows
+            # `name=None` for every ZID while his app timeline reads
+            # "Guest Access Zone" and "Living Room @Wall" -- both true
+            # at once, because they are different places.
+            #
+            # `data.get("name")` above is the map-side name and stays.
+            region_label=data.get("region_name"),
             params=CommandParams.from_json(params_data) if params_data else None,
         )
 

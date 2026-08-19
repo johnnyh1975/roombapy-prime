@@ -466,6 +466,26 @@ class CleanZone:
 
 @dataclass(frozen=True)
 class AddCleanZones:
+    """Add zones -- **and rename them**. There is no rename command.
+
+    APK 3.0.0, `updateCleanZones` on the `data.sdk/map` Flutter channel:
+    for each item it reads `zone, id, name, geometry`, looks up an
+    `existingId`, collects zones plus `retainIds`, and deletes
+    everything not retained. On the V2 path that becomes
+    `AddCleanZones` + `DeleteCleanZones`.
+
+    So **renaming is AddCleanZones carrying an existing `zone_id` and a
+    new `name`.** `CleanZone.zone_id` is optional precisely for this:
+    omit it to create, supply it to update.
+
+    ROOMS TAKE A DIFFERENT PATH: `setRoomMetadata` / `setRenameRoom`.
+    That is why @chairstacker can rename rooms and not zones -- two
+    separate mechanisms behind one app surface.
+
+    NOT WIRED UP HERE. Nothing in this library calls this class, so a
+    caller wanting to name a zone has to build the command itself.
+    """
+
     zones: list[CleanZone]
 
     def to_command_body(self) -> dict[str, Any]:

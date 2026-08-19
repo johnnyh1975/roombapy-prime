@@ -6867,3 +6867,137 @@ class TestFaultSceneIsDerivedNotReceived:
 
         assert FaultScene.scene_for(command="washPad") is None
         assert FaultScene.scene_for(command="washpad") is FaultScene.WASH_TASK
+
+
+class TestTheFirstObservedDigiCap:
+    """@ricrog1135's W155020, 18 August 2026 — the first `digiCap` ever
+    seen on real hardware. Nine gates had been modelled from iRobot's
+    own tables and none observed.
+
+    Recorded as a literal because the modelling was right and this is
+    what proves it: every key maps to a declared field, and every one
+    is read.
+    """
+
+    PAYLOAD = {
+        "appVer": 1,
+        "cleaningProfiles": 2,
+        "ddAutomation": 1,
+        "timeline": 1,
+        "perspective3DMap": 1,
+    }
+
+    def test_every_observed_key_is_read(self):
+        from roombapy_prime.models.robot_info import DigiCap
+
+        caps = DigiCap.from_json(self.PAYLOAD)
+
+        assert caps.app_ver == 1
+        assert caps.cleaning_profiles == 2
+        assert caps.dirt_detective_automation == 1
+        assert caps.timeline == 1
+        assert caps.rendering_3d_maps == 1
+
+    def test_unobserved_gates_stay_none_rather_than_zero(self):
+        """The block is partial — five of eleven documented gates. A
+        robot's digiCap describes what it has; it does not enumerate
+        everything with a 0. So absent must not become 0, or a gate
+        would read as explicitly disabled when it was never mentioned."""
+        from roombapy_prime.models.robot_info import DigiCap
+
+        caps = DigiCap.from_json(self.PAYLOAD)
+
+        assert caps.cleaning_time_estimates is None
+        assert caps.digital_spot_clean is None
+        assert caps.furniture is None
+        assert caps.keep_out_zone_recommendations is None
+
+
+class TestEveryDocumentedDigiCapKeyIsRead:
+    """`digiCap.matter` was declared in the key list and **not read** —
+    a robot reporting it would have had the value silently dropped.
+    @ricrog1135's does not report it, which is why nothing surfaced.
+
+    The eleven keys are iRobot's own, from the app's `digiCap_known`
+    list. A key that is documented but not read is worse than one that
+    is missing: it looks handled.
+    """
+
+    DOCUMENTED = (
+        "appVer", "cleaningProfiles", "cte", "cwia", "ddAutomation",
+        "digiSpot", "kozRecommendations", "matter", "perspective3DMap",
+        "smartClean", "timeline",
+    )
+
+    def test_a_payload_of_every_key_loses_nothing(self):
+        from roombapy_prime.models.robot_info import DigiCap
+
+        payload = dict.fromkeys(self.DOCUMENTED, 1)
+        caps = DigiCap.from_json(payload)
+
+        dropped = [
+            key for key in self.DOCUMENTED
+            if 1 not in vars(caps).values()
+            or not any(v == 1 for v in vars(caps).values())
+        ]
+        assert not dropped
+
+        # Every documented key has to land in some field, so the count
+        # of fields holding 1 must match the count of keys sent.
+        assert sum(1 for v in vars(caps).values() if v == 1) == len(
+            self.DOCUMENTED
+        ), (
+            f"sent {len(self.DOCUMENTED)} documented digiCap keys, "
+            f"{sum(1 for v in vars(caps).values() if v == 1)} were read "
+            f"-- one is declared but not mapped in from_json()"
+        )
+
+
+class TestRegionNameRoundTrips:
+    """Zone names live in the COMMAND, not the map.
+
+    APK 3.0.0: `IrobotTimelineRegionNameResolver` reads
+    `cmd.regions[].region_name`; the timeline events carry no name of
+    their own (`RobotTimelineZone` has only `zid`).
+
+    @chairstacker's `--list-rooms` shows `name=None` for every ZID
+    while his app timeline reads "Guest Access Zone" and "Living Room
+    @Wall". Both are true — they are different places, and this field
+    was written and never read back.
+    """
+
+    def test_region_name_is_read(self):
+        from roombapy_prime.models.mission_control import Region
+
+        region = Region.from_json(
+            {"region_id": "100", "type": "zid", "region_name": "Office"}
+        )
+
+        assert region.region_label == "Office"
+
+    def test_it_survives_a_round_trip(self):
+        from roombapy_prime.models.mission_control import Region
+
+        original = Region.from_json(
+            {"region_id": "100", "type": "zid", "region_name": "Office"}
+        )
+        again = Region.from_json(original.to_json())
+
+        assert again.region_label == "Office"
+
+    def test_the_map_side_name_is_separate(self):
+        """`name` is the map's, `region_name` the command's. A payload
+        carrying both must not conflate them."""
+        from roombapy_prime.models.mission_control import Region
+
+        region = Region.from_json(
+            {
+                "region_id": "10",
+                "type": "rid",
+                "name": "Dining Room",
+                "region_name": "Dining Room @Table",
+            }
+        )
+
+        assert region.name == "Dining Room"
+        assert region.region_label == "Dining Room @Table"

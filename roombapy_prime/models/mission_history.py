@@ -40,25 +40,49 @@ class DoneCode(StrEnum):
     rest inferred, and a real capture carrying any other done code
     settles that one."""
 
-    BATTERY = "battery"
-    BATTERY_CANCEL = "battery_cancel"
+    #: FIELD-CONFIRMED FROM APP 3.0.0 -- the wire values are
+    #: **abbreviated camelCase**, not the snake_case this enum carried.
+    #:
+    #: Two sets in the object pool, used by `isMissionHistorySuccess`
+    #: and `isMissionHistoryCancelled` in
+    #: `irobot_clean_task_completion_semantics.dart`:
+    #:
+    #:     success   {ok, busy, dndEnd, returnHomeEnd, timeboxEnd}
+    #:     cancelled {cncl, usrSlp, plcDoc, usrEnd, usrSpt, batcncl}
+    #:
+    #: Nine of the nineteen previous values were wrong. The
+    #: lowercase-snake_case rule, carried over from `RegionType`, does
+    #: not apply here at all -- **not one** snake_case form appears
+    #: anywhere in the APK.
+    OK = "ok"
     BUSY = "busy"
-    CANCEL = "cancel"
-    DND_END = "dnd_end"
+    DND_END = "dndEnd"
+    RETURN_HOME_END = "returnHomeEnd"
+    TIMEBOX_END = "timeboxEnd"
+
+    CANCEL = "cncl"
+    USER_SLEEP = "usrSlp"
+    PLACE_DOCK = "plcDoc"
+    USER_END = "usrEnd"
+    USER_SPOT = "usrSpt"
+    BATTERY_CANCEL = "batcncl"
+
+    #: UNPROVEN, AND KEPT ONLY AS PLACEHOLDERS. These eight came from
+    #: bytecode constant names in an older APK and appear nowhere in
+    #: 3.0.0 -- neither as written here nor as the abbreviations the
+    #: confirmed values would predict (`schedErr`, `usrRbt`: no hits).
+    #:
+    #: `_enum_or_none()` returns the raw string for anything unmatched,
+    #: so a real capture carrying one of these settles it. Until then
+    #: they are guesses wearing enum members.
+    BATTERY = "battery"
     EMPTY = "empty"
     FULL = "full"
     INCOMPLETE = "incomplete"
     NONE_ = "none"
-    OK = "ok"
-    PLACE_DOCK = "place_dock"
-    RETURN_HOME_END = "return_home_end"
     SCHEDULE_ERROR = "schedule_error"
     STUCK = "stuck"
-    TIMEBOX_END = "timebox_end"
-    USER_END = "user_end"
     USER_REBOOT = "user_reboot"
-    USER_SLEEP = "user_sleep"
-    USER_SPOT = "user_spot"
 
 
 #: REMOVED FROM HERE: a second `PadCategory`, seven UPPERCASE values

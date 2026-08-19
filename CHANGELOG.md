@@ -8,6 +8,50 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b9] - 2026-08-18
+
+### Fixed
+
+- **`DoneCode` was wrong on nine of nineteen values.** The wire values
+  are abbreviated camelCase (`dndEnd`, `cncl`, `plcDoc`, `batcncl`),
+  not snake_case — confirmed from app 3.0.0, where no snake_case form
+  appears at all. Only `ok` had ever been observed; the rest came from
+  bytecode constant names lowercased by a rule that does not apply
+  here. @chairstacker's `clean_streak` and `area_cleaned_today` read 0
+  because every one of his 128 missions mapped to "unknown".
+
+- **`region_name` was written and never parsed back.** Zone names live
+  in `lastCommand.regions[].region_name`, not in the map — the app's
+  own timeline resolver reads them from there. Now read as
+  `Region.region_label`, separate from the map-side `name`.
+
+- **`digiCap.matter` was declared and never read.** A robot reporting
+  it lost the value silently. A guard now checks all eleven documented
+  keys land somewhere.
+
+### Added
+
+- `roombapy-prime-name-clean-zone`. Renaming a zone is a full-list
+  rewrite through `SetPermanentAreasV1` — there is no rename command.
+  Dry run by default; reads the current zones first and refuses to send
+  if it cannot, because a list it could not read is a list it would
+  delete.
+
+### Documented
+
+- **The first observed `digiCap`** (@ricrog1135, W155020). Five of
+  eleven gates, every one mapping to a field already declared. The
+  block is partial, so an absent gate must stay absent rather than
+  becoming 0.
+
+- **`cleaningProfiles` carries no meaning.** The app types it as
+  `Set<CleaningProfileType>?` and matches entries against profile
+  names; a bare integer takes the else-branch and is discarded. Profiles
+  come from `GET /v1/profiles`.
+
+- **`digiCap.digiSpot` is not the spot-clean gate.** `cap.dSpot` is.
+  `DigitalSpotSupportType` does not appear in the app's Dart layer.
+
 ## [0.3.0b8] - 2026-08-17
 
 ### Fixed
