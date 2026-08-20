@@ -8,6 +8,33 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b10] - 2026-08-19
+
+### Fixed
+
+- **The map bundle was never readable.** `_fetch_bundle_rooms` read
+  `parsed["rooms"]` expecting a bare list; a bundle file is a GeoJSON
+  collection. The type check failed and the loop moved on silently,
+  because "skip this map" and "this map is empty" look identical.
+  @chairstacker got `0 room feature(s) found across all map bundles` on
+  a robot with seven named rooms.
+
+  The same reader is used by the Home Assistant integration to find
+  zone names and by `name-clean-zone` to check existing zones before
+  writing — a guard that was quietly broken until now.
+
+### Changed
+
+- **`--list-rooms` reads zone names from the map bundle.** It read
+  `get_map_metadata` → `rooms_metadata`, which carries room names only,
+  so zones always showed `name=None` regardless of whether they had
+  one. Both sources are read now, with the origin marked per line, and
+  an empty bundle says so rather than leaving `None` to be interpreted.
+
+  `--dump-config` cannot answer this: its summary is deliberately
+  depth-limited so real home layouts stay out of shared reports, and
+  zone names sit exactly under the cutoff.
+
 ## [0.3.0b9] - 2026-08-18
 
 ### Fixed
