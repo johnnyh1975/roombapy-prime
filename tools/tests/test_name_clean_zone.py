@@ -73,3 +73,133 @@ async def test_an_unreadable_bundle_sends_nothing():
     )
 
     assert await _read_zones(robot, "MAP-1") is None
+
+
+class TestZoneNamesComeFromTheBundle:
+    """@chairstacker's `--list-rooms` showed `name=None` for all eight
+    of his zones while his app labelled them.
+
+    The listing read `get_map_metadata` → `rooms_metadata`, which
+    carries ROOM names. A zone's name is a `properties.name` on its
+    feature in the bundle's `cleanZones` layer, and nothing looked
+    there.
+
+    `--dump-config` does not answer it either: its summary is
+    deliberately depth-limited so real home layouts stay out of shared
+    reports, and zone names sit exactly under the cutoff.
+    """
+
+    @staticmethod
+    async def _names(layer):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_region_commands import (
+            _zone_names_from_bundle,
+        )
+
+        robot = SimpleNamespace(
+            get_map_geojson_link=AsyncMock(return_value="url"),
+            download_map_bundle=AsyncMock(return_value=b""),
+            parse_map_bundle=lambda _blob: SimpleNamespace(
+                zone_layers={"cleanZones": layer}
+            ),
+        )
+        return await _zone_names_from_bundle(robot, "MAP-1")
+
+    @pytest.mark.asyncio
+    async def test_a_named_zone_is_found(self):
+        names = await self._names(
+            {"features": [
+                {"properties": {"id": "100", "name": "Guest Access Zone"}},
+                {"properties": {"id": "101", "name": "Living Room @Wall"}},
+            ]}
+        )
+
+        assert names == {
+            "100": "Guest Access Zone",
+            "101": "Living Room @Wall",
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_unnamed_zone_is_not_invented(self):
+        """An empty name is not a name. `Zone {id}` is the honest
+        answer, and claiming otherwise sends someone looking for a
+        rename that will not help."""
+        names = await self._names(
+            {"features": [
+                {"properties": {"id": "100"}},
+                {"properties": {"id": "101", "name": ""}},
+            ]}
+        )
+
+        assert names == {}
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_bundle_says_so(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime_tools.verify_region_commands import (
+            _zone_names_from_bundle,
+        )
+
+        robot = SimpleNamespace(
+            get_map_geojson_link=AsyncMock(side_effect=RuntimeError("nope"))
+        )
+
+        assert await _zone_names_from_bundle(robot, "MAP-1") == {}
+
+
+class TestABundleFileIsAFeatureCollection:
+    """@chairstacker: "0 room feature(s) found across all map bundles"
+    on a robot with seven named rooms.
+
+    `_fetch_bundle_rooms` read `parsed["rooms"]` expecting a bare list
+    and got the GeoJSON wrapper `{"type": ..., "features": [...]}`. The
+    isinstance check failed and it moved on — silently, because
+    `continue` looks exactly like an empty map.
+
+    `borders` really is a bare feature; `rooms` and `cleanZones` are
+    collections. Both shapes are accepted rather than assuming either.
+    """
+
+    @staticmethod
+    def _rooms(parsed):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from roombapy_prime_tools import verify_map_edit
+
+        robot = SimpleNamespace(
+            get_map_geojson_link=AsyncMock(return_value={"map_url": "http://x"}),
+            download_map_bundle=AsyncMock(return_value=b""),
+        )
+        versions = [SimpleNamespace(p2map_id="MAP-1", active_p2mapv_id="v1")]
+
+        with patch.object(
+            verify_map_edit, "parse_map_bundle", return_value=parsed
+        ):
+            return asyncio.run(
+                verify_map_edit._fetch_bundle_rooms(robot, versions)
+            )
+
+    def test_a_feature_collection_is_read(self):
+        rooms = self._rooms(
+            {"rooms": {"type": "FeatureCollection", "features": [
+                {"properties": {"id": "15", "name": "Room 1"}},
+            ]}}
+        )
+
+        assert len(rooms) == 1
+
+    def test_a_bare_list_still_works(self):
+        rooms = self._rooms(
+            {"rooms": [{"properties": {"id": "15", "name": "Room 1"}}]}
+        )
+
+        assert len(rooms) == 1
+
+    def test_a_missing_rooms_file_is_survivable(self):
+        assert self._rooms({}) == []

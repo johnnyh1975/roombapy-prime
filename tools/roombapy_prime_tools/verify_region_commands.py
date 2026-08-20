@@ -1477,6 +1477,34 @@ async def send_stage_two(
     )
 
 
+async def _zone_names_from_bundle(robot: Any, p2map_id: str) -> dict[str, str]:
+    """{zone_id: name} from the bundle's `cleanZones` layer, or {}.
+
+    The map metadata carries room names only. A zone's name, when it
+    has one, is a `properties.name` on its feature in the bundle.
+    """
+    try:
+        link = await robot.get_map_geojson_link(p2map_id)
+        blob = await robot.download_map_bundle(link)
+        bundle = robot.parse_map_bundle(blob)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (map bundle unreadable: {exc})")
+        return {}
+
+    layers = getattr(bundle, "zone_layers", None) or {}
+    layer = layers.get("cleanZones") or {}
+    names: dict[str, str] = {}
+    for feature in (layer.get("features") or []):
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties") or {}
+        zone_id = properties.get("id") or feature.get("id")
+        name = properties.get("name")
+        if zone_id and name:
+            names[str(zone_id)] = str(name)
+    return names
+
+
 async def list_rooms(username: str, password: str, country_code: str, blid: str, p2map_id: str) -> None:
     """Stage 3's own reconnaissance -- pure read, sends nothing.
     Lists real room_id/region_type/name values from
@@ -1491,8 +1519,38 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
         return
 
     print(f"\n{len(map_data.rooms_metadata)} room(s) found on map {p2map_id!r}:\n")
+    # ZONE NAMES ARE NOT IN THE MAP METADATA.
+    #
+    # @chairstacker's zones read `name=None` here while his app
+    # timeline labelled them. `rooms_metadata` carries ROOM names;
+    # a zone's name lives in the bundle's `cleanZones` layer, and
+    # this listing never looked there.
+    #
+    # `--dump-config` does not help either: its shallow summary is
+    # deliberately depth-limited so real home layouts stay out of
+    # shared reports, and the zone names sit exactly under the
+    # cutoff.
+    zone_names = await _zone_names_from_bundle(robot, p2map_id)
+
     for room in map_data.rooms_metadata:
-        print(f"  room_id={room.room_id!r}  region_type={room.region_type!r}  name={room.name!r}")
+        name = room.name
+        source = "map"
+        if name is None and str(room.room_id) in zone_names:
+            name = zone_names[str(room.room_id)]
+            source = "bundle"
+        suffix = f"  [{source}]" if name is not None else ""
+        print(
+            f"  room_id={room.room_id!r}  "
+            f"region_type={room.region_type!r}  name={name!r}{suffix}"
+        )
+
+    if zone_names:
+        print(f"\n  ({len(zone_names)} zone name(s) read from the map bundle)")
+    else:
+        print(
+            "\n  (no zone names in the map bundle -- zones without a "
+            "name here have none stored anywhere we can read)"
+        )
     print(
         "\nTo test one: roombapy-prime-verify-region-commands --send-region "
         "--p2map-id P2MAP_ID --room-id ROOM_ID --region-type rid_or_zid "

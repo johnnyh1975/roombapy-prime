@@ -177,10 +177,27 @@ async def _fetch_bundle_rooms(robot: Any, typed_versions: list[P2MapVersion]) ->
         except Exception as exc:  # noqa: BLE001
             print(f"  (map bundle check for {p2map_id!r} failed: {type(exc).__name__}: {exc})")
             continue
+        # A BUNDLE FILE IS A FeatureCollection, NOT A BARE LIST.
+        #
+        # @chairstacker: "0 room feature(s) found across all map
+        # bundles" on a robot with seven named rooms. This read
+        # `parsed["rooms"]` expecting a list, got the GeoJSON wrapper
+        # `{"type": ..., "features": [...]}`, failed the isinstance
+        # check and moved on -- silently, because a `continue` looks
+        # the same as an empty map.
+        #
+        # `borders` really is a bare feature (confirmed session 58);
+        # `rooms` and `cleanZones` are collections. Both shapes are
+        # accepted here rather than assuming either.
         rooms_file = parsed.get("rooms")
-        if not isinstance(rooms_file, list):
+        if isinstance(rooms_file, dict):
+            entries = rooms_file.get("features") or []
+        elif isinstance(rooms_file, list):
+            entries = rooms_file
+        else:
             continue
-        for entry in rooms_file:
+
+        for entry in entries:
             if isinstance(entry, dict):
                 rooms.append((p2map_id, RoomFeature.from_json(entry)))
     return rooms
