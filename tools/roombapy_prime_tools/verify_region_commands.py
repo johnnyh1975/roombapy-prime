@@ -1532,12 +1532,32 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
     # cutoff.
     zone_names = await _zone_names_from_bundle(robot, p2map_id)
 
+    # A THIRD SOURCE, and apparently the one the app itself uses.
+    # `GET /v1/p2maps/{id}/versions/{vid}` carries
+    # `geojson_details.regions` with names for rooms AND zones -- found
+    # in samm-git/irobot-explore's independent reconstruction, after
+    # four rounds looking at the other two.
+    version_names: dict[str, str] = {}
+    # Direct access, not getattr(): P2MapData declares the field, and
+    # a default would hide a rename. See the guard in tools/tests.
+    active = map_data.active_p2mapv_id
+    if active:
+        try:
+            version_names = await robot.get_map_region_names(
+                p2map_id, str(active)
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  (map version read failed: {exc})")
+
     for room in map_data.rooms_metadata:
         name = room.name
         source = "map"
         if name is None and str(room.room_id) in zone_names:
             name = zone_names[str(room.room_id)]
             source = "bundle"
+        if name is None and str(room.room_id) in version_names:
+            name = version_names[str(room.room_id)]
+            source = "version"
         suffix = f"  [{source}]" if name is not None else ""
         print(
             f"  room_id={room.room_id!r}  "

@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime-tools"
-version = "0.3.0b10"
+version = "0.3.0b11"
 description = "Diagnostic and field-test tooling for roombapy-prime (moves real robots -- read the safety notes)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ classifiers = [
 # than cleanly. scripts/check_version_pin.py enforces that this pin and
 # the core's own version stay in step.
 dependencies = [
-    "roombapy-prime @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b10",
+    "roombapy-prime @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11",
 ]
 
 [project.optional-dependencies]
@@ -49,6 +49,7 @@ roombapy-prime-verify-mission-timeline = "roombapy_prime_tools.verify_mission_ti
 roombapy-prime-verify-named-shadows = "roombapy_prime_tools.verify_named_shadows:main"
 roombapy-prime-verify-region-commands = "roombapy_prime_tools.verify_region_commands:main"
 roombapy-prime-name-clean-zone = "roombapy_prime_tools.name_clean_zone:main"
+roombapy-prime-verify-local-channel = "roombapy_prime_tools.verify_local_channel:main"
 roombapy-prime-verify-region-commands-session = "roombapy_prime_tools.verify_region_commands_session:main"
 roombapy-prime-verify-schedule-write = "roombapy_prime_tools.verify_schedule_write:main"
 roombapy-prime-verify-favorite-write = "roombapy_prime_tools.verify_favorite_write:main"

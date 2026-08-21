@@ -25,7 +25,7 @@ One command; it pulls the library in as a dependency:
 python3 -m venv ~/roombapy-test-venv
 source ~/roombapy-test-venv/bin/activate
 
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b3#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b10#subdirectory=tools"
 ```
 
 Requires Python 3.11+. You will need to re-run the `source` line each time you
@@ -92,12 +92,13 @@ command tells you what is missing without making you type credentials first.
 | `…-verify-named-shadows` | Dumps all nine device shadows. The single richest source of protocol data. |
 | `…-verify-commands` | Basic mission commands (start/stop/dock/…) with before/after state. |
 | `…-verify-mission-timeline` | Watches the live mission/event topics. Read-only unless `--start-mission`. |
-| `…-verify-region-commands` | Room-specific cleaning, staged. **Confirmed working** — see below. |
+| `…-verify-region-commands` | Room-specific cleaning, staged. **Confirmed working** — see below. `--list-rooms` shows rooms *and* zones, with the source of each name. |
 | `…-verify-region-commands-session` | The above as one guided session — one login, prompts between stages. |
 | `…-verify-map-edit` | Renames one room and reverts it. |
 | `…-verify-favorite-write` | Create/update/delete saved routines. |
 | `…-verify-schedule-write` | Resend and disable schedules. |
-| `…-verify-virtual-wall-write` | Keep-out zones and virtual walls. Reads work; **writes currently fail with HTTP 500.** |
+| `…-verify-virtual-wall-write` | Keep-out zones and virtual walls. **Writes work** — the HTTP 500 was solved before 0.2.0b1. Untested: a write carrying a *changed* list. |
+| `…-name-clean-zone` | Names a clean zone. **Full-list rewrite** — anything omitted is deleted. Dry run by default. |
 | `…-verify-settings-write` | Child lock, eco charge, schedule hold, … Writes confirmed; most effects untested. |
 
 Every script has `--help`, and it is worth reading before a first run.
@@ -139,11 +140,14 @@ Two notes from the sessions that got this working:
 Stage 0 (`--list-maps`, then `--list-walls`) works and is read-only.
 It is how the zone types were confirmed against real data.
 
-`--update-unchanged` currently fails with HTTP 500. Two causes have been
-ruled out by testing, and the script now tries three request shapes in
-one run rather than one guess per round trip. If all three fail, that is
-also a result — it moves the suspicion to the one remaining unverified
-part of the request.
+`--update-unchanged` **works.** The HTTP 500 this paragraph described
+was solved before 0.2.0b1 — `virwall` starts with a COUNT of the walls —
+and confirmed on two accounts, including the write / re-read / write
+round trip that separates "accepted" from "stored".
+
+**What is still untested: a write carrying a CHANGED list.** Every
+confirmed write resent its zones unchanged, and `set_virtual_wall`
+replaces the whole shared list — anything omitted is deleted.
 
 ## Developing from an unreleased checkout
 
