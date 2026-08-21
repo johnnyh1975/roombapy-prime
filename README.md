@@ -58,7 +58,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b10"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -69,7 +69,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b10#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11#subdirectory=tools"
 ```
 
 ### Upgrading, if you have the tools
@@ -79,10 +79,10 @@ upgrading the library on its own leaves the tools where they were:
 
 ```bash
 # right -- brings the matching library with it
-pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b10#subdirectory=tools"
+pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11#subdirectory=tools"
 
 # wrong, if you have the tools -- upgrades half of the pair
-pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b10"
+pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11"
 ```
 
 This is not theoretical. @chairstacker upgraded the library to b6, ran
@@ -157,7 +157,8 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-992+ tests, all passing — structural checks against decompiled source,
+1016+ tests for the library, plus 457 for the command-line tools —
+structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
 internal consistency (the library builds the requests it claims to
@@ -200,7 +201,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b10#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its
@@ -351,6 +352,31 @@ camelCase (`washPad`, `dryPad`) where this library uses lowercase. The
 lowercase forms are what a real robot recorded in its own shadow, with a
 pad-wash counter to match, so they stay. A confirmed shape outranks a
 plausible one — a rule this comparison had cause to apply three times.
+
+## Does your robot still answer locally?
+
+App 2.2.4 carried a complete local API — 46 local-socket serializers,
+`irobotmcs` discovery, port 5678. App 3.0.0 has none of it.
+
+Whether a given **robot** still listens is a question about its
+firmware, not about anyone's app, and nobody has asked it:
+
+```
+roombapy-prime-verify-local-channel
+```
+
+Four stages — UDP discovery, TCP connect, TLS handshake, and
+deliberately **no** MQTT CONNECT. No credentials, no cloud, nothing sent
+to the robot beyond the nine-byte discovery broadcast.
+
+The discovery reply carries **SKU and firmware version**, which is the
+datapoint the whole question turns on. A run that gets that far and then
+fails has already produced something useful.
+
+A note on what this would and would not prove: the reference
+implementation that does speak this channel still logs in to the cloud
+once, to fetch the robot's local password. A local transport removes the
+round trip, not the dependency.
 
 ## Data privacy & security
 

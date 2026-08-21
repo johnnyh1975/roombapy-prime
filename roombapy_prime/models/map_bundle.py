@@ -1017,14 +1017,23 @@ class CleanScoreRegion:
     #: commands carry. Kept raw: nothing was read out at this call site
     #: to say the nesting matches the command models, and assuming it
     #: does is how wire keys go wrong.
-    smart_clean_prefs: dict[str, Any] | None = None
-
+    #:
+    #: FOUR FIELDS WERE DECLARED TWICE HERE. `smart_clean_prefs`,
+    #: `high_traffic_enum`, `mission_last_cleaned` and
+    #: `mission_last_unfinished` each appeared once above and once
+    #: again below, with different comments. The second declaration
+    #: won silently and the first block's documentation described a
+    #: field nobody was reading.
+    #:
+    #: Found by mypy (`no-redef`) when it was first run against this
+    #: package -- a dataclass accepts the redefinition without
+    #: complaint, and no test can see it. The surviving comments are
+    #: merged from both blocks; the "not in the APK analysis" note
+    #: below applies to the last three.
+    #:
     #: FIELDS THE APK ANALYSIS DID NOT LIST, seen in the first real
     #: response. Reason enough to keep reading raw output rather than
     #: trusting a confirmed key list to be exhaustive.
-    high_traffic_enum: str | None = None
-    mission_last_cleaned: dict[str, Any] | None = None
-    mission_last_unfinished: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CleanScoreRegion:

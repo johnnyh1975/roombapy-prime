@@ -50,6 +50,19 @@ app versions 2.2.4 and 3.0.0. Two things here were wrong.
   version we have; a shadow `get` either answers or does not, and twelve
   testers settle it as a side effect of runs they were doing anyway.
 
+### Internal
+
+- **mypy now runs in CI**, against production code at default settings.
+  Informative rather than gating while the count comes down: the full
+  package under `--strict` reports 1399 errors, production code alone
+  reports 33, and gating on the larger number would mean gating on
+  nothing.
+
+  It paid for itself on the first run: **four dataclass fields in
+  `map_bundle.py` were declared twice**, the second declaration
+  silently winning while the first block's documentation described a
+  field nobody read. `no-redef` sees that; no test can.
+
 ### Documented
 
 - **`reset` is the reboot command.** Confirmed in 3.0.0:
