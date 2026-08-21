@@ -2,12 +2,22 @@
 
 App 2.2.4 carried a complete local API -- 46 socket serializers,
 `irobotmcs` discovery, port 5678. App 3.0.0 has none of it.
-samm-git/irobot-explore implements local control against 1.6.0 and
-notes it may be gone on newer firmware.
+**But the app dropping a path is not the robot dropping it** -- and the
+robot has not dropped it.
 
-**But the app dropping a path is not the robot dropping it.** Whether
-current firmware still listens is a question about the robot, and
-nobody has asked it.
+CURRENT FIRMWARE STILL SPEAKS IT. Reported August 2026 on
+`p25-705+9.3.6+I3.8.149` by the author of samm-git/irobot-explore, who
+also found how it opens: start the BLE Wi-Fi provisioning flow and
+**stop before sending any values**. The robot beeps, local MQTT comes
+up, and stays up until the next reboot.
+
+No physical button, no auto-test mode -- the channel comes up as part
+of a flow the app itself runs.
+
+WHICH IS WHY A SILENT RUN HERE MEANS LITTLE. This tool finds a channel
+that is *already open*. On a robot nobody has provisioned recently
+there is nothing to find, and that is the normal state rather than a
+verdict about the firmware.
 
 WHAT THIS RUNS
 --------------
@@ -111,20 +121,105 @@ _DISCOVERY_MESSAGE = b"irobotmcs"
 _CONTROL_PORTS = (8883, 8884)
 
 
+def _subnet_broadcast() -> str | None:
+    """The /24 broadcast address of whichever interface routes out.
+
+    Opening a UDP socket toward a public address does not send
+    anything -- it just makes the OS pick a source address, which is
+    the local IP on the interface that would carry the traffic.
+    """
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 80))
+            local_ip = probe.getsockname()[0]
+        finally:
+            probe.close()
+    except OSError:
+        return None
+
+    parts = local_ip.split(".")
+    if len(parts) != 4:
+        return None
+    parts[3] = "255"
+    return ".".join(parts)
+
+
+def _parse_discovery_reply(data: bytes) -> dict[str, Any]:
+    """Parse one discovery datagram, tolerating a length prefix.
+
+    Some robots prefix the JSON with a 2-byte big-endian length. A
+    plain json.loads() throws on those, and a silent skip would drop
+    the robot from discovery entirely -- indistinguishable from a
+    robot that never answered, which is the exact question this tool
+    exists to settle. Learned from samm-git/irobot-explore, whose
+    parser handles both forms.
+
+    Unparseable data is returned as `raw` rather than dropped: this
+    tool reports what happened rather than deciding what counts.
+    """
+    try:
+        return dict(json.loads(data.decode("utf-8", "replace")))
+    except ValueError:
+        pass
+
+    try:
+        length = int.from_bytes(data[:2], "big")
+        return dict(json.loads(data[2 : 2 + length].decode("utf-8", "replace")))
+    except (ValueError, IndexError):
+        return {"raw": data[:120].decode("utf-8", "replace")}
+
+
+def _blid_from(payload: dict[str, Any]) -> str | None:
+    """The BLID, falling back to the hostname when `robotid` is absent.
+
+    The hostname carries it as `iRobot-<blid>` or `Roomba-<blid>`.
+    Without this fallback a robot that omits `robotid` looks
+    unidentifiable when its BLID was sitting in the next field along.
+    """
+    robot_id = payload.get("robotid")
+    if isinstance(robot_id, str) and robot_id:
+        return robot_id
+
+    hostname = payload.get("hostname")
+    if not isinstance(hostname, str):
+        return None
+    for prefix in ("iRobot-", "Roomba-"):
+        if hostname.startswith(prefix):
+            return hostname[len(prefix) :] or None
+    return None
+
+
 def _discover(timeout: float = 5.0) -> list[dict[str, Any]]:
     """Broadcast `irobotmcs` and collect whatever answers.
 
     Pure UDP, nothing sent to any robot beyond a nine-byte broadcast
     that the protocol defines as a discovery request.
+
+    Sent to BOTH the subnet-directed broadcast and 255.255.255.255.
+    Some routers and interface configurations drop the global one, and
+    a dropped broadcast produces silence that reads exactly like a
+    robot that does not answer -- the wrong conclusion from the one
+    question this tool asks.
     """
     found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    targets = [t for t in (_subnet_broadcast(), "255.255.255.255") if t]
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(timeout)
 
     try:
-        sock.sendto(_DISCOVERY_MESSAGE, ("255.255.255.255", _DISCOVERY_PORT))
+        for target in targets:
+            try:
+                sock.sendto(_DISCOVERY_MESSAGE, (target, _DISCOVERY_PORT))
+            except OSError:
+                # One target failing is not fatal -- the other may
+                # still reach the robot.
+                continue
+
         while True:
             try:
                 data, addr = sock.recvfrom(4096)
@@ -133,13 +228,16 @@ def _discover(timeout: float = 5.0) -> list[dict[str, Any]]:
             except OSError:
                 break
 
-            # The robot answers with JSON. Anything else on this port
-            # is not ours, and is reported rather than parsed.
-            try:
-                payload = json.loads(data.decode("utf-8", "replace"))
-            except ValueError:
-                payload = {"raw": data[:120].decode("utf-8", "replace")}
+            # Two broadcasts mean a robot may answer twice.
+            if addr[0] in seen:
+                continue
+            seen.add(addr[0])
+
+            payload = _parse_discovery_reply(data)
             payload["_from"] = addr[0]
+            blid = _blid_from(payload)
+            if blid:
+                payload.setdefault("robotid", blid)
             found.append(payload)
     finally:
         sock.close()
@@ -163,6 +261,7 @@ def _tls_handshake(
     port: int,
     timeout: float = 8.0,
     max_version: ssl.TLSVersion | None = None,
+    ciphers: str = "DEFAULT@SECLEVEL=1",
 ) -> tuple[bool, str]:
     """Attempt a TLS handshake and report exactly how it ends.
 
@@ -178,7 +277,7 @@ def _tls_handshake(
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     try:
-        context.set_ciphers("DEFAULT@SECLEVEL=1")
+        context.set_ciphers(ciphers)
     except ssl.SSLError:
         pass
     if max_version is not None:
@@ -276,9 +375,24 @@ async def _run(args: argparse.Namespace) -> int:
     # message entirely -- no native helper, no compiler, no
     # hand-rolled TLS.
     #
-    # That is a hypothesis, not a finding. It is also free to test, and
-    # it would turn "needs a C helper" into "needs one line", which
-    # matters for anything shipping into a Home Assistant container.
+    # WHAT THE NATIVE HELPER ACTUALLY DOES (from lss_client.c in
+    # samm-git/irobot-explore): pins TLS 1.2, disables cert
+    # verification, drops OpenSSL's security level, AND pins a sigalgs
+    # list -- `RSA+SHA256:RSA+SHA384:RSA+SHA512`. Three of those four we
+    # already do below. The fourth, sigalgs, Python's `ssl` cannot set:
+    # there is no `set_sigalgs`, and nothing in `_ssl` exposes it
+    # (checked on OpenSSL 3.0.13).
+    #
+    # But the sigalgs pin may be a leftover from a 1.3 path rather than
+    # a 1.2 requirement. Sigalgs constrain how a signature is made;
+    # with verification off, our client signs nothing, and in 1.2 the
+    # server's own signature is not a CertificateVerify. So capping at
+    # 1.2 with cert checks off may not need the sigalgs pin at all.
+    #
+    # That is now a sharp hypothesis rather than a vague one, and only
+    # a handshake against a real robot settles it. If it holds, "needs
+    # a C helper" becomes "needs one line" -- which is the difference
+    # between shippable in a Home Assistant container and not.
     print(f"\n[3/4] TLS handshake with {host}:{port} ...")
     ok, detail = _tls_handshake(host, port)
     print(f"      default   {detail}")
@@ -301,15 +415,63 @@ async def _run(args: argparse.Namespace) -> int:
             )
             return 0
 
+        # THIRD ATTEMPT -- and the reasoning behind it.
+        #
+        # Field result (ricrog1135, W155020, firmware
+        # p25-705+9.3.6+I3.8.149): BOTH attempts above failed with
+        # `BAD_SIGNATURE`. That kills the "cap it at 1.2" hypothesis
+        # and explains why.
+        #
+        # The robot signs with a key that does not match the leaf
+        # certificate it presents. TLS 1.3 carries that signature in
+        # CertificateVerify. TLS 1.2 with an ECDHE suite carries it in
+        # ServerKeyExchange. Capping the version changes WHICH message
+        # holds the bad signature, not whether one is sent.
+        #
+        # But a STATIC RSA suite has no server signature at all: the
+        # client encrypts the premaster secret to the certificate's
+        # public key, and nothing is signed for us to reject. If the
+        # robot's legacy stack still offers one, the mismatched key is
+        # never exercised.
+        #
+        # Untested against a robot. If it completes, a native helper
+        # with a patched TLS library stops being necessary.
+        #
+        # `kRSA` still lists three TLS 1.3 suites -- set_ciphers() does
+        # not filter 1.3, which uses a separate suite list. The
+        # max_version cap below excludes them at handshake time, so the
+        # negotiated suite is always static RSA.
+        print("      retrying with static-RSA suites (no server signature) ...")
+        ok_rsa, detail_rsa = _tls_handshake(
+            host,
+            port,
+            max_version=ssl.TLSVersion.TLSv1_2,
+            ciphers="kRSA:@SECLEVEL=0",
+        )
+        print(f"      static RSA {detail_rsa}")
+
+        if ok_rsa:
+            print(
+                "\n      **THIS IS THE FINDING.**\n\n"
+                "      The robot's signature never gets checked because\n"
+                "      this suite has no server signature to check. If it\n"
+                "      holds up, pure Python can speak this channel and\n"
+                "      the native helper is not needed.\n\n"
+                "      Please report all three lines above."
+            )
+            return 0
+
     if not ok:
         print(
             "\n      The port is open and standard TLS cannot complete.\n"
-            "      This is the documented case: the robot sends a\n"
-            "      CertificateVerify that standard libraries reject, and a\n"
-            "      native helper is the only known way past it.\n\n"
-            "      Please report the exact SSLError above -- it says which\n"
-            "      part of the handshake fails, and nobody has captured\n"
-            "      that on current firmware."
+            "      The robot signs with a key that does not match the\n"
+            "      certificate it presents, so every attempt that needs a\n"
+            "      server signature fails -- in 1.3 that is\n"
+            "      CertificateVerify, in 1.2 ECDHE it is ServerKeyExchange,\n"
+            "      and a static-RSA suite avoids one entirely.\n\n"
+            "      All three failing means a patched TLS library really is\n"
+            "      required, which is worth knowing definitively.\n\n"
+            "      Please report the exact SSLError lines above."
         )
         return 0
 

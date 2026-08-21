@@ -249,3 +249,70 @@ class TestTheTlsTwelveFallback:
 
         assert "TLSv1_2" in source
         assert "retrying with TLS 1.2" in source
+
+
+class TestDiscoveryRobustness:
+    """Three cases learned from samm-git/irobot-explore's parser.
+
+    All three share a failure mode: the robot answers, we fail to
+    hear it, and the run reports silence. Silence is the one answer
+    this tool must not produce by accident -- it reads as "the
+    firmware dropped the local channel", which is the question being
+    asked.
+    """
+
+    def test_length_prefixed_json_is_parsed(self) -> None:
+        """Some robots prefix the JSON with a 2-byte big-endian
+        length. Plain json.loads() throws, and dropping the reply
+        would look exactly like no reply."""
+        from roombapy_prime_tools.verify_local_channel import _parse_discovery_reply
+
+        body = b'{"sku": "W155020", "sw": "p25-705+9.3.6"}'
+        framed = len(body).to_bytes(2, "big") + body
+
+        assert _parse_discovery_reply(framed)["sku"] == "W155020"
+        # And the plain form still works.
+        assert _parse_discovery_reply(body)["sku"] == "W155020"
+
+    def test_unparseable_data_is_reported_not_dropped(self) -> None:
+        from roombapy_prime_tools.verify_local_channel import _parse_discovery_reply
+
+        assert "raw" in _parse_discovery_reply(b"\xff\xfe not json at all")
+
+    def test_blid_falls_back_to_hostname(self) -> None:
+        """`iRobot-<blid>` / `Roomba-<blid>`. Without this a robot
+        omitting `robotid` looks unidentifiable when the BLID was in
+        the next field along."""
+        from roombapy_prime_tools.verify_local_channel import _blid_from
+
+        assert _blid_from({"robotid": "ABC"}) == "ABC"
+        assert _blid_from({"hostname": "iRobot-CB82370F"}) == "CB82370F"
+        assert _blid_from({"hostname": "Roomba-DEADBEEF"}) == "DEADBEEF"
+        # Real robotid wins over the hostname.
+        assert _blid_from({"robotid": "ABC", "hostname": "iRobot-XYZ"}) == "ABC"
+        assert _blid_from({"hostname": "some-other-device"}) is None
+        assert _blid_from({}) is None
+
+    def test_subnet_broadcast_is_derived_from_the_routing_interface(self) -> None:
+        """The probe socket sends nothing -- it only makes the OS pick
+        a source address. Mocked here because the suite blocks real
+        sockets, which is the correct default."""
+        from roombapy_prime_tools import verify_local_channel
+
+        fake = MagicMock()
+        fake.getsockname.return_value = ("192.168.1.217", 54321)
+        with patch.object(verify_local_channel.socket, "socket", return_value=fake):
+            assert verify_local_channel._subnet_broadcast() == "192.168.1.255"
+        # Nothing was transmitted.
+        fake.send.assert_not_called()
+        fake.sendto.assert_not_called()
+
+    def test_subnet_broadcast_returns_none_when_it_cannot_tell(self) -> None:
+        """A None target is skipped by _discover rather than crashing
+        it -- the global broadcast still goes out."""
+        from roombapy_prime_tools import verify_local_channel
+
+        with patch.object(
+            verify_local_channel.socket, "socket", side_effect=OSError("no route")
+        ):
+            assert verify_local_channel._subnet_broadcast() is None
