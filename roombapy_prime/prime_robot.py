@@ -688,6 +688,30 @@ class PrimeRobot:
         during a systematic review)."""
         return await self._rest.delete_map(p2map_id)
 
+    async def get_map_region_names(
+        self, map_id: str, map_version: str
+    ) -> dict[str, str]:
+        """{region_id: name} for every named room AND zone on a map.
+
+        The third source of region names, and apparently the one the
+        other two are derived from. `rooms_metadata` carries rooms
+        only; the bundle's `cleanZones` layer was empty on the one
+        robot anyone has checked.
+
+        Reads `GET /v1/p2maps/{id}/versions/{vid}` and its
+        `geojson_details.regions` -- see `get_map_version()` in
+        rest_client for where this shape came from and what is not yet
+        verified about it.
+
+        Returns {} rather than raising when the key is absent, because
+        this project has not seen the response on a robot.
+        """
+        from .models.robot_info import parse_map_version_regions
+
+        return parse_map_version_regions(
+            await self._rest.get_map_version(map_id, map_version)
+        )
+
     async def get_map_geojson_link(self, map_id: str, map_version: str) -> dict:
         """NEW (thirteenth session) -- was missing as a wrapper. Returns
         the presigned download URL for download_map_bundle() (see

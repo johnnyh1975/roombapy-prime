@@ -585,6 +585,24 @@ class PrimeMqttClient:
             # 60 costs one small PINGREQ per minute and cuts that blind
             # window to about 90 seconds. AWS IoT accepts anything from
             # 30 upward, so this stays well inside spec.
+            # RAISE THE IN-FLIGHT LIMIT. paho defaults to 20
+            # unacknowledged QoS-1 messages; the iRobot app sets 1000.
+            #
+            # This matters for `_subscribe_and_wait`, which subscribes
+            # to every persistent topic in one loop and then waits for
+            # each SUBACK. A restore carrying more than twenty topics
+            # would have paho queue the rest behind the window --
+            # arriving late, or looking like the "no SUBACK within
+            # 3.0s" that @utkjmitch sees on every reconnect.
+            #
+            # Not claimed as the cause of that: his robot has four
+            # persistent subscriptions, well under twenty. But the
+            # app's own value is the safer default, and it costs
+            # nothing.
+            #
+            # Found in samm-git/irobot-explore's reconstruction, which
+            # documents the app's connection parameters.
+            self._client.max_inflight_messages_set(1000)
             self._client.connect(self._endpoint, port=443, keepalive=60)
         except ssl.SSLError as exc:
             _raise_clear_ssl_error(exc)
@@ -972,6 +990,89 @@ class PrimeMqttClient:
         _publish_confirmed(info, topic)
         return True
 
+    #: CHECKED AGAINST APP 3.0.0: the gap is one topic, not nine.
+    #:
+    #: 3.0.0 uses exactly these:
+    #:
+    #:     irbt   things/{id}/cmd
+    #:            things/{id}/livemap/update
+    #:            things/{id}/mission/timeline/{report,request}
+    #:            things/{id}/editv3_req + editv3_resp     <- not built
+    #:     aws    things/{id}/get/accepted, shadow/...
+    #:     other  users/{userId}/event                      <- not built
+    #:
+    #: Everything in the 1.6.0 SDK log below is absent from 3.0.0:
+    #: the four dock reports, filexfer, the old edit_req/_resp,
+    #: mapdetails, matter. So the dock live-reports we wanted do not
+    #: exist in this app version -- pad wash and evacuation stay
+    #: after-the-fact timeline events.
+    #:
+    #: `users/{userId}/event` is a message centre, and new: a
+    #: user-scoped topic rather than a thing-scoped one. Nobody has
+    #: asked for it.
+    #:
+    #: Prefixes come from `TopicResolver`: `{awsPrefix}/{identifier}`
+    #: and `{irbtPrefix}/{identifier}`, per deployment.
+    #:
+    #: THE LOCAL CHANNEL WAS REAL, AND IT IS GONE.
+    #:
+    #: Three app versions, checked:
+    #:
+    #:     2.2.4   native C++/Djinni. **46 local-socket serializers**,
+    #:             `irobotmcs` x2, port 5678 x24. Authenticate, control,
+    #:             drive, get position, set preferences, set suction --
+    #:             a complete local API.
+    #:     1.6.0   samm-git/irobot-explore implements local MQTT
+    #:             control against it.
+    #:     3.0.0   Flutter/Dart. Zero hits for any of it.
+    #:
+    #: So the local path is not something iRobot never had. It existed,
+    #: it was thorough, and it was removed.
+    #:
+    #: AND IT WOULD NOT HAVE SOLVED `async-dependency` ANYWAY.
+    #:
+    #: samm-git's `--local` still logs in to the cloud once, to fetch
+    #: the robot's local password -- `/v2/login` returns it as
+    #: `robots[blid].password`, and there is no other way to get it. A
+    #: local transport removes the round trip, not the dependency.
+    #:
+    #: Worth stating plainly because this project described a local
+    #: path as "the most interesting answer to async-dependency" more
+    #: than once. It is interesting for latency and for working while
+    #: the cloud is down mid-session. It is not a cloud-free client.
+    #:
+    #: We already receive that password on every login
+    #: (`RobotLoginEntry.password`) and have never used it.
+    #:
+    #: 2.2.4 also carries `mission/rrtp/request` and
+    #: `mission/rrtp/report/update`, whose symbol names
+    #: (`kMessageTopicForLocalRrtpRequest`) mark them LOCAL. Neither
+    #: survives into 3.0.0.
+    #:
+    #: TOPICS FROM THE 1.6.0 RECONSTRUCTION, kept for the record.
+    #:
+    #: samm-git/irobot-explore's SDK log shows the robot subscribing to
+    #: more than we build topics for:
+    #:
+    #:     /evac/report              bin evacuation
+    #:     /dock/refill/report       fresh-water refill
+    #:     /dock/padwash/report      pad wash
+    #:     /dock/paddry/report       pad dry
+    #:     /filexfer_req + _resp     log and map upload
+    #:     /edit_req + /edit_resp    map editing (we use the REST path)
+    #:     /mapdetails/req + /resp   map details
+    #:     /matter/certificate/req   Matter commissioning
+    #:     /matter/fabric/req
+    #:
+    #: The dock ones matter most: we read pad wash and dry as *timeline
+    #: events* after the fact, and these are live reports. A tester
+    #: watching a pad wash would see it here first.
+    #:
+    #: Not built, because a topic name from a log is not a payload
+    #: shape, and this library has been burned by modelling a response
+    #: nobody has seen (`time_estimates`, replaced wholesale). Anyone
+    #: with a pad-washing dock can capture one with
+    #: `verify-named-shadows`-style watching and settle the shape.
     def rejected_report_topic(self, irbt_topic_prefix: str) -> str:
         """NEW (this session). Found via the same native decompilation
         pass as mission_timeline_topic() -- AssetIotTopicFactory's

@@ -252,6 +252,89 @@ class PrimeRestClient:
         data = await self._request("GET", url, query={"robotId": blid, "visible": "true"})
         return data if isinstance(data, list) else []
 
+    async def get_map_version(self, map_id: str, map_version: str) -> dict[str, Any]:
+        """The map version document, which carries region names inline.
+
+        `GET /v1/p2maps/{id}/versions/{vid}` -- no suffix. Distinct from
+        `/geojson` (a presigned link to the bundle) and `/raw`.
+
+        THIS IS WHERE REGION NAMES LIVE, and it took four rounds with
+        @chairstacker to find because we were looking at two other
+        places:
+
+            rooms_metadata          rooms only, zones always None
+            bundle cleanZones       empty on his robot
+            geojson_details.regions **names for rooms AND zones**
+
+        Shape, from samm-git/irobot-explore's independent
+        reconstruction of the same protocol:
+
+            {"geojson_details": {"regions": [
+              {"id": "10", "name": "Living room", "region_type": "livingRoom"},
+              {"id": "11", "name": "Kitchen", "region_type": "kitchen"}
+            ]}}
+
+        Note `region_type` here is a ROOM CATEGORY (`kitchen`,
+        `livingRoom`), not the `rid`/`zid` distinction that
+        `Region.region_type` carries. Two different things under one
+        name.
+
+        `geojson_details` EXISTS IN NO APP VERSION WE HAVE CHECKED.
+        Zero hits across 3.0.0 (2 DEX + Dart snapshot) and 2.2.4 (8 DEX
+        + 21 native libraries), including camelCase and snake_case
+        spellings. So the shape below is samm-git's alone, and may be a
+        1.6.0-only response or a reading of one.
+
+        THE SUFFIX-LESS PATH DOES EXIST, in 2.2.4, under the OLD
+        naming:
+
+            /v1/{assetId}/pmaps/{mapId}/versions/{versionId}
+
+        Note `pmaps`, not `p2maps`, and an `assetId` prefix. That whole
+        generation is gone from 3.0.0 -- zero `pmaps` paths, zero
+        `active_details`. Only `p2maps` survived, so the URL this
+        method builds is a 3.0.0-shaped guess at a 2.2.4-shaped
+        endpoint.
+
+        AND 2.2.4 LOOKED UP REGION NAMES ONE AT A TIME:
+
+            P2MapInfoProvider.fetchRegionName(
+                assetId, mapId, mapVersion, regionId, regionType)
+
+            rid  = room     zid = zone     furniture_id = furniture
+
+        It calls `fetchMapMetadata` -- the same source we already read.
+        Which suggests region names were never in a separate document
+        at all: the app resolved them per region from metadata it had.
+
+        APP 3.0.0 DOES NOT CALL THIS. Checked against both DEX files:
+        no suffix-less `/versions/{vid}` request anywhere. The endpoint
+        comes from samm-git/irobot-explore's reconstruction of app
+        **1.6.0**.
+
+        Kept anyway, because "not in the app" is not "does not exist" --
+        a server routinely serves what a newer client stopped calling,
+        and this project has been wrong in that direction before
+        (`libapp.so`, unreadable twice then readable). A caller who
+        tries it either gets regions or gets a 404, and both are
+        answers.
+
+        `parse_map_version_regions()` tolerates a missing key rather
+        than assuming one.
+
+        AND THE FIELD NAME COLLIDES. `region_type` in the 1.6.0 shape
+        is documented as a room CATEGORY (`kitchen`, `livingRoom`). In
+        3.0.0 `region_type` is the `rid`/`zid`/`tid` distinction, and
+        the categories live in `p2_map_room_info.value` as
+        `IrobotP2MapRoomTypeValue`. Two different things under one name
+        across two app versions -- read whichever you get carefully.
+        """
+        url = (
+            f"{self._http_base_auth}/v1/p2maps/{_path_segment(map_id)}"
+            f"/versions/{_path_segment(map_version)}"
+        )
+        return dict(await self._request("GET", url))
+
     async def get_map_geojson_link(self, map_id: str, map_version: str) -> dict[str, Any]:
         """NEW (July 11, third session -- after renewed, targeted
         searching). Finally resolves how fetchPersistentMap/
@@ -985,7 +1068,15 @@ class PrimeRestClient:
         data = await self._request("GET", url)
         return RoutinesDefaultsResponse.from_json(data)
 
-    async def get_firmware_raw(self, sku: str | None = None) -> Any:
+    async def get_firmware_raw(
+        self,
+        sku: str | None = None,
+        software_ver: str | None = None,
+        track: str | None = None,
+        dock_fw_ver: str | None = None,
+        dock_fw_ver_sec: str | None = None,
+        dock_hw_rev: str | None = None,
+    ) -> Any:
         """Available firmware releases, from `GET /v2/firmware`.
 
         WHAT THE SHADOW CANNOT SAY. `softwareVer` reports what is
@@ -1013,11 +1104,64 @@ class PrimeRestClient:
         parses an item once a caller has found where the items are.
         Modelling a response nobody has seen is how this library got a
         `time_estimates` shape it had to replace wholesale.
+
+        WRONG HOST, AND THAT WAS THE 403. @utkjmitch's 403 came from
+        `httpBaseAuth`, the SigV4-signed API gateway. The firmware
+        catalogue lives on the **content** host and needs **no auth at
+        all** -- confirmed by samm-git/irobot-explore's independent
+        reconstruction:
+
+            GET https://content-prod.iot.irobotapi.com/v2/firmware
+                ?sku=<SKU>&softwareVer=<ver>&track=prod&dockFwVer=
+
+        `softwareVer` must be URL-encoded: the `+` in
+        `p25-705+9.3.6+I3.8.149` becomes `%2B`.
+
+        So "the path exists, the consumer role has no invoke rights"
+        was the right reading of the response and the wrong conclusion
+        about the endpoint. It was never gated -- we were knocking on
+        a different door.
+
+        UNVERIFIED HERE. Host and parameters come from that
+        reconstruction, not from a capture in this project.
         """
-        url = f"{self._http_base_auth}/v2/firmware"
+        from urllib.parse import urlencode  # noqa: PLC0415
+
+        # `Domain.ContentStack` in the APK resolves as
+        # `content-{env}.iot.{domain}` -- a pattern, not a fixed host.
+        # Hardcoding `content-prod.iot.irobotapi.com` matches every
+        # production account anyone has, and would silently miss a
+        # different environment.
+        #
+        # Left hardcoded because nothing in the discovery response
+        # carries this host: it is not among the `deployments` fields.
+        # If a caller ever needs another environment, this is the line.
+        base = "https://content-prod.iot.irobotapi.com/v2/firmware"
+
+        # `sku` and `softwareVer` are the only required parameters.
+        # APK 3.0.0's `FirmwareRequest` sets the other four only when
+        # non-null -- sending `track=prod&dockFwVer=` unconditionally,
+        # as the reference implementation does, is a guess about
+        # defaults rather than what the app sends.
+        params: dict[str, str] = {}
         if sku:
-            url = f"{url}?sku={_path_segment(sku)}"
-        return await self._request("GET", url)
+            params["sku"] = sku
+        if software_ver:
+            # urlencode quotes the `+` for us; hand-building the query
+            # is how it becomes a space and the lookup silently misses.
+            params["softwareVer"] = software_ver
+        for key, value in (
+            ("track", track),
+            ("dockFwVer", dock_fw_ver),
+            # TWO PARAMETERS THE REFERENCE MISSED. `FirmwareRequest`
+            # declares six; samm-git/irobot-explore names four.
+            ("dockFwVerSec", dock_fw_ver_sec),
+            ("dockHwRev", dock_hw_rev),
+        ):
+            if value is not None:
+                params[key] = value
+
+        return await self._request("GET", f"{base}?{urlencode(params)}")
 
     async def get_robot_parts(self, blid: str) -> RobotPartsInfo:
         """GET /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED

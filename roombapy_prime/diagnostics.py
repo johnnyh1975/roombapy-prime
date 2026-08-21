@@ -412,7 +412,23 @@ async def _check_candidate_shadows(report: Report, robot: Any, raw_capture: dict
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#diagnostics_check_candidate_shadows
     """
-    for candidate_shadow in ("ro-currentstate", "ro-stats", "ro-services", "ro-configinfo"):
+    # `na-irbtfeatures` IS A GUESS, AND CHEAP TO TEST.
+    #
+    # It appears in samm-git/irobot-explore's reconstruction of app
+    # 1.6.0, carrying feature flags including `robotLogUpload`. App
+    # 3.0.0 does not reference it -- but a server routinely serves what
+    # a newer client stopped calling, and this project has been wrong
+    # in that direction before.
+    #
+    # A shadow `get` either answers or does not. Twelve testers settle
+    # it as a side effect of a run they were doing anyway, which is
+    # cheaper than any amount of reasoning about whether it exists.
+    #
+    # The `na-` prefix is also new here: we know `ro-` and `rw-`.
+    for candidate_shadow in (
+        "ro-currentstate", "ro-stats", "ro-services", "ro-configinfo",
+        "na-irbtfeatures",
+    ):
         await _try(
             report,
             f'Fetching named shadow "{candidate_shadow}" (get_named_shadow)',

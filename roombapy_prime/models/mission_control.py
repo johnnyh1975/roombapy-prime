@@ -70,6 +70,18 @@ class MissionCommandType(StrEnum):
     RESUME = "resume"
     STOP = "stop"
     WAKE = "wake"
+    #: RESET IS THE REBOOT BUTTON. Confirmed in APK 3.0.0:
+    #: `device_restart_page` -> `ControlSettingsRepo.restartDevice` ->
+    #: `MissionCommandType.reset` (index 7), on the same `send` channel
+    #: as `start`. The robot drops offline for about a minute.
+    #:
+    #: samm-git/irobot-explore found the same value in app 1.6.0, where
+    #: the binary carries the string "Sending reset command to reboot
+    #: robot". 3.0.0 has `Restart device failed` instead -- same
+    #: command, different logging.
+    #:
+    #: Sent like any other simple command:
+    #: `send_simple_command("reset")`.
     RESET = "reset"
     FIND = "find"
     WIPE = "wipe"

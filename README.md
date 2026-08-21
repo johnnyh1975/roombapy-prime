@@ -239,10 +239,28 @@ below. Three independent accounts have exercised this, on a Roomba Plus
 | **Region cleaning from a saved favorite** | robot cleaned the named rooms |
 | **Region cleaning built from scratch** | robot travelled to room 12 and cleaned it |
 | Schedule writes — unchanged resend and a real disable | change took effect |
+| **Map editing (`edit_map`, room rename)** | renamed and reverted, both confirmed in the app |
+| **Zone names in the map bundle** | read from a real robot's `cleanZones` layer |
 | Map editing — room rename, with revert | twice, name changed in the app |
 | Favorite writes — resend, colour change, delete | change visible in the app |
 | Robot settings — child lock | appeared in the app, robot announced it audibly |
 | Keep-out zone / no-mop zone **reads** | two real zones, both types correctly identified |
+
+### Independently reconstructed
+
+`samm-git/irobot-explore` rebuilt the same protocol from a different app
+version (1.6.0) on different hardware, with no knowledge of this
+project. Where two independent derivations agree, a thing is confirmed
+rather than one derivation deep.
+
+Agreeing without contradiction: service discovery, Gigya login,
+`/v2/login`, the four IoT session attributes, the custom-authorizer
+flow, shadow topics and envelope, the `cmd` topic with `p2map_id` and
+`regions`, `rid`/`zid`/`tid`, settings under `desired`, SigV4 for map
+data.
+
+Where we differed, that reconstruction was right twice — see the
+0.3.0b11 changelog entry.
 
 ### Region cleaning: what it took, and what it needs
 

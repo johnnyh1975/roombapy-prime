@@ -617,6 +617,36 @@ class P2MapVersion:
         )
 
 
+def parse_map_version_regions(data: dict[str, Any] | None) -> dict[str, str]:
+    """{region_id: name} from a map version's `geojson_details.regions`.
+
+    The third and apparently authoritative source of region names --
+    the other two are `rooms_metadata` (rooms only) and the bundle's
+    `cleanZones` layer (empty on at least one robot).
+
+    Tolerant on purpose: the shape comes from an independent
+    reconstruction (samm-git/irobot-explore) rather than a capture
+    here, so a missing key returns {} instead of raising.
+
+    Only entries carrying both an id and a non-empty name. A region
+    without a stored name has none, and inventing one would send
+    somebody looking for a rename that cannot help.
+    """
+    details = (data or {}).get("geojson_details")
+    if not isinstance(details, dict):
+        return {}
+
+    names: dict[str, str] = {}
+    for region in details.get("regions") or []:
+        if not isinstance(region, dict):
+            continue
+        region_id = region.get("id")
+        name = region.get("name")
+        if region_id and name:
+            names[str(region_id)] = str(name)
+    return names
+
+
 def parse_active_map_versions(data: list[dict[str, Any]] | None) -> list[P2MapVersion]:
     """Converts the raw get_active_map_versions() response into a list
     of typed P2MapVersion objects. NEW (session 26)."""

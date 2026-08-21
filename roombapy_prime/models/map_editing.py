@@ -15,6 +15,36 @@ published to `{irbt_prefix}/things/{blid}/editv3_req`, with answers on
 transport channel and nothing more -- which means the payloads inside it
 are not discoverable from this APK at all.
 
+CONFIRMED AGAINST APP 3.0.0 (August 2026), and it is now the ONLY
+map-edit path in the app -- `edit_req`/`edit_resp` do not appear at
+all. `MapEditV3Topics` builds `things/{assetId}/editv3_req` and
+`editv3_resp`; the envelope is
+
+    request   {method, msgId, params: {map_id, data: {value}}}
+    response  {method, msgId, data}
+
+with `method` a fixed `service.mapedit`. The nine operations and their
+replies:
+
+    setRenameRoomReq     -> setRenameRoomRsp
+    setVirtualWallReq    -> setVirtualWallRsp
+    setPermanentAreaReq  -> setPermanentAreaRsp
+    delPermanentAreaReq  -> delPermanentAreaRes    (Res, not Rsp)
+    setFurnitureReq      -> setFurnitureRsp
+    setSillReq           -> setSillRsp
+    setCarpetReq         -> setCarpetRsp
+    getSchemDataReq      -> getSchemDataRsp
+    setSchemDataReq      -> setSchemDataRsp
+
+NOTE `delPermanentAreaRes`. Eight replies end `Rsp` and one ends `Res`
+-- assume the pattern and one operation goes unanswered.
+
+NOT WIRED UP HERE. This library edits maps over REST (`edit_map`), and
+that path is field-confirmed working. But if 3.0.0 uses MQTT
+exclusively, the REST path may be the legacy one -- which would also
+explain why `AddCleanZones`/`DeleteCleanZones` were modelled from the
+app's command set and never called.
+
 **V3 CARRIES NINE OPERATIONS, NOT ONE.** An earlier reading here said
 "exactly one operation today", counting `MapServiceHandler`: 34 methods,
 of which only `deleteCleanZonesV3` and `observeV3EditResponses` name V3.

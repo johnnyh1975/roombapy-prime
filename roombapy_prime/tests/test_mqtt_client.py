@@ -789,6 +789,11 @@ class _NetworkFailingRawClient:
     def __init__(self, exc: BaseException) -> None:
         self._exc = exc
 
+    def max_inflight_messages_set(self, count: int) -> None:
+        """Called before connect() now. A bare stand-in that omits it
+        fails on the attribute rather than on the error under test --
+        which is what happened when this was added."""
+
     def connect(self, endpoint: str, port: int = 443, keepalive: int = 300) -> None:
         raise self._exc
 

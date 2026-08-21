@@ -1518,3 +1518,62 @@ class TestTheRawMapEndpointWasNeverImplemented:
         call = await self._url(response_type=None)
 
         assert call.kwargs["query"] == {}
+
+
+class TestFirmwareCatalogueParameters:
+    """The 403 was the wrong host, not a permission.
+
+    We called `/v2/firmware` against `httpBaseAuth` (the SigV4 gateway)
+    and read the 403 as "the consumer role has no invoke rights" —
+    correct reading, wrong conclusion. The catalogue is on the content
+    host and needs no auth.
+
+    Found by samm-git/irobot-explore's reconstruction of app 1.6.0 and
+    confirmed against 3.0.0's own `FirmwareRequest`, which declares
+    **six** parameters where the reference names four.
+    """
+
+    @staticmethod
+    async def _url(**kwargs):
+        from unittest.mock import AsyncMock
+
+        from roombapy_prime.rest_client import PrimeRestClient
+
+        client = object.__new__(PrimeRestClient)
+        client._request = AsyncMock(return_value={})
+        await PrimeRestClient.get_firmware_raw(client, **kwargs)
+        return client._request.call_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_it_uses_the_content_host(self):
+        url = await self._url(sku="W155040")
+
+        assert url.startswith("https://content-prod.iot.irobotapi.com/v2/firmware")
+
+    @pytest.mark.asyncio
+    async def test_the_plus_in_a_version_is_encoded(self):
+        """`p25-705+9.3.6+I3.8.149` -- an unencoded `+` becomes a space
+        and the lookup silently misses."""
+        url = await self._url(software_ver="p25-705+9.3.6+I3.8.149")
+
+        assert "%2B" in url
+        assert "+9.3.6" not in url
+
+    @pytest.mark.asyncio
+    async def test_optional_parameters_are_omitted(self):
+        """`FirmwareRequest` sets four of six only when non-null.
+        Sending `track=prod&dockFwVer=` unconditionally is a guess about
+        defaults, not what the app does."""
+        url = await self._url(sku="W155040")
+
+        for key in ("track", "dockFwVer", "dockFwVerSec", "dockHwRev"):
+            assert key not in url
+
+    @pytest.mark.asyncio
+    async def test_the_two_the_reference_missed_are_available(self):
+        url = await self._url(
+            sku="W155040", dock_fw_ver_sec="2", dock_hw_rev="A"
+        )
+
+        assert "dockFwVerSec=2" in url
+        assert "dockHwRev=A" in url

@@ -188,7 +188,7 @@ def test_report_tier_inference_ephemeral_when_settings_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_candidate_shadows_queries_all_four_by_name() -> None:
+async def test_check_candidate_shadows_queries_each_by_name() -> None:
     """NEW (this session) -- factored out of run() specifically so this
     is unit-testable, since run() as a whole has no dedicated test.
     Verifies all four never-before-queried named shadows
@@ -209,7 +209,22 @@ async def test_check_candidate_shadows_queries_all_four_by_name() -> None:
     await _check_candidate_shadows(report, robot, raw_capture)
 
     called_names = [call.args[0] for call in robot.get_named_shadow.await_args_list]
-    assert called_names == ["ro-currentstate", "ro-stats", "ro-services", "ro-configinfo"]
+    # `na-irbtfeatures` IS A GUESS BEING TESTED IN THE FIELD.
+    #
+    # It appears in samm-git/irobot-explore's reconstruction of app
+    # 1.6.0 and nowhere in 3.0.0 -- but "not in the app" is not "does
+    # not exist", and a shadow `get` either answers or does not. Twelve
+    # testers settle it as a side effect of a run they were doing
+    # anyway.
+    #
+    # If it comes back empty on every robot, remove it here and there.
+    assert called_names == [
+        "ro-currentstate",
+        "ro-stats",
+        "ro-services",
+        "ro-configinfo",
+        "na-irbtfeatures",
+    ]
     assert all(entry.status == "OK" for entry in report.results)
     assert raw_capture['Fetching named shadow "ro-currentstate" (get_named_shadow)'].payload == {
         "name": "ro-currentstate"

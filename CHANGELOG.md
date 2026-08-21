@@ -8,6 +8,71 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b11] - 2026-08-20
+
+Cross-checked against an independent reconstruction of the same
+protocol (`samm-git/irobot-explore`, built from app 1.6.0) and against
+app versions 2.2.4 and 3.0.0. Two things here were wrong.
+
+### Fixed
+
+- **The firmware catalogue was on the wrong host.** `get_firmware_raw()`
+  called the SigV4 gateway and got a 403, which we read as "the consumer
+  role has no invoke rights" and recorded as settled. The catalogue is
+  on `content-prod.iot.irobotapi.com` and needs **no authentication at
+  all** — the reading was right and the conclusion was wrong.
+- **It also took the wrong parameters.** `FirmwareRequest` in app 3.0.0
+  declares six, not four: `sku` and `softwareVer` are required;
+  `track`, `dockFwVer`, `dockFwVerSec` and `dockHwRev` are optional and
+  sent only when set. The last two are missing from the reference
+  implementation as well. Sending `track=prod&dockFwVer=`
+  unconditionally was a guess about defaults.
+- **`max_inflight` was paho's default of 20; the app sets 1000.** This
+  matters for `_subscribe_and_wait`, which subscribes to every
+  persistent topic in one loop — beyond twenty, the rest queue behind
+  the window and can look like a missing SUBACK.
+
+### Added
+
+- **`get_map_version()`, `parse_map_version_regions()`,
+  `get_map_region_names()`** — a third possible source of region names.
+  Marked as unverified: app 3.0.0 does not call this path, 2.2.4 has it
+  only under the older `pmaps` naming, and `geojson_details` appears in
+  **no** app version checked. Kept because "not in the app" is not
+  "does not exist".
+- **`roombapy-prime-verify-local-channel`** — checks whether a robot
+  still answers on the local channel. Four stages (UDP discovery, TCP
+  connect, TLS handshake, no MQTT CONNECT), no credentials, nothing sent
+  to the robot beyond the nine-byte discovery broadcast. The discovery
+  reply carries SKU and firmware, which is the datapoint the whole
+  question turns on.
+- **`na-irbtfeatures` in the shadow validation run.** Present in no app
+  version we have; a shadow `get` either answers or does not, and twelve
+  testers settle it as a side effect of runs they were doing anyway.
+
+### Documented
+
+- **`reset` is the reboot command.** Confirmed in 3.0.0:
+  `device_restart_page` → `ControlSettingsRepo.restartDevice` →
+  `MissionCommandType.reset` (index 7), same `send` channel as `start`.
+- **`editv3` map editing over MQTT.** App 3.0.0 uses
+  `things/{assetId}/editv3_req` with nine operations. Note
+  `delPermanentAreaRes` — eight replies end `Rsp` and one ends `Res`.
+  Not implemented: our REST path is now field-confirmed working, so
+  this would be a second transport for the same nine operations.
+- **The local channel existed and was removed.** App 2.2.4 carried 46
+  local-socket serializers, `irobotmcs` discovery and port 5678; 3.0.0
+  has none of it. It would not have answered the `async-dependency`
+  question anyway: the reference implementation still logs in to the
+  cloud once to fetch the robot's local password, so a local transport
+  removes the round trip, not the dependency.
+- **Region names were probably never in a separate document.** App
+  2.2.4's `fetchRegionName(assetId, mapId, mapVersion, regionId,
+  regionType)` resolves them one at a time via `fetchMapMetadata` — the
+  same source we already read. Confirmed in the field: a tester's
+  bundle carries them in the standard `cleanZones` GeoJSON layer.
+
+
 ## [0.3.0b10] - 2026-08-19
 
 ### Fixed
