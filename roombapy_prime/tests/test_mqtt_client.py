@@ -278,6 +278,29 @@ def test_livemap_topic_helper() -> None:
     assert client.livemap_topic("irbt-prefix") == "irbt-prefix/things/BLID1/livemap/update"
 
 
+def test_dock_report_topic_named_and_wildcard() -> None:
+    """dock/{reportType}/report family. `paddry` is confirmed live;
+    the no-argument form is a `+` wildcard for discovering siblings."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+    assert (
+        client.dock_report_topic("pfx", "paddry")
+        == "pfx/things/BLID1/dock/paddry/report"
+    )
+    # No type -> single-level wildcard, not a literal or a `#`.
+    assert client.dock_report_topic("pfx") == "pfx/things/BLID1/dock/+/report"
+
+
+def test_dock_report_model_reads_the_family_key() -> None:
+    """The model keys off `reportType`, which is why one class covers
+    the whole family and DockReport aliases it."""
+    from roombapy_prime.models import DockPadDryReport, DockReport
+
+    assert DockReport is DockPadDryReport
+    report = DockReport.from_json({"reportType": "paddry", "dockId": "NA"})
+    assert report.report_type == "paddry"
+    assert report.dock_id == "NA"
+
+
 def test_persistent_wildcard_subscription_receives_matching_messages() -> None:
     """BUG FOUND AND FIXED (this session): a live wildcard capture came
     back with zero messages despite matching traffic demonstrably

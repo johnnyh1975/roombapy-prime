@@ -58,7 +58,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -69,7 +69,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12#subdirectory=tools"
 ```
 
 ### Upgrading, if you have the tools
@@ -79,10 +79,10 @@ upgrading the library on its own leaves the tools where they were:
 
 ```bash
 # right -- brings the matching library with it
-pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11#subdirectory=tools"
+pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12#subdirectory=tools"
 
 # wrong, if you have the tools -- upgrades half of the pair
-pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11"
+pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12"
 ```
 
 This is not theoretical. @chairstacker upgraded the library to b6, ran
@@ -201,7 +201,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b11#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its
@@ -261,7 +261,7 @@ flow, shadow topics and envelope, the `cmd` topic with `p2map_id` and
 data.
 
 Where we differed, that reconstruction was right twice — see the
-0.3.0b11 changelog entry.
+0.3.0b12 changelog entry.
 
 ### Region cleaning: what it took, and what it needs
 
@@ -355,11 +355,18 @@ plausible one — a rule this comparison had cause to apply three times.
 
 ## Does your robot still answer locally?
 
-App 2.2.4 carried a complete local API — 46 local-socket serializers,
-`irobotmcs` discovery, port 5678. App 3.0.0 has none of it.
+**Yes — confirmed on current firmware.**
 
-Whether a given **robot** still listens is a question about its
-firmware, not about anyone's app, and nobody has asked it:
+App 2.2.4 carried a complete local API — 46 local-socket serializers,
+`irobotmcs` discovery, port 5678. App 3.0.0 has none of it. This
+library previously concluded from that the local path had been
+*removed*, which was wrong: the **app** stopped using it, the robots
+did not. An app dropping a path says nothing about the firmware behind
+it.
+
+Two independent confirmations on `p25-705+9.3.6+I3.8.149`, current as
+of August 2026: a field tester's discovery run (SKU W155020) and the
+author of `samm-git/irobot-explore`, who speaks the channel live.
 
 ```
 roombapy-prime-verify-local-channel
@@ -369,14 +376,41 @@ Four stages — UDP discovery, TCP connect, TLS handshake, and
 deliberately **no** MQTT CONNECT. No credentials, no cloud, nothing sent
 to the robot beyond the nine-byte discovery broadcast.
 
-The discovery reply carries **SKU and firmware version**, which is the
-datapoint the whole question turns on. A run that gets that far and then
-fails has already produced something useful.
+### Where it stands
 
-A note on what this would and would not prove: the reference
-implementation that does speak this channel still logs in to the cloud
-once, to fetch the robot's local password. A local transport removes the
-round trip, not the dependency.
+| stage | on current firmware |
+|---|---|
+| UDP discovery | **answers** |
+| TCP :8883 | **open** |
+| TLS handshake | **fails**, `BAD_SIGNATURE` |
+
+The TLS failure is the interesting part. The robot signs with a key
+that does not match the certificate it presents. TLS 1.3 carries that
+signature in `CertificateVerify`; TLS 1.2 with an ECDHE suite carries
+it in `ServerKeyExchange`. Capping the version changes *which message*
+holds the bad signature, not whether one is sent — a hypothesis this
+project held and a field run disproved.
+
+One case remains untested: a **static RSA** suite has no server
+signature at all. If the robot's legacy stack offers one, nothing is
+signed for a client to reject. The tool now tries it as a third
+attempt.
+
+So a native helper with a patched TLS library is the only route anyone
+has **got working** — not, as this README previously implied, the only
+route that could exist. Nobody has yet demonstrated that pure Python
+cannot do it.
+
+### Two caveats worth stating plainly
+
+**The channel is closed until something opens it.** It comes up as part
+of the BLE provisioning flow and closes again on reboot, so a silent
+run means "nobody has provisioned this robot recently", not "the
+firmware dropped it".
+
+**A local transport removes the round trip, not the dependency.** The
+reference implementation that speaks this channel still logs in to the
+cloud once, to fetch the robot's local password.
 
 ## Data privacy & security
 

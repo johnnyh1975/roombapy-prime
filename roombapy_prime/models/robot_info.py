@@ -3636,6 +3636,14 @@ class DockPadDryReport:
         )
 
 
+#: The report model reads `reportType`, so it fits the whole
+#: `dock/{reportType}/report` family, not just pad-dry -- which is
+#: what watch_dock_reports() subscribes. The original name predates
+#: knowing it was a family; `DockReport` is the name to reach for.
+#: The old name stays exported so nothing importing it breaks.
+DockReport = DockPadDryReport
+
+
 @dataclass(frozen=True)
 class DockControl:
     """NEW (session 49). CONFIRMED via DockControl$$serializer:

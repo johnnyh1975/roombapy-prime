@@ -1174,6 +1174,42 @@ class PrimeRobot:
             async for response in inner:
                 yield response
 
+    async def watch_dock_reports(
+        self,
+        report_type: str | None = None,
+        *,
+        queue_maxsize: int = DEFAULT_WATCH_QUEUE_MAXSIZE,
+        max_reconnect_backoff: float = DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS,
+    ) -> AsyncIterator[ShadowResponse]:
+        """Watch the `dock/{reportType}/report` family.
+
+        `dock/paddry/report` is confirmed live (chairstacker) and
+        parses into DockReport. With no `report_type` this subscribes
+        the whole family via a `+` wildcard, which is the only way to
+        find out whether a sibling like `charge` or `battery` exists --
+        the open question this method is built to answer.
+
+        Payloads parse with DockReport.from_json(); a `reportType` the
+        parser has not seen still comes through, with its fields
+        best-effort mapped and the rest reaching the caller as raw.
+
+        `evac/report` is a sibling one level up and is not covered here
+        -- use watch_raw_topic for it.
+        """
+        if self._irbt_topic_prefix is None:
+            raise ValueError(
+                "watch_dock_reports() needs irbt_topic_prefix (from LoginResult) -- "
+                "this was None."
+            )
+        topic = self._mqtt.dock_report_topic(self._irbt_topic_prefix, report_type)
+        async with contextlib.aclosing(
+            self._watch_topic(
+                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+            )
+        ) as inner:
+            async for response in inner:
+                yield response
+
     async def watch_rejected_commands(
         self,
         *,

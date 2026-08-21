@@ -7001,3 +7001,67 @@ class TestRegionNameRoundTrips:
 
         assert region.name == "Dining Room"
         assert region.region_label == "Dining Room @Table"
+
+
+class TestParseMapVersionRegions:
+    """`geojson_details.regions` -- the third source of region names.
+
+    Confirmed live August 2026: the author of samm-git/irobot-explore
+    ran their `rooms` command against current firmware and got rid 10
+    through 16 back with names. The shape below mirrors that output.
+
+    Until then this parser had no test at all -- the endpoint was
+    marked "in no app version we checked", which turned out to be a
+    limit of a DEX-and-Dart search rather than of the protocol (it
+    lives in ARM64 native blocks).
+    """
+
+    @staticmethod
+    def _regions(*pairs):
+        return {"geojson_details": {"regions": [
+            {"id": rid, "name": name} for rid, name in pairs
+        ]}}
+
+    def test_reads_the_confirmed_live_shape(self):
+        from roombapy_prime.models.robot_info import parse_map_version_regions
+
+        # Exactly what samm-git's `rooms` returned.
+        data = self._regions(
+            ("10", "Living room"), ("11", "Kitchen"), ("12", "Entryway"),
+            ("13", "Room"), ("14", "Basement"), ("15", "Bathroom"),
+            ("16", "Closet"),
+        )
+        result = parse_map_version_regions(data)
+        assert result["10"] == "Living room"
+        assert result["16"] == "Closet"
+        assert len(result) == 7
+
+    def test_ids_come_back_as_strings(self):
+        """A numeric id must key the same as the string the robot
+        reports in a mission, or a lookup misses."""
+        from roombapy_prime.models.robot_info import parse_map_version_regions
+
+        result = parse_map_version_regions(self._regions((11, "Kitchen")))
+        assert result == {"11": "Kitchen"}
+
+    def test_a_region_without_a_name_is_dropped(self):
+        """Inventing a name would send someone looking for a rename
+        that cannot help."""
+        from roombapy_prime.models.robot_info import parse_map_version_regions
+
+        data = {"geojson_details": {"regions": [
+            {"id": "10", "name": "Kitchen"},
+            {"id": "11"},
+            {"id": "12", "name": ""},
+        ]}}
+        assert parse_map_version_regions(data) == {"10": "Kitchen"}
+
+    def test_missing_key_returns_empty_not_raises(self):
+        """The shape is from an independent reconstruction, not a
+        capture here, so absence is tolerated rather than fatal."""
+        from roombapy_prime.models.robot_info import parse_map_version_regions
+
+        assert parse_map_version_regions(None) == {}
+        assert parse_map_version_regions({}) == {}
+        assert parse_map_version_regions({"geojson_details": None}) == {}
+        assert parse_map_version_regions({"geojson_details": {}}) == {}

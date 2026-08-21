@@ -279,7 +279,26 @@ class PrimeRestClient:
         `Region.region_type` carries. Two different things under one
         name.
 
-        `geojson_details` EXISTS IN NO APP VERSION WE HAVE CHECKED.
+        CONFIRMED WORKING ON A REAL ROBOT (August 2026). The author of
+        samm-git/irobot-explore ran their `rooms` command against
+        firmware `p25-705+9.3.6+I3.8.149` and got room names back --
+        rid 10 through 16, "Living room", "Kitchen", "Entryway" and so
+        on. So the endpoint is live, whatever the app does or does not
+        call.
+
+        Their read is that this lives in ARM64 native blocks in the app,
+        which would explain the searches below coming back empty: a
+        DEX-and-Dart search does not reach into compiled ARM64.
+
+        WHAT THAT DOES NOT SETTLE: their output is ROOMS. Whether the
+        same document carries ZONES is still open -- and on the one
+        robot where zone names were actually chased down, they came
+        from the bundle's `cleanZones` layer instead. Two sources, and
+        no reason yet to think either is the only one.
+
+        `geojson_details` EXISTS IN NO APP VERSION WE HAVE CHECKED,
+        which now reads as a limit of the search rather than of the
+        protocol.
         Zero hits across 3.0.0 (2 DEX + Dart snapshot) and 2.2.4 (8 DEX
         + 21 native libraries), including camelCase and snake_case
         spellings. So the shape below is samm-git's alone, and may be a

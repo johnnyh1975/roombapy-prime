@@ -8,6 +8,74 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b12] - 2026-08-21
+
+The local channel answered. A field run on current firmware settled a
+question this project had been guessing at, disproved one of its
+hypotheses, and exposed three ways the discovery tool could have
+reported silence from a robot that was talking.
+
+### Fixed
+
+- **Discovery could silently drop a robot that answered.** Three cases,
+  all sharing one failure mode: the robot replies, we fail to hear it,
+  and the run reports nothing found — which reads as *"the firmware
+  dropped the local channel"*, the exact question the tool exists to
+  ask. Learned by comparing against an independent implementation.
+  - Some robots prefix the discovery JSON with a **2-byte big-endian
+    length**. A plain `json.loads()` throws on those, and the reply was
+    discarded.
+  - **BLID now falls back to the hostname** (`iRobot-<blid>` /
+    `Roomba-<blid>`) when `robotid` is absent, instead of leaving the
+    robot unidentifiable with its BLID one field away.
+  - The discovery packet now goes to **both the subnet-directed
+    broadcast and 255.255.255.255**. Some routers and interface
+    configurations drop the global one.
+
+### Added
+
+- **`dock/{reportType}/report` is a real topic family, not a dead end.**
+  `dock_report_topic()` builds it and `PrimeRobot.watch_dock_reports()`
+  subscribes it — with no argument, via a `+` wildcard, which is the
+  only way to discover whether a `reportType` other than `paddry`
+  exists. A `charge` or `battery` sibling would be the real find; none
+  has been seen. `DockReport` aliases `DockPadDryReport`, whose model
+  already keyed off `reportType` and so always fitted the whole family.
+- **A third TLS attempt** in the local-channel check: a **static RSA**
+  suite, which carries no server signature at all. Untested against a
+  robot, and the one remaining case where standard Python might
+  complete the handshake.
+
+### Changed
+
+- **`geojson_details` is confirmed live.** Marked in this library as
+  existing in no app version checked; it returns room names on current
+  firmware. It lives in ARM64 native blocks, which a DEX-and-Dart
+  search cannot reach — a limit of the search, not of the protocol.
+  `parse_map_version_regions()` now has tests, mirroring a real
+  response.
+
+### Corrected
+
+- **"The local channel was removed" was wrong**, and wrong in a way
+  worth naming: the **app** stopped using it, the **robots** did not.
+  What an app ships says nothing about what firmware still serves —
+  a distinction this library built a tool around and then failed to
+  apply to its own notes.
+- **"Cap it at TLS 1.2 and the bad signature goes away" was wrong.** A
+  field run failed with `BAD_SIGNATURE` on both attempts. The robot
+  signs with a key that does not match the certificate it presents;
+  TLS 1.3 carries that signature in `CertificateVerify`, TLS 1.2 with
+  ECDHE carries it in `ServerKeyExchange`. Capping the version changes
+  which message holds the bad signature, not whether one is sent.
+- **A native helper is the only route that has been made to work** —
+  not, as previously implied, the only route that could exist.
+- **A silent local-channel run proves less than the tool claimed.** The
+  channel is closed until something opens it and closes again on
+  reboot, so silence means "not recently provisioned", not "firmware
+  dropped it". The old wording would have misled every tester who ran
+  it.
+
 ## [0.3.0b11] - 2026-08-20
 
 Cross-checked against an independent reconstruction of the same
@@ -73,9 +141,15 @@ app versions 2.2.4 and 3.0.0. Two things here were wrong.
   `delPermanentAreaRes` — eight replies end `Rsp` and one ends `Res`.
   Not implemented: our REST path is now field-confirmed working, so
   this would be a second transport for the same nine operations.
-- **The local channel existed and was removed.** App 2.2.4 carried 46
-  local-socket serializers, `irobotmcs` discovery and port 5678; 3.0.0
-  has none of it. It would not have answered the `async-dependency`
+- **The local channel: the APP dropped it, the ROBOTS did not.** App
+  2.2.4 carried 46 local-socket serializers, `irobotmcs` discovery and
+  port 5678; 3.0.0 has none of it. An earlier entry concluded from that
+  the channel "was removed" — wrong, and the wrong test: what an app
+  ships says nothing about what firmware still serves. Confirmed twice
+  on `p25-705+9.3.6+I3.8.149`, current: a field tester's discovery run
+  answered, port 8883 open. TLS then fails with `BAD_SIGNATURE`, the
+  robot signing with a key that does not match its certificate.
+  It would not have answered the `async-dependency`
   question anyway: the reference implementation still logs in to the
   cloud once to fetch the robot's local password, so a local transport
   removes the round trip, not the dependency.

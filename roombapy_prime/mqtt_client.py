@@ -947,6 +947,29 @@ class PrimeMqttClient:
         direction = "report" if report else "request"
         return f"{irbt_topic_prefix}/things/{self._blid}/mission/timeline/{direction}"
 
+    def dock_report_topic(
+        self, irbt_topic_prefix: str, report_type: str | None = None
+    ) -> str:
+        """A dock report topic in the `dock/{reportType}/report` family.
+
+        `dock/paddry/report` is CONFIRMED LIVE (chairstacker) -- it
+        fired right after a mission's `start`, carrying the dock's
+        lifetime stats rather than a live pad-dry state. The topic name
+        implies a family, `paddry` being the one `reportType` seen so
+        far; a `charge` or `battery` sibling would be the real find and
+        has not been observed.
+
+        With no `report_type`, returns a single-level `+` wildcard so a
+        caller can subscribe the whole family without knowing which
+        types exist -- which is the only way to discover a sibling.
+
+        `evac/report` sits one level up (`evac`, not `dock/evac`), so it
+        is deliberately NOT covered by this builder; use watch_raw_topic
+        for that one.
+        """
+        segment = report_type if report_type else "+"
+        return f"{irbt_topic_prefix}/things/{self._blid}/dock/{segment}/report"
+
     def request_mission_timeline(
         self, irbt_topic_prefix: str, request_id: int
     ) -> bool:
@@ -1027,7 +1050,23 @@ class PrimeMqttClient:
     #:     3.0.0   Flutter/Dart. Zero hits for any of it.
     #:
     #: So the local path is not something iRobot never had. It existed,
-    #: it was thorough, and it was removed.
+    #: it was thorough, and the APP stopped using it.
+    #:
+    #: THE ROBOTS DID NOT. Reported August 2026 on firmware
+    #: `p25-705+9.3.6+I3.8.149` -- current -- by the author of
+    #: samm-git/irobot-explore: the channel still works, and opens by
+    #: starting the BLE Wi-Fi provisioning flow and stopping before
+    #: sending any values. The robot beeps and local MQTT comes up.
+    #:
+    #: No physical button and no auto-test mode: it comes up as part of
+    #: a flow the app itself runs.
+    #:
+    #: An earlier version of this comment said the local path "was
+    #: removed", from decompiling three app versions. The app evidence
+    #: was right and the conclusion overreached -- an app dropping a
+    #: path says nothing about the firmware behind it, which is the
+    #: exact distinction the verify-local-channel tool was built around
+    #: and which this comment then failed to apply to itself.
     #:
     #: AND IT WOULD NOT HAVE SOLVED `async-dependency` ANYWAY.
     #:
@@ -1064,15 +1103,31 @@ class PrimeMqttClient:
     #:     /matter/certificate/req   Matter commissioning
     #:     /matter/fabric/req
     #:
-    #: The dock ones matter most: we read pad wash and dry as *timeline
-    #: events* after the fact, and these are live reports. A tester
-    #: watching a pad wash would see it here first.
+    #: The dock ones matter most, and one is no longer a guess.
+    #: `dock/paddry/report` is CONFIRMED LIVE (chairstacker) -- it fired
+    #: right after a mission's `start`, and its payload is modelled as
+    #: DockReport (nee DockPadDryReport). So samm-git's SDK-log list and
+    #: our own capture agree on it: the topics are real, not just names
+    #: in a decompiled app that never appeared on the wire.
     #:
-    #: Not built, because a topic name from a log is not a payload
-    #: shape, and this library has been burned by modelling a response
-    #: nobody has seen (`time_estimates`, replaced wholesale). Anyone
-    #: with a pad-washing dock can capture one with
-    #: `verify-named-shadows`-style watching and settle the shape.
+    #: An earlier version of this comment filed these as "not built" and
+    #: elsewhere as settled-dead, on the grounds that no report topic
+    #: appears in app 2.2.4 or 3.0.0. That was the wrong test: the app
+    #: not carrying a topic says nothing about whether the robot
+    #: publishes on it, and this one demonstrably does.
+    #:
+    #: NOW BUILT: dock_report_topic() constructs this family (with a `+`
+    #: wildcard for discovery), and PrimeRobot.watch_dock_reports()
+    #: subscribes it. The open question that method exists to answer:
+    #: whether a `reportType` other than `paddry` -- a `charge` or
+    #: `battery` sibling -- ever arrives. None has been seen yet.
+    #:
+    #: Still not built: evac/refill/padwash specifically. Their payload
+    #: shapes are unseen, and this library has been burned modelling a
+    #: response nobody captured (`time_estimates`, replaced wholesale).
+    #: But watch_dock_reports() with no argument would catch refill and
+    #: padwash too, since both are `dock/{type}/report` -- so a capture
+    #: is now one subscription away rather than needing new code.
     def rejected_report_topic(self, irbt_topic_prefix: str) -> str:
         """NEW (this session). Found via the same native decompilation
         pass as mission_timeline_topic() -- AssetIotTopicFactory's
