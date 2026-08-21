@@ -15,10 +15,10 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -29,6 +29,9 @@ jobs:
 
       - name: Compile check (all modules)
         run: python -m compileall roombapy_prime
+
+      - name: Check for stale files from a previous layout
+        run: python scripts/check_stale_files.py
 
       - name: Run test suite with coverage
         run: |
@@ -51,10 +54,10 @@ jobs:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -70,14 +73,56 @@ jobs:
         # mitgeprueft, CI selbst tat das bisher nicht -- Inkonsistenz
         # zwischen tatsaechlicher Verifikationspraxis und dem Gate.
 
+  typing:
+    name: Typing (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + typing dependencies
+        run: |
+          pip install -e ".[test,map]"
+          pip install mypy
+
+      # PRODUCTION CODE ONLY, AND NOT --strict. Both are deliberate.
+      #
+      # The full package under --strict reports 1399 errors; production
+      # code alone, at default settings, reports 33. Gating on the
+      # larger number would mean gating on nothing, because nobody
+      # fixes 1399 errors before the next release -- the job would be
+      # switched off within a week.
+      #
+      # 33 is a number someone can actually work through. When it
+      # reaches zero, tighten this: add tests/, then --strict, one step
+      # at a time. The integration next door runs --strict with two
+      # error codes named and justified; that is the destination.
+      #
+      # Running this at all already paid for itself: the first run
+      # found four dataclass fields declared twice in map_bundle.py,
+      # where the second declaration silently won and the first block's
+      # documentation described a field nobody read. No test can see
+      # that.
+      - name: mypy (production code)
+        run: mypy roombapy_prime --exclude 'tests/' --output-format=github
+        continue-on-error: true
+        # continue-on-error until the count reaches zero. Informative
+        # now, a real gate later -- the same path ruff took in this
+        # repo, and the comment above the ruff step records when it
+        # graduated.
+
   version-badge:
     name: README version/test-count check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -96,10 +141,10 @@ jobs:
     name: Build package (sdist + wheel)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 

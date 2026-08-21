@@ -29,7 +29,7 @@ jobs:
       # selected in the "Run workflow" dropdown (normally main) -- and
       # THAT commit is what gets tagged below, if the tag doesn't
       # already exist.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -62,7 +62,7 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -74,6 +74,9 @@ jobs:
           # Without this, pip would fetch a second, unrelated core from
           # GitHub and shadow the editable one being released.
           pip install -e ./tools --no-deps
+
+      - name: Check for stale files from a previous layout
+        run: python scripts/check_stale_files.py
 
       - name: Run test suite (never release on red)
         run: |
