@@ -72,7 +72,7 @@ async def test_an_unreadable_bundle_sends_nothing():
         get_map_geojson_link=AsyncMock(side_effect=RuntimeError("nope"))
     )
 
-    assert await _read_zones(robot, "MAP-1") is None
+    assert await _read_zones(robot, "MAP-1", "VER-1") is None
 
 
 class TestZoneNamesComeFromTheBundle:
@@ -105,7 +105,7 @@ class TestZoneNamesComeFromTheBundle:
                 zone_layers={"cleanZones": layer}
             ),
         )
-        return await _zone_names_from_bundle(robot, "MAP-1")
+        return await _zone_names_from_bundle(robot, "MAP-1", "VER-1")
 
     @pytest.mark.asyncio
     async def test_a_named_zone_is_found(self):
@@ -148,7 +148,7 @@ class TestZoneNamesComeFromTheBundle:
             get_map_geojson_link=AsyncMock(side_effect=RuntimeError("nope"))
         )
 
-        assert await _zone_names_from_bundle(robot, "MAP-1") == {}
+        assert await _zone_names_from_bundle(robot, "MAP-1", "VER-1") == {}
 
 
 class TestABundleFileIsAFeatureCollection:

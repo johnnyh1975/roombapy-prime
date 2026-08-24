@@ -66,6 +66,8 @@ from dataclasses import dataclass
 from typing import Any
 from collections.abc import Callable
 
+from roombapy_prime.ids import id_problem
+
 from ._cli import (
     add_account_arguments,
     confirm,
@@ -1106,6 +1108,27 @@ async def _mission_history(robot: Any, args: Any) -> Any:
             "number_of_evacuations", "minutes_running",
         ):
             print(f"     {name:24} {getattr(first, name, '(not modelled)')!r}")
+
+        # A MALFORMED MISSION ID LOOKS FINE UNTIL IT IS USED AS A KEY.
+        #
+        # `mission_id` is a ULID (26-char Crockford base32). An empty,
+        # truncated or lowercased one reads as an ordinary string here
+        # and then silently fails to match anything downstream. Naming
+        # the fault costs one line and saves a round of "why does this
+        # mission never correlate".
+        #
+        # Reported, not enforced: the robot is the authority on its own
+        # ids, and a format this project inferred is not grounds to
+        # call real data wrong. If this fires on a real robot, the
+        # assumption is what needs revisiting.
+        problem = id_problem(getattr(first, "mission_id", None))
+        if problem is not None:
+            print(
+                f"\n   ** mission_id is not a well-formed ULID: {problem} **\n"
+                "      (expected 26 chars of Crockford base32. Please "
+                "report this -- it may mean the format assumption is "
+                "wrong, not that your robot is.)"
+            )
         print("\n   raw keys on the first entry:")
         source = raw if isinstance(raw, list) else next(
             (v for v in raw.values() if isinstance(v, list) and v), []

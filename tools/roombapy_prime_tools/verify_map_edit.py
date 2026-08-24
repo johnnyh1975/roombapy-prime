@@ -57,6 +57,19 @@ general V1 envelope shape and about SetRoomMetadataV1 specifically
 (now confirmed twice), but does NOT by itself confirm any of the other
 command types.
 
+SPLIT AND MERGE ARE NO LONGER UNRUN, AND THIS TOOL STILL REFUSES THEM.
+Those are two different questions and it is worth keeping them apart.
+@bryznnguyen ran SplitRoomV1 (x3) and MergeRoomsV1 (x1) on a Combo 105
+and got the success-with-rendered-URL shape every time -- see their
+docstrings. So the commands work.
+
+The refusal here is not a claim that they don't; it is about
+reversibility. This tool's whole safety design is "change something
+and change it back", and a split or merge destroys the boundary
+information needed to undo it. A tester who wants to exercise them
+does so deliberately, on their own map, knowing it is one-way --
+which is exactly how the confirmation above was obtained.
+
 SAFETY DESIGN (same doubly-secured pattern as verify_mission_commands.py):
 1. --i-understand-this-will-edit-my-map must be explicitly set at
    startup, or the script aborts immediately, before it even logs in.

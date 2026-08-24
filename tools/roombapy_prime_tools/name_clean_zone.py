@@ -104,7 +104,8 @@ async def _run(args: argparse.Namespace) -> int:
             print("No active map id -- pass --map-id explicitly.")
             return 2
 
-        zones = await _read_zones(robot, p2map_id)
+        map_version = await _active_map_version(robot, p2map_id)
+        zones = await _read_zones(robot, p2map_id, map_version)
         if zones is None:
             print(
                 "Could not read the current zone list. Refusing to send: "
@@ -173,10 +174,32 @@ async def _active_map_id(robot: Any) -> str | None:
     return None
 
 
-async def _read_zones(robot: Any, p2map_id: str) -> list[Any] | None:
+async def _active_map_version(robot: Any, p2map_id: str) -> str | None:
+    """The active version id for a given map, or None.
+
+    get_map_geojson_link is per-version. Reading the bundle with the
+    map id alone raised `missing 1 required positional argument:
+    'map_version'` in @chairstacker's run -- this supplies it.
+    """
+    from roombapy_prime.models.map_bundle import parse_active_map_versions
+
+    raw = await robot.get_active_map_versions()
+    versions = parse_active_map_versions(raw)
+    for version in versions or []:
+        if str(version.p2map_id) == str(p2map_id) and version.active_p2mapv_id:
+            return str(version.active_p2mapv_id)
+    return None
+
+
+async def _read_zones(
+    robot: Any, p2map_id: str, map_version: str | None
+) -> list[Any] | None:
     """The current clean zones, from the map bundle."""
+    if not map_version:
+        print("Map bundle read failed: no active version for this map.")
+        return None
     try:
-        link = await robot.get_map_geojson_link(p2map_id)
+        link = await robot.get_map_geojson_link(p2map_id, map_version)
         blob = await robot.download_map_bundle(link)
         bundle = robot.parse_map_bundle(blob)
     except Exception as exc:  # noqa: BLE001

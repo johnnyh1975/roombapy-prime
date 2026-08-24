@@ -1477,14 +1477,24 @@ async def send_stage_two(
     )
 
 
-async def _zone_names_from_bundle(robot: Any, p2map_id: str) -> dict[str, str]:
+async def _zone_names_from_bundle(
+    robot: Any, p2map_id: str, map_version: str | None
+) -> dict[str, str]:
     """{zone_id: name} from the bundle's `cleanZones` layer, or {}.
 
     The map metadata carries room names only. A zone's name, when it
     has one, is a `properties.name` on its feature in the bundle.
+
+    Needs the map VERSION as well as the id: get_map_geojson_link is
+    per-version, and calling it with the id alone raised
+    `missing 1 required positional argument: 'map_version'` -- which
+    surfaced to @chairstacker as "map bundle unreadable", swallowing
+    every zone name on a map that had them.
     """
+    if not map_version:
+        return {}
     try:
-        link = await robot.get_map_geojson_link(p2map_id)
+        link = await robot.get_map_geojson_link(p2map_id, map_version)
         blob = await robot.download_map_bundle(link)
         bundle = robot.parse_map_bundle(blob)
     except Exception as exc:  # noqa: BLE001
@@ -1514,42 +1524,77 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
         username, password, country_code, blid, connect_mqtt=True) as (robot, report):
         map_data = await robot.get_map_metadata(p2map_id)
 
-    if not map_data.rooms_metadata:
-        print(f"No rooms_metadata found for p2map_id={p2map_id!r}.")
-        return
+        if not map_data.rooms_metadata:
+            print(f"No rooms_metadata found for p2map_id={p2map_id!r}.")
+            return
 
-    print(f"\n{len(map_data.rooms_metadata)} room(s) found on map {p2map_id!r}:\n")
-    # ZONE NAMES ARE NOT IN THE MAP METADATA.
-    #
-    # @chairstacker's zones read `name=None` here while his app
-    # timeline labelled them. `rooms_metadata` carries ROOM names;
-    # a zone's name lives in the bundle's `cleanZones` layer, and
-    # this listing never looked there.
-    #
-    # `--dump-config` does not help either: its shallow summary is
-    # deliberately depth-limited so real home layouts stay out of
-    # shared reports, and the zone names sit exactly under the
-    # cutoff.
-    zone_names = await _zone_names_from_bundle(robot, p2map_id)
+        print(f"\n{len(map_data.rooms_metadata)} room(s) found on map {p2map_id!r}:\n")
 
-    # A THIRD SOURCE, and apparently the one the app itself uses.
-    # `GET /v1/p2maps/{id}/versions/{vid}` carries
-    # `geojson_details.regions` with names for rooms AND zones -- found
-    # in samm-git/irobot-explore's independent reconstruction, after
-    # four rounds looking at the other two.
-    version_names: dict[str, str] = {}
-    # Direct access, not getattr(): P2MapData declares the field, and
-    # a default would hide a rename. See the guard in tools/tests.
-    active = map_data.active_p2mapv_id
-    if active:
-        try:
-            version_names = await robot.get_map_region_names(
-                p2map_id, str(active)
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"  (map version read failed: {exc})")
+        # THE ACTIVE MAP VERSION, read once inside the session. Both
+        # bundle and version lookups need it, and BOTH used to run
+        # AFTER this `async with` block closed -- which is why
+        # @chairstacker saw "Session is closed" on the version read and
+        # a missing-argument error on the bundle read. The reads were
+        # outside the connection that served them.
+        active = map_data.active_p2mapv_id
 
+        # ZONE NAMES ARE NOT IN THE MAP METADATA.
+        #
+        # @chairstacker's zones read `name=None` here while his app
+        # timeline labelled them. `rooms_metadata` carries ROOM names;
+        # a zone's name lives in the bundle's `cleanZones` layer, and
+        # this listing never looked there.
+        zone_names = await _zone_names_from_bundle(
+            robot, p2map_id, str(active) if active else None
+        )
+
+        # A THIRD SOURCE, and apparently the one the app itself uses.
+        # `GET /v1/p2maps/{id}/versions/{vid}` carries
+        # `geojson_details.regions` with names for rooms AND zones.
+        version_names: dict[str, str] = {}
+        version_ids: list[str] = []
+        if active:
+            try:
+                version_names = await robot.get_map_region_names(
+                    p2map_id, str(active)
+                )
+                # AND THE IDS, WHICH IS A DIFFERENT QUESTION.
+                #
+                # @chairstacker had twelve zones and this listed eight.
+                # The list came from `rooms_metadata` -- the p2map's own
+                # snapshot, which had not caught up with the zones he
+                # added -- while only the NAMES were read from the
+                # current version. A zone missing from the snapshot and
+                # unnamed in the version appeared in neither.
+                #
+                # The version is what the robot works from, so any id it
+                # carries that the snapshot lacks is added below rather
+                # than silently dropped.
+                #
+                # WHY THE SNAPSHOT LAGS, from the firmware/app analysis:
+                # the bundle's `room_metadata` (SINGULAR) is written on
+                # edit/upload only -- `setRoomMetadata`, `mergeRooms`,
+                # `splitRoom` -- not continuously, and its `Metadata`
+                # carries `mapUploadTime`. It is a snapshot BY DESIGN
+                # and catches up when the next upload happens.
+                #
+                # That finding is about the bundle field; this listing
+                # reads the p2map REST response's `rooms_metadata`
+                # (PLURAL), which is a different field, so it explains
+                # the mechanism rather than proving it applies here.
+                # Either way the fix stands: the extra ids are LABELLED
+                # as missing from the snapshot rather than merged into
+                # it, which is what a tester comparing against the app
+                # needs to see.
+                version_ids = await robot.get_map_region_ids(
+                    p2map_id, str(active)
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  (map version read failed: {exc})")
+
+    known_ids: set[str] = set()
     for room in map_data.rooms_metadata:
+        known_ids.add(str(room.room_id))
         name = room.name
         source = "map"
         if name is None and str(room.room_id) in zone_names:
@@ -1562,6 +1607,24 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
         print(
             f"  room_id={room.room_id!r}  "
             f"region_type={room.region_type!r}  name={name!r}{suffix}"
+        )
+
+    # REGIONS THE SNAPSHOT DOES NOT KNOW ABOUT. Marked, because a
+    # tester comparing this against the app needs to see WHICH entries
+    # the p2map metadata missed -- that difference is the finding.
+    extra = [rid for rid in version_ids if rid not in known_ids]
+    for rid in extra:
+        name = version_names.get(rid)
+        suffix = "  [version]" if name is not None else ""
+        print(
+            f"  room_id={rid!r}  region_type=None  "
+            f"name={name!r}{suffix}   <- not in map metadata"
+        )
+    if extra:
+        print(
+            f"\n  ({len(extra)} region(s) present in the current map "
+            f"version but missing from the p2map's own rooms_metadata "
+            f"-- the snapshot is behind)"
         )
 
     if zone_names:

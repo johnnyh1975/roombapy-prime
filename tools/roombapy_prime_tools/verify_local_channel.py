@@ -461,6 +461,35 @@ async def _run(args: argparse.Namespace) -> int:
             )
             return 0
 
+        # A RESET IS NOT A SIGNATURE FAILURE, and the difference matters.
+        # BAD_SIGNATURE means the handshake got far enough to present a
+        # signature we then rejected. A reset on the static-RSA attempt
+        # means the robot closed the connection BEFORE any signature --
+        # it declined the ClientHello itself, most likely because it
+        # does not offer a static-RSA suite and had nothing to
+        # negotiate.
+        #
+        # So static RSA is not a route in either direction: the robot
+        # will not speak it. That does not, on its own, prove a patched
+        # library is required -- it proves this particular escape hatch
+        # is shut. The BAD_SIGNATURE on the first two attempts is the
+        # real obstacle, and it is a real one.
+        if "reset" in detail_rsa.lower() or "econnreset" in detail_rsa.lower():
+            print(
+                "\n      The robot RESET the static-RSA attempt rather than\n"
+                "      failing its signature -- it declined the ClientHello\n"
+                "      before any signature, so it does not offer a\n"
+                "      static-RSA suite and that escape hatch is shut.\n\n"
+                "      The first two attempts got a BAD_SIGNATURE: the\n"
+                "      robot signs with a key that does not match the\n"
+                "      certificate it presents. That is the real obstacle,\n"
+                "      and every standard path hits it. A patched TLS\n"
+                "      library (disabling verification the way the native\n"
+                "      helper does) is the remaining route.\n\n"
+                "      Please report all three lines above."
+            )
+            return 0
+
     if not ok:
         print(
             "\n      The port is open and standard TLS cannot complete.\n"
@@ -468,9 +497,9 @@ async def _run(args: argparse.Namespace) -> int:
             "      certificate it presents, so every attempt that needs a\n"
             "      server signature fails -- in 1.3 that is\n"
             "      CertificateVerify, in 1.2 ECDHE it is ServerKeyExchange,\n"
-            "      and a static-RSA suite avoids one entirely.\n\n"
-            "      All three failing means a patched TLS library really is\n"
-            "      required, which is worth knowing definitively.\n\n"
+            "      and a static-RSA suite the robot will not negotiate.\n\n"
+            "      A patched TLS library really is required, which is\n"
+            "      worth knowing definitively.\n\n"
             "      Please report the exact SSLError lines above."
         )
         return 0
