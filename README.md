@@ -6,11 +6,18 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.3.0-beta.** (currently `b6`) Reading and writing both work
-> against real hardware, confirmed on three independent accounts:
+> **Status: v0.3.0-beta.** (currently `b13`) Reading and writing both work
+> against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
-> rooms, both from a saved favorite and built from scratch.
+> rooms, from a saved favorite, built from scratch, and with the *scope*
+> confirmed rather than merely the delivery: a single-room command on a
+> Combo 105 covered 234 sq ft against two whole-house runs at 644.
+>
+> **Splitting and merging rooms** are confirmed on hardware too. The
+> merge command's wire name is `arrange_room`, not `merge_rooms` — a
+> discriminator that contradicts its own class name, attested now in app
+> bytecode, on a live robot, and in the robot's own firmware.
 >
 > Virtual wall and keep-out zone writes **work**, on two independent
 > accounts, including the write / re-read / write round trip that
@@ -249,6 +256,8 @@ below. Three independent accounts have exercised this, on a Roomba Plus
 | **Splitting and merging rooms** | both accepted on a Combo 105, map re-rendered (response level; geometry not audited) |
 | **Region cleaning on an x05** | 234 sq ft against two whole-house runs at 644 — the area is the proof, not the acknowledgement |
 | Firmware catalogue (`get_firmware`) | a real response, parsed |
+| **Dock report topics** | `dock/paddry/report` received live; firmware confirms the family is exactly {evac, refill, padwash, paddry} |
+| **The local channel still answers** | the APP dropped local networking in 3.0.0; the robots did not |
 
 ### Independently reconstructed
 
@@ -316,6 +325,17 @@ regardless.
   envelope. The envelope shape and 8 of 9 commands' fields are confirmed;
   `SetRoomMetadata` and `VirtualWall` use custom serializers whose
   internals are not.
+- **Whole-house cleaning through the region command path** (`clean_all` /
+  `select_all`). Deliberately untested rather than assumed: a wrong guess
+  cleans the whole house. Reading firmware 3.8.126 narrowed it — there is
+  no `clean_all` field at all, and scope comes from whether `regions` is
+  present — but that is architecture-consistent inference, not a proven
+  branch condition. The safe rule is unchanged: send a global command
+  only when whole-house is positively intended, and never rely on
+  `command_type=START` to limit scope. START is the operating mode, not a
+  scope limiter.
+- **Uploading a p2map** back to the robot, and the services write path.
+  Both are marked at their call sites too.
 
 ### A warning if you search for help
 
