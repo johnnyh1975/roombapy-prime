@@ -203,3 +203,92 @@ class TestABundleFileIsAFeatureCollection:
 
     def test_a_missing_rooms_file_is_survivable(self):
         assert self._rooms({}) == []
+
+
+class TestAllThreeZoneLayersAreRead:
+    """@chairstacker's bundle had five files -- borders, manifest,
+    metadata, policyZones, rooms -- and no `cleanZones` at all.
+
+    Reading only that one layer returned {} and the tool reported "no
+    zone names in the map bundle", which was literally true about the
+    search and thoroughly wrong about the data. He then noticed the same
+    names appearing in calendar entries, which is how the claim came
+    apart.
+    """
+
+    @staticmethod
+    def _bundle(**layers):
+        from unittest.mock import MagicMock
+
+        bundle = MagicMock()
+        bundle.zone_layers = {
+            name: {"features": feats} for name, feats in layers.items()
+        }
+        return bundle
+
+    @staticmethod
+    async def _names(bundle):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from roombapy_prime_tools.verify_region_commands import (
+            _zone_names_from_bundle,
+        )
+
+        robot = MagicMock()
+        robot.get_map_geojson_link = AsyncMock(return_value="link")
+        robot.download_map_bundle = AsyncMock(return_value=b"")
+        robot.parse_map_bundle = MagicMock(return_value=bundle)
+        with patch("builtins.print"):
+            return await _zone_names_from_bundle(robot, "MAP", "V1")
+
+    @pytest.mark.asyncio
+    async def test_policy_zones_alone_still_yield_names(self):
+        """The exact shape of the bundle that broke this."""
+        bundle = self._bundle(
+            policyZones=[
+                {"properties": {"id": "100", "name": "Stairs",
+                                "zone_type": "KeepOutZone"}},
+            ],
+        )
+
+        names = await self._names(bundle)
+
+        assert "100" in names
+
+    @pytest.mark.asyncio
+    async def test_ad_hoc_zones_are_read_too(self):
+        bundle = self._bundle(
+            adHocCleanZones=[{"properties": {"id": "200", "name": "Spill"}}],
+        )
+
+        names = await self._names(bundle)
+
+        assert names["200"] == "Spill"
+
+    @pytest.mark.asyncio
+    async def test_a_clean_zone_name_is_left_alone(self):
+        """The name is the name. Appending the layer to every entry
+        turned data into noise on the common case."""
+        bundle = self._bundle(
+            cleanZones=[{"properties": {"id": "101", "name": "Living Room"}}],
+        )
+
+        names = await self._names(bundle)
+
+        assert names["101"] == "Living Room"
+
+    @pytest.mark.asyncio
+    async def test_a_no_go_zone_says_so(self):
+        """The one distinction worth surfacing: sending a cleaning
+        command at a keep-out zone is the mistake to prevent."""
+        bundle = self._bundle(
+            policyZones=[
+                {"properties": {"id": "300", "name": "Cables",
+                                "zone_type": "KeepOutZone"}},
+            ],
+        )
+
+        names = await self._names(bundle)
+
+        assert "KeepOutZone" in names["300"]
+        assert names["300"].startswith("Cables")

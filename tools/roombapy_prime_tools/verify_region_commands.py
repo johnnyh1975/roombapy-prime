@@ -1501,17 +1501,51 @@ async def _zone_names_from_bundle(
         print(f"  (map bundle unreadable: {exc})")
         return {}
 
+    # ALL THREE ZONE LAYERS, not just cleanZones.
+    #
+    # @chairstacker's bundle contained five files -- borders, manifest,
+    # metadata, policyZones, rooms -- and NO cleanZones at all. Reading
+    # only that one layer returned {} and the tool reported "no zone
+    # names in the map bundle", which was literally true and thoroughly
+    # misleading: it had looked in one of three drawers.
+    #
+    # Bundle contents vary per map. A map with only keep-out zones has
+    # policyZones and no cleanZones; a map with ad-hoc zones has a third
+    # layer again. Naming which layer a zone came from matters too --
+    # a keep-out zone and a clean zone are both "zones" here and mean
+    # opposite things to a caller building a cleaning command.
     layers = getattr(bundle, "zone_layers", None) or {}
-    layer = layers.get("cleanZones") or {}
     names: dict[str, str] = {}
-    for feature in (layer.get("features") or []):
-        if not isinstance(feature, dict):
-            continue
-        properties = feature.get("properties") or {}
-        zone_id = properties.get("id") or feature.get("id")
-        name = properties.get("name")
-        if zone_id and name:
-            names[str(zone_id)] = str(name)
+    for layer_name in ("cleanZones", "adHocCleanZones", "policyZones"):
+        layer = layers.get(layer_name) or {}
+        for feature in (layer.get("features") or []):
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("properties") or {}
+            zone_id = properties.get("id") or feature.get("id")
+            name = properties.get("name")
+            if not zone_id or not name:
+                continue
+            # THE NAME STAYS THE NAME. An earlier version appended the
+            # layer to every entry, which turned "Living Room @Wall"
+            # into "Living Room @Wall [cleanZones]" -- noise on the
+            # common case, and a change to the data rather than an
+            # addition to it.
+            #
+            # Only a POLICY zone gets marked, because only that is
+            # actionable: keep-out and no-mop zones live in policyZones
+            # discriminated by `zone_type`, and sending a cleaning
+            # command at one is the mistake worth preventing. A clean
+            # zone needs no marker; it is the default.
+            if layer_name == "policyZones":
+                zone_type = (
+                    properties.get("zone_type")
+                    or properties.get("type")
+                    or "policy"
+                )
+                names[str(zone_id)] = f"{name} [{zone_type}]"
+            else:
+                names[str(zone_id)] = str(name)
     return names
 
 
@@ -1630,9 +1664,20 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
     if zone_names:
         print(f"\n  ({len(zone_names)} zone name(s) read from the map bundle)")
     else:
+        # SAY WHERE WE LOOKED, NOT WHAT EXISTS.
+        #
+        # This used to claim the names were "stored nowhere we can
+        # read", which asserted something the tool cannot know. It had
+        # searched one layer of three, and @chairstacker's bundle had
+        # none of that layer -- so a true statement about the search
+        # read as a false one about the data. He then found the same
+        # names showing up in calendar entries, which is how we learned
+        # the claim was wrong.
         print(
-            "\n  (no zone names in the map bundle -- zones without a "
-            "name here have none stored anywhere we can read)"
+            "\n  (no zone names found in the bundle's cleanZones, "
+            "adHocCleanZones or policyZones layers -- if the app shows "
+            "names for these, they are stored somewhere this tool does "
+            "not yet read, which is worth reporting)"
         )
     print(
         "\nTo test one: roombapy-prime-verify-region-commands --send-region "
