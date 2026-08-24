@@ -8,6 +8,38 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b14] - 2026-08-23
+
+### Fixed
+
+- **`--list-rooms` read one zone layer of three.** It looked only at
+  `cleanZones`, so a map without that layer reported "no zone names in
+  the map bundle" — true about the search, wrong about the data.
+  @chairstacker's bundle held five files (borders, manifest, metadata,
+  **policyZones**, rooms) and no `cleanZones` at all; bundle contents
+  vary per map. `adHocCleanZones` and `policyZones` are read now.
+
+  A keep-out or no-mop zone is marked with its `zone_type`, because
+  sending a cleaning command at one is the mistake worth preventing. A
+  clean zone keeps its plain name — an earlier version of this fix
+  appended the layer to every entry, which changed the data rather than
+  adding to it, and an existing test caught it.
+
+- **The "no zone names" message claimed more than the tool knows.** It
+  asserted the names were "stored nowhere we can read". It now names
+  the layers it searched and asks for a report if the app shows names
+  anyway. @chairstacker then found the same names in calendar entries,
+  which is how the original claim came apart.
+
+### Documented
+
+- **`condNotReady` codes are named.** A comment claimed their meanings
+  were unknown and would need control-flow disassembly;
+  `RobotReadinessState` names them in the next file over. Values stay
+  plain ints so an unrecognised code reaches the caller rather than
+  raising.
+
+
 ## [0.3.0b13] - 2026-08-23
 
 ### Fixed

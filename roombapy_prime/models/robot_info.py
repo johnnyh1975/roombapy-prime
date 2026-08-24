@@ -2008,11 +2008,18 @@ class CleanMissionStatus:
     #: refuse condition is active, which is why every capture so far
     #: has been `[]` -- nobody has caught a robot mid-refusal.
     #:
-    #: TYPED BUT NOT NARROWED. `list[int]` is what the deserializer
-    #: says; the individual CODE meanings are unknown and would need
-    #: control-flow disassembly. Kept as plain ints rather than an
-    #: invented enum, because naming a code we have never seen is how
-    #: this project has been wrong before.
+    #: TYPED BUT NOT NARROWED, and "not narrowed" needs qualifying:
+    #: `RobotReadinessState` in mission_control already names these
+    #: codes -- 75 is NO_VAC_WITH_PAD, 22 is MAP_VERSION_MISMATCH, and
+    #: a real robot reported 234. An earlier version of this comment
+    #: claimed the meanings were unknown, which was wrong in the file
+    #: next door.
+    #:
+    #: Still plain ints here rather than the enum, so an unrecognised
+    #: code survives instead of raising. A robot reporting a value the
+    #: table lacks should reach the caller as that value, not as an
+    #: exception -- callers wrap it with RobotReadinessState.name_for()
+    #: when they want a name.
     #:
     #: A withdrawn piece of evidence, recorded so it is not re-derived:
     #: a `vector::_M_range_check` string sitting next to `condNotReady`
