@@ -97,23 +97,38 @@ jobs:
       # fixes 1399 errors before the next release -- the job would be
       # switched off within a week.
       #
-      # 33 is a number someone can actually work through. When it
-      # reaches zero, tighten this: add tests/, then --strict, one step
-      # at a time. The integration next door runs --strict with two
-      # error codes named and justified; that is the destination.
+      # 33 was a number someone could actually work through, and
+      # someone did -- it is zero as of 0.3.0b12, which is why the
+      # step below is a real gate.
       #
       # Running this at all already paid for itself: the first run
       # found four dataclass fields declared twice in map_bundle.py,
       # where the second declaration silently won and the first block's
       # documentation described a field nobody read. No test can see
       # that.
+      # GRADUATED (0.3.0b12): the count reached zero, so this is a real
+      # gate now -- no continue-on-error, exactly as the plan above
+      # said it would be. What the last 34 turned out to be, since the
+      # mix is the argument for having run it at all:
+      #
+      #   - a genuine crash path: request_mission_timeline() called
+      #     self._client.publish() with no None check at all, unlike
+      #     the publish next to it. Before connect() that was an
+      #     AttributeError on None.
+      #   - two missing guards: no irbt_topic_prefix check, so a
+      #     request would have gone to "None/things/...".
+      #   - annotations that were simply wrong: _watch_topic declared
+      #     AsyncIterator while being an async generator (six errors
+      #     from one line), three _raise_clear_* helpers declared
+      #     -> None while never returning.
+      #   - and the rest narrowing noise, fixed by making checks
+      #     explicit rather than by casting them away.
+      #
+      # Next steps, when someone wants them: add tests/, then --strict.
+      # The integration next door runs --strict with two error codes
+      # named and justified; that is still the destination.
       - name: mypy (production code)
         run: mypy roombapy_prime --exclude 'tests/' --output-format=github
-        continue-on-error: true
-        # continue-on-error until the count reaches zero. Informative
-        # now, a real gate later -- the same path ruff took in this
-        # repo, and the comment above the ruff step records when it
-        # graduated.
 
   version-badge:
     name: README version/test-count check
