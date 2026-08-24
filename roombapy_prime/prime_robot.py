@@ -1,10 +1,21 @@
 """Public robot class (analogous to roombapy.roomba.Roomba).
 
-STATUS: Draft. Connects auth.LoginResult, mqtt_client.PrimeMqttClient
-and rest_client.PrimeRestClient. NOT tested against a real V4 account
--- the individual building blocks are confirmed to varying degrees
-(see their respective docstrings), this class itself is pure wiring,
-untested as a whole.
+STATUS: In field use. Connects auth.LoginResult,
+mqtt_client.PrimeMqttClient and rest_client.PrimeRestClient.
+
+It read "NOT tested against a real V4 account" for months after that
+stopped being true. A dozen testers run this class daily; region
+cleaning, splitting and merging rooms, schedule writes and map editing
+are all confirmed on hardware, several of them with the robot's own
+answer recorded. A "Draft" banner on the most-read docstring in the
+package told every reader the opposite of the truth.
+
+WHAT REMAINS UNCONFIRMED IS NAMED PER METHOD, not here. The pattern is
+deliberate: a blanket disclaimer at the top invites either ignoring the
+whole file or distrusting all of it, and neither helps someone deciding
+whether one specific call is safe. `send_routine_command_via_cmd_topic`
+carries the sharpest of them -- `clean_all` is still untested, and a
+wrong guess there cleans the whole house.
 
 Also part of this draft (see watch_state()/watch_live_map() below):
 continuous dispatch loops for shadow deltas and live-map/-position
@@ -43,8 +54,8 @@ import time as _time
 from datetime import UTC, datetime
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from typing import Any, TypeVar
 
 from .auth import LoginResult
 from .mqtt_client import PrimeMqttClient, ShadowResponse
@@ -52,6 +63,7 @@ from .rest_client import PrimeRestClient
 from .models import (
     DNDStatusResponse,
     FavoriteV1,
+    FirmwareItem,
     HouseholdSchedule,
     LiveMapStreamInit,
     MapEditCommand,
@@ -131,7 +143,12 @@ DEFAULT_MAX_RECONNECT_BACKOFF_SECONDS = 60.0
 # not tie up unbounded memory if the consumer permanently falls behind.
 
 
-def _put_with_backpressure(queue: asyncio.Queue[object], item: object, topic: str) -> None:
+_QueueItemT = TypeVar("_QueueItemT")
+
+
+def _put_with_backpressure(
+    queue: asyncio.Queue[_QueueItemT], item: _QueueItemT, topic: str
+) -> None:
     """Runs on the event loop thread (called via
     loop.call_soon_threadsafe from watch_state()/watch_live_map()). If
     the queue is full, the OLDEST entry is dropped to make room for the
@@ -188,7 +205,30 @@ class PrimeRobot:
     object, kept around so diagnostics.py can report its actual keys
     when irbt_topic_prefix/iot_topic_prefix guessing turns out wrong (as
     a live test first showed) -- not used by PrimeRobot itself for
-    anything beyond exposing it for diagnostics."""
+    anything beyond exposing it for diagnostics.
+
+    COMMAND SURFACE, cross-checked against the firmware 3.8.126 image's
+    own handler router in `connectivity_broker`. The firmware names six
+    write handlers; four have methods here, two do not, and the two
+    gaps are deliberate:
+
+        rw-settings   process_update_robot_settings_event  -> set_setting etc.
+        rw-schedule   handle_clean_schedules               -> create/update/delete_schedule
+        map/zone edit handle_map_edit_request              -> edit_map, edit_map_v2, set_map_name
+        dock status   process_dock_status                  -> DockStatus model, watch_dock_reports
+
+        p2map upload  handle_smart_map_upload              -> NOT BUILT
+        services      process_update_robot_services_event  -> NOT BUILT (svcConf is read, not written)
+
+    The two NOT-BUILT ones are not built because no request payload has
+    been captured for either. The upload we DO model is the robot's own
+    outbound side (`uploadP2MapLive`/`uploadP2MapMission`, see
+    map_bundle.py); sending a map TO a robot is a different, unseen
+    payload, and restoring a map onto a robot is rare and destructive
+    enough that guessing its shape is the wrong trade. `svcConf` is
+    read from the shadow; writing services has no observed request.
+    Both go in when a real capture shows the shape -- the firmware
+    confirms the handlers exist, which is the useful half."""
 
     def __init__(
         self,
@@ -611,6 +651,95 @@ class PrimeRobot:
         path, as opposed to `send_simple_command("start")`. Whether it
         needs the same START-not-CLEAN treatment is unknown.
 
+        FIRMWARE 3.8.126 WAS READ FOR THIS AND DID NOT SETTLE IT. The
+        result is recorded here so nobody repeats the search or, worse,
+        mistakes what was found for permission:
+
+        - `clean_all` appears in the image ONLY inside the Realtek WiFi
+          driver (`phydm_clean_all_csi_mask`) -- an unrelated false
+          positive. No `select_all`, `cleanAll` or `selectAll` token
+          exists anywhere in it.
+        - `robot-command-processor.cpp::process_robot_command` does
+          confirm the command field vocabulary (`rid`, `zid`, `ordered`,
+          `pmap_id`, `p2map_id`, `poly`, `regions`, `region_id`,
+          `user_pmapv_id`, `operatingMode`, ~50 more) -- the payload
+          SHAPE, not the command-value literals. No `"start"`/`"clean"`
+          string constants: the command type is very likely numeric.
+        - The schedule path nearby has
+          `create_global_cleaning_task_if_required` /
+          `create_room_cleaning_task_if_required`, i.e. "valid region
+          selected -> region task, else global" -- the same shape as
+          the observed START/CLEAN split. But that is INFERENCE FROM
+          CODE LAYOUT, not a confirmed shared call site.
+
+        So the region-vs-global branch exists as shared architecture,
+        gated on whether a valid region is present. That is consistent
+        with the field-observed behaviour and is not proof of it.
+
+        DISASSEMBLY LATER CORRECTED THE MENTAL MODEL, and the
+        correction matters more than the original question.
+        `process_robot_command` was disassembled: it hashes the
+        command, looks the handler up in a map, validates the
+        OPERATING MODE, and calls the handler virtually. It is a
+        dispatcher plus a mode gate -- it does NOT contain the
+        region-vs-global branch at all. That decision lives downstream
+        in the per-command handler.
+
+        WHICH MEANS `command_type=START` IS NOT A SCOPE LIMITER. START
+        is the operating mode the dispatcher validates; it says what
+        kind of run this is, not how much of the house it covers.
+        Scope comes from the presence of region data -- `regions`,
+        `region_id`, `rid` inside `params`. There is no `clean_all`
+        field in the firmware at all; whole-house is the ABSENCE of a
+        region selection, not a flag.
+
+        A caller must therefore not read the field-confirmed
+        `START` + `map_id` + `Region(RID)` result as "START keeps it
+        to one room". It worked because a region was named. Send a
+        command with no regions only when whole-house is positively
+        intended.
+
+        THE PREDICATE IS NOW KNOWN, from the app rather than the
+        firmware. The handler's own branch resisted static
+        disassembly, so the question was answered at the source that
+        BUILDS the command: `MissionCommand::toPayload` in Prime
+        3.0.0. It null-checks the `regions` list, then checks its
+        length, and skips emitting the key on either.
+
+        So the rule is checkable rather than cautionary:
+
+            region clean  <=>  `regions` is a NON-EMPTY array of
+                               {(rid|region_id), type} elements
+            whole house   <=>  `regions` null or empty, and the key is
+                               OMITTED from the payload
+
+        `region_id` is never a top-level field -- it is an element key
+        inside `regions`, chosen per element by a type discriminator
+        alongside `rid`. So scope is never set by a top-level
+        `region_id`, and never by `command_type`/`operatingMode`.
+
+        `to_json()` implements exactly this: an empty list omits the
+        key. It previously emitted `regions: []`, a shape the vendor
+        client never sends.
+
+        THE SHAPE ABOVE IS NOW FIELD-CONFIRMED, WHICH IS THE OTHER HALF
+        OF THAT STORY. @bryznnguyen fired it on a Combo 105 (SKU
+        G284020, x05) on b9: `command_type=START`, non-null `map_id`,
+        one `Region(RID)`, `initiator="rmtApp"`.
+
+        The proof is the area, not the acknowledgement. The mission ran
+        27 minutes and reported 234 sq ft; two prior whole-house runs on
+        the same robot both reported exactly 644. One room was cleaned
+        and nothing else, so the third failure mode above did not fire.
+
+        WHAT THAT DOES NOT ESTABLISH, in his own framing: the OUTBOUND
+        `initiator` is confirmed, the ECHOED one is not -- the
+        `cleanMissionStatus` snapshot he persisted came back with blank
+        `initiator` and `missionId`, so nothing here says the robot
+        reflects the value it was sent. Geometry was not independently
+        audited either; the command behaved (right room, right size),
+        which is a different claim from boundary-accurate.
+
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_routine_command_via_cmd_topic
     """
@@ -709,6 +838,23 @@ class PrimeRobot:
         from .models.robot_info import parse_map_version_regions
 
         return parse_map_version_regions(
+            await self._rest.get_map_version(map_id, map_version)
+        )
+
+    async def get_map_region_ids(
+        self, map_id: str, map_version: str
+    ) -> list[str]:
+        """Every region id the CURRENT map version carries.
+
+        The p2map's own `rooms_metadata` is a snapshot and can lag
+        behind zone edits -- @chairstacker had twelve zones and a
+        listing built from it showed eight. The version is what the
+        robot is actually working from, so it is the honest source for
+        "which regions exist".
+        """
+        from .models.robot_info import parse_map_version_region_ids
+
+        return parse_map_version_region_ids(
             await self._rest.get_map_version(map_id, map_version)
         )
 
@@ -913,6 +1059,21 @@ class PrimeRobot:
         # run). The sku lives on the login entry, not on the robot
         # object -- and a caller who has one can pass it.
         return await self._rest.get_firmware_raw(sku)
+
+    async def get_firmware(self, sku: str | None = None) -> list[FirmwareItem]:
+        """Available firmware releases, parsed.
+
+        The envelope is `{"firmware": [item, ...]}`, confirmed against a
+        live response (SKU W155040). Returns the items; an empty list
+        means the catalogue had nothing for this sku rather than an
+        error. See get_firmware_raw() for the unparsed form and the
+        host/parameter history.
+        """
+        raw = await self._rest.get_firmware_raw(sku)
+        items = raw.get("firmware") if isinstance(raw, dict) else None
+        if not isinstance(items, list):
+            return []
+        return [FirmwareItem.from_json(item) for item in items if isinstance(item, dict)]
 
     async def get_clean_score_raw(self, p2map_id: str) -> Any:
         """See rest_client.py::get_clean_score_raw() -- per-room
@@ -1139,6 +1300,14 @@ class PrimeRobot:
         """
         self._timeline_request_id += 1
         request_id = self._timeline_request_id
+        if self._irbt_topic_prefix is None:
+            # Same guard the watch_*() methods carry; this one was
+            # missing, so a robot constructed without a LoginResult
+            # would have sent the request to "None/things/...".
+            raise ValueError(
+                "request_mission_timeline() needs irbt_topic_prefix (from LoginResult) -- "
+                "this was None."
+            )
         await asyncio.to_thread(
             self._mqtt.request_mission_timeline,
             self._irbt_topic_prefix,
@@ -1329,7 +1498,7 @@ class PrimeRobot:
         *,
         queue_maxsize: int,
         max_reconnect_backoff: float,
-    ) -> AsyncIterator[ShadowResponse]:
+    ) -> AsyncGenerator[ShadowResponse, None]:
         """Shared core behind watch_state()/watch_mission_timeline() --
         extracted (this session) when the second caller appeared, to
         avoid duplicating the reconnect-hardening logic.
@@ -1542,12 +1711,18 @@ class PrimeRobot:
                         # ordinary reconnect with a still-valid token uses
                         # the fast, same-token path exactly as it always did
                         # before either fix existed.
+                        # Bound to a local so the None check narrows:
+                        # via `needs_relogin` a checker cannot see that
+                        # self._relogin was tested, and the attribute
+                        # could in principle change between the two
+                        # reads anyway.
+                        relogin = self._relogin
                         needs_relogin = (
-                            self._relogin is not None
+                            relogin is not None
                             and self._mqtt.seconds_until_token_refresh_due() == 0.0
                         )
-                        if needs_relogin:
-                            login_result = await self._relogin()
+                        if needs_relogin and relogin is not None:
+                            login_result = await relogin()
                             new_token = login_result.token_for_blid(self.blid)
                             await asyncio.to_thread(self._mqtt.replace_token, new_token)
                         else:

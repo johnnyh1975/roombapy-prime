@@ -50,6 +50,15 @@ class DoneCode(StrEnum):
     #:     success   {ok, busy, dndEnd, returnHomeEnd, timeboxEnd}
     #:     cancelled {cncl, usrSlp, plcDoc, usrEnd, usrSpt, batcncl}
     #:
+    #: The six cancelled values are now CONFIRMED FROM A SECOND,
+    #: INDEPENDENT SOURCE: the firmware 3.8.126 image lists exactly
+    #: `cncl, usrSlp, plcDoc, usrEnd, usrSpt, batcncl` as its
+    #: cycle-end DoneCodes. App send-path and firmware agree, which is
+    #: the standard this project treats as confirmed rather than
+    #: one-derivation-deep. (The five success values are not in the
+    #: firmware list -- it enumerates cancellation reasons, and a
+    #: success is the absence of one.)
+    #:
     #: Nine of the nineteen previous values were wrong. The
     #: lowercase-snake_case rule, carried over from `RegionType`, does
     #: not apply here at all -- **not one** snake_case form appears
@@ -72,9 +81,22 @@ class DoneCode(StrEnum):
     #: 3.0.0 -- neither as written here nor as the abbreviations the
     #: confirmed values would predict (`schedErr`, `usrRbt`: no hits).
     #:
+    #: EXHAUSTIVELY RULED OUT FOR FIRMWARE 3.8.126. A re-verification
+    #: of the 393 MB image found each of the six confirmed values
+    #: exactly once, all six contiguous in a single 31-byte window --
+    #: one static enum literal, not scattered fragments. No additional
+    #: candidate token exists anywhere in the image. That is as far as
+    #: string analysis reaches, and it reaches far enough: THESE EIGHT
+    #: ARE NOT FIRMWARE-BACKED and must not be cited as though they
+    #: were.
+    #:
+    #: KEPT ANYWAY, deliberately. The check covers ONE firmware
+    #: version; it does not prove these never existed on older builds,
+    #: and this project supports robots several generations back.
     #: `_enum_or_none()` returns the raw string for anything unmatched,
-    #: so a real capture carrying one of these settles it. Until then
-    #: they are guesses wearing enum members.
+    #: so nothing depends on them being right -- removing them would
+    #: trade a harmless unused member for a lost record of what was
+    #: once believed and why.
     BATTERY = "battery"
     EMPTY = "empty"
     FULL = "full"

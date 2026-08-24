@@ -7065,3 +7065,235 @@ class TestParseMapVersionRegions:
         assert parse_map_version_regions({}) == {}
         assert parse_map_version_regions({"geojson_details": None}) == {}
         assert parse_map_version_regions({"geojson_details": {}}) == {}
+
+
+class TestFirmwareItemAgainstALiveResponse:
+    """Built from `$$serializer` keys, then corrected by a real
+    response (SKU W155040, August 2026). Two fields were guessed wrong
+    from key names alone -- this pins the shape that actually came
+    back, so a guess cannot drift back in.
+    """
+
+    # The catalogue's own reply, trimmed to the modelled fields.
+    LIVE = {
+        "sku": "W155040",
+        "version": "8.6.2",
+        "track": "prod",
+        "otaPriority": 1,
+        "provisioningPriority": 1,
+        "expectedDownloadTime": 6,
+        "expectedInstallationTime": 8,
+        "downloadUrl": "https://content-prod.iot.irobotapi.com/media/files/firmware/8.6.2-w10-w15-k15/package/V11_705.meta.signed",
+        "fused": 3,
+        "notes": "705V",
+        "releaseDate": "2025-08-28",
+        "signing": "production",
+        "targetSoftwareVer": ["p25-705+9.3.6+I3.8.149"],
+    }
+
+    def test_fused_is_an_int_not_a_bool(self):
+        """It was modelled as bool. The live value is 3 -- an eFuse
+        level, not a yes/no. `bool(3)` would have been True and lost
+        the number entirely."""
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        item = FirmwareItem.from_json(self.LIVE)
+        assert item.fused == 3
+        assert not isinstance(item.fused, bool)
+
+    def test_target_software_ver_stays_a_list(self):
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        item = FirmwareItem.from_json(self.LIVE)
+        assert item.target_software_ver == ["p25-705+9.3.6+I3.8.149"]
+
+    def test_the_download_url_survives(self):
+        """The one field a firmware-update feature would actually
+        need."""
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        item = FirmwareItem.from_json(self.LIVE)
+        assert item.download_url is not None
+        assert item.download_url.endswith(".meta.signed")
+
+    def test_install_time_is_read_verbatim(self):
+        """8 is the vendor's number. The old test asserted 1800, a
+        made-up seconds value -- this is minutes, as the field arrives,
+        not a unit conversion the response never asked for."""
+        from roombapy_prime.models.robot_info import FirmwareItem
+
+        assert FirmwareItem.from_json(self.LIVE).expected_installation_time == 8
+
+
+class TestDoneCodeCancelReasonsConfirmedTwice:
+    """The six cancellation DoneCodes now have two independent sources.
+
+    They came from app 3.0.0's `isMissionHistoryCancelled` set. The
+    firmware 3.8.126 image lists exactly the same six as its cycle-end
+    codes: `cncl, usrSlp, plcDoc, usrEnd, usrSpt, batcncl`. App
+    send-path and firmware agreeing is what this project treats as
+    confirmed, rather than one derivation deep.
+
+    This pins the wire values so a well-meaning "tidy-up" to snake_case
+    (the rule that applies to some other enums here, and explicitly
+    not to this one) cannot slip back in.
+    """
+
+    def test_the_six_cancel_codes_are_the_firmware_values(self):
+        from roombapy_prime.models.mission_history import DoneCode
+
+        assert DoneCode.CANCEL == "cncl"
+        assert DoneCode.USER_SLEEP == "usrSlp"
+        assert DoneCode.PLACE_DOCK == "plcDoc"
+        assert DoneCode.USER_END == "usrEnd"
+        assert DoneCode.USER_SPOT == "usrSpt"
+        assert DoneCode.BATTERY_CANCEL == "batcncl"
+
+    def test_an_unknown_code_is_returned_raw_not_dropped(self):
+        """The eight bytecode-only placeholders are unconfirmed; a real
+        capture carrying any other code must survive as its raw string
+        rather than crash or vanish."""
+        from roombapy_prime.models.mission_history import DoneCode
+
+        # StrEnum: a value outside the members is not one of them, and
+        # the parser (_enum_or_none) hands back the raw string. This
+        # asserts the membership boundary the parser relies on.
+        assert "someNewCode" not in {c.value for c in DoneCode}
+
+
+class TestMapVersionRegionIds:
+    """@chairstacker had twelve zones and a listing showed eight.
+
+    The list came from the p2map's `rooms_metadata` -- a snapshot that
+    lagged his edits -- while only the names were read from the current
+    version. `parse_map_version_regions` drops unnamed regions, which
+    is right for a name lookup and wrong for a listing, so a zone he
+    had just added (absent from the snapshot, unnamed in the version)
+    appeared in neither.
+    """
+
+    VERSION = {
+        "geojson_details": {
+            "regions": [
+                {"id": "10", "name": "Kitchen"},
+                {"id": "101", "name": "Sofa"},
+                {"id": "102"},              # added, not yet named
+                {"id": "103", "name": ""},  # named empty
+                {"id": "102"},              # duplicate
+            ]
+        }
+    }
+
+    def test_unnamed_regions_are_included(self):
+        from roombapy_prime.models.robot_info import parse_map_version_region_ids
+
+        ids = parse_map_version_region_ids(self.VERSION)
+
+        assert "102" in ids, "an unnamed region is exactly the case this exists for"
+        assert "103" in ids
+
+    def test_ids_are_deduplicated_and_ordered(self):
+        from roombapy_prime.models.robot_info import parse_map_version_region_ids
+
+        assert parse_map_version_region_ids(self.VERSION) == ["10", "101", "102", "103"]
+
+    def test_the_name_lookup_still_drops_unnamed_ones(self):
+        """The two functions answer different questions; this pins the
+        difference so neither is 'fixed' into the other."""
+        from roombapy_prime.models.robot_info import parse_map_version_regions
+
+        names = parse_map_version_regions(self.VERSION)
+
+        assert "102" not in names
+        assert "103" not in names  # empty name is no name
+        assert names["101"] == "Sofa"
+
+    def test_missing_or_malformed_input_returns_empty(self):
+        from roombapy_prime.models.robot_info import parse_map_version_region_ids
+
+        assert parse_map_version_region_ids(None) == []
+        assert parse_map_version_region_ids({}) == []
+        assert parse_map_version_region_ids({"geojson_details": "not a dict"}) == []
+
+
+class TestSplitAndMergeConfirmedOnHardware:
+    """@bryznnguyen ran both on a Combo 105 (SKU G284020, x05) and got
+    the success-with-rendered-URL shape: split three times, merge once.
+
+    They had been decompiled and modelled but never sent. These pin the
+    two things a live run actually validated -- the discriminator
+    strings and the payload shapes -- since a decompiled string that
+    reads wrong against its own class name is exactly the kind a
+    well-meaning reader "corrects".
+    """
+
+    def test_merge_uses_arrange_room_not_merge_rooms(self):
+        """The class is MergeRoomsV1; the wire command is
+        `arrange_room`. A robot has now acted on it."""
+        from roombapy_prime.models.map_editing import MergeRoomsV1
+
+        body = MergeRoomsV1(ids=["10", "11"]).to_v1_command_body()
+
+        assert body["command"] == "arrange_room"
+        assert body["params"] == {"room_ids": ["10", "11"]}
+
+    def test_split_points_go_out_flat_not_paired(self):
+        """Kotlin `List<Double>`: [x1, y1, x2, y2], not [[x1,y1],
+        [x2,y2]]. The paired shape was assumed before and was wrong."""
+        from roombapy_prime.models.map_editing import SplitRoomV1
+
+        body = SplitRoomV1(
+            room_id="10", split_points=[(1.5, 2.5), (3.5, 4.5)]
+        ).to_v1_command_body()
+
+        assert body["command"] == "split_room"
+        assert body["params"]["split_points"] == [1.5, 2.5, 3.5, 4.5]
+
+    def test_split_keeps_the_room_id_key(self):
+        from roombapy_prime.models.map_editing import SplitRoomV1
+
+        body = SplitRoomV1(room_id="42", split_points=[(0.0, 0.0)]).to_v1_command_body()
+
+        assert body["params"]["room_id"] == "42"
+
+
+class TestRegionsKeyIsOmittedWhenEmpty:
+    """Scope is decided by whether region data is present, and the
+    vendor app produces whole-house by OMITTING `regions` entirely.
+
+    Verified from `MissionCommand::toPayload` (Prime 3.0.0, Dart AOT):
+    the list is null-checked, then length-checked, and `regions` is
+    skipped on either. Null and empty are treated identically.
+
+    This code sent `regions: []` for an empty list, because `[] is not
+    None` -- a payload shape the vendor client never emits, in the one
+    place being creative is unaffordable.
+    """
+
+    @staticmethod
+    def _command(regions):
+        from roombapy_prime.models.mission_control import (
+            MissionCommandType,
+            RoutineCommand,
+        )
+
+        return RoutineCommand(
+            command_type=MissionCommandType.START,
+            asset_id="BLID1",
+            map_id="MAP-A",
+            regions=regions,
+        ).to_json()
+
+    def test_an_empty_list_omits_the_key(self):
+        assert "regions" not in self._command([])
+
+    def test_none_omits_the_key(self):
+        assert "regions" not in self._command(None)
+
+    def test_a_real_region_is_still_sent(self):
+        from roombapy_prime.models.mission_control import Region, RegionType
+
+        body = self._command([Region(region_id="10", region_type=RegionType.RID)])
+
+        assert body["regions"]
+        assert len(body["regions"]) == 1

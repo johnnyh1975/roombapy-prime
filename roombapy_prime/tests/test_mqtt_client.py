@@ -1664,3 +1664,37 @@ class TestALateSubackIsStillASuback:
         client._confirmed_mids.add(1)
 
         assert client.resubscribe_still_unconfirmed() == ["b/topic"]
+
+
+def test_dispatch_survives_a_subscription_starting_mid_message() -> None:
+    """_on_message runs on paho's thread; subscribe() writes
+    `_persistent` from the caller's. Iterating the dict live raises
+    "dictionary keys changed during iteration", the exception escapes
+    into paho's dispatch loop, and every watcher on the client stops
+    receiving -- silently.
+
+    The callback below registers a new subscription while dispatch is
+    walking the dict, which is exactly the interleaving that breaks a
+    live iteration.
+    """
+    from unittest.mock import MagicMock
+
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+
+    seen: list[str] = []
+
+    def watcher(_response: object) -> None:
+        seen.append("first")
+        # A second watcher starting up during dispatch.
+        client._persistent.setdefault(f"other/{len(seen)}", []).append(lambda _r: None)
+
+    client._persistent["prefix/things/BLID1/#"] = [watcher]
+
+    msg = MagicMock()
+    msg.topic = "prefix/things/BLID1/livemap/update"
+    msg.payload = b'{"state": {"reported": {}}}'
+
+    # Must not raise RuntimeError.
+    client._on_message(client, None, msg)
+
+    assert seen == ["first"]

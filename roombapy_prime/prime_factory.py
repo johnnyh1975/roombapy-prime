@@ -1,6 +1,6 @@
 """Factory: username/password/blid instead of a local IP (cloud client setup).
 
-STATUS: Draft. Naming convention deliberately mirrors
+STATUS: In field use. Naming convention deliberately mirrors
 roombapy.roomba_factory (RoombaFactory.create_roomba(...) ->
 PrimeFactory.create_prime_robot(...)) for recognizability -- see
 docs/internal/ROOMBAPY_COMPARISON.md section 4. Unlike roombapy's factory,
@@ -8,7 +8,12 @@ this one is necessarily async, because establishing the connection
 needs a real login flow (roombapy doesn't need this since it works
 directly with a local IP + an already-known password).
 
-NOT tested against a real V4 account -- pure wiring of already
+CONFIRMED: this is the entry point every field tester goes through --
+if the factory did not work, none of the confirmations elsewhere in
+this package would exist. It read "NOT tested against a real V4
+account" long after a dozen accounts had come through it.
+
+Pure wiring of already
 individually documented building blocks (auth.py, mqtt_client.py,
 rest_client.py, prime_robot.py).
 

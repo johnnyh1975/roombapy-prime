@@ -1,9 +1,19 @@
 """p2maps REST client: map metadata, edit commands, live stream init.
 
-STATUS: Draft. Endpoints/payload shapes confirmed from Java source code
-analysis (see docs/archive/FINDINGS_2026-07-11.md), NOT live-tested against a
-real server -- neither Classic nor V4/Prime. Not a single one of
-these calls has actually been executed yet.
+STATUS: Field-exercised. The endpoint shapes came from Java source
+analysis (see docs/archive/FINDINGS_2026-07-11.md); they have since been
+run against real accounts by a dozen testers.
+
+CONFIRMED ON HARDWARE: map metadata and bundle reads, map editing
+(rename, split, merge -- the last two on a Combo 105), the firmware
+catalogue, favourites and schedules. The read surface is the
+best-attested part of this library.
+
+STILL UNRUN, and marked as such at each call site rather than here:
+p2map upload, and the services write path. A blanket claim at the top of
+the file that nothing has been executed was true when written and is
+badly misleading now -- individual doubts belong next to the individual
+calls, where a reader is deciding whether to trust one.
 
 Also: AWS SigV4 signing (see aws_sigv4.py) and `http_base_auth` instead
 of `http_base` -- both carried over from ha_roomba_plus's already-
@@ -31,7 +41,7 @@ import math
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from json.decoder import JSONDecodeError
-from typing import Any
+from typing import Any, NoReturn
 
 import aiohttp
 
@@ -112,7 +122,7 @@ class RestTimeoutError(RestError):
     _raise_clear_timeout_error()."""
 
 
-def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> None:
+def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> NoReturn:
     """Re-raise an aiohttp SSL/certificate failure as a clear
     RestSSLError instead of letting the raw aiohttp exception bubble
     up as an opaque "unknown error occurred".
@@ -134,7 +144,7 @@ def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> None:
     ) from exc
 
 
-def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> None:
+def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> NoReturn:
     """Re-raise a connection failure (DNS, connection refused, network
     unreachable) as a clear RestConnectionError. See auth.py's
     equivalent for why this deliberately doesn't claim confident fault
@@ -147,7 +157,7 @@ def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> None:
     ) from exc
 
 
-def _raise_clear_timeout_error(exc: BaseException) -> None:
+def _raise_clear_timeout_error(exc: BaseException) -> NoReturn:
     """Re-raise a request timeout as a clear RestTimeoutError. Accepts
     BaseException -- see auth.py's equivalent for why."""
     raise RestTimeoutError(

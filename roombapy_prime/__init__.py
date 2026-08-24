@@ -5,8 +5,12 @@ Alpha. Login, MQTT shadow connection, mission control
 (start/stop/pause/resume/dock via send_simple_command()), and most REST
 read endpoints are confirmed working live against two independent real
 Prime/V4 accounts (chairstacker, jadestar1864 -- both a Roomba 405
-Combo, SKU G185020). Map editing and region-based mission commands
-remain unverified against a live server. See
+Combo, SKU G185020). Map editing and region-based mission commands are
+confirmed too, and were still described here as unverified long after
+they were not: room rename with revert, splitting and merging rooms on
+a Combo 105, and a region clean on an x05 where the area cleaned (234
+sq ft against two whole-house runs at 644) proves the scope rather than
+merely the delivery. See
 docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the complete,
 continuously updated audit status and README.md's "Confidence & known
 gaps" section for the current, per-feature breakdown.
@@ -59,9 +63,10 @@ from .auth import (
 from .mqtt_client import ShadowConnectionError, ShadowError, ShadowResponse, ShadowSSLError
 from .prime_factory import PrimeFactory
 from .prime_robot import PrimeRobot
+from .ids import id_problem, is_valid_id, normalise_id
 from .rest_client import RestConnectionError, RestError, RestSSLError, RestTimeoutError
 
-__version__ = "0.3.0b12"
+__version__ = "0.3.0b13"
 
 __all__ = [
     "AuthConnectionError",
@@ -73,6 +78,9 @@ __all__ = [
     "LoginResult",
     "PrimeFactory",
     "PrimeRobot",
+    "id_problem",
+    "is_valid_id",
+    "normalise_id",
     "RestConnectionError",
     "RestError",
     "RestSSLError",

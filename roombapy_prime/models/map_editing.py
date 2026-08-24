@@ -715,7 +715,26 @@ class SplitRoomV1:
     list of doubles (Kotlin `List<Double>`), not a list of [x,y] pairs
     as the previous [[x1,y1],[x2,y2]] shape assumed. room_id's field
     name was already correct (session 48); the split_points VALUE shape
-    was not previously re-examined once envelope work started."""
+    was not previously re-examined once envelope work started.
+
+    FIELD-CONFIRMED ON HARDWARE (@bryznnguyen, Combo 105 / SKU
+    G284020, x05 generation, three runs on b7): `edit_map_checked`
+    returned the SUCCESS shape carrying a rendered map URL each time
+    -- not `is_error`, and not the `is_partial` "new version, no
+    render" case. The divide line was a user-drawn polyline
+    un-projected from the map's meter space.
+
+    WHAT THAT DOES AND DOES NOT ESTABLISH, in his own framing: the
+    server accepts and applies this command and re-renders. He
+    verified at the RESPONSE level only and did not audit that the
+    resulting boundaries match what was drawn. So the envelope, the
+    discriminator and the flat split_points shape are confirmed; the
+    geometry is not. A caller drawing a line should still check the
+    result on the rendered map.
+
+    This was previously "never run" -- it had been decompiled and
+    modelled but nobody had sent one. Someone did.
+    """
 
     room_id: str
     split_points: list[Position]
@@ -736,7 +755,27 @@ class MergeRoomsV1:
     {"room_ids": [...]} under command "arrange_room" -- the field name
     room_ids was already correct (session 48); the discriminator string
     is the surprise here (not "merge_rooms" as the class name would
-    suggest)."""
+    suggest).
+
+    FIELD-CONFIRMED ON HARDWARE (@bryznnguyen, Combo 105 / SKU
+    G284020, one run on b7): same success-with-rendered-URL shape as
+    the split. THE DISCRIMINATOR IS THE PART THIS VALIDATES -- a
+    decompiled string that reads wrong against its own class name is
+    exactly the kind that gets "corrected" by a well-meaning reader.
+    `arrange_room` is right, and a live robot has now acted on it.
+
+    Response-level confirmation only, same caveat as SplitRoomV1: the
+    server accepted and re-rendered; whether the merged boundary is
+    geometrically what was intended was not audited.
+
+    NOW CONFIRMED A THIRD TIME, from firmware 3.8.126. The broker's
+    local RPC namespace lists `service.arrange_room` alongside
+    `service.rename_room`, `service.split_room` and
+    `service.rename_map`. So the discriminator that contradicts its
+    own class name is attested in the app bytecode, on a live robot,
+    and in the robot's own firmware. It is not a decompilation
+    artefact, and nobody should "fix" it.
+    """
 
     ids: list[str]
 

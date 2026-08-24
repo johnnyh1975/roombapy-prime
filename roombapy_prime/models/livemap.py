@@ -218,6 +218,11 @@ def _read_field(buf: bytes, pos: int) -> tuple[int, int, object, int]:
     tag, pos = _read_varint(buf, pos)
     field_num = tag >> 3
     wire_type = tag & 0x7
+    # A protobuf field is an int for varint/fixed wire types and bytes
+    # for length-delimited ones, which is why the return type is
+    # `object`. Without this declaration the first branch fixes `value`
+    # as int and the later branches read as errors.
+    value: object
     if wire_type == 0:
         value, pos = _read_varint(buf, pos)
     elif wire_type == 2:
@@ -234,6 +239,30 @@ def _read_field(buf: bytes, pos: int) -> tuple[int, int, object, int]:
         msg = f"Unsupported protobuf wire type {wire_type} at offset {pos}"
         raise ValueError(msg)
     return field_num, wire_type, value, pos
+
+
+def _expect_bytes(value: object, what: str) -> bytes:
+    """Narrow a parsed protobuf field to bytes, checking rather than
+    asserting.
+
+    `_read_field` returns `object` because a field is an int or bytes
+    depending on its wire type. Callers know which they expect from
+    the layout, but "knowing" is how a malformed payload turns into an
+    AttributeError three frames away. This raises the same ValueError
+    the surrounding layout checks raise.
+    """
+    if not isinstance(value, bytes):
+        msg = f"rawmap {what}: expected length-delimited bytes, got {type(value).__name__}"
+        raise ValueError(msg)
+    return value
+
+
+def _expect_int(value: object, what: str) -> int:
+    """The varint counterpart of `_expect_bytes`."""
+    if not isinstance(value, int):
+        msg = f"rawmap {what}: expected a varint, got {type(value).__name__}"
+        raise ValueError(msg)
+    return value
 
 
 def _parse_top_level(buf: bytes) -> dict[int, list[tuple[int, object]]]:
@@ -318,15 +347,15 @@ def decode_rawmap_to_png(rawmap_bytes: bytes) -> bytes:
 
     width = height = None
     if 3 in top:
-        _wt, header_bytes = top[3][0]
-        header_fields = _parse_top_level(header_bytes)
+        _wt, header_raw = top[3][0]
+        header_fields = _parse_top_level(_expect_bytes(header_raw, "header (field 3)"))
         for fnum in sorted(header_fields.keys()):
             for wt, val in header_fields[fnum]:
                 if wt == 0:
                     if fnum == 2 and width is None:
-                        width = val
+                        width = _expect_int(val, "width")
                     elif fnum == 3 and height is None:
-                        height = val
+                        height = _expect_int(val, "height")
     if not (width and height):
         msg = "rawmap header (field 3) didn't contain the expected width/height -- unrecognized layout"
         raise ValueError(msg)
@@ -335,11 +364,12 @@ def decode_rawmap_to_png(rawmap_bytes: bytes) -> bytes:
         msg = "rawmap has no field 4 (grid wrapper) -- unrecognized layout"
         raise ValueError(msg)
     _wt, grid_wrapper = top[4][0]
-    inner = _parse_top_level(grid_wrapper)
+    inner = _parse_top_level(_expect_bytes(grid_wrapper, "grid wrapper (field 4)"))
     if 1 not in inner:
         msg = "rawmap's field 4 has no field 1 (grid bytes) inside it -- unrecognized layout"
         raise ValueError(msg)
-    _wt, grid_bytes = inner[1][0]
+    _wt, grid_raw = inner[1][0]
+    grid_bytes = _expect_bytes(grid_raw, "grid bytes (field 4.1)")
 
     if width * height != len(grid_bytes):
         msg = (
@@ -349,7 +379,10 @@ def decode_rawmap_to_png(rawmap_bytes: bytes) -> bytes:
         raise ValueError(msg)
 
     img = Image.frombytes("L", (width, height), grid_bytes)
-    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    # `Image.FLIP_TOP_BOTTOM` was deprecated in Pillow 9.1 in favour of
+    # the enum; it still works at runtime but is gone from the type
+    # stubs, and will eventually go from Pillow too.
+    img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
     from io import BytesIO
 
     buf = BytesIO()

@@ -8,6 +8,102 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b13] - 2026-08-23
+
+### Fixed
+
+- **`regions: []` is no longer sent.** An empty region list produced
+  `regions: []` in the command payload, because `[] is not None`. The
+  vendor app omits the key entirely for both null and empty — verified
+  from `MissionCommand::toPayload` (Prime 3.0.0) — and scope is decided
+  downstream by whether region data is present. An empty array is a
+  shape the vendor client never emits, in the one place being creative
+  is unaffordable.
+- **Race condition in MQTT dispatch.** `_on_message` runs on paho's
+  network thread and iterated the persistent-subscription dict live
+  while `subscribe()`/`unsubscribe()` wrote it from the caller's
+  thread. The resulting `RuntimeError` escaped into paho's dispatch
+  loop, after which **every watcher on that client stopped receiving,
+  silently** — the same failure mode the wildcard fix was written to
+  cure. Reproduced deliberately before fixing.
+- **`request_mission_timeline()` could raise `AttributeError`** when
+  called before `connect()`: it published without the None check its
+  neighbour had.
+- **Two verification tools read the map bundle after the session had
+  closed** (`verify-region-commands --list-rooms`,
+  `name-clean-zone`), and called `get_map_geojson_link()` with one
+  argument where it needs two. Both surfaced to a tester as "map
+  bundle unreadable" / "Session is closed".
+
+### Added
+
+- **`get_firmware()`** — the firmware catalogue, parsed. The endpoint
+  is confirmed live; `FirmwareItem.fused` was corrected from `bool` to
+  `int` (a real response carries `3`, an eFuse level).
+- **`ids` module** — validation for mission and deployment IDs
+  (26-char Crockford base32). Validates without rejecting: the robot
+  is the authority on its own IDs. Scoped to mission/deployment IDs
+  only — map ids and map-version ids are different formats, and
+  applying this to them would flag working data as broken.
+- **`parse_map_version_region_ids()`** — every region in a map
+  version, named or not. The name lookup drops unnamed regions, which
+  is right for a name lookup and wrong for a listing: a tester with
+  twelve zones saw eight, because a newly added zone was absent from
+  the p2map snapshot and unnamed in the version.
+- **`get_map_region_ids()`**, **`watch_dock_reports()`**,
+  **`dock_report_topic()`**.
+
+### Changed
+
+- **17 Prime mission phases** added to the phase tables, tagged
+  OBSERVED vs ASSUMED. Three were seen in real data; the rest come
+  from a firmware enum and no robot here has been observed reporting
+  them. Both are mapped; only one kind is evidence.
+- **`condNotReady` is now `list[int]`** rather than `list[Any]`, and
+  the parser filters rather than casting. The individual code
+  meanings stay unnamed — naming a code nobody has seen is how this
+  project has been wrong before.
+- **The dock report family is closed**: exactly `{evac, refill,
+  padwash, paddry}`. No `charge`, no `battery`. This was an open
+  question no field tester could have answered, because a tester's
+  silence is ambiguous.
+- **mypy is clean and the CI gate is now hard.** The 34 errors it had
+  been running past included one real crash path and two missing
+  guards; none were resolved with a `cast`.
+
+### Documented (no behaviour change)
+
+- **Five module docstrings had outdated status banners removed.**
+  `prime_robot`, `rest_client` and `prime_factory` each opened with
+  "STATUS: Draft" and a claim of never having been tested against a real
+  account; `rest_client` went further with "not a single one of these
+  calls has actually been executed yet". A dozen testers had been using
+  all three for months. `mqtt_client` still said the shadow topics were
+  unverified for V4 — the inference it described had since been
+  confirmed — and `__init__` called map editing and region commands
+  unverified after both were confirmed on hardware.
+
+  The specific caveats stay exactly where they were: `clean_all`, the
+  p2map upload, the services write path. A blanket disclaimer at the top
+  of a file invites either ignoring it or distrusting everything, and
+  helps nobody deciding whether one particular call is safe.
+
+- **`command_type=START` is not a scope limiter.** Disassembly shows
+  the command dispatcher validates the operating mode and calls the
+  handler; scope is decided downstream by whether `regions` is
+  present. A field-confirmed `START` + region run worked *because a
+  region was named*.
+- **`SplitRoomV1` / `MergeRoomsV1` are field-confirmed** on hardware
+  (response level; geometry not audited). `MergeRoomsV1`'s wire
+  command is `arrange_room` — now attested in app bytecode, on a live
+  robot, and in firmware.
+- **Region cleaning confirmed on an x05**: 234 sq ft against two
+  whole-house runs at 644. A PUBACK proves delivery; the area proves
+  intent.
+- **`clean_all` / `select_all` remain untested**, and the firmware
+  read did not change that. No such field exists in firmware at all.
+
+
 ## [0.3.0b12] - 2026-08-21
 
 The local channel answered. A field run on current firmware settled a

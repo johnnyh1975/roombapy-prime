@@ -634,7 +634,7 @@ def is_prime_sku(sku: str | None) -> bool:
     SKU is not evidence of Prime, and the table above is explicitly
     incomplete for platforms nobody has field-tested. Callers should
     read False as "not known to be Prime", not "confirmed Classic"."""
-    return bool(sku) and sku[:2].upper() in _PRIME_PREFIXES_2
+    return sku is not None and sku[:2].upper() in _PRIME_PREFIXES_2
 
 
 def is_classic_sku(sku: str | None) -> bool:
@@ -657,7 +657,7 @@ def is_classic_sku(sku: str | None) -> bool:
     genuinely ambiguous: "R" is Prime in R285020 and Classic in
     R980020.
     """
-    return bool(sku) and sku[:2].upper() in _CLASSIC_PREFIXES_2
+    return sku is not None and sku[:2].upper() in _CLASSIC_PREFIXES_2
 
 
 def sku_generation(sku: str | None) -> str:

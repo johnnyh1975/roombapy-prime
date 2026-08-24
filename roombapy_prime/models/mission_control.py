@@ -362,7 +362,20 @@ class RoutineCommand:
             ]
         if self.params is not None:
             body["params"] = self.params.to_json() if hasattr(self.params, "to_json") else self.params
-        if self.regions is not None:
+        # NULL AND EMPTY ARE THE SAME THING, AND THE KEY IS OMITTED FOR
+        # BOTH. Verified from the vendor app's own `MissionCommand::
+        # toPayload` (Prime 3.0.0, Dart AOT): it null-checks the list,
+        # then checks its length, and skips emitting `regions` on
+        # either -- so whole-house is produced by the ABSENCE of the
+        # key, not by a flag.
+        #
+        # This used to send `regions: []` for an empty list, because
+        # `[] is not None`. That is a payload shape the vendor client
+        # never emits, and the one place this project cannot afford to
+        # be creative: scope is decided downstream by whether region
+        # data is present, and a whole-house run nobody asked for is
+        # the most expensive way to find out how `[]` is read.
+        if self.regions:
             body["regions"] = [r.to_json() if hasattr(r, "to_json") else r for r in self.regions]
         if self.pmap_version_id is not None:
             body["user_p2mapv_id"] = self.pmap_version_id

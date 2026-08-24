@@ -647,6 +647,39 @@ def parse_map_version_regions(data: dict[str, Any] | None) -> dict[str, str]:
     return names
 
 
+def parse_map_version_region_ids(data: dict[str, Any] | None) -> list[str]:
+    """Every region id in a map version, named or not.
+
+    THE COMPANION TO parse_map_version_regions, WHICH DROPS UNNAMED
+    ONES. That filter is right for a name lookup and wrong for a
+    listing: @chairstacker had twelve zones and saw eight, because the
+    LIST came from the p2map's own `rooms_metadata` -- a snapshot that
+    had not caught up with his edits -- while only the NAMES were read
+    from the current version. Zones he had added were absent from the
+    snapshot and unnamed in the version, so neither source showed them.
+
+    Returns ids in the order the version reports them, de-duplicated.
+    An id with no name is exactly the case this exists for, so nothing
+    is filtered on name here.
+    """
+    details = (data or {}).get("geojson_details")
+    if not isinstance(details, dict):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for region in details.get("regions") or []:
+        if not isinstance(region, dict):
+            continue
+        region_id = region.get("id")
+        if region_id is None:
+            continue
+        key = str(region_id)
+        if key not in seen:
+            seen.add(key)
+            ids.append(key)
+    return ids
+
+
 def parse_active_map_versions(data: list[dict[str, Any]] | None) -> list[P2MapVersion]:
     """Converts the raw get_active_map_versions() response into a list
     of typed P2MapVersion objects. NEW (session 26)."""
@@ -1964,7 +1997,31 @@ class CleanMissionStatus:
     2) matches OperatingModeBitmask.VACUUMING exactly, independently
     validating that enum against yet another real data point."""
 
-    cond_not_ready: list[Any] = field(default_factory=list)
+    #: WHAT THIS FIELD IS: the robot's refuse-to-start reasons. A start
+    #: command can be declined, and `condNotReady` carries why -- gated
+    #: by `cap.oMode` (`get_conditional_start_refuse_errors` in the
+    #: firmware's connectivity broker).
+    #:
+    #: ELEMENT TYPE IS `int`, from the app-side deserializers
+    #: (`CleanMissionStatus.java` / `CleanMissionStatusData.java`): an
+    #: array of integer refuse-reason codes. An empty array means no
+    #: refuse condition is active, which is why every capture so far
+    #: has been `[]` -- nobody has caught a robot mid-refusal.
+    #:
+    #: TYPED BUT NOT NARROWED. `list[int]` is what the deserializer
+    #: says; the individual CODE meanings are unknown and would need
+    #: control-flow disassembly. Kept as plain ints rather than an
+    #: invented enum, because naming a code we have never seen is how
+    #: this project has been wrong before.
+    #:
+    #: A withdrawn piece of evidence, recorded so it is not re-derived:
+    #: a `vector::_M_range_check` string sitting next to `condNotReady`
+    #: in the firmware image was briefly read as corroboration. It is
+    #: libstdc++'s generic out-of-bounds message for any `vector::at()`
+    #: anywhere in the binary -- string-blob proximity is compiler
+    #: layout, not a semantic link. The type claim rests on the app
+    #: deserializer alone, which is sufficient on its own.
+    cond_not_ready: list[int] = field(default_factory=list)
     cycle: str | None = None
     error: int | None = None
     initiator: str | None = None
@@ -2027,7 +2084,14 @@ class CleanMissionStatus:
         if not isinstance(data, dict):
             return cls()
         return cls(
-            cond_not_ready=data.get("condNotReady") or [],
+            # Filtered, not cast: the annotation says `list[int]`, and a
+            # robot sending something else should not silently become a
+            # lie about the type. A non-int entry is dropped and the
+            # rest survives.
+            cond_not_ready=[
+                v for v in (data.get("condNotReady") or [])
+                if isinstance(v, int) and not isinstance(v, bool)
+            ],
             cycle=data.get("cycle"),
             error=data.get("error"),
             initiator=data.get("initiator"),
@@ -3789,8 +3853,11 @@ class FirmwareItem:
     can be told rather than left to find out.
 
     Wire keys verified from `FirmwareItemDto`'s `$$serializer` in app
-    3.0.0 (build 3000008). Untested against the live endpoint -- the
-    request model gives no method, so even the verb is unconfirmed.
+    3.0.0 (build 3000008), and CONFIRMED against a live response
+    (SKU W155040, August 2026). The response is `{"firmware": [item,
+    ...]}`; the item shape below matches. Two things the live dump
+    corrected: `fused` is an int, not a bool, and `target_software_ver`
+    is a list -- both were guessed from key names alone before.
     """
 
     version: str | None = None
@@ -3812,7 +3879,13 @@ class FirmwareItem:
     provisioning_priority: int | None = None
     ota_priority: int | None = None
     signing: str | None = None
-    fused: bool | None = None
+    #: AN INT, NOT A BOOL. A live response (SKU W155040, Aug 2026)
+    #: carried `"fused": 3`. It is an eFuse level -- physical,
+    #: write-once bits in the SoC that back secure boot -- not a
+    #: yes/no. Modelled as bool when this class was built from the
+    #: `$$serializer` alone, where the key name gave no type. A real
+    #: dump did.
+    fused: int | None = None
     expected_download_time: int | None = None
     expected_installation_time: int | None = None
 

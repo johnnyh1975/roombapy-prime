@@ -58,7 +58,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b13"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -69,7 +69,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b13#subdirectory=tools"
 ```
 
 ### Upgrading, if you have the tools
@@ -79,10 +79,10 @@ upgrading the library on its own leaves the tools where they were:
 
 ```bash
 # right -- brings the matching library with it
-pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12#subdirectory=tools"
+pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b13#subdirectory=tools"
 
 # wrong, if you have the tools -- upgrades half of the pair
-pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12"
+pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b13"
 ```
 
 This is not theoretical. @chairstacker upgraded the library to b6, ran
@@ -201,7 +201,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b12#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b13#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its
@@ -246,6 +246,9 @@ below. Three independent accounts have exercised this, on a Roomba Plus
 | Favorite writes — resend, colour change, delete | change visible in the app |
 | Robot settings — child lock | appeared in the app, robot announced it audibly |
 | Keep-out zone / no-mop zone **reads** | two real zones, both types correctly identified |
+| **Splitting and merging rooms** | both accepted on a Combo 105, map re-rendered (response level; geometry not audited) |
+| **Region cleaning on an x05** | 234 sq ft against two whole-house runs at 644 — the area is the proof, not the acknowledgement |
+| Firmware catalogue (`get_firmware`) | a real response, parsed |
 
 ### Independently reconstructed
 
@@ -261,7 +264,7 @@ flow, shadow topics and envelope, the `cmd` topic with `p2map_id` and
 data.
 
 Where we differed, that reconstruction was right twice — see the
-0.3.0b12 changelog entry.
+0.3.0b13 changelog entry.
 
 ### Region cleaning: what it took, and what it needs
 

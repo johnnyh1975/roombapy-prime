@@ -2391,3 +2391,41 @@ class TestAWatchIsNotResumedUntilItIsAcknowledged:
             "the resumed message must be reached only after checking "
             "that every restored subscription was acknowledged"
         )
+
+
+@pytest.mark.asyncio
+async def test_get_firmware_unwraps_the_envelope():
+    """The response is `{"firmware": [item, ...]}` (confirmed live,
+    SKU W155040). get_firmware() returns the items; get_firmware_raw()
+    still hands back the whole thing."""
+    from roombapy_prime.models.robot_info import FirmwareItem
+
+    mqtt = MagicMock()
+    rest = MagicMock()
+    rest.get_firmware_raw = AsyncMock(
+        return_value={"firmware": [{"version": "8.6.2", "fused": 3}]}
+    )
+    robot = PrimeRobot(
+        blid="B", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None
+    )
+
+    items = await robot.get_firmware("W155040")
+
+    assert len(items) == 1
+    assert isinstance(items[0], FirmwareItem)
+    assert items[0].version == "8.6.2"
+    assert items[0].fused == 3
+
+
+@pytest.mark.asyncio
+async def test_get_firmware_returns_empty_list_for_a_missing_key():
+    """An empty catalogue is a list of nothing, not an error -- a
+    caller iterates it either way."""
+    mqtt = MagicMock()
+    rest = MagicMock()
+    rest.get_firmware_raw = AsyncMock(return_value={})
+    robot = PrimeRobot(
+        blid="B", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None
+    )
+
+    assert await robot.get_firmware() == []

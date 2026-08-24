@@ -395,7 +395,9 @@ def _report_tier_inference(report: Report, settings_result: Any) -> None:
         )
 
 
-async def _check_candidate_shadows(report: Report, robot: Any, raw_capture: dict[str, Any]) -> None:
+async def _check_candidate_shadows(
+    report: Report, robot: Any, raw_capture: dict[str, Any] | None
+) -> None:
     """NEW (this session, prompted by a person's own native-binary symbol
     analysis, not this library's own investigation): the real app
     subscribes to a wildcard covering every NAMED shadow. Five were
@@ -1047,7 +1049,7 @@ def main() -> None:
     if args.dump_config:
         print(f"--dump-config set: redacted raw responses will additionally be saved under {args.dump_config}.")
 
-    raw_capture: dict[str, Any] = {} if args.dump_config else None
+    raw_capture: dict[str, Any] | None = {} if args.dump_config else None
     report = asyncio.run(run(username, password, args.country_code, args.blid, args.allow_writes, raw_capture))
     report.redact(username, password)
 

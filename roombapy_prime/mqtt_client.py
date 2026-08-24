@@ -24,11 +24,14 @@ Key corrections baked in here that were NOT obvious from the start:
     setup logic on every reconnect — otherwise a disconnect can trigger
     an effectively infinite reconnect loop.
 
-Confirmed on EPHEMERAL (900-series) and SMART-tier (i7-series) robots.
-NOT yet confirmed against a Prime/V4 account — native strings suggest the
-same shadow topic conventions apply (ClassicThingShadowTopicFactory /
-NamedThingShadowTopicFactory both exist in the shared native core), but
-this is unverified live for V4.
+Confirmed on EPHEMERAL (900-series), SMART-tier (i7-series) AND
+Prime/V4 robots — the last of those by a dozen testers running region
+cleans, schedule writes and map edits through this client. The native
+strings that suggested the same shadow topic conventions apply
+(ClassicThingShadowTopicFactory / NamedThingShadowTopicFactory in the
+shared core) turned out to be right, which is worth recording: the
+inference held, and the note claiming it was unverified outlived its
+own confirmation.
 """
 from __future__ import annotations
 
@@ -452,10 +455,19 @@ class PrimeMqttClient:
             # Was a bare assert -- see reconnect()'s own note on why
             # that is the wrong tool here.
             self.reconnect(timeout=timeout)
+        client = self._client
+        if client is None:
+            # reconnect() -> connect() always assigns a client, so this
+            # is unreachable in practice. Checked rather than asserted
+            # because the alternative is an AttributeError on None from
+            # inside the loop below, where the topic being subscribed
+            # is no longer in the message.
+            msg = "MQTT client is not available after reconnect"
+            raise ConnectionError(msg)
         mids = []
         not_sent: dict[str, int] = {}
         for topic in topics:
-            result, mid = self._client.subscribe(topic, qos=1)
+            result, mid = client.subscribe(topic, qos=1)
             # THE RETURN CODE WAS DISCARDED. paho answers MQTT_ERR_NO_CONN
             # when the client is not connected, and then no SUBSCRIBE
             # packet leaves at all -- no SUBACK follows, the wait below
@@ -464,6 +476,15 @@ class PrimeMqttClient:
             # subscribed to, forever, with nothing anywhere saying so.
             if result != mqtt.MQTT_ERR_SUCCESS:
                 not_sent[topic] = result
+                continue
+            if mid is None:
+                # paho types mid as optional and documents it as set on
+                # success. A success without one would mean we cannot
+                # match the SUBACK, so the wait below would time out and
+                # report a subscription failure for a topic that may
+                # actually be live -- worth treating as not-sent
+                # explicitly rather than crashing on the dict key.
+                not_sent[topic] = mqtt.MQTT_ERR_UNKNOWN
                 continue
             mids.append(mid)
             self._mid_to_topic[mid] = topic
@@ -878,9 +899,30 @@ class PrimeMqttClient:
         # traffic actually existed. _pending (above) is unaffected --
         # it's only ever used for one-shot exact-topic request/response
         # waits (get_shadow()/update_shadow()), never wildcards.
-        for pattern, cbs in self._persistent.items():
+        # SNAPSHOT, NOT LIVE ITERATION. This runs on paho's network
+        # thread; subscribe()/unsubscribe() write `_persistent` from
+        # whatever thread the caller is on. Iterating .items() directly
+        # raises "dictionary keys changed during iteration" if a
+        # watcher starts or stops while a message is being dispatched.
+        #
+        # Reproduced deliberately: two threads, one writing keys and
+        # one iterating, raise within a second or two. Rare in practice
+        # -- it needs a subscribe/unsubscribe to land inside this loop
+        # -- but the consequence is bad out of proportion to the odds:
+        # the exception escapes into paho's dispatch loop, and every
+        # watcher on this client stops receiving, silently, exactly the
+        # failure mode the persistent-wildcard fix above was written to
+        # cure.
+        #
+        # list() copies the key/value pairs under the GIL, so the loop
+        # below runs against a stable view. A watcher registered during
+        # dispatch is picked up on the next message, which is what the
+        # caller would expect anyway.
+        for pattern, cbs in list(self._persistent.items()):
             if mqtt.topic_matches_sub(pattern, msg.topic):
-                for cb in cbs:
+                # The callback list itself can also grow while we walk
+                # it -- same reason, same fix.
+                for cb in list(cbs):
                     # Same guard, same reason. Persistent subscribers are
                     # the watchers -- mission timeline, live map -- and a
                     # watcher that raises would take down the client that
@@ -954,10 +996,26 @@ class PrimeMqttClient:
 
         `dock/paddry/report` is CONFIRMED LIVE (chairstacker) -- it
         fired right after a mission's `start`, carrying the dock's
-        lifetime stats rather than a live pad-dry state. The topic name
-        implies a family, `paddry` being the one `reportType` seen so
-        far; a `charge` or `battery` sibling would be the real find and
-        has not been observed.
+        lifetime stats rather than a live pad-dry state.
+
+        THE FAMILY IS CLOSED, AND THIS QUESTION IS ANSWERED. It read
+        here for a while that a `charge` or `battery` sibling "would be
+        the real find and has not been observed" -- an open question no
+        field tester could ever have closed, because a tester's silence
+        is ambiguous.
+
+        Firmware 3.8.126 settles it. `cloud-state-mqtt-connection.cpp::
+        configure_mqtt_topics` builds the complete local subscription
+        list as one contiguous literal, and the report topics in it are
+        exactly:
+
+            /evac/report  /dock/refill/report
+            /dock/padwash/report  /dock/paddry/report
+
+        Four, and no more. No `charge`, no `battery`. That is a
+        subscribe-list construction rather than a pattern match across
+        the image, which is why it supersedes an earlier grep-based
+        version of the same finding.
 
         With no `report_type`, returns a single-level `+` wildcard so a
         caller can subscribe the whole family without knowing which
@@ -1009,6 +1067,14 @@ class PrimeMqttClient:
         """
         topic = self.mission_timeline_topic(irbt_topic_prefix, report=False)
         payload = json.dumps({"timelineRequestId": request_id}).encode()
+        if self._client is None:
+            # This path had no check at all, unlike publish_cmd_payload()
+            # below -- calling it before connect() raised AttributeError
+            # on None rather than saying what was wrong.
+            raise ShadowError(
+                "Not connected. connect() must have been called before requesting a "
+                "mission timeline -- the request goes over MQTT."
+            )
         info = self._client.publish(topic, payload=payload, qos=1)
         _publish_confirmed(info, topic)
         return True
