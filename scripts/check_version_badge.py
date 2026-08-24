@@ -154,6 +154,32 @@ def get_readme_test_count_mentions() -> list[int]:
     return [int(n) for n in re.findall(r"(\d+)\+ (?:unit )?tests?", text)]
 
 
+def readme_status_version() -> str | None:
+    """The version named in the README's status blockquote, if any.
+
+    SEPARATE FROM THE BADGE, and that separation is why this exists. The
+    badge reads `v0.3.0-beta` and stays correct across every beta, so it
+    passed while the line beneath it said "currently `b6`" through seven
+    releases. The first sentence a reader sees was the stalest thing in
+    the file, and the check that was supposed to catch staleness had no
+    opinion about it.
+    """
+    text = Path("README.md").read_text(encoding="utf-8")
+    match = re.search(r"currently\s+`(b\d+)`", text)
+    return match.group(1) if match else None
+
+
+def release_note_exists(version: str) -> bool:
+    """Whether release-notes/ carries an entry for this version.
+
+    b11, b12 and b13 were all missing when this was added -- the
+    changelog had them, the directory did not, and nothing noticed
+    because nothing looked. A changelog entry and a release note serve
+    different readers; having one is not having the other.
+    """
+    return (Path("release-notes") / f"v{version}.md").is_file()
+
+
 def main() -> int:
     problems = []
 
@@ -164,6 +190,27 @@ def main() -> int:
         problems.append(
             f"README's version badge says {actual_badge!r}, but pyproject.toml's "
             f"version ({pyproject_version!r}) implies it should say {expected_badge!r}."
+        )
+
+    status_version = readme_status_version()
+    if status_version is not None:
+        # "0.3.0b13" -> "b13". Not `.split(".")[-1]`, which yields
+        # "0b13" -- the patch number and the beta suffix share a
+        # dot-segment, so splitting on dots cuts in the wrong place.
+        suffix = re.search(r"(b\d+)$", pyproject_version)
+        expected_status = suffix.group(1) if suffix else pyproject_version
+        if not pyproject_version.endswith(status_version):
+            problems.append(
+                f"README status line says 'currently `{status_version}`', but "
+                f"pyproject.toml is at {pyproject_version} "
+                f"(expected `{expected_status}`) -- this is the first line a "
+                f"reader sees, and the badge alone does not cover it."
+            )
+
+    if not release_note_exists(pyproject_version):
+        problems.append(
+            f"release-notes/v{pyproject_version}.md is missing. The changelog "
+            f"entry is not a substitute -- the two serve different readers."
         )
 
     if not changelog_has_entry(pyproject_version):
