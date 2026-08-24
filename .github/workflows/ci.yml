@@ -127,8 +127,16 @@ jobs:
       # Next steps, when someone wants them: add tests/, then --strict.
       # The integration next door runs --strict with two error codes
       # named and justified; that is still the destination.
+      # NO --output-format HERE. That is a Ruff flag, and it was copied
+      # onto this line from the Ruff step above -- mypy has never
+      # accepted it and exits 2 on the argument alone, before it type
+      # checks anything. The failure looks like a type error in CI and
+      # is a typo in the workflow.
+      #
+      # mypy's GitHub annotations come from the default output, which
+      # Actions already parses; there is nothing to opt into.
       - name: mypy (production code)
-        run: mypy roombapy_prime --exclude 'tests/' --output-format=github
+        run: mypy roombapy_prime --exclude 'tests/'
 
   version-badge:
     name: README version/test-count check
