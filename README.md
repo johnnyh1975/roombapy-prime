@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.3.0-beta.** (currently `b14`) Reading and writing both work
+> **Status: v0.3.0-beta.** (currently `b15`) Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -65,7 +65,7 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 Not yet published to PyPI — install from GitHub:
 
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b14"
+pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b15"
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -76,7 +76,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b14#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b15#subdirectory=tools"
 ```
 
 ### Upgrading, if you have the tools
@@ -86,10 +86,10 @@ upgrading the library on its own leaves the tools where they were:
 
 ```bash
 # right -- brings the matching library with it
-pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b14#subdirectory=tools"
+pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b15#subdirectory=tools"
 
 # wrong, if you have the tools -- upgrades half of the pair
-pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b14"
+pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b15"
 ```
 
 This is not theoretical. @chairstacker upgraded the library to b6, ran
@@ -208,7 +208,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b14#subdirectory=tools"
+pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0b15#subdirectory=tools"
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its
@@ -248,7 +248,7 @@ below. Three independent accounts have exercised this, on a Roomba Plus
 | **Region cleaning built from scratch** | robot travelled to room 12 and cleaned it |
 | Schedule writes — unchanged resend and a real disable | change took effect |
 | **Map editing (`edit_map`, room rename)** | renamed and reverted, both confirmed in the app |
-| **Zone names in the map bundle** | read from a real robot's `cleanZones` layer |
+| Zone names in the map bundle | **not established.** The reading code had a typo that made it return nothing on every bundle, so the earlier "confirmed" here rested on a search that never ran. Fixed in b15 and now genuinely untested. |
 | Map editing — room rename, with revert | twice, name changed in the app |
 | Favorite writes — resend, colour change, delete | change visible in the app |
 | Robot settings — child lock | appeared in the app, robot announced it audibly |
@@ -273,7 +273,7 @@ flow, shadow topics and envelope, the `cmd` topic with `p2map_id` and
 data.
 
 Where we differed, that reconstruction was right twice — see the
-0.3.0b14 changelog entry.
+0.3.0b15 changelog entry.
 
 ### Region cleaning: what it took, and what it needs
 

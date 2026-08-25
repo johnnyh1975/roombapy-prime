@@ -8,6 +8,39 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b15] - 2026-08-24
+
+### Fixed
+
+- **The zone-name search never ran.** `_zone_names_from_bundle` read
+  `getattr(bundle, "zone_layers", None)`. `parse_map_bundle` returns a
+  **dict** — `{filename_without_extension: content}` — and has no such
+  attribute, so that expression was `None` on every bundle and the
+  function returned `{}` regardless of the map's contents.
+
+  Every "no zone names in the map bundle" message, across every
+  version, was a statement about a typo.
+
+  b14's widening from one layer to three did nothing, because the loop
+  was iterating an empty dict. Same mistake one level up: concluding
+  absence from a search that never happened.
+
+- **Three tests agreed it worked.** Each built its fixture with a
+  `zone_layers` attribute, matching what the reading code reached for —
+  proving the code agreed with itself and nothing else. They now
+  construct bundles from the field names confirmed in `map_bundle.py`:
+  a `CleanZoneFeature` carries `id` on the feature and `name` inside
+  `properties`.
+
+### Added
+
+- **`--list-rooms` prints what the bundle contains.** Reporting
+  "nothing found" without naming where it looked is unfalsifiable from
+  outside, which is precisely how the typo above survived as a claim
+  about a tester's data. Bundle contents also vary per map, so the file
+  list is the first thing worth knowing when the answer is empty.
+
+
 ## [0.3.0b14] - 2026-08-23
 
 ### Fixed
