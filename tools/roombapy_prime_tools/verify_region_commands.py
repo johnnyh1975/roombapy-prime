@@ -1514,7 +1514,27 @@ async def _zone_names_from_bundle(
     # layer again. Naming which layer a zone came from matters too --
     # a keep-out zone and a clean zone are both "zones" here and mean
     # opposite things to a caller building a cleaning command.
-    layers = getattr(bundle, "zone_layers", None) or {}
+    # `parse_map_bundle` RETURNS A DICT, keyed by filename without the
+    # extension -- there is no `zone_layers` attribute and never was.
+    #
+    # `getattr(bundle, "zone_layers", None)` therefore returned None on
+    # every bundle ever passed here, so this function returned {}
+    # unconditionally. The tool then reported "no zone names in the map
+    # bundle", which read as a fact about the data and was a fact about
+    # a typo.
+    #
+    # Adding two more layer names to the loop did not help, because the
+    # loop was reading an empty dict. That is the same mistake one level
+    # up: concluding absence from a search that never ran.
+    layers = bundle if isinstance(bundle, dict) else {}
+
+    # SAY WHAT IS IN THE BUNDLE. A tool that reports "nothing found"
+    # without naming where it looked is unfalsifiable from the outside
+    # -- which is exactly how a typo here survived as a claim about the
+    # data. Bundle contents vary per map, so the file list is also the
+    # first thing worth knowing when the answer is empty.
+    print(f"\n  (bundle contains: {', '.join(sorted(layers)) or 'nothing'})")
+
     names: dict[str, str] = {}
     for layer_name in ("cleanZones", "adHocCleanZones", "policyZones"):
         layer = layers.get(layer_name) or {}

@@ -101,9 +101,13 @@ class TestZoneNamesComeFromTheBundle:
         robot = SimpleNamespace(
             get_map_geojson_link=AsyncMock(return_value="url"),
             download_map_bundle=AsyncMock(return_value=b""),
-            parse_map_bundle=lambda _blob: SimpleNamespace(
-                zone_layers={"cleanZones": layer}
-            ),
+            # A DICT, because that is what parse_map_bundle returns:
+            # {filename_without_extension: content}. This used to build
+            # a SimpleNamespace with a `zone_layers` attribute, matching
+            # the production code's `getattr(bundle, "zone_layers")` --
+            # and both were wrong the same way, so the test passed while
+            # the tool returned nothing on every real bundle.
+            parse_map_bundle=lambda _blob: {"cleanZones": layer},
         )
         return await _zone_names_from_bundle(robot, "MAP-1", "VER-1")
 
@@ -218,13 +222,19 @@ class TestAllThreeZoneLayersAreRead:
 
     @staticmethod
     def _bundle(**layers):
-        from unittest.mock import MagicMock
+        """A PLAIN DICT, which is what `parse_map_bundle` returns.
 
-        bundle = MagicMock()
-        bundle.zone_layers = {
-            name: {"features": feats} for name, feats in layers.items()
-        }
-        return bundle
+        The first version of this helper built a MagicMock with a
+        `zone_layers` attribute, mirroring the production code's
+        `getattr(bundle, "zone_layers", None)`. Both were wrong in the
+        same way, so the tests passed and the tool still returned
+        nothing on a real bundle.
+
+        A mock that agrees with the code proves the code agrees with
+        itself. `parse_map_bundle` returns {filename_without_extension:
+        content} and never had a `zone_layers` attribute at all.
+        """
+        return {name: {"features": feats} for name, feats in layers.items()}
 
     @staticmethod
     async def _names(bundle):
@@ -292,3 +302,124 @@ class TestAllThreeZoneLayersAreRead:
 
         assert "KeepOutZone" in names["300"]
         assert names["300"].startswith("Cables")
+
+
+class TestAgainstTheConfirmedFeatureShape:
+    """Built from the field names confirmed in `map_bundle.py`, not from
+    what the reading code happens to expect.
+
+    Every earlier test here constructed its fixture to match the parser.
+    That is why a typo survived: `getattr(bundle, "zone_layers")` on a
+    dict returns None, so the function returned {} on every real bundle
+    while three tests agreed it worked.
+
+    A `CleanZoneFeature` carries `id` beside `geometry` and `status`,
+    with `name` inside `properties` -- that pairing is what makes a
+    clean zone nameable. A `PolicyZoneFeature`'s properties carry
+    `zone_type` and no name at all.
+    """
+
+    @staticmethod
+    async def _names(bundle):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from roombapy_prime_tools.verify_region_commands import (
+            _zone_names_from_bundle,
+        )
+
+        robot = MagicMock()
+        robot.get_map_geojson_link = AsyncMock(return_value="url")
+        robot.download_map_bundle = AsyncMock(return_value=b"")
+        robot.parse_map_bundle = MagicMock(return_value=bundle)
+        with patch("builtins.print"):
+            return await _zone_names_from_bundle(robot, "MAP", "VER")
+
+    @pytest.mark.asyncio
+    async def test_a_clean_zone_uses_feature_level_id(self):
+        """`id` sits on the feature, `name` inside properties. Reading
+        both from properties would find nothing."""
+        names = await self._names({
+            "cleanZones": {"features": [{
+                "type": "Feature",
+                "id": "101",
+                "geometry": {"type": "Polygon", "coordinates": [[]]},
+                "properties": {"name": "Kitchen", "status": "active"},
+            }]},
+        })
+
+        assert names == {"101": "Kitchen"}
+
+    @pytest.mark.asyncio
+    async def test_a_policy_zone_has_no_name_to_find(self):
+        """Its properties carry `zone_type` and nothing else useful.
+        Finding no name here is correct, not a failure."""
+        names = await self._names({
+            "policyZones": {"features": [{
+                "type": "Feature",
+                "id": "200",
+                "geometry": {"type": "Polygon", "coordinates": [[]]},
+                "properties": {"zone_type": "KeepOutZone"},
+            }]},
+        })
+
+        assert names == {}
+
+    @pytest.mark.asyncio
+    async def test_the_bundle_is_a_plain_dict(self):
+        """The regression itself: an object with the attribute the old
+        code reached for must not be treated as a bundle."""
+        from types import SimpleNamespace
+
+        names = await self._names(
+            SimpleNamespace(zone_layers={"cleanZones": {"features": [
+                {"id": "1", "properties": {"name": "Nope"}},
+            ]}})
+        )
+
+        assert names == {}, "only a dict is a parsed bundle"
+
+
+class TestTheBundleContentsAreNamed:
+    """A tool that reports "nothing found" without saying where it
+    looked cannot be checked from outside.
+
+    That is how `getattr(bundle, "zone_layers")` survived as a claim
+    about the data: it returned {} on every bundle, the message said
+    the names were stored nowhere readable, and nobody could see that
+    the search had not happened. Bundle contents also vary per map, so
+    the file list is the first thing worth knowing when the answer is
+    empty.
+    """
+
+    @staticmethod
+    async def _run(bundle, capsys):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from roombapy_prime_tools.verify_region_commands import (
+            _zone_names_from_bundle,
+        )
+
+        robot = MagicMock()
+        robot.get_map_geojson_link = AsyncMock(return_value="url")
+        robot.download_map_bundle = AsyncMock(return_value=b"")
+        robot.parse_map_bundle = MagicMock(return_value=bundle)
+        await _zone_names_from_bundle(robot, "MAP", "VER")
+        return capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_the_file_list_is_printed(self, capsys):
+        """Built from @chairstacker's actual bundle: five files, and no
+        cleanZones among them."""
+        out = await self._run({
+            "borders": {}, "manifest": {}, "metadata": {},
+            "policyZones": {"features": []}, "rooms": {},
+        }, capsys)
+
+        assert "policyZones" in out
+        assert "cleanZones" not in out
+
+    @pytest.mark.asyncio
+    async def test_an_empty_bundle_says_so(self, capsys):
+        out = await self._run({}, capsys)
+
+        assert "nothing" in out
