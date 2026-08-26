@@ -423,3 +423,65 @@ class TestTheBundleContentsAreNamed:
         out = await self._run({}, capsys)
 
         assert "nothing" in out
+
+
+class TestTheGeojsonLinkIsADict:
+    """@chairstacker (#64) on b15: `map bundle unreadable: Constructor
+    parameter should be str`.
+
+    `get_map_geojson_link` returns the whole response dict;
+    `download_map_bundle` wants the URL string out of it. Passing the
+    dict raised that message from yarl, which reads like a type bug in
+    the library rather than a mistake at the call site.
+
+    `verify_map_edit.py` has extracted the URL correctly all along.
+    Two implementations of the same three lines, one of them wrong —
+    and the wrong one was the one his zone-name question depended on.
+    """
+
+    @staticmethod
+    async def _names(link_value, capsys):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from roombapy_prime_tools.verify_region_commands import (
+            _zone_names_from_bundle,
+        )
+
+        robot = MagicMock()
+        robot.get_map_geojson_link = AsyncMock(return_value=link_value)
+
+        async def _download(url):
+            assert isinstance(url, str), f"got {type(url).__name__}"
+            return b""
+
+        robot.download_map_bundle = AsyncMock(side_effect=_download)
+        robot.parse_map_bundle = MagicMock(return_value={
+            "cleanZones": {"features": [
+                {"id": "101", "properties": {"name": "Kitchen"}},
+            ]},
+        })
+        names = await _zone_names_from_bundle(robot, "MAP", "VER")
+        return names, capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_a_dict_response_still_finds_the_url(self, capsys):
+        names, _ = await self._names(
+            {"url": "https://example.invalid/bundle.tar.gz", "expires": 900},
+            capsys,
+        )
+
+        assert names == {"101": "Kitchen"}
+
+    @pytest.mark.asyncio
+    async def test_a_plain_string_still_works(self, capsys):
+        names, _ = await self._names("https://example.invalid/b.tar.gz", capsys)
+
+        assert names == {"101": "Kitchen"}
+
+    @pytest.mark.asyncio
+    async def test_a_response_without_a_url_says_so(self, capsys):
+        """Rather than passing None down and failing further in."""
+        names, out = await self._names({"expires": 900}, capsys)
+
+        assert names == {}
+        assert "no download URL" in out

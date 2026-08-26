@@ -1495,10 +1495,30 @@ async def _zone_names_from_bundle(
         return {}
     try:
         link = await robot.get_map_geojson_link(p2map_id, map_version)
-        blob = await robot.download_map_bundle(link)
+        # THE LINK IS A DICT, NOT A URL. `get_map_geojson_link` returns
+        # the whole response; `download_map_bundle` wants the string.
+        # Passing the dict raised "Constructor parameter should be str"
+        # from yarl, which reads like a type bug in the library rather
+        # than a mistake at the call site (@chairstacker, #64).
+        #
+        # verify_map_edit.py has extracted it correctly all along --
+        # this is the second implementation of the same three lines,
+        # and only one of them was right.
+        url = next(
+            (v for v in link.values() if isinstance(v, str) and v.startswith("http")),
+            None,
+        ) if isinstance(link, dict) else link
+        if not url:
+            print("  (no download URL in the map bundle response)")
+            return {}
+        blob = await robot.download_map_bundle(url)
         bundle = robot.parse_map_bundle(blob)
     except Exception as exc:  # noqa: BLE001
-        print(f"  (map bundle unreadable: {exc})")
+        # NAME THE STEP, not just the exception. "map bundle unreadable"
+        # covered three different network calls, so a failure said
+        # nothing about which one -- and the bundle-contents line below
+        # only prints on success, which is when it is least needed.
+        print(f"  (map bundle unreadable: {type(exc).__name__}: {exc})")
         return {}
 
     # ALL THREE ZONE LAYERS, not just cleanZones.
