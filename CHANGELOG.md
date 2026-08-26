@@ -8,6 +8,48 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b17] - 2026-08-26
+
+### Fixed
+
+- **`parse_map_bundle` is a module function, not a robot method.**
+  `robot.parse_map_bundle(blob)` raised `AttributeError` — and the
+  dict-link bug fixed in b16 had masked it completely: that line had
+  never executed, so the error only became reachable one release ago.
+  @utkjmitch and @chairstacker both hit it the same day.
+
+- **The tool concluded absence after a read that threw.**
+  `_zone_names_from_bundle` returned `{}` for both "the read failed"
+  and "the read found no names", so the caller printed its no-names
+  finding either way. It returns `None` on failure now, and the caller
+  says the question is unanswered by that run.
+
+  Three releases in a row reported on a search that had not happened:
+  b14 widened a search that was not running, b15 fixed the reader the
+  call never reached, b16 made the call work and still printed the
+  conclusion after a throw. @utkjmitch proposed the split.
+
+- **The blid leaked through composite ids in diagnostics.** Substring
+  redaction already existed, built after an earlier report where
+  `p2map_id` carried `<BLID>-<epoch>` past a key-name list — and was
+  wired into the shadow section only. `map_id` inside a `lastCommand`
+  repr went through the outer pass, which checks key names and did not
+  know the blid. Both passes now cover the whole payload.
+
+- **A test read a source file through a cwd-relative path**, so the
+  suite passed from the repo root and failed from inside `tools/`.
+  Anchored to `__file__`.
+
+### Internal
+
+- **Bundle tests build a real tar.gz and use the real parser.** Every
+  one of them mocked `parse_map_bundle` as a robot method — an
+  attribute `PrimeRobot` does not have — so the mocks agreed with a
+  call site that could only ever raise. Fourteen failed when they were
+  switched over. b15's own notes named this failure mode for the
+  `zone_layers` fixture; this was the same seam one function up.
+
+
 ## [0.3.0b16] - 2026-08-25
 
 ### Fixed
