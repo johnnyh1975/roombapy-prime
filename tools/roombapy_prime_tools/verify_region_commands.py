@@ -1479,7 +1479,7 @@ async def send_stage_two(
 
 async def _zone_names_from_bundle(
     robot: Any, p2map_id: str, map_version: str | None
-) -> dict[str, str]:
+) -> dict[str, str] | None:
     """{zone_id: name} from the bundle's `cleanZones` layer, or {}.
 
     The map metadata carries room names only. A zone's name, when it
@@ -1512,14 +1512,29 @@ async def _zone_names_from_bundle(
             print("  (no download URL in the map bundle response)")
             return {}
         blob = await robot.download_map_bundle(url)
-        bundle = robot.parse_map_bundle(blob)
+        # A MODULE FUNCTION, not a robot method. `PrimeRobot` has no
+        # `parse_map_bundle`, so this raised AttributeError -- and the
+        # dict-link bug fixed in b16 masked it completely: this line had
+        # never executed, so the error only became reachable one release
+        # ago. @utkjmitch and @chairstacker both hit it immediately.
+        from roombapy_prime.models.map_bundle import (  # noqa: PLC0415
+            parse_map_bundle,
+        )
+
+        bundle = parse_map_bundle(blob)
     except Exception as exc:  # noqa: BLE001
         # NAME THE STEP, not just the exception. "map bundle unreadable"
         # covered three different network calls, so a failure said
         # nothing about which one -- and the bundle-contents line below
         # only prints on success, which is when it is least needed.
         print(f"  (map bundle unreadable: {type(exc).__name__}: {exc})")
-        return {}
+        # None MEANS "NOT ANSWERED", {} MEANS "READ FINE, NO NAMES".
+        #
+        # Both returned {} before, so the caller printed its no-names
+        # conclusion after a read that threw -- concluding absence from
+        # a search that never ran, one level above where b15 fixed the
+        # same words. @utkjmitch spotted it and proposed this split.
+        return None
 
     # ALL THREE ZONE LAYERS, not just cleanZones.
     #
@@ -1713,12 +1728,23 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
         # read as a false one about the data. He then found the same
         # names showing up in calendar entries, which is how we learned
         # the claim was wrong.
-        print(
-            "\n  (no zone names found in the bundle's cleanZones, "
-            "adHocCleanZones or policyZones layers -- if the app shows "
-            "names for these, they are stored somewhere this tool does "
-            "not yet read, which is worth reporting)"
-        )
+        # ABSENCE AND FAILURE ARE DIFFERENT FINDINGS. `None` means the
+        # bundle could not be read, so nothing was searched; `{}` means
+        # the search ran and found no names. Printing the same sentence
+        # for both is how three releases reported on a search that had
+        # not happened.
+        if zone_names is None:
+            print(
+                "\n  (the bundle read FAILED above, so whether zone names "
+                "exist in its layers is UNANSWERED by this run)"
+            )
+        else:
+            print(
+                "\n  (no zone names found in the bundle's cleanZones, "
+                "adHocCleanZones or policyZones layers -- if the app shows "
+                "names for these, they are stored somewhere this tool does "
+                "not yet read, which is worth reporting)"
+            )
     print(
         "\nTo test one: roombapy-prime-verify-region-commands --send-region "
         "--p2map-id P2MAP_ID --room-id ROOM_ID --region-type rid_or_zid "

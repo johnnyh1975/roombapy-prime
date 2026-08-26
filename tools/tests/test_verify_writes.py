@@ -1689,8 +1689,13 @@ class TestTheCandidateKeysAreTheVendorsOwn:
         import re
         import pathlib
 
-        source = pathlib.Path(
-            "tools/roombapy_prime_tools/verify_writes.py"
+        # ANCHORED TO THIS FILE, not to the working directory.
+        # A cwd-relative path makes the suite pass from the repo root
+        # and fail from inside tools/ with FileNotFoundError -- which
+        # reads as a broken test rather than a wrong path (@utkjmitch).
+        source = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "roombapy_prime_tools" / "verify_writes.py"
         ).read_text()
         # THE WHOLE LIST, not a fixed slice of it.
         #

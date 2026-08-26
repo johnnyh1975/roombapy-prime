@@ -16,6 +16,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+# Loaded by path: two conftest files exist in this repo, so a plain
+# `from conftest import` resolves to whichever pytest imported first,
+# and `tools.tests.conftest` only works from the repo root.
+import importlib.util as _ilu
+from pathlib import Path as _P
+_spec = _ilu.spec_from_file_location(
+    "_bundle_conftest", _P(__file__).resolve().parent / "conftest.py"
+)
+_mod = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+_make_bundle = _mod.make_bundle_bytes
+
+
 
 class _Zone(SimpleNamespace):
     pass
@@ -100,14 +113,14 @@ class TestZoneNamesComeFromTheBundle:
 
         robot = SimpleNamespace(
             get_map_geojson_link=AsyncMock(return_value="url"),
-            download_map_bundle=AsyncMock(return_value=b""),
-            # A DICT, because that is what parse_map_bundle returns:
-            # {filename_without_extension: content}. This used to build
-            # a SimpleNamespace with a `zone_layers` attribute, matching
-            # the production code's `getattr(bundle, "zone_layers")` --
-            # and both were wrong the same way, so the test passed while
-            # the tool returned nothing on every real bundle.
-            parse_map_bundle=lambda _blob: {"cleanZones": layer},
+            # REAL BYTES, read by the REAL parser. This used to mock
+            # `parse_map_bundle` as a robot method -- an attribute
+            # `PrimeRobot` does not have -- so the mock agreed with a
+            # call site that could only ever raise, and hid an
+            # AttributeError behind a passing test.
+            download_map_bundle=AsyncMock(
+                return_value=_make_bundle({"cleanZones.geojson": layer})
+            ),
         )
         return await _zone_names_from_bundle(robot, "MAP-1", "VER-1")
 
@@ -152,7 +165,10 @@ class TestZoneNamesComeFromTheBundle:
             get_map_geojson_link=AsyncMock(side_effect=RuntimeError("nope"))
         )
 
-        assert await _zone_names_from_bundle(robot, "MAP-1", "VER-1") == {}
+        # None, NOT {}: "the read failed" and "the read found no names"
+        # are different findings. Returning {} for both is what let the
+        # caller print its no-names conclusion after a read that threw.
+        assert await _zone_names_from_bundle(robot, "MAP-1", "VER-1") is None
 
 
 class TestABundleFileIsAFeatureCollection:
@@ -247,7 +263,13 @@ class TestAllThreeZoneLayersAreRead:
         robot = MagicMock()
         robot.get_map_geojson_link = AsyncMock(return_value="link")
         robot.download_map_bundle = AsyncMock(return_value=b"")
-        robot.parse_map_bundle = MagicMock(return_value=bundle)
+        # NO parse_map_bundle MOCK. It is a module function, not a
+        # robot method -- mocking it here is what let an
+        # AttributeError ship green. The download returns real bytes
+        # and the real parser reads them.
+        robot.download_map_bundle = AsyncMock(
+            return_value=_make_bundle(bundle)
+        )
         with patch("builtins.print"):
             return await _zone_names_from_bundle(robot, "MAP", "V1")
 
@@ -330,7 +352,13 @@ class TestAgainstTheConfirmedFeatureShape:
         robot = MagicMock()
         robot.get_map_geojson_link = AsyncMock(return_value="url")
         robot.download_map_bundle = AsyncMock(return_value=b"")
-        robot.parse_map_bundle = MagicMock(return_value=bundle)
+        # NO parse_map_bundle MOCK. It is a module function, not a
+        # robot method -- mocking it here is what let an
+        # AttributeError ship green. The download returns real bytes
+        # and the real parser reads them.
+        robot.download_map_bundle = AsyncMock(
+            return_value=_make_bundle(bundle)
+        )
         with patch("builtins.print"):
             return await _zone_names_from_bundle(robot, "MAP", "VER")
 
@@ -364,19 +392,32 @@ class TestAgainstTheConfirmedFeatureShape:
 
         assert names == {}
 
-    @pytest.mark.asyncio
-    async def test_the_bundle_is_a_plain_dict(self):
-        """The regression itself: an object with the attribute the old
-        code reached for must not be treated as a bundle."""
-        from types import SimpleNamespace
+    @staticmethod
+    async def _names_from_blob(blob, capsys):
+        """Feed arbitrary bytes through the real parser."""
+        from unittest.mock import AsyncMock, MagicMock
 
-        names = await self._names(
-            SimpleNamespace(zone_layers={"cleanZones": {"features": [
-                {"id": "1", "properties": {"name": "Nope"}},
-            ]}})
+        from roombapy_prime_tools.verify_region_commands import (
+            _zone_names_from_bundle,
         )
 
-        assert names == {}, "only a dict is a parsed bundle"
+        robot = MagicMock()
+        robot.get_map_geojson_link = AsyncMock(return_value="url")
+        robot.download_map_bundle = AsyncMock(return_value=blob)
+        names = await _zone_names_from_bundle(robot, "MAP", "VER")
+        return names, capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_a_non_bundle_blob_is_a_failure_not_an_absence(self, capsys):
+        """WAS a test that the reader ignores an object carrying the
+        old `zone_layers` attribute. That attribute is gone, and the
+        reader now parses real bytes -- so the case that remains is
+        bytes that are not a bundle, which must report as a FAILED read
+        rather than as "no names found"."""
+        names, out = await self._names_from_blob(b"not a tar.gz", capsys)
+
+        assert names is None
+        assert "unreadable" in out
 
 
 class TestTheBundleContentsAreNamed:
@@ -402,7 +443,13 @@ class TestTheBundleContentsAreNamed:
         robot = MagicMock()
         robot.get_map_geojson_link = AsyncMock(return_value="url")
         robot.download_map_bundle = AsyncMock(return_value=b"")
-        robot.parse_map_bundle = MagicMock(return_value=bundle)
+        # NO parse_map_bundle MOCK. It is a module function, not a
+        # robot method -- mocking it here is what let an
+        # AttributeError ship green. The download returns real bytes
+        # and the real parser reads them.
+        robot.download_map_bundle = AsyncMock(
+            return_value=_make_bundle(bundle)
+        )
         await _zone_names_from_bundle(robot, "MAP", "VER")
         return capsys.readouterr().out
 
@@ -455,11 +502,11 @@ class TestTheGeojsonLinkIsADict:
             return b""
 
         robot.download_map_bundle = AsyncMock(side_effect=_download)
-        robot.parse_map_bundle = MagicMock(return_value={
-            "cleanZones": {"features": [
+        robot.download_map_bundle = AsyncMock(return_value=_make_bundle({
+            "cleanZones.geojson": {"features": [
                 {"id": "101", "properties": {"name": "Kitchen"}},
             ]},
-        })
+        }))
         names = await _zone_names_from_bundle(robot, "MAP", "VER")
         return names, capsys.readouterr().out
 
