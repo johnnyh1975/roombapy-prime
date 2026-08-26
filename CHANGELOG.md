@@ -8,6 +8,26 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b16] - 2026-08-25
+
+### Fixed
+
+- **`--list-rooms` never reached the bundle.** `get_map_geojson_link`
+  returns the whole response dict; `download_map_bundle` wants the URL
+  string out of it. Passing the dict raised `Constructor parameter
+  should be str` from yarl — which reads like a type bug in the library
+  rather than a mistake at the call site (@chairstacker).
+
+  `verify_map_edit.py` has extracted the URL correctly all along. Two
+  implementations of the same three lines, one of them wrong, and the
+  wrong one was the one the zone-name question depended on.
+
+- **The bundle-contents line printed only on success.** Added in b15 so
+  a reader could see where the tool had looked, it sat *after* the
+  `except` — so the run that fails, which is when it matters, never
+  showed it. The failure message now names the exception type as well.
+
+
 ## [0.3.0b15] - 2026-08-24
 
 ### Fixed
