@@ -91,6 +91,13 @@ def pep440_alpha_to_readme_style(version: str) -> str:
     match = re.match(r"^(\d+\.\d+\.\d+)b\d+$", version)
     if match:
         return f"v{match.group(1)}-beta"
+    # A PLAIN RELEASE. Added for 0.3.0, the first stable version of this
+    # library -- the docstring above asks for each scheme change to be a
+    # deliberate confirmation rather than a widened regex, so: a badge
+    # with no suffix means the version is stable, and nothing else does.
+    match = re.match(r"^(\d+\.\d+\.\d+)$", version)
+    if match:
+        return f"v{match.group(1)}"
     raise ValueError(
         f"pyproject.toml version {version!r} isn't a plain alpha "
         f"pre-release (expected X.Y.ZaN) -- this script's version-string "
@@ -101,7 +108,8 @@ def pep440_alpha_to_readme_style(version: str) -> str:
 
 def get_readme_version_badge() -> str:
     text = README_PATH.read_text(encoding="utf-8")
-    match = re.search(r"Status:\s*(v\d+\.\d+\.\d+-\w+)\.", text)
+    # The suffix is optional now: a stable release carries none.
+    match = re.search(r"Status:\s*(v\d+\.\d+\.\d+(?:-\w+)?)\.", text)
     if not match:
         raise ValueError("Could not find a 'Status: vX.Y.Z-suffix.' badge in README.md")
     return match.group(1)

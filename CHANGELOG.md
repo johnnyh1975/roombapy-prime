@@ -8,6 +8,50 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-27
+
+First stable release of the 0.3 line. Eighteen betas, and the last six
+were about one question: where zone names live.
+
+### The zone-name question, answered
+
+Four releases of `--list-rooms` reported "no zone names found" after a
+search that had not run. In order:
+
+- **b13–b14** widened a search that was not executing — `zone_layers`
+  was read with `getattr` on a dict, so the function returned `{}` for
+  every bundle ever passed to it
+- **b15** fixed that reader, which the call never reached
+- **b16** fixed the call — the geojson link is a dict, not a URL string
+- **b17** fixed what the call then hit: `parse_map_bundle` is a module
+  function, not a robot method
+
+The answer, once the search ran, is that it depends on the layer:
+
+- **`cleanZones` carries names.** Confirmed on a G185020 with nine
+  names read (@chairstacker).
+- **`policyZones` has no name field at all.** Confirmed from a raw dump
+  on a Y351020 (@utkjmitch): a FeatureCollection whose properties carry
+  only `{"type": "NoMopZone"}`. The app does not offer naming for
+  keep-out and no-mop zones and the bundle agrees.
+
+### Fixed since b18
+
+- **The room listing missed regions the snapshot did not know.**
+  `rooms_metadata` lags map edits in both directions, and the listing
+  compared against the map version in one direction only. A zone
+  created in the app had its name read from the bundle and was never
+  printed — nine names read, eight shown. A zone deleted in the app
+  stayed in the listing as an unnamed one. Both are now visible, the
+  second marked as absent from the current map version.
+
+### Internal
+
+- `_regions_not_in_snapshot()` extracted so the comparison can be
+  tested. It used to be four lines inside a function that logs in,
+  connects over MQTT and downloads a bundle.
+
+
 ## [0.3.0b18] - 2026-08-26
 
 ### Fixed
