@@ -647,9 +647,20 @@ class PrimeRobot:
         and a robot cleaning every room when one was requested is the
         most expensive way to learn that.
 
-        STILL UNTESTED: `clean_all` / `select_all=True` through this
-        path, as opposed to `send_simple_command("start")`. Whether it
-        needs the same START-not-CLEAN treatment is unknown.
+        NOT UNTESTED, AND THIS PARAGRAPH SAID SO FOR MONTHS. It read
+        "STILL UNTESTED: clean_all / select_all=True through this path"
+        while the paragraph above recorded @Echovictor37 firing exactly
+        that on hardware -- regions omitted and regions empty, PUBACK
+        both times, no effect either time.
+
+        Two claims about the same thing in one docstring, and the wrong
+        one was the one people read: it sent @BryznNguyen offering to
+        spend a hardware run on a question already answered.
+
+        What remains genuinely open is narrower: whether a whole-house
+        clean through this path would need the same START-not-CLEAN
+        treatment a region clean does. It cannot be answered by sending
+        `clean_all`, because that key never reaches the robot.
 
         FIRMWARE 3.8.126 WAS READ FOR THIS AND DID NOT SETTLE IT. The
         result is recorded here so nobody repeats the search or, worse,

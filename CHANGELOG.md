@@ -8,6 +8,34 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+## [0.3.0b18] - 2026-08-26
+
+### Fixed
+
+- **`active_p2mapv_id` is not the only spelling.** @chairstacker's
+  G185020 reports `p2mapv_id` and `user_p2mapv_id` and no `active_`
+  field at all — the one field callers read. So "the current version"
+  came back None, the bundle request went out without one, and the
+  server returned its default: a zone created that morning was missing
+  from a bundle read that afternoon while the version carrying it sat
+  in the same response.
+
+  `P2MapData.current_map_version` resolves whichever the robot uses,
+  `user_p2mapv_id` first — that is the version the user's own edits
+  produced, which is what "the map as it is now" means.
+
+### Documented
+
+- **A docstring contradicted itself about `clean_all`.** One paragraph
+  recorded @Echovictor37 firing it on hardware — `regions` omitted and
+  `regions` empty, PUBACK both times, no effect — while another said
+  "STILL UNTESTED". Same subject, opposite claims, and the wrong one
+  got read: it sent @BryznNguyen offering a hardware run on a question
+  already answered.
+
+  What remains open is narrower and now says so.
+
+
 ## [0.3.0b17] - 2026-08-26
 
 ### Fixed

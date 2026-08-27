@@ -7297,3 +7297,56 @@ class TestRegionsKeyIsOmittedWhenEmpty:
 
         assert body["regions"]
         assert len(body["regions"]) == 1
+
+
+class TestTheCurrentMapVersionHasThreeSpellings:
+    """@chairstacker (#64): a zone created in the morning was missing
+    from a bundle read that afternoon, and no map edit brought it in.
+
+    His G185020 reports `p2mapv_id` and `user_p2mapv_id` and no
+    `active_p2mapv_id` at all — the one field callers read. So "the
+    current version" came back None, the bundle request went out
+    without one, and the server returned its default.
+
+    The version carrying the zone was in the same response the whole
+    time. Values below are his, from a diagnostics download.
+    """
+
+    @staticmethod
+    def _map(**kwargs):
+        from roombapy_prime.models.robot_info import P2MapData
+
+        return P2MapData.from_json({"p2map_id": "BLID-1758329350", **kwargs})
+
+    def test_his_robot_now_resolves(self):
+        """`user_p2mapv_id` only — the shape that returned None."""
+        m = self._map(
+            user_p2mapv_id="260825T181918.582",
+            p2mapv_id="260719T175506.195",
+        )
+
+        assert m.current_map_version == "260825T181918.582"
+
+    def test_the_user_edit_wins(self):
+        """A caller asking for "the map as it is now" means the version
+        the user's own edits produced."""
+        m = self._map(
+            active_p2mapv_id="260719T175506.195",
+            user_p2mapv_id="260825T181918.582",
+        )
+
+        assert m.current_map_version == "260825T181918.582"
+
+    def test_the_original_field_still_works(self):
+        m = self._map(active_p2mapv_id="260719T175506.195")
+
+        assert m.current_map_version == "260719T175506.195"
+
+    def test_a_bare_p2mapv_id_is_used_as_a_last_resort(self):
+        """A robot sending only that has nothing else to offer."""
+        m = self._map(p2mapv_id="260518T135521.119")
+
+        assert m.current_map_version == "260518T135521.119"
+
+    def test_none_when_the_robot_names_no_version(self):
+        assert self._map().current_map_version is None

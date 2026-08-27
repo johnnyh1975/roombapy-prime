@@ -436,6 +436,34 @@ class P2MapData:
     p2map_id: str | None = None
     entity_type: str | None = None
     active_p2mapv_id: str | None = None
+    #: THE SAME QUESTION, TWO OTHER SPELLINGS.
+    #:
+    #: `active_p2mapv_id` comes from the class's own <clinit>, and some
+    #: robots simply do not send it: @chairstacker's G185020 reports
+    #: `p2mapv_id` and `user_p2mapv_id` and no `active_` field at all.
+    #: A caller asking for "the current version" then got None and
+    #: fetched whatever the server serves by default -- which is how a
+    #: zone created that morning was missing from a bundle read that
+    #: afternoon, while the version carrying it sat in the same
+    #: response.
+    user_p2mapv_id: str | None = None
+    p2mapv_id: str | None = None
+
+    @property
+    def current_map_version(self) -> str | None:
+        """Whichever field this robot uses to name its current version.
+
+        `user_p2mapv_id` first: it is the version the USER's edits
+        produced, which is what a caller asking for "the map as it is
+        now" means. `active_p2mapv_id` next, then the bare
+        `p2mapv_id` -- taking the last only because a robot that sends
+        just that one has nothing else to offer.
+        """
+        return (
+            self.user_p2mapv_id
+            or self.active_p2mapv_id
+            or self.p2mapv_id
+        )
     create_time: Any | None = None
     robot_id: str | None = None
     sku: str | None = None
@@ -454,6 +482,8 @@ class P2MapData:
             p2map_id=data.get("p2map_id"),
             entity_type=data.get("entity_type"),
             active_p2mapv_id=data.get("active_p2mapv_id"),
+            user_p2mapv_id=data.get("user_p2mapv_id"),
+            p2mapv_id=data.get("p2mapv_id"),
             create_time=data.get("create_time"),
             robot_id=data.get("robot_id"),
             sku=data.get("sku"),
