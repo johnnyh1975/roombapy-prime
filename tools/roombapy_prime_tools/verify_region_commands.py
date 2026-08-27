@@ -1625,7 +1625,14 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
         # @chairstacker saw "Session is closed" on the version read and
         # a missing-argument error on the bundle read. The reads were
         # outside the connection that served them.
-        active = map_data.active_p2mapv_id
+        # THE ROBOT'S OWN SPELLING, whichever it uses. @chairstacker's
+        # G185020 sends `user_p2mapv_id` and `p2mapv_id` and no
+        # `active_` field, so this read None and the bundle request went
+        # out with no version -- returning whatever the server defaults
+        # to. A zone created that morning was missing from a bundle read
+        # that afternoon while the version carrying it sat in the same
+        # response.
+        active = map_data.current_map_version
 
         # ZONE NAMES ARE NOT IN THE MAP METADATA.
         #
