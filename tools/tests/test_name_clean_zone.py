@@ -532,3 +532,69 @@ class TestTheGeojsonLinkIsADict:
 
         assert names == {}
         assert "no download URL" in out
+
+
+class TestTheSnapshotLagsInBothDirections:
+    """@chairstacker's map showed `rooms_metadata` lagging each way at
+    the same time, and the tool handled one case and not the other.
+
+    Zone 107, deleted in the app, stayed in the snapshot and lost only
+    its bundle name — so it printed as an unnamed zone that still
+    exists.
+
+    Zone 109, created in the app, had a name in the bundle and no
+    snapshot entry — so it printed not at all. The proof was in the
+    tool's own output: **nine zone names read from the bundle, eight
+    printed.**
+
+    The version endpoint is the honest source for which regions exist,
+    and it was being compared in one direction only.
+    """
+
+    @staticmethod
+    def _leftovers(version_ids, zone_names, known_ids):
+        """Calls the real function.
+
+        A FIRST VERSION REIMPLEMENTED IT HERE, which would have proved
+        the test agrees with itself -- the same mistake that let a
+        broken bundle reader ship green three times. The computation was
+        extracted so it could be called instead.
+        """
+        from roombapy_prime_tools.verify_region_commands import (
+            _regions_not_in_snapshot,
+        )
+
+        return _regions_not_in_snapshot(version_ids, zone_names, known_ids)
+
+    def test_a_bundle_name_without_a_snapshot_entry_is_listed(self):
+        """Zone 109: named in the bundle, absent from the snapshot."""
+        extra = self._leftovers(
+            version_ids=[], zone_names={"109": "Testing Zone 13b"},
+            known_ids={"108"},
+        )
+
+        assert extra == ["109"]
+
+    def test_a_version_id_without_a_snapshot_entry_still_works(self):
+        """The case that already worked must keep working."""
+        extra = self._leftovers(
+            version_ids=["109"], zone_names={}, known_ids={"108"},
+        )
+
+        assert extra == ["109"]
+
+    def test_a_region_in_both_is_not_listed_twice(self):
+        extra = self._leftovers(
+            version_ids=["109"], zone_names={"109": "Testing Zone 13b"},
+            known_ids=set(),
+        )
+
+        assert extra == ["109"]
+
+    def test_a_region_already_printed_is_not_repeated(self):
+        extra = self._leftovers(
+            version_ids=["108"], zone_names={"108": "Testing Zone 12a"},
+            known_ids={"108"},
+        )
+
+        assert extra == []

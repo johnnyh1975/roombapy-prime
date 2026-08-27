@@ -1477,6 +1477,28 @@ async def send_stage_two(
     )
 
 
+def _regions_not_in_snapshot(
+    version_ids: Any, zone_names: dict[str, str], known_ids: set[str]
+) -> list[str]:
+    """Regions the snapshot does not list, from either other source.
+
+    A SEPARATE FUNCTION SO IT CAN BE TESTED. The version comparison
+    used to be four lines inside a function that logs in, connects over
+    MQTT and downloads a bundle -- untestable in practice, and it was
+    wrong in a way nobody could have caught: it looked for version ids
+    missing from the snapshot and not for bundle names missing from it.
+
+    @chairstacker's zone 109 had a name in the bundle and no snapshot
+    entry, so the tool read its name and never printed it. Nine names
+    read, eight printed -- the tool's own counter was the evidence.
+    """
+    version_id_set = {str(r) for r in version_ids}
+    candidates = list(version_ids) + [
+        r for r in zone_names if r not in version_id_set
+    ]
+    return [rid for rid in candidates if rid not in known_ids]
+
+
 async def _zone_names_from_bundle(
     robot: Any, p2map_id: str, map_version: str | None
 ) -> dict[str, str] | None:
@@ -1592,6 +1614,17 @@ async def _zone_names_from_bundle(
             # discriminated by `zone_type`, and sending a cleaning
             # command at one is the mistake worth preventing. A clean
             # zone needs no marker; it is the default.
+            # POLICY ZONES HAVE NO NAME FIELD AT ALL. Confirmed from a
+            # raw dump (@utkjmitch, Y351020): the layer is a
+            # FeatureCollection whose properties carry only
+            # `{"type": "NoMopZone"}`. The app does not offer naming for
+            # keep-out and no-mop zones and the bundle agrees, so "no
+            # zone names found" was never a parsing gap here.
+            #
+            # Named zones live in `cleanZones` -- confirmed separately
+            # (@chairstacker, G185020, nine names read). Four releases
+            # of this tool reported on a search that had not run; the
+            # answer, once it ran, is that it depends on the layer.
             if layer_name == "policyZones":
                 zone_type = (
                     properties.get("zone_type")
@@ -1688,6 +1721,22 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
             except Exception as exc:  # noqa: BLE001
                 print(f"  (map version read failed: {exc})")
 
+    # THE VERSION IS THE HONEST SOURCE for "which regions exist".
+    #
+    # `rooms_metadata` is a snapshot and lags edits in BOTH directions.
+    # @chairstacker's map showed it doing each:
+    #
+    #   - zone 107, deleted in the app, stayed in the snapshot and lost
+    #     only its bundle name -- so it printed as an unnamed zone that
+    #     still exists
+    #   - zone 109, created in the app, had a name in the bundle and no
+    #     snapshot entry -- so it printed not at all. The tool read its
+    #     name and dropped it: nine names read, eight printed.
+    #
+    # This loop ran over the snapshot alone and compared against the
+    # version in one direction only, which caught the second case and
+    # never the first.
+    version_id_set = {str(r) for r in version_ids}
     known_ids: set[str] = set()
     for room in map_data.rooms_metadata:
         known_ids.add(str(room.room_id))
@@ -1700,6 +1749,11 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
             name = version_names[str(room.room_id)]
             source = "version"
         suffix = f"  [{source}]" if name is not None else ""
+        # GONE FROM THE MAP, still in the snapshot. Marked, because an
+        # entry with no name looks exactly like a zone nobody has named
+        # yet, and the two need different action from a reader.
+        if version_id_set and str(room.room_id) not in version_id_set:
+            suffix += "   <- NOT in the current map version (deleted?)"
         print(
             f"  room_id={room.room_id!r}  "
             f"region_type={room.region_type!r}  name={name!r}{suffix}"
@@ -1708,10 +1762,15 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
     # REGIONS THE SNAPSHOT DOES NOT KNOW ABOUT. Marked, because a
     # tester comparing this against the app needs to see WHICH entries
     # the p2map metadata missed -- that difference is the finding.
-    extra = [rid for rid in version_ids if rid not in known_ids]
+    # BOTH LEFTOVER SETS. Version ids without a snapshot entry, and
+    # bundle names without one either -- the second was silently
+    # dropped, which is how a zone the tool had read the name of never
+    # reached the screen.
+    extra = _regions_not_in_snapshot(version_ids, zone_names, known_ids)
     for rid in extra:
-        name = version_names.get(rid)
-        suffix = "  [version]" if name is not None else ""
+        name = version_names.get(rid) or zone_names.get(rid)
+        source = "version" if version_names.get(rid) else "bundle"
+        suffix = f"  [{source}]" if name is not None else ""
         print(
             f"  room_id={rid!r}  region_type=None  "
             f"name={name!r}{suffix}   <- not in map metadata"
