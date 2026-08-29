@@ -732,3 +732,85 @@ class TestExamplesUseRealNames:
         from roombapy_prime import PrimeFactory
 
         assert hasattr(PrimeFactory, "create_prime_robot")
+
+
+class TestNoDirectUrlDependencies:
+    """PyPI rejects any distribution with a direct-URL dependency, and
+    rejects the entire upload with it:
+
+        400 Can't have direct dependency: roombapy-prime-tools @
+        git+https://github.com/...
+
+    Both pyprojects carried one. They were correct while this lived only
+    on GitHub — a bare name would have looked resolvable and failed —
+    and they made the package unpublishable the moment it did not.
+
+    Caught by a failed release run, which is the expensive way. Nothing
+    was uploaded, so the version survived; a partial success would have
+    burned it.
+    """
+
+    @staticmethod
+    def _pyprojects():
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent.parent
+        return [root / "pyproject.toml", root / "tools" / "pyproject.toml"]
+
+    def test_no_pyproject_declares_a_url_dependency(self):
+        import re
+
+        offenders = []
+        for path in self._pyprojects():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#") or "=" not in line and "@" not in line:
+                    continue
+                if re.search(r'"[^"]*@\s*(git\+|https?://)', line):
+                    offenders.append(f"{path.name}: {stripped}")
+
+        assert not offenders, (
+            f"PyPI rejects direct-URL dependencies: {offenders}"
+        )
+
+
+class TestTheToolsReadmeMatchesTheTools:
+    """`tools/README.md` still advertised `v0.3.0b10` — four releases
+    behind — and listed twelve of the fourteen console commands.
+
+    Both are the kind of drift nobody reports: the install line works
+    (that tag exists), and a missing command is only missing to someone
+    who already knows it should be there.
+    """
+
+    @staticmethod
+    def _readme():
+        from pathlib import Path
+
+        return (
+            Path(__file__).resolve().parent.parent / "README.md"
+        ).read_text(encoding="utf-8")
+
+    def test_every_console_command_is_documented(self):
+        import tomllib
+        from pathlib import Path
+
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        with pyproject.open("rb") as handle:
+            commands = set(tomllib.load(handle)["project"]["scripts"])
+
+        readme = self._readme()
+        # The table abbreviates the shared prefix as `…-`, so match on
+        # the distinctive tail rather than the full name.
+        missing = sorted(
+            c for c in commands
+            if c not in readme
+            and c.split("roombapy-prime-")[-1] not in readme
+        )
+
+        assert not missing, f"undocumented console commands: {missing}"
+
+    def test_the_install_line_does_not_pin_an_old_tag(self):
+        """It reads `pip install roombapy-prime-tools` now. A git URL
+        here would name a version, and a named version goes stale."""
+        assert "git+https" not in self._readme()
