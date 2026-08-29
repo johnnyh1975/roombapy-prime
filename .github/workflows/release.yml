@@ -22,6 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Trusted Publishing: PyPI verifies this workflow's identity
+      # directly, so there is no API token stored in the repository.
+      id-token: write
     steps:
       # No explicit `ref:` here on purpose: for a tag push, this
       # already checks out that tag by default. For a manual
@@ -29,7 +32,7 @@ jobs:
       # selected in the "Run workflow" dropdown (normally main) -- and
       # THAT commit is what gets tagged below, if the tag doesn't
       # already exist.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -62,7 +65,7 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -144,14 +147,32 @@ jobs:
       # this workflow) once/if this project reaches an actual beta/stable
       # milestone -- see docs/PRIME_APP_GAP_ANALYSIS_2026-07-11.md for the
       # concrete criteria discussed for that.
-      - name: Create GitHub Release (marked pre-release)
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.resolve.outputs.tag }}
-          prerelease: true
+          prerelease: false
           body_path: release-notes/${{ steps.resolve.outputs.tag }}.md
           files: |
             dist/*.whl
             dist/*.tar.gz
             dist-tools/*.whl
             dist-tools/*.tar.gz
+
+      # ORDER MATTERS. roombapy-prime-tools declares roombapy-prime as a
+      # dependency, so the library has to exist on PyPI before the tools
+      # package that pins it. Publishing them in one step would race.
+      #
+      # A version cannot be replaced once uploaded -- only yanked, and
+      # the number stays used. Everything above this point (tests,
+      # README badge check, install verification in a clean venv) runs
+      # first for exactly that reason.
+      - name: Publish library to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+      - name: Publish tools to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-tools/
