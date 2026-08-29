@@ -18,7 +18,11 @@ classifiers = [
 # than cleanly. scripts/check_version_pin.py enforces that this pin and
 # the core's own version stay in step.
 dependencies = [
-    "roombapy-prime @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.1",
+    # A BARE PIN, not a git URL. PyPI rejects any distribution carrying
+    # a direct-URL dependency and rejects the whole upload with it, so
+    # the git pointer that was right while this lived only on GitHub
+    # made the package unpublishable.
+    "roombapy-prime==0.3.1",
 ]
 
 [project.optional-dependencies]
