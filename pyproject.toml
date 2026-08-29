@@ -44,12 +44,14 @@ map = [
 # PATH of every Home Assistant installation that merely consumes this
 # library. See tools/pyproject.toml.
 tools = [
-    # Installable only from this repository, not from an index -- the
-    # project is not published to PyPI, so a bare name here would look
-    # resolvable and fail. Kept as a documented pointer rather than a
-    # promise pip can keep. To actually get the tooling, see
-    # tools/README.md.
-    "roombapy-prime-tools @ git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.1b3#subdirectory=tools",
+    # A BARE NAME, not a git URL. PyPI rejects any distribution with a
+    # direct-URL dependency ("400 Can't have direct dependency"), and it
+    # rejects the whole upload -- so the git pointer that was correct
+    # while this was GitHub-only made the package unpublishable.
+    #
+    # The pin keeps the pair in step: the tools import from this library
+    # and the two are released together from one tag.
+    "roombapy-prime-tools>=0.3.1",
 ]
 
 [build-system]

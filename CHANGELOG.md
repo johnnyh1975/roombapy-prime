@@ -10,6 +10,19 @@ This file only tracks what changed from a user's point of view.
 
 ### Packaging
 
+- **Removed the direct-URL dependencies that made this unpublishable.**
+  Both pyprojects pointed at each other with
+  `@ git+https://github.com/...`, which was right while the project
+  lived only on GitHub and fatal the moment it did not: PyPI rejects
+  any distribution carrying one, and rejects the whole upload with it.
+
+  Now `roombapy-prime-tools>=0.3.1` and `roombapy-prime==0.3.1`. A test
+  fails the build if a URL dependency comes back.
+
+  Found by a release run that got as far as the upload and stopped
+  there. Nothing was uploaded, so the version survived — a partial
+  success would have burned it.
+
 - **Published to PyPI.** `pip install roombapy-prime` and
   `pip install roombapy-prime-tools`; the GitHub install instructions
   are gone from the README.

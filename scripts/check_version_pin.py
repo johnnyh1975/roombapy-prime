@@ -34,7 +34,10 @@ def _core_version() -> str:
 
 def _tools_version_and_pin(text: str) -> tuple[str, str]:
     version = re.search(r'^version = "([^"]+)"', text, re.M)
-    pin = re.search(r"roombapy-prime\.git@v([0-9a-z.]+)", text)
+    # `roombapy-prime==X.Y.Z`, since the pin stopped being a git URL
+    # when the project went to PyPI -- an index rejects direct-URL
+    # dependencies outright.
+    pin = re.search(r'roombapy-prime==([0-9a-z.]+)', text)
     if not version or not pin:
         sys.exit(f"Could not find a version and a core pin in {_TOOLS}")
     return version.group(1), pin.group(1)
