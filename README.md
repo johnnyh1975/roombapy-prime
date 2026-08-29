@@ -6,7 +6,7 @@ An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.3.0.** (currently `0.3.0`) Reading and writing both work
+> **Status: v0.3.1.** (currently `0.3.1`) Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -62,10 +62,8 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
 ## Installation
 
-Not yet published to PyPI — install from GitHub:
-
 ```bash
-pip install "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0"
+pip install roombapy-prime
 ```
 
 This gives you the **library only** — no console scripts at all. That is
@@ -76,7 +74,7 @@ with the open questions below), install those instead — they pull this
 library in as a dependency, so it stays one command:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0#subdirectory=tools"
+pip install roombapy-prime-tools
 ```
 
 ### Upgrading, if you have the tools
@@ -86,10 +84,10 @@ upgrading the library on its own leaves the tools where they were:
 
 ```bash
 # right -- brings the matching library with it
-pip install --upgrade "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0#subdirectory=tools"
+pip install --upgrade roombapy-prime-tools
 
 # wrong, if you have the tools -- upgrades half of the pair
-pip install --upgrade "roombapy-prime@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0"
+pip install --upgrade roombapy-prime
 ```
 
 This is not theoretical. @chairstacker upgraded the library to b6, ran
@@ -113,7 +111,7 @@ Requires Python 3.11+. Dependencies: `aiohttp`, `paho-mqtt`, `certifi`.
 ```python
 import asyncio
 import aiohttp
-from roombapy_prime.prime_factory import PrimeFactory
+from roombapy_prime import PrimeFactory
 
 async def main():
     async with aiohttp.ClientSession() as session:
@@ -153,9 +151,27 @@ and model organized by feature area, with confidence markers per item —
 or the module docstrings in `roombapy_prime/` directly for the full
 evidence behind each one.
 
-Runnable versions of the above (plus mission control and a favorites/
-mission-history example) are in [`examples/`](examples/) — each reads
-credentials from environment variables, none hardcode a password.
+Eleven runnable examples are in [`examples/`](examples/). Each reads
+credentials from environment variables; none hardcode a password, and
+every one that writes anything puts it behind a flag.
+
+| Example | Covers |
+|---|---|
+| `basic_usage.py` | Log in, connect, read state, watch for updates |
+| `clean_regions.py` | Send the robot to named rooms and zones |
+| `mission_control.py` | Start, pause, resume, dock |
+| `schedules.py` | Reading and writing cleaning schedules |
+| `favorites_and_history.py` | Saved favourites and past missions |
+| `settings.py` | Robot settings |
+| `maps.py` | Map versions, region names, downloading the bundle |
+| `maintenance.py` | Consumable part counters, and resetting them |
+| `do_not_disturb.py` | Quiet hours — two mutually exclusive shapes |
+| `watching.py` | Live position and dock streams instead of polling |
+| `error_handling.py` | Which failures are worth retrying, and which are not |
+
+If you are writing anything that logs in unattended, start with
+`error_handling.py`: an `AuthCredentialsError` will never succeed on
+retry, and a naive retry loop turns it into `AuthRateLimitedError`.
 
 ## Testing
 
@@ -208,7 +224,7 @@ The tools are a **separate distribution** — one command, and it pulls
 this library in with it:
 
 ```bash
-pip install "roombapy-prime-tools@git+https://github.com/johnnyh1975/roombapy-prime.git@v0.3.0#subdirectory=tools"
+pip install roombapy-prime-tools
 ```
 
 Start with `roombapy-prime-validate`: read-only, sends nothing, and its

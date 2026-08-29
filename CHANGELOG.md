@@ -8,6 +8,77 @@ This file only tracks what changed from a user's point of view.
 
 ## [Unreleased]
 
+### Packaging
+
+- **Published to PyPI.** `pip install roombapy-prime` and
+  `pip install roombapy-prime-tools`; the GitHub install instructions
+  are gone from the README.
+- The release workflow publishes both distributions via **Trusted
+  Publishing** — PyPI verifies the workflow's identity directly, so no
+  API token is stored in the repository. The library goes first: the
+  tools declare it as a dependency.
+- **Development Status raised to Production/Stable** for both
+  distributions. The tools were left at Alpha on the reasoning that
+  they move real robots — but that describes their effect, not their
+  maturity. 486 tests, 17 console commands, and every field finding in
+  this project was made with them. The warning belongs in the
+  description and the safety notes, which is where it is.
+- GitHub releases are no longer marked pre-release.
+
+### Documentation
+
+- **Every exception is now in the API reference.** All 13 were exported
+  and none documented, so a caller could not tell
+  `AuthCredentialsError` from `AuthRateLimitedError` without reading the
+  source — and those two need opposite handling. Three independent
+  hierarchies, one per transport, with a retry column.
+- **`is_valid_id`, `normalise_id` and `id_problem`** documented. They
+  are exported and deal with the identifiers every caller handles.
+- **Four new examples**, covering areas that had none: `maps.py`
+  (versions, region names, bundle), `maintenance.py` (part counters and
+  resetting them), `do_not_disturb.py` (the two mutually exclusive
+  schedule shapes) and `watching.py` (live streams rather than polling).
+  Sixteen of 64 robot methods appeared in an example before; the gaps
+  included every map read and every write to DND.
+- **New example: `error_handling.py`.** The other six show the happy
+  path. This one shows the distinction that matters: a credentials
+  failure will never succeed on retry, and a naive retry loop turns it
+  into `AuthRateLimitedError`.
+- **Import line straightened.** README and all examples used
+  `from roombapy_prime.prime_factory import PrimeFactory`, teaching the
+  submodule path when the package exports it directly.
+
+### Internal
+
+- A test now parses every example and checks that every imported name,
+  every `roombapy_prime.*` model import and every `robot.<method>()`
+  call actually exists. A first draft of the
+  new example invented `factory.login()` and `factory.create_robot()`;
+  neither exists. An example that does not run is worse than none — it
+  is the first thing a new user copies, and it fails in a way that looks
+  like their mistake.
+
+
+## [0.3.1] - 2026-08-27
+
+### Fixed
+
+- **Every zone was marked as possibly deleted.** The "not in the current
+  map version" marker added in 0.3.0 compares against
+  `geojson_details.regions`, which lists rooms and not zones — so no
+  zone is ever in that set and all ten of @chairstacker's were flagged.
+  A marker that always fires is not information.
+
+  It applies to rooms only now. For a zone there is no list of what
+  currently exists, so a deleted one and an unnamed one still look
+  alike; saying nothing is better than a confident wrong answer.
+
+- **A zone listed from the bundle showed `region_type=None`.** The
+  snapshot has no entry to read a type from, but a name found in the
+  bundle's zone layers is itself the answer. It now reads
+  `'zid (from bundle)'`.
+
+
 ## [0.3.0] - 2026-08-27
 
 First stable release of the 0.3 line. Eighteen betas, and the last six

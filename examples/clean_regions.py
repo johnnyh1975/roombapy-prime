@@ -43,7 +43,7 @@ from roombapy_prime.models import (
     RoutineCommand,
 )
 from roombapy_prime.models.robot_info import parse_active_map_versions
-from roombapy_prime.prime_factory import PrimeFactory
+from roombapy_prime import PrimeFactory
 
 
 async def main() -> None:

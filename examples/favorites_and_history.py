@@ -14,7 +14,7 @@ import sys
 import aiohttp
 
 from roombapy_prime.models import parse_mission_history
-from roombapy_prime.prime_factory import PrimeFactory
+from roombapy_prime import PrimeFactory
 
 
 async def main() -> None:

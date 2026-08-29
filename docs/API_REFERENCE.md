@@ -395,6 +395,75 @@ mission remains available via `MissionHistoryEntry.raw`.
 
 ---
 
+## Errors
+
+Every exception below is exported from `roombapy_prime` directly. Three
+independent hierarchies, one per transport, each deriving from
+`Exception` rather than a shared base — so catching "any error from this
+library" means catching all three.
+
+### Authentication — `AuthError`
+
+| Exception | Meaning | Retry? |
+|---|---|---|
+| `AuthCredentialsError` | The login was rejected: wrong username or password | **No.** Retrying sends the same rejected credentials |
+| `AuthRateLimitedError` | iRobot rejected the login for too many active app sessions | Later, and not immediately |
+| `AuthTimeoutError` | Sent, no response in time | Yes |
+| `AuthSSLError` | TLS or certificate verification failed | Only after investigating — a certificate failure is not transient |
+| `AuthConnectionError` | No connection established at all (DNS, refused) | Yes |
+
+The distinction that matters in practice is the first row against the
+rest. A credentials failure will never succeed on retry; everything
+else might.
+
+### REST — `RestError`
+
+`RestConnectionError`, `RestSSLError`, `RestTimeoutError` — the same
+three transport conditions, for calls to iRobot's HTTP API.
+
+### Shadow/MQTT — `ShadowError`
+
+`ShadowConnectionError`, `ShadowSSLError`.
+
+### Catching them
+
+```python
+from roombapy_prime import (
+    AuthCredentialsError,
+    AuthError,
+    AuthRateLimitedError,
+)
+
+try:
+    result = await factory.login(username, password)
+except AuthCredentialsError:
+    # Ask the user for new credentials. Do not retry.
+    raise
+except AuthRateLimitedError:
+    # Too many app sessions. Wait, then try again.
+    await asyncio.sleep(60)
+except AuthError:
+    # Transport: timeout, TLS, connection. Usually worth one retry.
+    ...
+```
+
+Ordering matters: `AuthError` is the base, so it must come last or it
+swallows the specific cases.
+
+## Identifier helpers
+
+BLIDs and map ids arrive from several sources with inconsistent
+formatting. Three functions, all exported from `roombapy_prime`:
+
+| Function | Returns |
+|---|---|
+| `is_valid_id(value)` | `True` if the string is a well-formed identifier |
+| `normalise_id(value)` | The canonical form, or raises on an unusable value |
+| `id_problem(value)` | A description of what is wrong, or `None` |
+
+`id_problem()` exists so a caller can tell a user *why* an id was
+rejected instead of only that it was.
+
 ## Model index
 
 Everything above covers the models you're likely to construct or read

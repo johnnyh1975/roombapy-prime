@@ -24,7 +24,7 @@ import sys
 
 import aiohttp
 
-from roombapy_prime.prime_factory import PrimeFactory
+from roombapy_prime import PrimeFactory
 
 AVAILABLE_COMMANDS = ("start", "stop", "pause", "resume", "dock")
 

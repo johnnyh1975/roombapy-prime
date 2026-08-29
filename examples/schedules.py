@@ -35,7 +35,7 @@ import sys
 
 import aiohttp
 
-from roombapy_prime.prime_factory import PrimeFactory
+from roombapy_prime import PrimeFactory
 
 _WIRE_DAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
 
