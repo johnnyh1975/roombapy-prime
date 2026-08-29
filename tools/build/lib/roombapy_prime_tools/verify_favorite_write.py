@@ -79,31 +79,22 @@ immediate one-time action a command like "stop" could interrupt.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import dataclasses
 import json
 import sys
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report
-from roombapy_prime.prime_factory import PrimeFactory
 
 
-def _confirm(prompt: str) -> bool:
-    """Interactive confirmation -- ONLY "j"/"ja"/"y"/"yes" (case
-    doesn't matter) counts as approval, anything else (including just
-    pressing Enter) aborts. Same convention as this project's other
-    diagnostic scripts."""
-    answer = input(f"{prompt} [y/N] ").strip().lower()
-    return answer in ("j", "ja", "y", "yes")
 
 
 async def list_favorites(username: str, password: str, country_code: str, blid: str) -> None:
     """Stage 0 -- pure reconnaissance, sends nothing."""
-    async with aiohttp.ClientSession() as session:
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
         favorites = await robot.get_favorites()
 
     if not favorites:
@@ -132,7 +123,7 @@ async def _confirm_show_send(robot, favorite_id: str, favorite, report: Report, 
     print(f"\n{description}")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    if not _confirm("\nSend this EXACT payload now? This changes a real favorite."):
+    if not confirm("\nSend this EXACT payload now? This changes a real favorite."):
         print("Aborted by user -- nothing sent.")
         return
 
@@ -144,11 +135,9 @@ async def _confirm_show_send(robot, favorite_id: str, favorite, report: Report, 
 async def send_update_unchanged(
     username: str, password: str, country_code: str, blid: str, favorite_id: str,
 ) -> None:
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
 
         print("\n== Fetching favorites ==")
         favorites = await robot.get_favorites()
@@ -162,8 +151,6 @@ async def send_update_unchanged(
             f"favorite_id={favorite_id!r} -- EXACTLY as stored, nothing modified:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 def _build_recolored_favorite(favorite, new_color: str):
@@ -181,11 +168,9 @@ def _build_recolored_favorite(favorite, new_color: str):
 async def send_update_color(
     username: str, password: str, country_code: str, blid: str, favorite_id: str, new_color: str,
 ) -> None:
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
 
         print("\n== Fetching favorites ==")
         favorites = await robot.get_favorites()
@@ -202,8 +187,6 @@ async def send_update_color(
             "everything else (including command_defs) unchanged:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 async def delete_by_id(username: str, password: str, country_code: str, blid: str, favorite_id: str) -> None:
@@ -215,13 +198,11 @@ async def delete_by_id(username: str, password: str, country_code: str, blid: st
     list_favorites(). Since --create-and-delete-test's own in-app
     confirmation step can't be answered for a favorite you can't see,
     this standalone command is the only way to clean it up)."""
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
 
-        if not _confirm(f"Delete favorite_id={favorite_id!r} now? This cannot be undone."):
+        if not confirm(f"Delete favorite_id={favorite_id!r} now? This cannot be undone."):
             print("Aborted by user -- nothing deleted.")
             return
 
@@ -232,8 +213,6 @@ async def delete_by_id(username: str, password: str, country_code: str, blid: st
         except Exception as exc:  # noqa: BLE001
             report.add("delete_favorite()", "FAILED", f"{type(exc).__name__}: {exc}")
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 async def create_and_delete_test(username: str, password: str, country_code: str, blid: str) -> None:
@@ -245,7 +224,6 @@ async def create_and_delete_test(username: str, password: str, country_code: str
     for map editing's own rename-then-revert test."""
     from roombapy_prime.models.favorites import FavoriteV1
 
-    report = Report()
     # CONFIRMED NECESSARY (chairstacker): a fixed name here caused a real
     # HTTP 409 conflict on a second run, since the FIRST run's favorite
     # was never deleted (declined at the confirmation step) -- a repeat
@@ -256,17 +234,16 @@ async def create_and_delete_test(username: str, password: str, country_code: str
 
     test_name = f"[roombapy-prime-test {datetime.datetime.now(datetime.UTC):%Y-%m-%d %H:%M:%S}]"
 
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
 
         test_favorite = FavoriteV1(name=test_name, command_defs=[])
         payload = test_favorite.to_json()
         print(f"\nAbout to create a minimal test favorite (empty command_defs, name={test_name!r}):")
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-        if not _confirm("\nCreate this test favorite now?"):
+        if not confirm("\nCreate this test favorite now?"):
             print("Aborted by user -- nothing created.")
             return
 
@@ -281,12 +258,10 @@ async def create_and_delete_test(username: str, password: str, country_code: str
                 f"automatically. Check the real app and delete '{test_name}' manually if it "
                 "was actually created."
             )
-            report.redact(username, password)
-            report.print_final_summary()
             return
 
         print(f"\nCreated with favorite_id={created_id!r}.")
-        if not _confirm(f"Did '{test_name}' appear as a new favorite in the real app? Confirm to proceed to delete it"):
+        if not confirm(f"Did '{test_name}' appear as a new favorite in the real app? Confirm to proceed to delete it"):
             print(
                 f"Not confirmed -- leaving '{test_name}' (favorite_id={created_id!r}) in place. "
                 "Delete it manually via the real app, or re-run this script's delete step "
@@ -298,8 +273,6 @@ async def create_and_delete_test(username: str, password: str, country_code: str
             delete_result = await robot.delete_favorite(created_id)
             report.add("delete_favorite()", "OK", f"response: {delete_result!r}")
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 def main() -> None:
@@ -364,27 +337,27 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_favorites:
-        asyncio.run(list_favorites(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_favorites(username, password, args.country_code, args.blid)))
         return
 
     if args.update_unchanged:
-        asyncio.run(
+        sys.exit(run_script(
             send_update_unchanged(username, password, args.country_code, args.blid, args.update_unchanged)
-        )
+        ))
         return
 
     if args.update_color:
-        asyncio.run(
+        sys.exit(run_script(
             send_update_color(username, password, args.country_code, args.blid, args.update_color, args.color)
-        )
+        ))
         return
 
     if args.create_and_delete_test:
-        asyncio.run(create_and_delete_test(username, password, args.country_code, args.blid))
+        sys.exit(run_script(create_and_delete_test(username, password, args.country_code, args.blid)))
         return
 
     if args.delete:
-        asyncio.run(delete_by_id(username, password, args.country_code, args.blid, args.delete))
+        sys.exit(run_script(delete_by_id(username, password, args.country_code, args.blid, args.delete)))
         return
 
 

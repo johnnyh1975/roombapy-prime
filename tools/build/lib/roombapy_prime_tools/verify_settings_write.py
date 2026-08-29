@@ -70,15 +70,11 @@ needed on top of the change-acknowledgment one):
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
-from roombapy_prime.diagnostics import Report
-from roombapy_prime.prime_factory import PrimeFactory
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 
 # wire key <-> RobotSettings/ClassicShadowState attribute name, for the
 # five settings this script can toggle. Kept as a single source of
@@ -93,21 +89,15 @@ _TARGET_SETTINGS: dict[str, str] = {
 }
 
 
-def _confirm(prompt: str) -> bool:
-    """Interactive confirmation -- ONLY "j"/"ja"/"y"/"yes" (case
-    doesn't matter) counts as approval, anything else (including just
-    pressing Enter) aborts. Same convention as this project's other
-    diagnostic scripts."""
-    answer = input(f"{prompt} [y/N] ").strip().lower()
-    return answer in ("j", "ja", "y", "yes")
 
 
 async def list_settings(username: str, password: str, country_code: str, blid: str) -> None:
     """Stage 0 -- pure reconnaissance, sends nothing."""
     from roombapy_prime.models import ClassicShadowState, RobotSettings
 
-    async with aiohttp.ClientSession() as session:
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         print("\n== rw-settings (the five target settings) ==")
         settings_response = await robot.get_settings()
@@ -116,20 +106,63 @@ async def list_settings(username: str, password: str, country_code: str, blid: s
             print(f"  {attr_name} ({wire_key}): {getattr(settings, attr_name)!r}")
 
         print("\n== classic/unnamed shadow's OWN schedHold (cross-check) ==")
-        state_response = await robot.get_state()
-        classic_state = ClassicShadowState.from_json(state_response.payload["state"]["reported"])
-        print(f"  classic/unnamed.sched_hold: {classic_state.sched_hold!r}")
-        if classic_state.sched_hold != settings.sched_hold:
+        # This reads the UNNAMED shadow, which not every robot has.
+        # A field run (DaRealGuGu, a Roomba Plus 505) timed out here
+        # after the five settings had already printed perfectly -- the
+        # whole run then died on a traceback, throwing away the useful
+        # part of its own output.
+        #
+        # The cross-check is a nice-to-have: it exists only to see
+        # whether two sources of schedHold disagree. Losing it must not
+        # cost the tester the primary result, so a failure is reported
+        # and the run continues.
+        try:
+            state_response = await robot.get_state()
+        except Exception as exc:  # noqa: BLE001
+            print(f"  not available on this robot ({type(exc).__name__}: {exc})")
             print(
-                "  NOTE: these two values DIFFER right now -- confirmed possible "
-                "(this session, real capture): the two sources update independently."
+                "  This is a cross-check only -- the five values above are the actual "
+                "result and are unaffected."
             )
+            report.add(
+                "Cross-check against unnamed shadow", "SKIPPED",
+                f"{type(exc).__name__}: {exc}",
+            )
+        else:
+            classic_state = ClassicShadowState.from_json(
+                state_response.payload["state"]["reported"]
+            )
+            print(f"  classic/unnamed.sched_hold: {classic_state.sched_hold!r}")
+            report.add(
+                "Cross-check against unnamed shadow", "OK",
+                f"sched_hold={classic_state.sched_hold!r}",
+            )
+            if classic_state.sched_hold != settings.sched_hold:
+                print(
+                    "  NOTE: these two values DIFFER right now -- confirmed possible "
+                    "(this session, real capture): the two sources update independently."
+                )
 
     print(
         "\nTo test a toggle: roombapy-prime-verify-settings-write --toggle KEY "
         "--i-understand-this-changes-a-real-setting"
     )
     print(f"Valid KEYs: {', '.join(_TARGET_SETTINGS)}")
+
+
+
+
+# Settings whose write is accepted and reads back correctly, but which
+# do not actually change the robot's behaviour.
+#
+# schedHold: confirmed by a field test (DaRealGuGu) -- write accepted,
+# read-back confirmed, and the schedule remained active in the app.
+# Notably this project's own cross-check against the classic/unnamed
+# shadow FLAGGED the divergence before the app was even checked, which
+# is what makes it a signal rather than noise: rw-settings said True
+# while classic still said False. Disabling moved both in step, so the
+# divergence is specific to enabling.
+_WRITES_ACCEPTED_BUT_INEFFECTIVE: frozenset[str] = frozenset({"sched_hold"})
 
 
 async def send_toggle(username: str, password: str, country_code: str, blid: str, key: str) -> None:
@@ -143,11 +176,16 @@ async def send_toggle(username: str, password: str, country_code: str, blid: str
         return
     wire_key = _TARGET_SETTINGS[key]
 
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    if key in _WRITES_ACCEPTED_BUT_INEFFECTIVE:
+        print(
+            f"\nNOTE: {key} is known to be accepted and read back correctly while having NO\n"
+            "real effect -- a field test confirmed the schedule stays active in the app\n"
+            "afterwards. Writing it here is evidently not the mechanism the app uses.\n"
+            "Still worth running if you want to check whether that holds on your robot too;\n"
+            "the point is that a green result below does NOT mean it worked."
+        )
+
+    async with connected_robot(username, password, country_code, blid, connect_mqtt=True) as (robot, report):
 
         print("\n== Fetching current value ==")
         settings_response = await robot.get_settings()
@@ -161,7 +199,7 @@ async def send_toggle(username: str, password: str, country_code: str, blid: str
         print(f"\n{key} ({wire_key}): {current!r} -> {new_value!r}")
         print(json.dumps({"key": wire_key, "value": new_value}, indent=2))
 
-        if not _confirm("\nSend this EXACT change now? This changes a real robot setting."):
+        if not confirm("\nSend this EXACT change now? This changes a real robot setting."):
             print("Aborted by user -- nothing sent.")
             return
 
@@ -198,8 +236,6 @@ async def send_toggle(username: str, password: str, country_code: str, blid: str
                     "stay in sync (confirmed this session, real capture)",
                 )
 
-    report.redact(username, password)
-    report.print_final_summary()
     print(
         "\nIMPORTANT: this confirms the write was accepted and, per the read-back above, "
         "whether it stuck in rw-settings -- it does NOT confirm the robot's actual physical "
@@ -243,11 +279,11 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_settings:
-        asyncio.run(list_settings(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_settings(username, password, args.country_code, args.blid)))
         return
 
     if args.toggle:
-        asyncio.run(send_toggle(username, password, args.country_code, args.blid, args.toggle))
+        sys.exit(run_script(send_toggle(username, password, args.country_code, args.blid, args.toggle)))
         return
 
 

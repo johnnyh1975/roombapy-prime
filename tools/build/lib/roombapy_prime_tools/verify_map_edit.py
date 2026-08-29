@@ -57,6 +57,19 @@ general V1 envelope shape and about SetRoomMetadataV1 specifically
 (now confirmed twice), but does NOT by itself confirm any of the other
 command types.
 
+SPLIT AND MERGE ARE NO LONGER UNRUN, AND THIS TOOL STILL REFUSES THEM.
+Those are two different questions and it is worth keeping them apart.
+@bryznnguyen ran SplitRoomV1 (x3) and MergeRoomsV1 (x1) on a Combo 105
+and got the success-with-rendered-URL shape every time -- see their
+docstrings. So the commands work.
+
+The refusal here is not a claim that they don't; it is about
+reversibility. This tool's whole safety design is "change something
+and change it back", and a split or merge destroys the boundary
+information needed to undo it. A tester who wants to exercise them
+does so deliberately, on their own map, knowing it is one-way --
+which is exactly how the confirmation above was obtained.
+
 SAFETY DESIGN (same doubly-secured pattern as verify_mission_commands.py):
 1. --i-understand-this-will-edit-my-map must be explicitly set at
    startup, or the script aborts immediately, before it even logs in.
@@ -99,14 +112,12 @@ or interactive prompt, never as a command-line argument.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 import webbrowser
 from typing import Any
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
 from roombapy_prime.models import (
     P2MapVersion,
@@ -116,8 +127,6 @@ from roombapy_prime.models import (
     parse_active_map_versions,
     parse_map_bundle,
 )
-from roombapy_prime.prime_factory import PrimeFactory
-from .verify_mission_commands import _confirm
 
 _TEST_SUFFIX = " [roombapy-prime-test]"
 
@@ -164,8 +173,8 @@ async def _fetch_bundle_rooms(robot: Any, typed_versions: list[P2MapVersion]) ->
     more personal than most other data" rule."""
     rooms: list[tuple[str, RoomFeature]] = []
     for version in typed_versions:
-        p2map_id = getattr(version, "p2map_id", None)
-        p2mapv_id = getattr(version, "active_p2mapv_id", None)
+        p2map_id = field(version, "p2map_id", None)
+        p2mapv_id = field(version, "active_p2mapv_id", None)
         if not (p2map_id and p2mapv_id):
             continue
         try:
@@ -181,10 +190,27 @@ async def _fetch_bundle_rooms(robot: Any, typed_versions: list[P2MapVersion]) ->
         except Exception as exc:  # noqa: BLE001
             print(f"  (map bundle check for {p2map_id!r} failed: {type(exc).__name__}: {exc})")
             continue
+        # A BUNDLE FILE IS A FeatureCollection, NOT A BARE LIST.
+        #
+        # @chairstacker: "0 room feature(s) found across all map
+        # bundles" on a robot with seven named rooms. This read
+        # `parsed["rooms"]` expecting a list, got the GeoJSON wrapper
+        # `{"type": ..., "features": [...]}`, failed the isinstance
+        # check and moved on -- silently, because a `continue` looks
+        # the same as an empty map.
+        #
+        # `borders` really is a bare feature (confirmed session 58);
+        # `rooms` and `cleanZones` are collections. Both shapes are
+        # accepted here rather than assuming either.
         rooms_file = parsed.get("rooms")
-        if not isinstance(rooms_file, list):
+        if isinstance(rooms_file, dict):
+            entries = rooms_file.get("features") or []
+        elif isinstance(rooms_file, list):
+            entries = rooms_file
+        else:
             continue
-        for entry in rooms_file:
+
+        for entry in entries:
             if isinstance(entry, dict):
                 rooms.append((p2map_id, RoomFeature.from_json(entry)))
     return rooms
@@ -213,13 +239,11 @@ def _pick_test_room(rooms: list[tuple[str, RoomFeature]]) -> tuple[str, str, str
 
 
 async def run(username: str, password: str, country_code: str, blid: str) -> tuple[Report, dict[str, Any]]:
-    report = Report()
     raw_capture: dict[str, Any] = {}
 
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
         await robot.connect()
         report.add("MQTT connection", "OK")
 
@@ -234,7 +258,13 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             await robot.disconnect()
             return report, raw_capture
         report.add("Fetching active map versions", "OK", f"{len(map_versions)} map version(s) found")
-        raw_capture["Active map versions"] = [getattr(v, "__dict__", str(v)) for v in map_versions]
+        # A dict has no __dict__, so the old fallback stored str(v) --
+        # turning structured capture data into a flat string exactly
+        # where the structure is the point.
+        raw_capture["Active map versions"] = [
+            v if isinstance(v, dict) else getattr(v, "__dict__", str(v))
+            for v in map_versions
+        ]
 
         typed_versions = parse_active_map_versions(map_versions)
 
@@ -279,7 +309,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             "OLD, incorrectly-shaped RenameRoom envelope, had failed with HTTP 500 -- fixed "
             "via full APK decompilation of EditMapV1Request.java, then confirmed working live."
         )
-        if not _confirm("Proceed with the rename?"):
+        if not confirm("Proceed with the rename?"):
             report.add("Rename room (test)", "SKIPPED", "not confirmed by user")
             await robot.disconnect()
             return report, raw_capture
@@ -298,7 +328,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             await robot.disconnect()
             return report, raw_capture
 
-        renamed_confirmed = _confirm(
+        renamed_confirmed = confirm(
             f'Please check the real app now: does the room show as "{test_name}"? (y/n)'
         )
         if renamed_confirmed:
@@ -312,7 +342,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
 
         print(f"\n{'=' * 60}")
         print(f"Reverting room_id={room_id} back to its original name: {original_name!r}")
-        if not _confirm("Proceed with the revert?"):
+        if not confirm("Proceed with the revert?"):
             report.add(
                 "Revert room name", "SKIPPED",
                 f"NOT confirmed by user -- room_id={room_id} may still show the test name "
@@ -334,7 +364,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             await robot.disconnect()
             return report, raw_capture
 
-        reverted_confirmed = _confirm(
+        reverted_confirmed = confirm(
             f'Please check the real app again: is the room back to "{original_name}"? (y/n)'
         )
         if reverted_confirmed:
@@ -392,13 +422,11 @@ async def run_category_test(username: str, password: str, country_code: str, bli
     already been observed to actually work against a real robot in
     both directions. Same capture-then-revert safety pattern as the
     rename test above."""
-    report = Report()
     raw_capture: dict[str, Any] = {}
 
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
         await robot.connect()
         report.add("MQTT connection", "OK")
 
@@ -446,7 +474,7 @@ async def run_category_test(username: str, password: str, country_code: str, bli
             "Using SetRoomMetadataV1 (command='set_room_metadata') -- the SAME command already "
             "LIVE-CONFIRMED for renaming, just its other field (room_type/category instead of name)."
         )
-        if not _confirm("Proceed with the category change?"):
+        if not confirm("Proceed with the category change?"):
             report.add("Change room category (test)", "SKIPPED", "not confirmed by user")
             await robot.disconnect()
             return report, raw_capture
@@ -460,7 +488,7 @@ async def run_category_test(username: str, password: str, country_code: str, bli
             await robot.disconnect()
             return report, raw_capture
 
-        changed_confirmed = _confirm(
+        changed_confirmed = confirm(
             f"Please check the real app now: does the room show category {test_category.value!r}? (y/n)"
         )
         if changed_confirmed:
@@ -474,7 +502,7 @@ async def run_category_test(username: str, password: str, country_code: str, bli
 
         print(f"\n{'=' * 60}")
         print(f"Reverting room_id={room_id} back to its original category: {original_category!r}")
-        if not _confirm("Proceed with the revert?"):
+        if not confirm("Proceed with the revert?"):
             report.add(
                 "Revert room category", "SKIPPED",
                 f"NOT confirmed by user -- room_id={room_id} may still show {test_category!r}. "
@@ -540,14 +568,14 @@ def main() -> None:
     else:
         print("This script is about to temporarily rename one room on this device's real map, then")
         print("rename it back. See the module docstring for why only this one operation is tested.")
-    if not _confirm("Continue?"):
+    if not confirm("Continue?"):
         print("Aborted.")
         sys.exit(0)
 
     if args.test_category:
-        report, raw_capture = asyncio.run(run_category_test(username, password, args.country_code, args.blid))
+        report, raw_capture = sys.exit(run_script(run_category_test(username, password, args.country_code, args.blid)))
     else:
-        report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid))
+        report, raw_capture = sys.exit(run_script(run(username, password, args.country_code, args.blid)))
     report.redact(username, password)
 
     report.print_final_summary()

@@ -50,24 +50,13 @@ itself is what you're worried about) state fresh.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
-from roombapy_prime.diagnostics import Report
-from roombapy_prime.prime_factory import PrimeFactory
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
 
 
-def _confirm(prompt: str) -> bool:
-    """Interactive confirmation -- ONLY "j"/"ja"/"y"/"yes" (case
-    doesn't matter) counts as approval, anything else (including just
-    pressing Enter) aborts. Same convention as this project's other
-    diagnostic scripts."""
-    answer = input(f"{prompt} [y/N] ").strip().lower()
-    return answer in ("j", "ja", "y", "yes")
 
 
 async def _fetch_current_walls(robot, p2map_id: str, p2mapv_id: str):
@@ -106,10 +95,9 @@ async def list_maps(username: str, password: str, country_code: str, blid: str) 
     region-command work is investigating. This prints the CURRENTLY
     ACTIVE pair straight from get_active_map_versions(), making this
     script self-sufficient instead of sending testers hunting."""
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
         maps = await robot.get_active_map_versions()
 
     if not maps:
@@ -118,10 +106,10 @@ async def list_maps(username: str, password: str, country_code: str, blid: str) 
     else:
         print(f"\n{len(maps)} map(s) found:\n")
         for m in maps:
-            name = getattr(m, "name", None) or "(unnamed)"
+            name = field(m, "name") or "(unnamed)"
             print(f"  name={name!r}")
-            print(f"    --p2map-id  {getattr(m, 'p2map_id', None)}")
-            print(f"    --p2mapv-id {getattr(m, 'active_p2mapv_id', None)}")
+            print(f"    --p2map-id  {field(m, 'p2map_id')}")
+            print(f"    --p2mapv-id {field(m, 'active_p2mapv_id')}")
         report.add("List maps", "OK", f"{len(maps)} map(s)")
         print(
             "\nCopy the two IDs of the map you want into:\n"
@@ -129,23 +117,94 @@ async def list_maps(username: str, password: str, country_code: str, blid: str) 
             "--p2map-id <...> --p2mapv-id <...>"
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
+
+
+async def warn_if_map_version_is_stale(robot, p2map_id: str, p2mapv_id: str, report) -> bool:
+    """Warns when the caller passed a map version the robot has moved on
+    from. Returns True if the version is current (or unknowable).
+
+    FOUND IN THE FIELD (DaRealGuGu). He restarted his robot between
+    tests, which re-versioned the map, then ran with the older version
+    id -- and got "No policyZones.geojson data found". That result is
+    ambiguous in the worst way: it reads as "you have no keep-out
+    zones" when it might equally mean "we looked in a version that no
+    longer exists".
+
+    Neither he nor we could tell which, and the script said nothing
+    about the difference. Since map re-versioning on restart is now
+    confirmed behaviour rather than a theory, an unnoticed stale id is
+    a realistic way to produce a confidently wrong empty result."""
+    try:
+        maps = await robot.get_active_map_versions()
+    except Exception as exc:  # noqa: BLE001
+        report.add("Map version freshness", "SKIPPED", f"{type(exc).__name__}: {exc}")
+        return True
+
+    for entry in maps or []:
+        if field(entry, "p2map_id") != p2map_id:
+            continue
+        active = field(entry, "active_p2mapv_id")
+        if not active:
+            report.add("Map version freshness", "SKIPPED", "robot reported no active version")
+            return True
+        if active == p2mapv_id:
+            report.add("Map version freshness", "OK", f"--p2mapv-id matches the active {active!r}")
+            return True
+        report.add(
+            "Map version freshness", "FAILED",
+            f"you passed --p2mapv-id {p2mapv_id!r} but the robot's active version is "
+            f"{active!r}. Map versions change when the robot re-maps or is restarted, so an "
+            "empty result here would be ambiguous: it could mean you have no zones, or that "
+            f"we looked in a version that no longer exists. Re-run with --p2mapv-id {active}",
+        )
+        return False
+
+    report.add("Map version freshness", "SKIPPED", f"map {p2map_id!r} not in the active list")
+    return True
 
 
 async def list_walls(username: str, password: str, country_code: str, blid: str, p2map_id: str, p2mapv_id: str) -> None:
     """Stage 0 -- pure reconnaissance, sends nothing."""
-    async with aiohttp.ClientSession() as session:
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
+        fresh = await warn_if_map_version_is_stale(robot, p2map_id, p2mapv_id, report)
         features, walls = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
 
     if not features:
         print("No policyZones.geojson data found for this map (or the map bundle had none).")
+        if not fresh:
+            print(
+                "\nTREAT THIS RESULT AS INCONCLUSIVE: the map version you passed is not the\n"
+                "robot's current one (see the report above). An empty result may simply mean\n"
+                "we looked in a version that no longer exists. Re-run with the active version."
+            )
+        else:
+            print(
+                "\nThe map version you passed IS the robot's current one, so this is a real\n"
+                "result: this map genuinely has no keep-out zones or virtual walls. That is\n"
+                "still worth reporting."
+            )
         return
 
     print(f"\n{len(features)} raw policyZones feature(s), {len(walls)} converted to VirtualWallV1:\n")
     for feature, wall in zip(features, walls + [None] * (len(features) - len(walls)), strict=True):
-        kind = type(wall).__name__ if wall is not None else "(dropped -- Threshold or unrecognized)"
+        # KNOWN omissions read differently from unknown ones, and the
+        # old message conflated them (arielgr: a Threshold zone printed
+        # as "dropped -- Threshold or unrecognized", which reads like a
+        # gap in this library and is not).
+        #
+        # Thresholds are doorway markers. They live in policyZones
+        # alongside keep-out zones, but they are NOT virtual walls: the
+        # app edits them through set_thresholds, a separate command with
+        # its own status field. Dropping them here is correct --
+        # resending them as virtual walls would be wrong.
+        if wall is not None:
+            kind = type(wall).__name__
+        elif (feature.properties.zone_type or "") == "Threshold":
+            kind = "(skipped -- a doorway threshold, edited via set_thresholds, not a wall)"
+        else:
+            kind = f"(DROPPED -- zone_type {feature.properties.zone_type!r} is not recognised; please report)"
         print(f"  id={feature.feature_id!r} zone_type={feature.properties.zone_type!r} -> {kind}")
 
     print(
@@ -158,43 +217,162 @@ async def list_walls(username: str, password: str, country_code: str, blid: str,
 
 async def send_update_unchanged(
     username: str, password: str, country_code: str, blid: str, p2map_id: str, p2mapv_id: str,
+    only_first_wall: bool = False,
 ) -> None:
     from roombapy_prime.models.map_editing import SetVirtualWallsV1
 
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
 
         print("\n== Reading current policy zones ==")
         try:
             features, walls = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
         except Exception as exc:  # noqa: BLE001
             report.add("Reading current policy zones", "FAILED", f"{type(exc).__name__}: {exc}")
-            report.redact(username, password)
-            report.print_final_summary()
             return
         report.add("Reading current policy zones", "OK", f"{len(features)} feature(s), {len(walls)} wall(s)")
 
+        if only_first_wall and len(walls) > 1:
+            # NARROWING TEST (this session). Three request envelopes have
+            # now been genuinely sent and all rejected with HTTP 500, so
+            # response_type is ruled out -- the first negative result in
+            # this investigation that was actually earned.
+            #
+            # What remains untested is whether the problem is the command
+            # SHAPE or something about this particular list. Unlike
+            # rename_room, which is confirmed live, set_virtual_wall has
+            # never been observed on the wire from the real app: its
+            # entire structure comes from decompilation.
+            #
+            # One wall is the cheapest way to split that question.
+            print(
+                f"\n== --only-first-wall: sending 1 of {len(walls)} wall(s) =="
+                "\n(If this is accepted while the full list was not, the problem is "
+                "the list or one entry in it, not the command shape.)"
+            )
+            walls = walls[:1]
+
+        # BUILT AFTER the truncation, not before.
+        #
+        # The first version of this built the command first and then
+        # trimmed the list it had already been given. The banner said
+        # "sending 1 of 2" and the payload printed both walls -- so the
+        # run answered the question it was meant to replace, and
+        # DaRealGuGu spent a session on a test that never ran.
+        #
+        # Second time this exact class of mistake has cost a tester an
+        # evening in this project: a28 added a parameter to one layer
+        # and not the next. Both were invisible until real output was
+        # read carefully.
         command = SetVirtualWallsV1(walls=walls)
         payload = command.to_v1_command_body()
-        print(f"\nResending {len(walls)} wall(s) -- EXACTLY as read, nothing modified:")
+
+        print(f"\nResending {len(walls)} wall(s) -- EXACTLY as read, nothing modified.")
+        print(
+            f"The leading {len(walls)} in virwall is the wall COUNT, not a wall -- "
+            "the piece that was missing until now and the reason every previous\n"
+            "attempt returned HTTP 500."
+        )
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-        if not _confirm("\nSend this EXACT payload now? This changes real map zones."):
+        if not confirm("\nSend this EXACT payload now? This changes real map zones."):
             print("Aborted by user -- nothing sent.")
             return
 
-        print("\n== Sending ==")
-        try:
-            result = await robot.edit_map(p2map_id, command)
-            report.add("edit_map() -- SetVirtualWallsV1", "OK", f"response: {result!r}")
-        except Exception as exc:  # noqa: BLE001
-            report.add("edit_map() -- SetVirtualWallsV1", "FAILED", f"{type(exc).__name__}: {exc}")
+        # TRIES SEVERAL ENVELOPES IN ONE RUN (this session).
+        #
+        # Two field runs resent two untouched zones and got HTTP 500
+        # both times -- once with a payload carrying a genuine extra
+        # point, and again after that was corrected. So the extra point
+        # was a real deviation from the documented format but not the
+        # cause, and testing one guess per round is too slow when each
+        # round costs a tester their evening.
+        #
+        # `response_type` is the least-verified part of this request:
+        # "link" asks the server for a presigned DOWNLOAD url, which is
+        # confirmed for FETCHING a map and may be meaningless on an
+        # EDIT. This module's own docstring has said as much all along.
+        #
+        # The variants stop at the first success, so a working one ends
+        # the run rather than sending the same edit repeatedly.
+        # TYPE VARIANTS REMOVED AGAIN (this session), unused.
+        #
+        # They were built to probe whether the wall id should be an Int
+        # and the type code a String -- and APK bytecode then settled
+        # both directly: id is a String (no boxing), type code an Int
+        # (Integer.valueOf + Number cast). Sending variants that are
+        # already known wrong would spend real writes on someone's real
+        # map and add noise to the result.
+        #
+        # The actual cause turned out to be elsewhere entirely: the
+        # virwall array starts with a COUNT. See SetVirtualWallsV1.
+        #
+        # response_type stays varied: all three shapes were genuinely
+        # sent and rejected before the count was known, so they were
+        # rejected for the count and tell us nothing about response_type
+        # after all. Worth re-running now that the payload is correct.
+        variants: list[tuple[str, str | None]] = [
+            ("response_type omitted entirely", None),
+            ('response_type="link" (the app default)', "link"),
+            ('response_type="binary"', "binary"),
+        ]
+        local_bug = False
+        print(f"\n== Sending -- trying {len(variants)} request shapes, stopping at the first success ==")
+        for label, response_type in variants:
+            print(f"\n-- {label} --")
+            try:
+                result = await robot.edit_map(p2map_id, command, response_type=response_type)
+            except TypeError as exc:
+                # A TypeError here never reached the network -- it is a
+                # bug in THIS code, not an answer from the server.
+                #
+                # HAPPENED FOR REAL (a28): response_type was added to
+                # the REST client and not to the robot wrapper, so all
+                # three variants died before a single request went out
+                # -- and the summary below still announced that
+                # response_type was ruled out. It had not been tested
+                # at all.
+                #
+                # Reporting a local failure as a server result is the
+                # same mistake as the PUBACK false signal earlier in
+                # this project's history, and it wastes a tester's
+                # entire evening.
+                report.add(
+                    f"edit_map() -- {label}", "FAILED",
+                    f"LOCAL BUG, request never sent -- {type(exc).__name__}: {exc}",
+                )
+                print(f"   NOT SENT -- bug in this script: {exc}")
+                local_bug = True
+                continue
+            except Exception as exc:  # noqa: BLE001
+                report.add(
+                    f"edit_map() -- {label}", "FAILED", f"{type(exc).__name__}: {exc}",
+                )
+                print(f"   failed: {type(exc).__name__}: {exc}")
+                continue
 
-    report.redact(username, password)
-    report.print_final_summary()
+            report.add(f"edit_map() -- {label}", "OK", f"response: {result!r}")
+            print(f"   ACCEPTED: {result!r}")
+            print(
+                "\nThis shape worked. Please check the iRobot app: the zones should look\n"
+                "exactly as they did before, since this resent them unchanged."
+            )
+            return
+
+        if local_bug:
+            print(
+                "\nNOTHING WAS ACTUALLY SENT. The failures above are bugs in this script,\n"
+                "not answers from the server -- so this run rules out nothing at all.\n"
+                "Please report it; the fix belongs on our side."
+            )
+        else:
+            print(
+                "\nAll shapes were sent and all were rejected. That rules out response_type\n"
+                "as the cause, which is worth knowing -- it was the least-verified part of\n"
+                "the request."
+            )
+
 
 
 def main() -> None:
@@ -224,6 +402,15 @@ def main() -> None:
         "--update-unchanged", action="store_true",
         help="Stage 1: resend the current, complete list unchanged.",
     )
+    parser.add_argument(
+        "--only-first-wall", action="store_true",
+        help="Stage 1b: resend only the FIRST wall instead of the whole list. "
+        "Splits one question into two -- if a single wall is accepted while the "
+        "full list is rejected, the problem is the list or a specific entry in it; "
+        "if a single wall is rejected too, the command shape itself is wrong. "
+        "Both outcomes are informative, which was not true of the whole-list test "
+        "on its own.",
+    )
     parser.add_argument("--i-understand-this-changes-real-map-zones", action="store_true")
     args = parser.parse_args()
     require_blid(args)
@@ -249,17 +436,20 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_maps:
-        asyncio.run(list_maps(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_maps(username, password, args.country_code, args.blid)))
         return
 
     if args.list_walls:
-        asyncio.run(list_walls(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id))
+        sys.exit(run_script(list_walls(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id)))
         return
 
     if args.update_unchanged:
-        asyncio.run(
-            send_update_unchanged(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id)
-        )
+        sys.exit(run_script(
+            send_update_unchanged(
+                username, password, args.country_code, args.blid,
+                args.p2map_id, args.p2mapv_id, args.only_first_wall,
+            )
+        ))
         return
 
 

@@ -598,3 +598,137 @@ class TestTheSnapshotLagsInBothDirections:
         )
 
         assert extra == []
+
+
+class TestTheDeletedMarkerAppliesToRoomsOnly:
+    """@chairstacker on 0.3.0: every one of his ten zones was marked
+    "NOT in the current map version (deleted?)".
+
+    `geojson_details.regions` lists **rooms**, not zones. So no zone is
+    ever in that set, the marker fired for all of them, and a marker
+    that always fires is not information.
+
+    For a zone there is no list of what currently exists, so a deleted
+    one and an unnamed one still look alike. Saying nothing is better
+    than a confident wrong answer.
+    """
+
+    @staticmethod
+    def _is_zone(region_type):
+        """The check as the tool performs it."""
+        return str(region_type or "").lower().endswith("zid")
+
+    def test_a_zone_is_recognised(self):
+        from roombapy_prime.models.mission_control import RegionType
+
+        assert self._is_zone(RegionType.ZID)
+
+    def test_a_room_is_not(self):
+        from roombapy_prime.models.mission_control import RegionType
+
+        assert not self._is_zone(RegionType.RID)
+
+    def test_a_room_with_no_type_is_treated_as_a_room(self):
+        """His room 12 reports `region_type=None` and is a room. Guessing
+        zone from a missing type would suppress the marker for exactly
+        the entries it is meant to cover."""
+        assert not self._is_zone(None)
+
+
+class TestExamplesUseRealNames:
+    """A first draft of `error_handling.py` called `factory.login()` and
+    `factory.create_robot()`. Neither exists — `PrimeFactory` has one
+    method, `create_prime_robot`, and it is static.
+
+    An example that does not run is worse than no example: it is the
+    first thing a new user copies, and it fails in a way that looks like
+    their mistake.
+    """
+
+    @staticmethod
+    def _example_files():
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent.parent
+        return sorted((root / "examples").glob("*.py"))
+
+    def test_every_example_parses(self):
+        import ast
+
+        for path in self._example_files():
+            ast.parse(path.read_text(encoding="utf-8"))
+
+    def test_every_imported_name_exists(self):
+        import ast
+
+        import roombapy_prime
+
+        missing = []
+        for path in self._example_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "roombapy_prime"
+                ):
+                    missing += [
+                        f"{path.name}: {a.name}"
+                        for a in node.names
+                        if not hasattr(roombapy_prime, a.name)
+                    ]
+
+        assert not missing, f"examples import names that do not exist: {missing}"
+
+    def test_every_robot_method_called_exists(self):
+        """The wider version of the same check.
+
+        Import names were covered; `robot.get_maps()` was not, and a
+        draft of `maps.py` called exactly that. `PrimeRobot` has
+        `get_map_metadata` and `get_active_map_versions`.
+        """
+        import re
+
+        from roombapy_prime.prime_robot import PrimeRobot
+
+        missing = []
+        for path in self._example_files():
+            called = set(
+                re.findall(r"robot\.(\w+)\(", path.read_text(encoding="utf-8"))
+            )
+            missing += [
+                f"{path.name}: robot.{m}()"
+                for m in sorted(called)
+                if not hasattr(PrimeRobot, m)
+            ]
+
+        assert not missing, f"examples call methods that do not exist: {missing}"
+
+    def test_every_model_import_exists(self):
+        import ast
+        import importlib
+
+        missing = []
+        for path in self._example_files():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module
+                    and node.module.startswith("roombapy_prime.")
+                ):
+                    continue
+                mod = importlib.import_module(node.module)
+                missing += [
+                    f"{path.name}: {node.module}.{a.name}"
+                    for a in node.names
+                    if not hasattr(mod, a.name)
+                ]
+
+        assert not missing, f"examples import names that do not exist: {missing}"
+
+    def test_the_factory_method_examples_call_is_real(self):
+        """The specific mistake, named so a rename breaks this test
+        rather than the examples."""
+        from roombapy_prime import PrimeFactory
+
+        assert hasattr(PrimeFactory, "create_prime_robot")

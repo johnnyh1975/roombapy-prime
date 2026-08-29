@@ -73,25 +73,15 @@ consequence of this write's own delayed-effect nature described above.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from typing import Any
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report, _extract_first_id, _try_silent
-from roombapy_prime.prime_factory import PrimeFactory
 
 
-def _confirm(prompt: str) -> bool:
-    """Interactive confirmation -- ONLY "j"/"ja"/"y"/"yes" (case
-    doesn't matter) counts as approval, anything else (including just
-    pressing Enter) aborts. Same convention as this project's other
-    diagnostic scripts."""
-    answer = input(f"{prompt} [y/N] ").strip().lower()
-    return answer in ("j", "ja", "y", "yes")
 
 
 async def _discover_household_id(robot: Any) -> str | None:
@@ -107,8 +97,9 @@ async def list_schedules(username: str, password: str, country_code: str, blid: 
     """Stage 0 -- pure reconnaissance, sends nothing. Auto-discovers
     household_id, then lists every schedule with enough detail to pick
     a target for --update-unchanged/--disable."""
-    async with aiohttp.ClientSession() as session:
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
         household_id = await _discover_household_id(robot)
         if not household_id:
             print("Could not auto-discover household_id (get_user_households()'s response shape is unconfirmed).")
@@ -145,7 +136,7 @@ async def _confirm_show_send(robot: Any, household_id: str, household_schedule_i
     print(f"\n{description}")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    if not _confirm("\nSend this EXACT payload now? This changes a real schedule."):
+    if not confirm("\nSend this EXACT payload now? This changes a real schedule."):
         print("Aborted by user -- nothing sent.")
         return
 
@@ -159,11 +150,9 @@ async def send_update_unchanged(
 ) -> None:
     from roombapy_prime.models.schedules_dnd import HouseholdSchedule
 
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
 
         household_id = await _discover_household_id(robot)
         if not household_id:
@@ -186,8 +175,6 @@ async def send_update_unchanged(
             f"household_schedule_id={household_schedule_id!r} -- EXACTLY as stored, nothing modified:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 def _build_disabled_schedules(schedules: list, schedule_index: int):
@@ -212,11 +199,9 @@ async def send_disable(
 ) -> None:
     from roombapy_prime.models.schedules_dnd import HouseholdSchedule
 
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
 
         household_id = await _discover_household_id(robot)
         if not household_id:
@@ -245,8 +230,6 @@ async def send_disable(
             f"(schedule_id={target.schedule_id!r}) enabled: {was_enabled!r} -> False:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 def main() -> None:
@@ -290,21 +273,21 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_schedules:
-        asyncio.run(list_schedules(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_schedules(username, password, args.country_code, args.blid)))
         return
 
     if args.update_unchanged:
-        asyncio.run(
+        sys.exit(run_script(
             send_update_unchanged(username, password, args.country_code, args.blid, args.update_unchanged)
-        )
+        ))
         return
 
     if args.disable:
-        asyncio.run(
+        sys.exit(run_script(
             send_disable(
                 username, password, args.country_code, args.blid, args.disable, args.schedule_index,
             )
-        )
+        ))
         return
 
 

@@ -65,21 +65,12 @@ import webbrowser
 from dataclasses import asdict
 from typing import Any
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, require_blid, resolve_credentials, run_script
 from roombapy_prime.diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url, redact_aws_url_secrets
 from roombapy_prime.models import parse_robot_status_v2
-from roombapy_prime.prime_factory import PrimeFactory
 
 
-def _confirm(prompt: str) -> bool:
-    """Interactive confirmation -- ONLY "j"/"ja"/"y"/"yes" (case
-    doesn't matter) counts as approval, anything else (including just
-    pressing Enter) aborts. Deliberately restrictive -- an accidental
-    Enter must never count as approval."""
-    answer = input(f"{prompt} [y/N] ").strip().lower()
-    return answer in ("j", "ja", "y", "yes")
 
 
 async def _show_state(robot: Any, label: str) -> dict[str, Any] | None:
@@ -177,7 +168,7 @@ async def _capture_mid_mission_state(
     print("cleaning (moving, brush/vacuum sound, an on-robot or app cleaning")
     print("indicator -- whatever your model shows) before confirming below.")
     print("Take your time -- this step waits for you, there is no timeout.")
-    if not _confirm("Robot is now visibly, actively cleaning -- capture state now?"):
+    if not confirm("Robot is now visibly, actively cleaning -- capture state now?"):
         report.add("Mid-mission capture", "SKIPPED", "not confirmed by user")
         return
 
@@ -217,7 +208,7 @@ async def _run_command(
     print(f"\n{'=' * 60}")
     print(f"NEXT COMMAND: {label} ({command})")
     print(f'About to send: {{"command": "{command}", "initiator": "localApp"}} via the cmd topic')
-    if not _confirm(f'Send "{label}" to the real robot now?'):
+    if not confirm(f'Send "{label}" to the real robot now?'):
         report.add(label, "SKIPPED", "not confirmed by user")
         return False
 
@@ -236,7 +227,7 @@ async def _run_command(
         raw_capture[f"{label} (before)"] = before
         raw_capture[f"{label} (after)"] = after
 
-    observed = _confirm(f'Did the robot actually react as expected to "{label}"?')
+    observed = confirm(f'Did the robot actually react as expected to "{label}"?')
     if observed:
         report.add(label, "OK", "confirmed by user on the real robot")
     else:
@@ -245,13 +236,11 @@ async def _run_command(
 
 
 async def run(username: str, password: str, country_code: str, blid: str) -> tuple[Report, dict[str, Any]]:
-    report = Report()
     raw_capture: dict[str, Any] = {}
 
-    async with aiohttp.ClientSession() as session:
-        print("\n== Login ==")
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-        report.add("Login", "OK", f"BLID={robot.blid}")
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
         await robot.connect()
         report.add("MQTT connection", "OK")
 
@@ -287,7 +276,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             report.add("Mid-mission capture", "SKIPPED", "Start was not confirmed")
 
         print("\n== Optional additional tests ==")
-        if _confirm("Also test Pause/Resume? (needs a freshly started mission)"):
+        if confirm("Also test Pause/Resume? (needs a freshly started mission)"):
             if await _run_command(robot, report, raw_capture, "start", "Start (for pause test)"):
                 await _run_command(robot, report, raw_capture, "pause", "Pause")
                 await _run_command(robot, report, raw_capture, "resume", "Resume")
@@ -295,7 +284,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
         else:
             report.add("Pause/Resume", "SKIPPED", "not chosen by user")
 
-        if _confirm("Also test Dock? (sends the robot back to its charging station)"):
+        if confirm("Also test Dock? (sends the robot back to its charging station)"):
             await _run_command(robot, report, raw_capture, "dock", "Dock")
         else:
             report.add("Dock", "SKIPPED", "not chosen by user")
@@ -308,7 +297,7 @@ async def run(username: str, password: str, country_code: str, blid: str) -> tup
             "works. Does NOT require an active mission -- works regardless of whether the robot "
             "is currently cleaning, docked, or idle."
         )
-        if _confirm('Also test "find" (should make the robot chime)?'):
+        if confirm('Also test "find" (should make the robot chime)?'):
             await _run_command(robot, report, raw_capture, "find", "Find")
             print(
                 "\nDid the robot actually chime? Already confirmed working on at least one real "
@@ -356,11 +345,11 @@ def main() -> None:
 
     print(f"\nTARGET DEVICE: {args.blid}")
     print("This script is about to send real start/stop commands to this device.")
-    if not _confirm("Continue?"):
+    if not confirm("Continue?"):
         print("Aborted.")
         sys.exit(0)
 
-    report, raw_capture = asyncio.run(run(username, password, args.country_code, args.blid))
+    report, raw_capture = sys.exit(run_script(run(username, password, args.country_code, args.blid)))
     report.redact(username, password)
 
     report.print_final_summary()

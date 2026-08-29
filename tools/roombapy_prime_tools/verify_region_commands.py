@@ -1752,7 +1752,20 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
         # GONE FROM THE MAP, still in the snapshot. Marked, because an
         # entry with no name looks exactly like a zone nobody has named
         # yet, and the two need different action from a reader.
-        if version_id_set and str(room.room_id) not in version_id_set:
+        # ROOMS ONLY. `geojson_details.regions` lists rooms and not
+        # zones, so every zone is absent from it and this marked all ten
+        # of @chairstacker's as possibly deleted -- a marker that always
+        # fires is not information.
+        #
+        # For a zone there is no list of what currently exists, so a
+        # deleted one and an unnamed one still look alike. Saying so is
+        # better than a confident wrong answer.
+        _is_zone = str(room.region_type or "").lower().endswith("zid")
+        if (
+            version_id_set
+            and not _is_zone
+            and str(room.room_id) not in version_id_set
+        ):
             suffix += "   <- NOT in the current map version (deleted?)"
         print(
             f"  room_id={room.room_id!r}  "
@@ -1771,8 +1784,13 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
         name = version_names.get(rid) or zone_names.get(rid)
         source = "version" if version_names.get(rid) else "bundle"
         suffix = f"  [{source}]" if name is not None else ""
+        # A NAME FROM THE BUNDLE'S ZONE LAYERS MEANS IT IS A ZONE. The
+        # snapshot has no entry to read a type from, and printing
+        # `region_type=None` for something we do know is a zone reads as
+        # missing data rather than as a zone (@chairstacker's 109).
+        region_type = "zid (from bundle)" if rid in zone_names else None
         print(
-            f"  room_id={rid!r}  region_type=None  "
+            f"  room_id={rid!r}  region_type={region_type!r}  "
             f"name={name!r}{suffix}   <- not in map metadata"
         )
     if extra:

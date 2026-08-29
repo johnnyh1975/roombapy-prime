@@ -62,7 +62,7 @@ on just one, shared by stages 1-3:
      underlying mechanism is not)
   3. An interactive y/N confirmation, showing the EXACT JSON payload
      that will be sent, immediately before sending it -- the same
-     _confirm() helper already used elsewhere in this project's
+     confirm() helper already used elsewhere in this project's
      diagnostic scripts.
 
 WHAT SUCCESS LOOKS LIKE: the robot starts cleaning the same area(s) it
@@ -88,12 +88,11 @@ import sys
 import time
 from typing import Any
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
+from roombapy_prime.vendor_errors import vendor_error
 from roombapy_prime.diagnostics import Report
 from roombapy_prime.models.mission_control import Region, RegionType
-from roombapy_prime.prime_factory import PrimeFactory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -115,13 +114,6 @@ SUBSCRIBE_SETTLE_SECONDS = 1.0
 STATUS_SNAPSHOT_DELAY_SECONDS = 3.0
 
 
-def _confirm(prompt: str) -> bool:
-    """Interactive confirmation -- ONLY "j"/"ja"/"y"/"yes" (case
-    doesn't matter) counts as approval, anything else (including just
-    pressing Enter) aborts. Same convention as verify_mission_timeline.py
-    and verify_mission_commands.py's own _confirm() helpers."""
-    answer = input(f"{prompt} [y/N] ").strip().lower()
-    return answer in ("j", "ja", "y", "yes")
 
 
 def _region_types(regions: Any) -> list[str]:
@@ -150,20 +142,11 @@ def _is_safe_command_def(command) -> bool:
     command_def from stage 1 entirely -- see RegionType.TID's own
     docstring for why ad-hoc regions carry extra, unconfirmed
     construction requirements this script deliberately avoids."""
-    regions = getattr(command, "regions", None)
+    regions = field(command, "regions", None)
     for region_type in _region_types(regions):
         if region_type.lower() == str(RegionType.TID).lower():
             return False
     return True
-
-
-async def _login_and_connect(session: aiohttp.ClientSession, username: str, password: str, country_code: str, blid: str, report: Report):
-    print("\n== Login ==")
-    robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
-    report.add("Login", "OK", f"BLID={robot.blid}")
-    await robot.connect()
-    report.add("MQTT connection", "OK")
-    return robot
 
 
 class _EnvelopedCommand:
@@ -275,7 +258,17 @@ async def _preflight_roundtrip_fidelity_check(
         report.add("Pre-flight: round-trip fidelity", "SKIPPED", "favorite not found in raw response")
         return
 
-    raw_defs = raw_fav.get("command_defs") or raw_fav.get("commandDefs") or []
+    # "commanddefs", all lowercase, is the CONFIRMED wire key (see
+    # FavoriteV1's own to_json). The two camel/snake variants below were
+    # guesses, and because neither ever matched, this check silently
+    # reported "raw command_def not found" on every real run it has ever
+    # had -- it has never actually compared anything.
+    raw_defs = (
+        raw_fav.get("commanddefs")
+        or raw_fav.get("command_defs")
+        or raw_fav.get("commandDefs")
+        or []
+    )
     if command_index >= len(raw_defs):
         report.add("Pre-flight: round-trip fidelity", "SKIPPED", "raw command_def not found")
         return
@@ -307,9 +300,65 @@ async def _preflight_roundtrip_fidelity_check(
         )
 
 
+def preflight_target_robot_check(command, blid: str, report: Report) -> bool:
+    """Checks that the favorite we are about to resend actually belongs
+    to the robot we are sending it to.
+
+    FOUND IN THE FIELD (DaRealGuGu, v0.1.11a22) and not something anyone
+    thought to check: his login BLID was a 16-character
+    "3178480C91223620" while the stored favorite's own robot_id was a
+    32-character "0B710054CA277C04B2700374A8349C9A" -- and the
+    favorite's p2map_id carried that same 32-character prefix, not the
+    BLID's.
+
+    We publish to {prefix}/things/{BLID}/cmd. If those two identifiers
+    name different robots -- two devices on one account being the
+    obvious way that happens -- then the command goes to a robot that
+    has never heard of that map or those regions, and "no reaction" is
+    the only possible outcome. No protocol mystery required.
+
+    NOW BLOCKS RATHER THAN WARNS (this session). The first version only
+    reported, on the reasoning that the two identifiers might live in
+    different namespaces on some device generations. A field run settled
+    that: DaRealGuGu's account has a Roomba 980 (sku R980040, a CLASSIC
+    protocol robot) and a Prime robot, and the command was going to the
+    980. The proof was in the same log -- ro-currentstate came back 404
+    "No shadow exists with name", which a V4 device always has and a
+    classic one never does.
+
+    So a mismatch is not an interesting curiosity. It means the command
+    is going somewhere it cannot possibly work, and every result from
+    that run is noise. Returning False stops the send; --i-know-the-
+    robot-id-differs overrides it for anyone who wants to confirm the
+    negative deliberately."""
+    robot_id = field(command, "asset_id", None)
+    if not robot_id:
+        report.add("Pre-flight: target robot", "SKIPPED", "command carries no robot_id")
+        return True
+    if robot_id == blid:
+        report.add(
+            "Pre-flight: target robot", "OK",
+            f"favorite's robot_id matches the BLID being published to ({blid})",
+        )
+        return True
+    report.add(
+        "Pre-flight: target robot", "FAILED",
+        f"the favorite says robot_id={robot_id!r}, but this command is being published to "
+        f"BLID={blid!r} -- these are NOT the same identifier, so this command is being sent "
+        "to a DIFFERENT robot than the favorite belongs to. A field run confirmed exactly "
+        "this: the command went to a Roomba 980 (a classic-protocol robot) while the "
+        "favorite belonged to the Prime robot on the same account. Nothing can work that "
+        "way, and every result from such a run is noise.\n\n"
+        f"Re-run with:  --blid {robot_id}\n"
+        "(or set ROOMBAPY_PRIME_BLID to that value)\n\n"
+        "If you genuinely want to send it anyway, pass --i-know-the-robot-id-differs.",
+    )
+    return False
+
+
 async def run_session_preflight_checks(
     robot, command, favorite_id: str, command_index: int, report: Report,
-) -> None:
+) -> bool:
     """The two pre-flight checks whose inputs do NOT change between
     stages of one session: the favorite's map version, and whether our
     own round-trip drops fields the stored favorite carries.
@@ -323,11 +372,20 @@ async def run_session_preflight_checks(
     stages, and the mission status is the whole point of a before/after
     comparison.
 
-    Call once, after picking the favorite and before the first send."""
+    Call once, after picking the favorite and before the first send.
+    Returns False if the favorite belongs to a different robot than the
+    one being targeted -- in which case the caller must not send, since
+    every result from such a run is noise (see
+    preflight_target_robot_check for the field case that established
+    this)."""
+    targets_right_robot = preflight_target_robot_check(
+        command, getattr(robot, "blid", "") or "", report
+    )
     await _preflight_map_version_check(robot, command, report)
     await _preflight_roundtrip_fidelity_check(
         robot, command, favorite_id, command_index, report
     )
+    return targets_right_robot
 
 
 async def _preflight_map_version_check(robot, command, report: Report) -> None:
@@ -347,7 +405,7 @@ async def _preflight_map_version_check(robot, command, report: Report) -> None:
     value: silently sending something different from what the user
     asked to send would undermine the whole point of a staged,
     show-the-exact-payload test script."""
-    stored_version = getattr(command, "pmap_version_id", None)
+    stored_version = field(command, "pmap_version_id", None)
     if not stored_version:
         report.add("Pre-flight: map version", "SKIPPED", "command carries no user_p2mapv_id")
         return
@@ -358,9 +416,9 @@ async def _preflight_map_version_check(robot, command, report: Report) -> None:
         return
 
     active = {
-        getattr(v, "active_p2mapv_id", None)
+        field(v, "active_p2mapv_id")
         for v in (versions or [])
-        if getattr(v, "active_p2mapv_id", None)
+        if field(v, "active_p2mapv_id")
     }
     if not active:
         report.add("Pre-flight: map version", "SKIPPED", "no active_p2mapv_id reported")
@@ -371,11 +429,27 @@ async def _preflight_map_version_check(robot, command, report: Report) -> None:
         )
     else:
         report.add(
-            "Pre-flight: map version", "FAILED",
+            # DOWNGRADED FROM "FAILED" (this session, settled by field
+            # data). The robot re-versions its map CONSTANTLY -- one
+            # tester's own mission events show five different
+            # p2mapvId values inside 37 seconds of cleaning. A stored
+            # favorite is therefore stale within a minute of being
+            # saved, always, for everyone.
+            #
+            # More decisively: two confirmed-working region commands
+            # both carried a map version hours out of date and started
+            # missions regardless. A check that fires on every single
+            # run for something demonstrably harmless is not a signal,
+            # it is noise -- and noise next to genuine failures makes
+            # the genuine ones easier to skip past.
+            "Pre-flight: map version", "SKIPPED",
             f"favorite carries user_p2mapv_id {stored_version!r}, but the currently active "
-            f"version(s) are {sorted(active)!r} -- a MAP_VERSION_MISMATCH "
-            "(RobotReadinessState 22) is a strong candidate for why this command has no effect. "
-            "Re-saving the favorite in the real app would refresh it.",
+            f"version(s) are {sorted(active)!r} -- but this is EXPECTED and has "
+            "never blocked anything. The robot re-versions its map every few seconds while "
+            "cleaning (five values inside 37 seconds in one real capture), so a stored "
+            "favorite is stale within a minute of being saved. Two confirmed-working region "
+            "commands both carried a version hours out of date. Noted only in case it ever "
+            "turns out to matter for WHICH rooms get cleaned.",
         )
 
 
@@ -403,8 +477,13 @@ def preflight_pad_vs_mode_check(command, reported: dict | None, report: Report) 
     from roombapy_prime.models import OperatingModeBitmask
 
     modes: set[int] = set()
-    for region in (getattr(command, "regions", None) or []):
-        params = getattr(region, "params", None)
+    for region in (field(command, "regions", None) or []):
+        # Regions arriving from a stored favorite are raw dicts, not
+        # typed objects -- getattr() on a dict silently returns the
+        # default, which is why this reported "no operatingMode in
+        # regions" for a payload that visibly contained one on every
+        # region (DaRealGuGu, v0.1.11a22).
+        params = region.get("params") if isinstance(region, dict) else field(region, "params", None)
         mode = (
             params.get("operatingMode") if isinstance(params, dict)
             else getattr(params, "operating_mode", None)
@@ -572,7 +651,7 @@ def _report_mission_status(report: Report, before: dict | None, after: dict | No
 
 async def _confirm_show_send_watch(
     robot, command, report: Report, watch_seconds: int, description: str,
-    disconnect_after: bool = True,
+    disconnect_after: bool = True, watch_rejected: bool = False,
 ) -> tuple[list, list]:
     """Shared final step for every stage: show the exact payload,
     require interactive confirmation, subscribe to mission/timeline/
@@ -631,7 +710,7 @@ async def _confirm_show_send_watch(
         "the moment of sending, a second or two after this preview)"
     )
 
-    if not _confirm("\nSend this EXACT payload now? This will move the robot."):
+    if not confirm("\nSend this EXACT payload now? This will move the robot."):
         print("Aborted by user -- nothing sent.")
         return [], []
 
@@ -651,13 +730,37 @@ async def _confirm_show_send_watch(
     timeline_task: asyncio.Task | None = None
     rejected_task: asyncio.Task | None = None
     if watch_seconds > 0:
+        topics = "mission/timeline/report"
+        if watch_rejected:
+            topics += " and rejected/report"
         print(
-            "\n== Subscribing to mission/timeline/report and rejected/report BEFORE "
-            "sending (a fast response, especially a rejection, could otherwise arrive "
-            "before we're listening) =="
+            f"\n== Subscribing to {topics} BEFORE sending (a fast response, especially "
+            "a rejection, could otherwise arrive before we're listening) =="
         )
         timeline_task = asyncio.create_task(_watch_timeline())
-        rejected_task = asyncio.create_task(_watch_rejected())
+        # rejected/report is OFF BY DEFAULT (this session) -- see
+        # watch_rejected_commands()'s own docstring: it is EXPLORATORY,
+        # never confirmed live, and this module's header warns in as many
+        # words that subscribing to an unconfirmed topic causes immediate
+        # "Unspecified error" disconnects.
+        #
+        # A field log (DaRealGuGu, a24) is full of exactly that error.
+        # And the correlation there is total: every stage that got a
+        # PUBACK started a mission, every stage that did not got nothing
+        # -- the payload never mattered. So the most likely story is that
+        # our own diagnostic subscription was poisoning the connection
+        # the command needed.
+        #
+        # The topic named in a drop message only says which watcher
+        # NOTICED, not what caused it: the connection is shared, so one
+        # bad subscription takes both down.
+        #
+        # Cost of turning it off: across five real runs by three testers,
+        # this channel has produced exactly zero messages. Losing nothing
+        # to possibly stop losing everything is an easy trade. --watch-
+        # rejected brings it back for anyone testing the channel itself.
+        if watch_rejected:
+            rejected_task = asyncio.create_task(_watch_rejected())
         # Give the subscribe() calls a moment to actually reach the
         # broker before sending -- there's no "subscription confirmed"
         # signal to await precisely here, so a short, fixed settle
@@ -684,9 +787,12 @@ async def _confirm_show_send_watch(
     else:
         report.add(
             "send_routine_command_via_cmd_topic()", "FAILED",
-            "broker did NOT confirm receipt (no PUBACK within the timeout) -- this points at a "
-            "policy/ACL-level block rather than the robot ignoring a valid payload. See the "
-            "parallel APK-research chat's own IoT-policy investigation.",
+            "broker did NOT confirm receipt (no PUBACK within the timeout). CHECK THE OUTPUT "
+            "ABOVE FIRST: if the connection dropped or reconnected during this run, that alone "
+            "explains a missing PUBACK and this says nothing about the payload. Only on an "
+            "otherwise clean run does this point at a policy/ACL-level block. (A client-side "
+            "crash in our own SUBACK handling produced exactly this false signal for one "
+            "tester in v0.1.11a22 -- fixed since, but worth checking rather than assuming.)",
         )
 
     # Snapshot the mission status shortly after sending -- deliberately
@@ -701,8 +807,21 @@ async def _confirm_show_send_watch(
         print(f"\n== Watching for {watch_seconds}s (already subscribed since before sending) ==")
         print("(Ctrl+C to stop watching early -- the command has already been sent either way)")
         try:
+            # BUG INTRODUCED IN a25 AND CAUGHT IN THE FIELD IMMEDIATELY
+            # (DaRealGuGu). Making rejected_task conditional left this
+            # gather() passing None, which raises TypeError instantly --
+            # so the watch window died on arrival and every stage
+            # reported "NO events observed" even when the robot had
+            # visibly started a mission.
+            #
+            # That is the same class of damage the bug it replaced did:
+            # a real success reported as nothing. Filtering here rather
+            # than reconstructing the task list at each call site,
+            # because there is exactly one place that can get this
+            # wrong and it should be this one.
+            watch_tasks = [t for t in (timeline_task, rejected_task) if t is not None]
             async with asyncio.timeout(watch_seconds):
-                await asyncio.gather(timeline_task, rejected_task)
+                await asyncio.gather(*watch_tasks)
         except TimeoutError:
             pass
         except KeyboardInterrupt:
@@ -780,33 +899,93 @@ def _summarize_events(events: list) -> str:
 
     lines = [f"\n== Summary: {len(events)} event(s) observed =="]
     for event in events:
-        event_type = getattr(event, "event_type", None)
-        parts = [f"  [{event_type}]"]
-        command_ev = getattr(event, "command", None)
-        if command_ev is not None:
-            parts.append(
-                f"command={getattr(command_ev, 'command', None)!r} "
-                f"initiator={getattr(command_ev, 'initiator', None)!r}"
-            )
-        room_ev = getattr(event, "room", None)
-        if room_ev is not None:
-            parts.append(
-                f"region_id={getattr(room_ev, 'region_id', None)!r} "
-                f"area={getattr(room_ev, 'area', None)!r} "
-                f"total_area={getattr(room_ev, 'total_area', None)!r}"
-            )
-        zone_ev = getattr(event, "zone", None)
-        if zone_ev is not None:
-            parts.append(
-                f"zone_id={getattr(zone_ev, 'zone_id', None)!r} "
-                f"area={getattr(zone_ev, 'area', None)!r} "
-                f"total_area={getattr(zone_ev, 'total_area', None)!r}"
-            )
-        error_ev = getattr(event, "error", None)
-        if error_ev is not None:
-            parts.append(f"** ERROR value={getattr(error_ev, 'value', None)!r} **")
-        lines.append(" ".join(parts))
+        lines.extend(_describe_event(event))
     return "\n".join(lines)
+
+
+def _describe_event(event) -> list[str]:
+    """Renders one timeline event.
+
+    REAL BUG FOUND AND FIXED, and it could hardly have picked a worse
+    moment: this summariser was written against a parsed
+    MissionTimelineEvent model, but what actually arrives on the wire is
+    a raw ShadowResponse whose useful content sits in a payload DICT.
+    Every getattr() therefore returned None, and the summary printed
+    "[None]" for each event.
+
+    That held for months without consequence, because until now every
+    run observed zero events. It surfaced on the very first run where
+    the robot genuinely started a mission (DaRealGuGu) -- the one moment
+    the summary had to be readable, it said nothing.
+
+    Reads the real shape and keeps the typed path as a fallback, since
+    an unparsed dict is what we get today but not necessarily forever."""
+    payload = field(event, "payload", None)
+    if not isinstance(payload, dict):
+        return [_describe_typed_event(event)]
+
+    out: list[str] = []
+    mission_id = payload.get("mission_id")
+    n_mssn = payload.get("nMssn")
+    header = "  mission"
+    if mission_id:
+        header += f" {mission_id}"
+    if n_mssn is not None:
+        header += f"  (#{n_mssn} on this robot)"
+    out.append(header)
+
+    for label, key in (("event", "event"), ("finished", "finEvents")):
+        for entry in payload.get(key) or []:
+            if isinstance(entry, dict):
+                out.append(f"    [{label}] type={entry.get('type')!r} ts={entry.get('ts')!r}")
+            else:
+                out.append(f"    [{label}] {entry!r}")
+
+    # The robot echoes the command back. Worth surfacing which regions it
+    # actually accepted -- that is the whole question these tests exist for.
+    cmd = payload.get("cmd")
+    if isinstance(cmd, dict):
+        regions = cmd.get("regions") or []
+        region_ids = [r.get("region_id") for r in regions if isinstance(r, dict)]
+        out.append(
+            f"    [echoed back] command={cmd.get('command')!r} "
+            f"initiator={cmd.get('initiator')!r} regions={region_ids or '(none)'}"
+        )
+    return out
+
+
+def _describe_typed_event(event) -> str:
+    """Fallback for a parsed MissionTimelineEvent, kept in case the
+    watch path ever returns parsed models rather than raw responses."""
+    parts = [f"  [{field(event, 'event_type', None)}]"]
+    command_ev = field(event, "command", None)
+    if command_ev is not None:
+        parts.append(
+            f"command={field(command_ev, 'command', None)!r} "
+            f"initiator={field(command_ev, 'initiator', None)!r}"
+        )
+    room_ev = field(event, "room", None)
+    if room_ev is not None:
+        parts.append(
+            f"region_id={field(room_ev, 'region_id', None)!r} "
+            f"area={field(room_ev, 'area', None)!r} "
+            f"total_area={field(room_ev, 'total_area', None)!r}"
+        )
+    zone_ev = field(event, "zone", None)
+    if zone_ev is not None:
+        parts.append(f"zone_id={field(zone_ev, 'zone_id', None)!r}")
+    error_ev = field(event, "error", None)
+    if error_ev is not None:
+        # NAME THE CODE. This printed `ERROR value=46` and left the
+        # reader to look it up -- and looking it up meant asking us,
+        # because until now this library had no error table at all.
+        _code = field(error_ev, "value", None)
+        _text = vendor_error(_code)
+        parts.append(
+            f"** ERROR {_code}: {_text['title']} **" if _text
+            else f"** ERROR value={_code!r} (not in iRobot's catalogue) **"
+        )
+    return " ".join(parts)
 
 
 async def list_favorites(username: str, password: str, country_code: str, blid: str) -> None:
@@ -815,8 +994,8 @@ async def list_favorites(username: str, password: str, country_code: str, blid: 
     which ones are eligible for stage 1 (no TID regions) and which
     aren't, so a tester can pick a safe target before touching --send
     at all."""
-    async with aiohttp.ClientSession() as session:
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True) as (robot, report):
         favorites = await robot.get_favorites()
 
     if not favorites:
@@ -830,10 +1009,10 @@ async def list_favorites(username: str, password: str, country_code: str, blid: 
             print("  (no command_defs)")
             continue
         for i, command in enumerate(favorite.command_defs):
-            region_types = _region_types(getattr(command, "regions", None))
+            region_types = _region_types(field(command, "regions", None))
             eligible = _is_safe_command_def(command)
             tag = "STAGE-1 ELIGIBLE" if eligible else "CONTAINS TID -- NOT eligible for stage 1/2"
-            print(f"  [{i}] command_type={getattr(command, 'command_type', '?')!r} regions={region_types or '(none)'} -- {tag}")
+            print(f"  [{i}] command_type={field(command, 'command_type', '?')!r} regions={region_types or '(none)'} -- {tag}")
     print(
         "\nTo test one: roombapy-prime-verify-region-commands --send FAVORITE_ID "
         "--command-index N --i-understand-this-will-move-my-robot "
@@ -869,9 +1048,9 @@ async def send_stage_one(
     real behavior; it isn't a new modification of the kind stage 1's
     own "completely unchanged" promise is about (suction level,
     regions, etc. remain untouched)."""
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         print("\n== Fetching favorites ==")
         favorites = await robot.get_favorites()
@@ -901,8 +1080,6 @@ async def send_stage_one(
             "the real app's own confirmed behavior, nothing else changed:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 def build_stage_one_command(original, favorite_id: str):
@@ -1036,9 +1213,9 @@ async def send_stage_one_with_initiator(
     existed, does not override anything that was actually set). See
     _add_initiator_if_missing()'s own docstring for why "rmtApp", not
     the earlier "localApp"."""
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         print("\n== Fetching favorites ==")
         favorites = await robot.get_favorites()
@@ -1059,9 +1236,16 @@ async def send_stage_one_with_initiator(
             )
             return
 
-        await run_session_preflight_checks(
+        ok_target = await run_session_preflight_checks(
             robot, original, favorite_id, command_index, report
         )
+        if not ok_target:
+            print(
+                "\nAborted: the favorite belongs to a different robot than this command "
+                "would be sent to. See the check above for the exact --blid to use.\n"
+                "Nothing was sent."
+            )
+            return
 
         command = build_stage_one_b_command(original, favorite_id)
         if command is None:
@@ -1080,8 +1264,6 @@ async def send_stage_one_with_initiator(
             "nothing else changed:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -1116,7 +1298,7 @@ def _build_modified_command(original, suction_level: int):
 
     from roombapy_prime.models.mission_control import CommandParams
 
-    original_params = getattr(original, "params", None)
+    original_params = field(original, "params", None)
     if isinstance(original_params, dict):
         original_level = original_params.get("suctionLevel")
         new_params: CommandParams | dict = {
@@ -1128,8 +1310,49 @@ def _build_modified_command(original, suction_level: int):
     else:
         original_level = None
         new_params = CommandParams(suction_level=suction_level, routine_modified=True)
-    modified = dataclasses.replace(original, params=new_params)
+    # ALSO change it where the real app actually keeps it.
+    #
+    # EVIDENCE, from a field capture of an app-created favorite
+    # (DaRealGuGu): the stored favorite's top-level params were exactly
+    # {"routine_type", "profile"} -- no suctionLevel at all -- while
+    # EVERY region carried its own {"suctionLevel": 1, ...}. So the app
+    # stores suction per region and does not use a top-level field for
+    # it.
+    #
+    # This function only ever wrote the top level, leaving each region's
+    # real value untouched. The result was a payload asking for level 2
+    # in a place the app never uses while still saying level 1 in the
+    # place it does -- and nobody could say which one the robot honours.
+    # The robot accepted it and ran, so it was never fatal, just
+    # uninterpretable.
+    #
+    # The top-level write is KEPT rather than replaced: it is where
+    # routineModified goes, and dropping it would change two things at
+    # once in a test whose whole point is changing one.
+    new_regions = _with_region_suction_level(field(original, "regions", None), suction_level)
+    modified = dataclasses.replace(original, params=new_params, regions=new_regions)
     return modified, original_level
+
+
+def _with_region_suction_level(regions, suction_level: int):
+    """Returns the region list with each region's own suctionLevel set.
+
+    Leaves anything it does not recognise alone -- a region that is
+    neither a dict nor carries params is passed through untouched
+    rather than reshaped on a guess."""
+    if not regions:
+        return regions
+    out = []
+    for region in regions:
+        if not isinstance(region, dict):
+            out.append(region)
+            continue
+        params = region.get("params")
+        if not isinstance(params, dict):
+            out.append(region)
+            continue
+        out.append({**region, "params": {**params, "suctionLevel": suction_level}})
+    return out
 
 
 async def send_stage_one_c(
@@ -1141,9 +1364,9 @@ async def send_stage_one_c(
     in a cmd/cmdJson envelope rather than flattened at the top level --
     see _EnvelopedCommand's own docstring for the three signals that
     make this worth testing separately."""
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         print("\n== Fetching favorites ==")
         favorites = await robot.get_favorites()
@@ -1174,8 +1397,6 @@ async def send_stage_one_c(
             f"{envelope_style!r} envelope instead of flattened at the top level:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
 
 
 async def send_stage_two(
@@ -1214,9 +1435,9 @@ async def send_stage_two(
     for the full finding (the real app's own RoutineCommandBuilder
     always sends favorite_id together with a favorite's resolved
     command_defs). Composed on top of the initiator addition."""
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         print("\n== Fetching favorites ==")
         favorites = await robot.get_favorites()
@@ -1250,12 +1471,170 @@ async def send_stage_two(
             "favorite_id added to match the real app's own confirmed behavior:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
     )
+
+
+def _regions_not_in_snapshot(
+    version_ids: Any, zone_names: dict[str, str], known_ids: set[str]
+) -> list[str]:
+    """Regions the snapshot does not list, from either other source.
+
+    A SEPARATE FUNCTION SO IT CAN BE TESTED. The version comparison
+    used to be four lines inside a function that logs in, connects over
+    MQTT and downloads a bundle -- untestable in practice, and it was
+    wrong in a way nobody could have caught: it looked for version ids
+    missing from the snapshot and not for bundle names missing from it.
+
+    @chairstacker's zone 109 had a name in the bundle and no snapshot
+    entry, so the tool read its name and never printed it. Nine names
+    read, eight printed -- the tool's own counter was the evidence.
+    """
+    version_id_set = {str(r) for r in version_ids}
+    candidates = list(version_ids) + [
+        r for r in zone_names if r not in version_id_set
+    ]
+    return [rid for rid in candidates if rid not in known_ids]
+
+
+async def _zone_names_from_bundle(
+    robot: Any, p2map_id: str, map_version: str | None
+) -> dict[str, str] | None:
+    """{zone_id: name} from the bundle's `cleanZones` layer, or {}.
+
+    The map metadata carries room names only. A zone's name, when it
+    has one, is a `properties.name` on its feature in the bundle.
+
+    Needs the map VERSION as well as the id: get_map_geojson_link is
+    per-version, and calling it with the id alone raised
+    `missing 1 required positional argument: 'map_version'` -- which
+    surfaced to @chairstacker as "map bundle unreadable", swallowing
+    every zone name on a map that had them.
+    """
+    if not map_version:
+        return {}
+    try:
+        link = await robot.get_map_geojson_link(p2map_id, map_version)
+        # THE LINK IS A DICT, NOT A URL. `get_map_geojson_link` returns
+        # the whole response; `download_map_bundle` wants the string.
+        # Passing the dict raised "Constructor parameter should be str"
+        # from yarl, which reads like a type bug in the library rather
+        # than a mistake at the call site (@chairstacker, #64).
+        #
+        # verify_map_edit.py has extracted it correctly all along --
+        # this is the second implementation of the same three lines,
+        # and only one of them was right.
+        url = next(
+            (v for v in link.values() if isinstance(v, str) and v.startswith("http")),
+            None,
+        ) if isinstance(link, dict) else link
+        if not url:
+            print("  (no download URL in the map bundle response)")
+            return {}
+        blob = await robot.download_map_bundle(url)
+        # A MODULE FUNCTION, not a robot method. `PrimeRobot` has no
+        # `parse_map_bundle`, so this raised AttributeError -- and the
+        # dict-link bug fixed in b16 masked it completely: this line had
+        # never executed, so the error only became reachable one release
+        # ago. @utkjmitch and @chairstacker both hit it immediately.
+        from roombapy_prime.models.map_bundle import (  # noqa: PLC0415
+            parse_map_bundle,
+        )
+
+        bundle = parse_map_bundle(blob)
+    except Exception as exc:  # noqa: BLE001
+        # NAME THE STEP, not just the exception. "map bundle unreadable"
+        # covered three different network calls, so a failure said
+        # nothing about which one -- and the bundle-contents line below
+        # only prints on success, which is when it is least needed.
+        print(f"  (map bundle unreadable: {type(exc).__name__}: {exc})")
+        # None MEANS "NOT ANSWERED", {} MEANS "READ FINE, NO NAMES".
+        #
+        # Both returned {} before, so the caller printed its no-names
+        # conclusion after a read that threw -- concluding absence from
+        # a search that never ran, one level above where b15 fixed the
+        # same words. @utkjmitch spotted it and proposed this split.
+        return None
+
+    # ALL THREE ZONE LAYERS, not just cleanZones.
+    #
+    # @chairstacker's bundle contained five files -- borders, manifest,
+    # metadata, policyZones, rooms -- and NO cleanZones at all. Reading
+    # only that one layer returned {} and the tool reported "no zone
+    # names in the map bundle", which was literally true and thoroughly
+    # misleading: it had looked in one of three drawers.
+    #
+    # Bundle contents vary per map. A map with only keep-out zones has
+    # policyZones and no cleanZones; a map with ad-hoc zones has a third
+    # layer again. Naming which layer a zone came from matters too --
+    # a keep-out zone and a clean zone are both "zones" here and mean
+    # opposite things to a caller building a cleaning command.
+    # `parse_map_bundle` RETURNS A DICT, keyed by filename without the
+    # extension -- there is no `zone_layers` attribute and never was.
+    #
+    # `getattr(bundle, "zone_layers", None)` therefore returned None on
+    # every bundle ever passed here, so this function returned {}
+    # unconditionally. The tool then reported "no zone names in the map
+    # bundle", which read as a fact about the data and was a fact about
+    # a typo.
+    #
+    # Adding two more layer names to the loop did not help, because the
+    # loop was reading an empty dict. That is the same mistake one level
+    # up: concluding absence from a search that never ran.
+    layers = bundle if isinstance(bundle, dict) else {}
+
+    # SAY WHAT IS IN THE BUNDLE. A tool that reports "nothing found"
+    # without naming where it looked is unfalsifiable from the outside
+    # -- which is exactly how a typo here survived as a claim about the
+    # data. Bundle contents vary per map, so the file list is also the
+    # first thing worth knowing when the answer is empty.
+    print(f"\n  (bundle contains: {', '.join(sorted(layers)) or 'nothing'})")
+
+    names: dict[str, str] = {}
+    for layer_name in ("cleanZones", "adHocCleanZones", "policyZones"):
+        layer = layers.get(layer_name) or {}
+        for feature in (layer.get("features") or []):
+            if not isinstance(feature, dict):
+                continue
+            properties = feature.get("properties") or {}
+            zone_id = properties.get("id") or feature.get("id")
+            name = properties.get("name")
+            if not zone_id or not name:
+                continue
+            # THE NAME STAYS THE NAME. An earlier version appended the
+            # layer to every entry, which turned "Living Room @Wall"
+            # into "Living Room @Wall [cleanZones]" -- noise on the
+            # common case, and a change to the data rather than an
+            # addition to it.
+            #
+            # Only a POLICY zone gets marked, because only that is
+            # actionable: keep-out and no-mop zones live in policyZones
+            # discriminated by `zone_type`, and sending a cleaning
+            # command at one is the mistake worth preventing. A clean
+            # zone needs no marker; it is the default.
+            # POLICY ZONES HAVE NO NAME FIELD AT ALL. Confirmed from a
+            # raw dump (@utkjmitch, Y351020): the layer is a
+            # FeatureCollection whose properties carry only
+            # `{"type": "NoMopZone"}`. The app does not offer naming for
+            # keep-out and no-mop zones and the bundle agrees, so "no
+            # zone names found" was never a parsing gap here.
+            #
+            # Named zones live in `cleanZones` -- confirmed separately
+            # (@chairstacker, G185020, nine names read). Four releases
+            # of this tool reported on a search that had not run; the
+            # answer, once it ran, is that it depends on the layer.
+            if layer_name == "policyZones":
+                zone_type = (
+                    properties.get("zone_type")
+                    or properties.get("type")
+                    or "policy"
+                )
+                names[str(zone_id)] = f"{name} [{zone_type}]"
+            else:
+                names[str(zone_id)] = str(name)
+    return names
 
 
 async def list_rooms(username: str, password: str, country_code: str, blid: str, p2map_id: str) -> None:
@@ -1263,17 +1642,193 @@ async def list_rooms(username: str, password: str, country_code: str, blid: str,
     Lists real room_id/region_type/name values from
     get_map_metadata()'s own rooms_metadata, so a tester can pick a
     REAL room rather than guessing at an id."""
-    async with aiohttp.ClientSession() as session:
-        robot = await PrimeFactory.create_prime_robot(session, username, password, country_code, blid)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True) as (robot, report):
         map_data = await robot.get_map_metadata(p2map_id)
 
-    if not map_data.rooms_metadata:
-        print(f"No rooms_metadata found for p2map_id={p2map_id!r}.")
-        return
+        if not map_data.rooms_metadata:
+            print(f"No rooms_metadata found for p2map_id={p2map_id!r}.")
+            return
 
-    print(f"\n{len(map_data.rooms_metadata)} room(s) found on map {p2map_id!r}:\n")
+        print(f"\n{len(map_data.rooms_metadata)} room(s) found on map {p2map_id!r}:\n")
+
+        # THE ACTIVE MAP VERSION, read once inside the session. Both
+        # bundle and version lookups need it, and BOTH used to run
+        # AFTER this `async with` block closed -- which is why
+        # @chairstacker saw "Session is closed" on the version read and
+        # a missing-argument error on the bundle read. The reads were
+        # outside the connection that served them.
+        # THE ROBOT'S OWN SPELLING, whichever it uses. @chairstacker's
+        # G185020 sends `user_p2mapv_id` and `p2mapv_id` and no
+        # `active_` field, so this read None and the bundle request went
+        # out with no version -- returning whatever the server defaults
+        # to. A zone created that morning was missing from a bundle read
+        # that afternoon while the version carrying it sat in the same
+        # response.
+        active = map_data.current_map_version
+
+        # ZONE NAMES ARE NOT IN THE MAP METADATA.
+        #
+        # @chairstacker's zones read `name=None` here while his app
+        # timeline labelled them. `rooms_metadata` carries ROOM names;
+        # a zone's name lives in the bundle's `cleanZones` layer, and
+        # this listing never looked there.
+        zone_names = await _zone_names_from_bundle(
+            robot, p2map_id, str(active) if active else None
+        )
+
+        # A THIRD SOURCE, and apparently the one the app itself uses.
+        # `GET /v1/p2maps/{id}/versions/{vid}` carries
+        # `geojson_details.regions` with names for rooms AND zones.
+        version_names: dict[str, str] = {}
+        version_ids: list[str] = []
+        if active:
+            try:
+                version_names = await robot.get_map_region_names(
+                    p2map_id, str(active)
+                )
+                # AND THE IDS, WHICH IS A DIFFERENT QUESTION.
+                #
+                # @chairstacker had twelve zones and this listed eight.
+                # The list came from `rooms_metadata` -- the p2map's own
+                # snapshot, which had not caught up with the zones he
+                # added -- while only the NAMES were read from the
+                # current version. A zone missing from the snapshot and
+                # unnamed in the version appeared in neither.
+                #
+                # The version is what the robot works from, so any id it
+                # carries that the snapshot lacks is added below rather
+                # than silently dropped.
+                #
+                # WHY THE SNAPSHOT LAGS, from the firmware/app analysis:
+                # the bundle's `room_metadata` (SINGULAR) is written on
+                # edit/upload only -- `setRoomMetadata`, `mergeRooms`,
+                # `splitRoom` -- not continuously, and its `Metadata`
+                # carries `mapUploadTime`. It is a snapshot BY DESIGN
+                # and catches up when the next upload happens.
+                #
+                # That finding is about the bundle field; this listing
+                # reads the p2map REST response's `rooms_metadata`
+                # (PLURAL), which is a different field, so it explains
+                # the mechanism rather than proving it applies here.
+                # Either way the fix stands: the extra ids are LABELLED
+                # as missing from the snapshot rather than merged into
+                # it, which is what a tester comparing against the app
+                # needs to see.
+                version_ids = await robot.get_map_region_ids(
+                    p2map_id, str(active)
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  (map version read failed: {exc})")
+
+    # THE VERSION IS THE HONEST SOURCE for "which regions exist".
+    #
+    # `rooms_metadata` is a snapshot and lags edits in BOTH directions.
+    # @chairstacker's map showed it doing each:
+    #
+    #   - zone 107, deleted in the app, stayed in the snapshot and lost
+    #     only its bundle name -- so it printed as an unnamed zone that
+    #     still exists
+    #   - zone 109, created in the app, had a name in the bundle and no
+    #     snapshot entry -- so it printed not at all. The tool read its
+    #     name and dropped it: nine names read, eight printed.
+    #
+    # This loop ran over the snapshot alone and compared against the
+    # version in one direction only, which caught the second case and
+    # never the first.
+    version_id_set = {str(r) for r in version_ids}
+    known_ids: set[str] = set()
     for room in map_data.rooms_metadata:
-        print(f"  room_id={room.room_id!r}  region_type={room.region_type!r}  name={room.name!r}")
+        known_ids.add(str(room.room_id))
+        name = room.name
+        source = "map"
+        if name is None and str(room.room_id) in zone_names:
+            name = zone_names[str(room.room_id)]
+            source = "bundle"
+        if name is None and str(room.room_id) in version_names:
+            name = version_names[str(room.room_id)]
+            source = "version"
+        suffix = f"  [{source}]" if name is not None else ""
+        # GONE FROM THE MAP, still in the snapshot. Marked, because an
+        # entry with no name looks exactly like a zone nobody has named
+        # yet, and the two need different action from a reader.
+        # ROOMS ONLY. `geojson_details.regions` lists rooms and not
+        # zones, so every zone is absent from it and this marked all ten
+        # of @chairstacker's as possibly deleted -- a marker that always
+        # fires is not information.
+        #
+        # For a zone there is no list of what currently exists, so a
+        # deleted one and an unnamed one still look alike. Saying so is
+        # better than a confident wrong answer.
+        _is_zone = str(room.region_type or "").lower().endswith("zid")
+        if (
+            version_id_set
+            and not _is_zone
+            and str(room.room_id) not in version_id_set
+        ):
+            suffix += "   <- NOT in the current map version (deleted?)"
+        print(
+            f"  room_id={room.room_id!r}  "
+            f"region_type={room.region_type!r}  name={name!r}{suffix}"
+        )
+
+    # REGIONS THE SNAPSHOT DOES NOT KNOW ABOUT. Marked, because a
+    # tester comparing this against the app needs to see WHICH entries
+    # the p2map metadata missed -- that difference is the finding.
+    # BOTH LEFTOVER SETS. Version ids without a snapshot entry, and
+    # bundle names without one either -- the second was silently
+    # dropped, which is how a zone the tool had read the name of never
+    # reached the screen.
+    extra = _regions_not_in_snapshot(version_ids, zone_names, known_ids)
+    for rid in extra:
+        name = version_names.get(rid) or zone_names.get(rid)
+        source = "version" if version_names.get(rid) else "bundle"
+        suffix = f"  [{source}]" if name is not None else ""
+        # A NAME FROM THE BUNDLE'S ZONE LAYERS MEANS IT IS A ZONE. The
+        # snapshot has no entry to read a type from, and printing
+        # `region_type=None` for something we do know is a zone reads as
+        # missing data rather than as a zone (@chairstacker's 109).
+        region_type = "zid (from bundle)" if rid in zone_names else None
+        print(
+            f"  room_id={rid!r}  region_type={region_type!r}  "
+            f"name={name!r}{suffix}   <- not in map metadata"
+        )
+    if extra:
+        print(
+            f"\n  ({len(extra)} region(s) present in the current map "
+            f"version but missing from the p2map's own rooms_metadata "
+            f"-- the snapshot is behind)"
+        )
+
+    if zone_names:
+        print(f"\n  ({len(zone_names)} zone name(s) read from the map bundle)")
+    else:
+        # SAY WHERE WE LOOKED, NOT WHAT EXISTS.
+        #
+        # This used to claim the names were "stored nowhere we can
+        # read", which asserted something the tool cannot know. It had
+        # searched one layer of three, and @chairstacker's bundle had
+        # none of that layer -- so a true statement about the search
+        # read as a false one about the data. He then found the same
+        # names showing up in calendar entries, which is how we learned
+        # the claim was wrong.
+        # ABSENCE AND FAILURE ARE DIFFERENT FINDINGS. `None` means the
+        # bundle could not be read, so nothing was searched; `{}` means
+        # the search ran and found no names. Printing the same sentence
+        # for both is how three releases reported on a search that had
+        # not happened.
+        if zone_names is None:
+            print(
+                "\n  (the bundle read FAILED above, so whether zone names "
+                "exist in its layers is UNANSWERED by this run)"
+            )
+        else:
+            print(
+                "\n  (no zone names found in the bundle's cleanZones, "
+                "adHocCleanZones or policyZones layers -- if the app shows "
+                "names for these, they are stored somewhere this tool does "
+                "not yet read, which is worth reporting)"
+            )
     print(
         "\nTo test one: roombapy-prime-verify-region-commands --send-region "
         "--p2map-id P2MAP_ID --room-id ROOM_ID --region-type rid_or_zid "
@@ -1317,12 +1872,21 @@ async def send_stage_three(
         print(f"ERROR: --region-type must be 'rid' or 'zid', got {region_type!r}. Use --send-adhoc for 'tid'.")
         return
 
-    report = Report()
-    async with aiohttp.ClientSession() as session:
-        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         command = RoutineCommand(
-            command_type=MissionCommandType.CLEAN,
+            # "start", NOT "clean" (this session, settled by field data).
+            #
+            # Stage 3 was written when nothing worked at all, and its
+            # command verb was never revisited afterwards. Both
+            # confirmed-working region commands use "start" -- the robot
+            # echoed them back that way in its own mission timeline.
+            # Stage 3 kept sending "clean", was delivered with a PUBACK,
+            # and did nothing: same robot, same map, same room, minutes
+            # after "start" had worked twice.
+            command_type=MissionCommandType.START,
             asset_id=blid,
             map_id=p2map_id,
             regions=[Region(region_id=room_id, region_type=RegionType(region_type.lower()))],
@@ -1336,8 +1900,6 @@ async def send_stage_three(
             "no favorite_id, nothing derived from an existing favorite, initiator=\"rmtApp\" added:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -1389,7 +1951,6 @@ async def send_stage_four(
         RoutineCommand,
     )
 
-    report = Report()
     print(
         "\n*** STAGE 4: the highest-risk tier this project knows about. ***\n"
         "furniture_id and polygon_points are YOUR responsibility to supply as real, "
@@ -1405,11 +1966,21 @@ async def send_stage_four(
     )
     region = Region(region_id=adhoc_id, region_type=RegionType.TID)
 
-    async with aiohttp.ClientSession() as session:
-        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         command = RoutineCommand(
-            command_type=MissionCommandType.CLEAN,
+            # "start", NOT "clean" (this session, settled by field data).
+            #
+            # Stage 3 was written when nothing worked at all, and its
+            # command verb was never revisited afterwards. Both
+            # confirmed-working region commands use "start" -- the robot
+            # echoed them back that way in its own mission timeline.
+            # Stage 3 kept sending "clean", was delivered with a PUBACK,
+            # and did nothing: same robot, same map, same room, minutes
+            # after "start" had worked twice.
+            command_type=MissionCommandType.START,
             asset_id=blid,
             map_id=p2map_id,
             regions=[region],
@@ -1422,8 +1993,6 @@ async def send_stage_four(
             f"{len(polygon_points)} polygon point(s), on map {p2map_id!r}:",
         )
 
-    report.redact(username, password)
-    report.print_final_summary()
     print(
         "\nIf the robot is doing something unexpected: send 'stop' now, either from the "
         "real app or via roombapy-prime-verify-mission-commands in a separate terminal."
@@ -1611,65 +2180,65 @@ def main() -> None:
     username, password = resolve_credentials(args)
 
     if args.list_favorites:
-        asyncio.run(list_favorites(username, password, args.country_code, args.blid))
+        sys.exit(run_script(list_favorites(username, password, args.country_code, args.blid)))
         return
 
     if args.list_rooms:
-        asyncio.run(list_rooms(username, password, args.country_code, args.blid, args.p2map_id))
+        sys.exit(run_script(list_rooms(username, password, args.country_code, args.blid, args.p2map_id)))
         return
 
     if args.send:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_one(
                 username, password, args.country_code, args.blid,
                 args.send, args.command_index, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_with_initiator:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_one_with_initiator(
                 username, password, args.country_code, args.blid,
                 args.send_with_initiator, args.command_index, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_enveloped:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_one_c(
                 username, password, args.country_code, args.blid,
                 args.send_enveloped, args.command_index, args.envelope_style, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_modified:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_two(
                 username, password, args.country_code, args.blid,
                 args.send_modified, args.command_index, args.suction_level, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_region:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_three(
                 username, password, args.country_code, args.blid,
                 args.p2map_id, args.room_id, args.region_type, args.watch_seconds,
             )
-        )
+        ))
         return
 
     if args.send_adhoc:
-        asyncio.run(
+        sys.exit(run_script(
             send_stage_four(
                 username, password, args.country_code, args.blid,
                 args.p2map_id, args.furniture_id, parsed_polygon_points, args.watch_seconds,
             )
-        )
+        ))
         return
 
 

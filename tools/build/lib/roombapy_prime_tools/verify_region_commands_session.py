@@ -34,22 +34,17 @@ closing message for exact next-step instructions if stage 2 succeeds.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 
-import aiohttp
 
-from ._cli import add_account_arguments, require_blid, resolve_credentials
-from roombapy_prime.diagnostics import Report
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
 from .verify_region_commands import (
     run_session_preflight_checks,
     build_stage_one_b_command,
     build_stage_one_command,
     build_stage_two_command,
-    _confirm,
     _confirm_show_send_watch,
     _is_safe_command_def,
-    _login_and_connect,
     _region_types,
     _summarize_events,
 )
@@ -80,7 +75,7 @@ def _pick_favorite_interactively(favorites: list) -> tuple[object, int] | None:
             print("  (no command_defs)")
             continue
         for i, command in enumerate(favorite.command_defs):
-            region_types = _region_types(getattr(command, "regions", None))
+            region_types = _region_types(field(command, "regions", None))
             if _is_safe_command_def(command):
                 eligible.append((favorite, i))
                 print(f"  [{len(eligible)}] {favorite.name!r} command_defs[{i}] regions={region_types or '(none)'}")
@@ -101,12 +96,13 @@ def _pick_favorite_interactively(favorites: list) -> tuple[object, int] | None:
 async def run_session(
     username: str, password: str, country_code: str, blid: str,
     favorite_id: str | None, command_index: int | None, suction_level: int, watch_seconds: int,
+    allow_robot_id_mismatch: bool = False,
 ) -> None:
-    report = Report()
     all_results: list[tuple[str, list, list]] = []
 
-    async with aiohttp.ClientSession() as session:
-        robot = await _login_and_connect(session, username, password, country_code, blid, report)
+    async with connected_robot(
+        username, password, country_code, blid, connect_mqtt=True
+    ) as (robot, report):
 
         print("\n== Fetching favorites (once for this whole session) ==")
         favorites = await robot.get_favorites()
@@ -131,9 +127,16 @@ async def run_session(
         favorite_id = favorite.favorite_id
         # Runs ONCE per session -- the favorite doesn't change between
         # stages, so re-checking before every send would just be noise.
-        await run_session_preflight_checks(
+        ok_target = await run_session_preflight_checks(
             robot, original, favorite_id, command_index, report
-        )  # normalize: always the real id from here on,
+        )
+        if not ok_target and not allow_robot_id_mismatch:
+            print(
+                "\nAborted: the favorite belongs to a different robot than this command "
+                "would be sent to. See the check above for the exact --blid to use.\n"
+                "Nothing was sent."
+            )
+            return  # normalize: always the real id from here on,
         # whether it came from --favorite-id or the interactive picker below.
 
         if not _is_safe_command_def(original):
@@ -158,7 +161,7 @@ async def run_session(
             disconnect_after=False,
         )
         all_results.append(("Stage 1 (unchanged)", events, rejected))
-        if not _confirm("\nContinue to stage 1b (adds initiator if missing)?"):
+        if not confirm("\nContinue to stage 1b (adds initiator if missing)?"):
             await robot.disconnect()
             _print_final_summary(all_results)
             return
@@ -186,7 +189,7 @@ async def run_session(
             )
         all_results.append(("Stage 1b (+initiator)", events_1b, rejected_1b))
 
-        if not _confirm(f"\nContinue to stage 2 (changes suction level to {suction_level})?"):
+        if not confirm(f"\nContinue to stage 2 (changes suction level to {suction_level})?"):
             await robot.disconnect()
             _print_final_summary(all_results)
             return
@@ -277,12 +280,12 @@ def main() -> None:
 
     username, password = resolve_credentials(args)
 
-    asyncio.run(
+    sys.exit(run_script(
         run_session(
             username, password, args.country_code, args.blid,
             args.favorite_id, args.command_index, args.suction_level, args.watch_seconds,
         )
-    )
+    ))
 
 
 if __name__ == "__main__":
