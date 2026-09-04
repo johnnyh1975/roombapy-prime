@@ -13,7 +13,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # 3.14 ADDED after the suite was run against it: 1553 passed,
+        # identical to 3.12 and 3.13, no version-dependent failures and
+        # no new deprecation warnings.
+        #
+        # `requires-python = ">=3.11"` already promises 3.14 to anyone
+        # installing from PyPI. Testing only up to 3.13 meant the promise
+        # was wider than the evidence -- and the pypi/pyversions badge in
+        # the README reads that same field, so it advertises what this
+        # matrix now actually checks.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
