@@ -1,12 +1,16 @@
 # roombapy-prime
 
+[![PyPI](https://img.shields.io/pypi/v/roombapy-prime)](https://pypi.org/project/roombapy-prime/)
+[![Python](https://img.shields.io/pypi/pyversions/roombapy-prime)](https://pypi.org/project/roombapy-prime/)
+[![Downloads](https://img.shields.io/pypi/dm/roombapy-prime)](https://pypi.org/project/roombapy-prime/)
 [![CI](https://github.com/johnnyh1975/roombapy-prime/actions/workflows/ci.yml/badge.svg)](https://github.com/johnnyh1975/roombapy-prime/actions/workflows/ci.yml)
+[![License](https://img.shields.io/pypi/l/roombapy-prime)](LICENSE)
 
 An independent, async Python client library for iRobot's cloud-connected
 **"Prime"/V4-generation** robots — the successor line to the Classic
 protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 
-> **Status: v0.3.1.** (currently `0.3.1`) Reading and writing both work
+> **Status: v0.3.2.** Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific

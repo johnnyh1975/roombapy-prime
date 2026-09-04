@@ -6,6 +6,60 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.3.2]
+
+### Added
+
+- **`verify-virtual-wall-write --drop-one-wall` and `--move-one-wall`** —
+  the first writes on this path that CHANGE the list rather than
+  restating it. Both preserve existing coordinates byte-for-byte, so the
+  unconfirmed CommandPolygon coordinate system is never touched; stage 2
+  had been deferred on the assumption that it needed new geometry, which
+  is true of adding and not of removing or moving.
+
+  Both capture the original before sending, print the restore payload
+  before the change, verify by re-reading rather than trusting the
+  response, and restore unconditionally. `--drop-one-wall` refuses a map
+  with fewer than two walls, because removing the only entry sends an
+  empty list and asks a different question.
+
+  `--move-one-wall` also **measures the coordinate system**: geometry
+  reaches the wire untransformed, so a known delta and a look at the app
+  give the scale. Metres or millimetres has been open on the edit path
+  since it was first modelled.
+
+- **Python 3.14 in the CI matrix.** The suite already passed there and
+  `requires-python = ">=3.11"` already promised it.
+
+- **PyPI badges** in the README: version, supported Pythons, monthly
+  downloads, license.
+
+### Fixed
+
+- **Four blocks of documentation were unreachable.** A second
+  triple-quoted string after a docstring is a discarded expression, not
+  documentation — `send_simple_command()`, `mission_control.py`,
+  `schedules_dnd.py` and `mqtt_client.py` each had one, including the
+  evidence trail for the corrected mission-control path and a correction
+  of four wire keys. All merged into their docstrings, with a test that
+  fails on the pattern and deliberately allows PEP 258 attribute
+  docstrings.
+
+### Documentation
+
+- `irbtTopics` / `iotTopics` confirmed independently by the app's own
+  service-discovery response, so the "best-guess field names" note is
+  gone. They remain optional reads because the VALUE is legitimately
+  absent sometimes — deployment-dependent, with vendor error causes for
+  both being empty. What its absence costs is now written down: two
+  subscriptions die silently and back off to five minutes.
+
+- `WRITE_PATH_TEST_STATUS.md` rewritten. Its header had said
+  `v0.1.11a29` for roughly twenty releases while section 6 still called
+  virtual-wall writes broken — solved before 0.2.0b1. A tester planned a
+  field test against it and asked first. The file now says what is
+  actually open and what is answered.
+
 ## [Unreleased]
 
 ### Packaging

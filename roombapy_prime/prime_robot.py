@@ -588,18 +588,18 @@ class PrimeRobot:
         VERBS CONFIRMED on this SKU once it was cleared: `start` (twice,
         user-observed), `pause`, and `dock` from Home Assistant. Plain
         shape, `initiator: "localApp"`, no map id, no regions.
-        """
-        """NEW (session 39) -- the corrected mission-control path,
-        replacing send_mission_command() for basic commands. See
-        mqtt_client.py's cmd_topic()/publish_cmd() docstrings for the
-        full evidence trail (this library's own native disassembly of
-        libcorebase.so independently corroborated by a third-party,
-        unaffiliated GitHub project that reports this exact path
-        working against a real device).
 
-    Full evidence trail, correction history and open questions:
-    docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_simple_command
-    """
+        THE PATH ITSELF: the corrected mission-control route, replacing
+        send_mission_command() for basic commands. See mqtt_client.py's
+        cmd_topic()/publish_cmd() docstrings for the full evidence trail
+        -- this library's own native disassembly of libcorebase.so,
+        independently corroborated by a third-party, unaffiliated GitHub
+        project that reports this exact path working against a real
+        device.
+
+        Full evidence trail, correction history and open questions:
+        docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_simple_command
+        """
         if self._irbt_topic_prefix is None:
             raise RuntimeError(
                 "send_simple_command() needs irbt_topic_prefix (from LoginResult) -- "

@@ -235,8 +235,8 @@ class RoutineCommand:
         model is the same mistake as removing `robot_id` would be. The
         switch exists so a legacy-SKU owner can try the other shape; it
         does not flip itself.
-        """
-        """NEW (July 11, eighth session): id_multipolys/params/regions
+
+        NEW (July 11, eighth session): id_multipolys/params/regions
         now accept either the bytecode-confirmed types
         (CommandPolygon/CommandParams/Region, see below in the module)
         or still raw dicts (backward compatibility/escape hatch for

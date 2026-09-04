@@ -874,11 +874,41 @@ async def login(
         connection_tokens=connection_tokens,
         raw=login_result,
         deployment=deployment,
-        # Best-guess field names (see LoginResult docstring) -- .get(),
-        # not a gate failure, since it's too uncertain to enforce strictly.
-        # CONFIRMED (session 43, chairstacker): real keys are "irbtTopics"/
-        # "iotTopics" (plural "Topics", not "TopicPrefix" as previously
-        # guessed) -- see LoginResult's docstring for the full story.
+        # NAMES CONFIRMED TWICE OVER, so the "best-guess" note that used
+        # to sit here is gone: `irbtTopics` / `iotTopics`, plural
+        # "Topics", not "TopicPrefix" as originally guessed. First from
+        # @chairstacker's capture, then independently from the app's own
+        # service-discovery response
+        # (`GET /v1/robot/discover/{blid}` -> `{"iotTopics": "$aws",
+        # "irbtTopics": "v028-irbthbu"}`).
+        #
+        # STILL .get() RATHER THAN A GATE, but for a different reason
+        # than before. The name is no longer uncertain -- the VALUE is
+        # legitimately optional. It is deployment-dependent (v028, v029
+        # and v030 all seen in the wild), and the vendor's own app
+        # carries error causes for both being empty
+        # (`kEmptyIoTTopicPrefix`, `kEmptyIRBTTopicPrefix`), which is
+        # iRobot saying the same thing: expected at runtime, and
+        # sometimes absent.
+        #
+        # WHAT ITS ABSENCE COSTS, because it is not obvious from here:
+        # two topics -- and only two -- are built from it,
+        # `watch_live_map()` and `watch_mission_timeline()`. Both raise
+        # immediately when it is None, their retry loops back off to
+        # five minutes, and everything else keeps working because the
+        # shadow uses `$aws` and needs no prefix. The symptom is a live
+        # map that updates every few minutes instead of every few
+        # seconds, with no error anywhere a user can see
+        # (@chairstacker: every live-map counter at zero mid-mission,
+        # mission timeline empty).
+        #
+        # The two prefixes are NOT interchangeable. `$aws/things/{name}/`
+        # is reserved by AWS IoT for Shadow and Jobs; rrtp, timeline and
+        # cmd live under the irbt prefix. Publishing rrtp under `$aws`
+        # is a policy violation, and AWS answers one with SUBACK 0x80 or
+        # by closing the connection silently -- which reads like "the
+        # robot does not answer" and has already cost one round of field
+        # testing.
         irbt_topic_prefix=deployment.get("irbtTopics"),
         iot_topic_prefix=deployment.get("iotTopics"),
     )

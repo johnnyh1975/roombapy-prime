@@ -138,8 +138,8 @@ class ScheduleOptions:
     derives a new schedule from an existing one instead of building one
     from literals, which is the only reliable way to produce something
     the server accepts.
-    """
-    """CORRECTED (session 46): real wire keys directly confirmed via
+
+    CORRECTED (session 46): real wire keys directly confirmed via
     the `ScheduleOptions$$serializer` companion class's `<clinit>`
     (the same technique that resolved RobotStatusV2 in session 40) --
     a stronger basis than the previous "no @SerialName found, presumed

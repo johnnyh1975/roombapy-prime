@@ -717,8 +717,8 @@ class PrimeMqttClient:
         A fresh id per reconnect costs nothing -- the id is ours to
         choose, and nothing depends on it staying the same across a
         reconnect.
-        """
-        """NEW (this session, reconnect-after-drop hardening). Same-
+
+        NEW (this session, reconnect-after-drop hardening). Same-
         token counterpart to replace_token() -- extracted from it,
         since the "disconnect, connect, restore all persistent
         subscriptions" sequence is identical either way, only whether
