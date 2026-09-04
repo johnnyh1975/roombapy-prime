@@ -339,3 +339,217 @@ class TestPayloadTypesWereSettledByBytecodeNotByGuessing:
 
         assert '"link"' in source
         assert '"binary"' in source
+
+
+# ---------------------------------------------------------------------
+# Stage 2 -- --drop-one-wall
+#
+# The first write in this project that changes what the robot holds
+# rather than restating it. The send itself cannot be tested without a
+# robot; what CAN be tested is everything that decides whether a
+# tester's map survives the run, and that is the part worth guarding:
+#
+#   * the original list is captured BEFORE the change, so a restore
+#     never depends on a re-read that might fail
+#   * a map with one wall is refused, because dropping the only entry
+#     sends an EMPTY list and answers a different question
+#   * the restore is unconditional, not a second prompt
+#
+# Each of these is a way a tester could be left with a zone missing.
+# ---------------------------------------------------------------------
+
+def _walls_and_robot(count: int, shrink_after_first_read: bool = False):
+    """A robot whose map holds `count` walls, recording every edit.
+
+    `shrink_after_first_read` makes the SECOND and later reads return
+    one wall fewer -- what a real robot does once the drop has landed.
+    Without it a re-read and the captured original look identical and a
+    test claiming to tell them apart proves nothing.
+    """
+    policy_zones = {
+        "features": [
+            {
+                "id": f"kz{i}",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[float(i), 0.0], [float(i) + 1, 0.0],
+                                     [float(i) + 1, 1.0], [float(i), 1.0]]],
+                },
+                "properties": {"type": "KeepOutZone"},
+            }
+            for i in range(count)
+        ]
+    }
+    robot = MagicMock()
+    robot.get_map_geojson_link = AsyncMock(
+        return_value={"map_url": "https://example.invalid/bundle.tar.gz"}
+    )
+    shrunk = {"features": policy_zones["features"][1:]}
+    reads = {"n": 0}
+
+    async def _download(*_a, **_k):
+        reads["n"] += 1
+        if shrink_after_first_read and reads["n"] > 1:
+            return _make_bundle_bytes(shrunk)
+        return _make_bundle_bytes(policy_zones)
+
+    robot.download_map_bundle = AsyncMock(side_effect=_download)
+    robot.edit_map = AsyncMock(return_value={"status": "success"})
+    return robot
+
+
+def _run_drop(robot, index=0, monkeypatch=None):
+    from unittest.mock import patch
+
+    from roombapy_prime_tools import verify_virtual_wall_write as mod
+
+    report = MagicMock()
+
+    class _Ctx:
+        async def __aenter__(self):
+            return robot, report
+
+        async def __aexit__(self, *exc):
+            return False
+
+    with patch.object(mod, "connected_robot", lambda *a, **k: _Ctx()), \
+         patch.object(mod, "confirm", lambda *a, **k: True):
+        asyncio.run(
+            mod.send_drop_one_wall("u", "p", "DE", "BLID", "MAP1", "V1", index)
+        )
+    return report
+
+
+def test_a_single_wall_map_is_refused_rather_than_emptied():
+    """Dropping the only entry sends an empty list -- a different
+    question, and one whose answer would be indistinguishable from
+    this one's."""
+    robot = _walls_and_robot(1)
+    _run_drop(robot)
+    assert robot.edit_map.await_count == 0, (
+        "a one-wall map must send nothing at all"
+    )
+
+
+def test_the_original_list_is_restored_after_the_drop():
+    robot = _walls_and_robot(3)
+    _run_drop(robot, index=1)
+
+    assert robot.edit_map.await_count == 2, "expected a drop and a restore"
+    dropped, restored = (c.args[1] for c in robot.edit_map.await_args_list)
+    assert len(dropped.walls) == 2, "the drop must send one wall fewer"
+    assert len(restored.walls) == 3, "the restore must send the original list"
+
+
+def test_the_restore_carries_the_original_entries_not_a_re_read():
+    """The restore is built from the list captured BEFORE the change.
+
+    The robot here shrinks after the first read, exactly as a real one
+    does once the drop lands -- so a restore built from a re-read would
+    send two walls and put nothing back. The first version of this test
+    used a robot that returned the same three walls on every read, which
+    made both implementations look identical: it passed against the bug
+    it was written to catch."""
+    robot = _walls_and_robot(3, shrink_after_first_read=True)
+    _run_drop(robot, index=0)
+
+    _, restored = (c.args[1] for c in robot.edit_map.await_args_list)
+    assert len(restored.walls) == 3, (
+        "the restore must send all three original walls, not what the map "
+        "reported after the drop"
+    )
+
+
+def test_an_out_of_range_index_sends_nothing():
+    robot = _walls_and_robot(2)
+    _run_drop(robot, index=9)
+    assert robot.edit_map.await_count == 0
+
+
+# ---------------------------------------------------------------------
+# Stage 2b -- --move-one-wall
+#
+# shift_wall() is pure arithmetic and therefore the one part of this
+# script that CAN be fully tested. It is also the part where a mistake
+# is invisible in the field: a zone that moves the wrong way, or by the
+# wrong amount, still looks like "it moved", and the run would report a
+# confirmed coordinate system that is wrong.
+# ---------------------------------------------------------------------
+
+def test_a_polygon_moves_by_exactly_the_delta():
+    from roombapy_prime.models.geometry import Polygon
+    from roombapy_prime.models.map_editing import VirtualWallRectangleV1
+    from roombapy_prime_tools.verify_virtual_wall_write import shift_wall
+
+    wall = VirtualWallRectangleV1(
+        wall_id="kz1",
+        polygon=Polygon(coordinates=[[(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)]]),
+    )
+    moved = shift_wall(wall, 0.5, -0.25)
+
+    assert moved.polygon.coordinates == [
+        [(0.5, -0.25), (2.5, -0.25), (2.5, 0.75), (0.5, 0.75)]
+    ]
+    assert moved.wall_id == "kz1", "moving must not change identity"
+
+
+def test_the_original_wall_is_not_mutated():
+    """The restore resends the originals. If shift_wall() edited them in
+    place, the restore would put back the MOVED zone and the map would
+    never return to where it started -- while every count check still
+    passed."""
+    from roombapy_prime.models.geometry import Polygon
+    from roombapy_prime.models.map_editing import VirtualWallRectangleV1
+    from roombapy_prime_tools.verify_virtual_wall_write import shift_wall
+
+    wall = VirtualWallRectangleV1(
+        wall_id="kz1",
+        polygon=Polygon(coordinates=[[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]]),
+    )
+    before = list(wall.polygon.coordinates[0])
+    shift_wall(wall, 10.0, 10.0)
+
+    assert wall.polygon.coordinates[0] == before
+
+
+def test_a_wall_with_no_recognised_geometry_field_raises():
+    """Returning the wall unchanged would send a "move" that moves
+    nothing -- indistinguishable from a robot that ignored the edit, and
+    it would be recorded as a confirmed negative.
+
+    The first version of this test used a class carrying `polygon =
+    object()`, which reaches the INNER type check and raises there. It
+    passed while the fallback below was replaced with `return wall`:
+    right assertion, wrong code path. A wall with no geometry attribute
+    at all is what actually exercises it."""
+    from roombapy_prime_tools.verify_virtual_wall_write import shift_wall
+
+    class _NoGeometry:
+        wall_id = "x"
+
+    with pytest.raises(TypeError):
+        shift_wall(_NoGeometry(), 1.0, 1.0)
+
+
+def test_an_unmovable_geometry_type_also_raises():
+    """The inner check, kept separately now that the two are known to be
+    different paths."""
+    from roombapy_prime_tools.verify_virtual_wall_write import shift_wall
+
+    class _Odd:
+        polygon = object()
+
+    with pytest.raises(TypeError):
+        shift_wall(_Odd(), 1.0, 1.0)
+
+
+def test_the_default_delta_is_a_quarter_of_the_zone():
+    from roombapy_prime.models.geometry import Polygon
+    from roombapy_prime.models.map_editing import VirtualWallRectangleV1
+    from roombapy_prime_tools.verify_virtual_wall_write import wall_extent
+
+    wall = VirtualWallRectangleV1(
+        wall_id="kz1",
+        polygon=Polygon(coordinates=[[(0.0, 0.0), (4.0, 0.0), (4.0, 1.0), (0.0, 1.0)]]),
+    )
+    assert wall_extent(wall) == 4.0

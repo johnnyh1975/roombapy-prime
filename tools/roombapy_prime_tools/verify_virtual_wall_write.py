@@ -26,13 +26,37 @@ THE STAGED APPROACH:
   SetVirtualWallsV1, completely unchanged. Confirms the write path
   accepts a real, complete list without error.
 
-  Stage 2 (NOT built yet, deliberately): adding one new object then
-  removing it again (matching deleteVirtualWall()'s own real
-  approach: full list minus/plus one entry). Would need a real,
-  user-supplied polygon/line geometry to add -- deferred for the same
-  reason region-commands' stage 4 defers ad-hoc geometry: the exact
-  coordinate system remains genuinely unconfirmed (though, per the
-  point above, unnecessary for stage 1 specifically).
+  Stage 2 (--drop-one-wall): removes ONE existing entry, confirms the
+  robot accepted a list that differs from the one it had, then puts
+  the entry back and confirms the map is as it was.
+
+  THE OPEN QUESTION IS "does a CHANGED list work", AND REMOVAL ANSWERS
+  IT WITHOUT NEW GEOMETRY. This stage was deferred for a long time on
+  the grounds that it "would need a real, user-supplied polygon
+  geometry to add" -- true of ADDING, and not true of removing. A
+  removal is the current list minus one entry, with every surviving
+  coordinate preserved byte-for-byte, exactly as stage 1 does. The
+  unconfirmed CommandPolygon coordinate system is never touched, so
+  the thing that made stage 2 look risky was only ever half of it.
+
+  WHY THIS IS THE HALF WORTH HAVING. Every confirmed write so far
+  resent the existing zones unchanged, and `set_virtual_wall` replaces
+  the whole shared list. So the one behaviour nobody has ever
+  observed is the one that matters most in practice: what the robot
+  does with a list that is missing something. If a user deletes a
+  keep-out zone in Home Assistant one day, this is the code path that
+  runs.
+
+  IT RESTORES, AND THE RESTORE IS THE POINT. The original list is
+  captured before anything is sent and resent afterwards, so the map
+  ends where it started. If the restore itself fails, the exact JSON
+  needed to repair the map by hand is printed -- a tester must never
+  be left with a map in a state this script created and cannot undo.
+
+  Stage 3 (still not built): ADDING a new object. That one really does
+  need user-supplied geometry, and the coordinate system is still
+  unconfirmed -- the same reason region-commands' stage 4 defers ad-hoc
+  geometry.
 
 TWO SAFETY GATES (same reasoning as verify_schedule_write.py's own
 two-gate design):
@@ -375,6 +399,375 @@ async def send_update_unchanged(
 
 
 
+def shift_wall(wall, dx: float, dy: float):
+    """Return a copy of `wall` with every coordinate moved by (dx, dy).
+
+    THE COORDINATE SYSTEM DOES NOT HAVE TO BE KNOWN FOR THIS TO BE
+    CORRECT, which is the whole reason this is the next stage rather
+    than "add a new zone".
+
+    `policy_zone_to_virtual_wall()` passes geometry through UNCHANGED --
+    confirmed by native analysis, no transformation anywhere from the
+    bundle read to the wire. So the numbers in a command are the numbers
+    from `policyZones.geojson`, in whatever frame and unit that file
+    uses. Adding a constant to them moves the zone by that amount in
+    that same unit, whatever it turns out to be.
+
+    AND THAT IS ALSO HOW THE UNIT GETS ANSWERED. Move a zone by a known
+    delta, look at the app, and the observed distance against the delta
+    gives the scale. That is a measurement, not a guess -- and the
+    question "metres or millimetres" has been open on the edit path
+    since it was first modelled.
+
+    Every wall subtype keeps its own id and type; only positions change.
+    """
+    import dataclasses
+
+    from roombapy_prime.models.geometry import LineString, Polygon
+
+    def _move(geometry):
+        if isinstance(geometry, Polygon):
+            return Polygon(
+                coordinates=[
+                    [(x + dx, y + dy) for x, y in ring]
+                    for ring in geometry.coordinates
+                ]
+            )
+        if isinstance(geometry, LineString):
+            return LineString(
+                coordinates=[(x + dx, y + dy) for x, y in geometry.coordinates]
+            )
+        raise TypeError(f"cannot shift {type(geometry).__name__}")
+
+    for attr in ("polygon", "geometry", "line"):
+        if hasattr(wall, attr):
+            return dataclasses.replace(wall, **{attr: _move(getattr(wall, attr))})
+
+    # A subtype storing its points some other way must not be moved by
+    # guessing -- silently returning it unchanged would look like a
+    # successful move that did nothing, which is the one result this
+    # stage cannot distinguish from a robot that ignores the edit.
+    raise TypeError(
+        f"{type(wall).__name__} has no recognised geometry field; "
+        "refusing to move it rather than sending it unchanged"
+    )
+
+
+def wall_extent(wall) -> float:
+    """Largest side of the wall's bounding box, for sizing a sane delta."""
+    for attr in ("polygon", "geometry", "line"):
+        geometry = getattr(wall, attr, None)
+        if geometry is None:
+            continue
+        coords = getattr(geometry, "coordinates", None) or []
+        flat = coords[0] if coords and isinstance(coords[0], list) else coords
+        if not flat:
+            return 0.0
+        xs = [p[0] for p in flat]
+        ys = [p[1] for p in flat]
+        return max(max(xs) - min(xs), max(ys) - min(ys))
+    return 0.0
+
+
+async def send_drop_one_wall(
+    username: str, password: str, country_code: str, blid: str,
+    p2map_id: str, p2mapv_id: str, index: int,
+) -> None:
+    """Stage 2: send the list MINUS one entry, then put it back.
+
+    The first write in this project's history that changes what the
+    robot holds rather than restating it.
+    """
+    from roombapy_prime.models.map_editing import SetVirtualWallsV1
+
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
+
+        print("\n== Reading current policy zones ==")
+        try:
+            features, walls = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
+        except Exception as exc:  # noqa: BLE001
+            report.add("Reading current policy zones", "FAILED", f"{type(exc).__name__}: {exc}")
+            return
+        report.add("Reading current policy zones", "OK", f"{len(walls)} wall(s)")
+
+        if len(walls) < 2:
+            # ONE WALL IS NOT ENOUGH, and the reason is not squeamishness.
+            # Dropping the only entry sends an EMPTY list, and an empty
+            # list is a different question -- "does the robot accept a
+            # removal" and "does the robot accept having no zones at
+            # all" would be answered by one run and indistinguishable in
+            # the result. This project has spent enough evenings on
+            # results that answered two questions at once.
+            print(
+                f"\nThis map has {len(walls)} wall(s). Stage 2 needs at least 2.\n"
+                "\nWith one wall, removing it sends an empty list -- which asks a "
+                "different question (does an EMPTY list work) and would not tell "
+                "us what a changed list does. Add a second zone in the iRobot app "
+                "and re-run, or run this on a map that has two."
+            )
+            report.add("Stage 2", "SKIPPED", f"needs >=2 walls, found {len(walls)}")
+            return
+
+        if not 0 <= index < len(walls):
+            print(f"\n--index {index} is out of range: this map has {len(walls)} wall(s), 0-{len(walls)-1}.")
+            return
+
+        # CAPTURED BEFORE ANYTHING IS SENT. The restore must not depend
+        # on re-reading the map afterwards: if the drop succeeds and the
+        # re-read then fails, a re-read-based restore would have nothing
+        # to send and the tester would be left with a map this script
+        # broke.
+        original = list(walls)
+        victim = walls[index]
+        remaining = [w for i, w in enumerate(walls) if i != index]
+
+        print(f"\n== Dropping wall {index} of {len(walls)} ==")
+        print(f"Removing:  {victim!r}")
+        print(f"Sending {len(remaining)} of {len(original)} wall(s).")
+
+        restore_payload = SetVirtualWallsV1(walls=original).to_v1_command_body()
+        print(
+            "\nRESTORE PAYLOAD, printed BEFORE the change so you have it even if "
+            "this script dies mid-run. If anything goes wrong, this is the exact "
+            "body that puts the map back:"
+        )
+        print(json.dumps(restore_payload, indent=2, ensure_ascii=False))
+
+        drop_command = SetVirtualWallsV1(walls=remaining)
+        print("\nAbout to send:")
+        print(json.dumps(drop_command.to_v1_command_body(), indent=2, ensure_ascii=False))
+
+        if not confirm(
+            f"\nSend the list WITHOUT wall {index}? This really removes a zone "
+            "from your map. It is put back immediately afterwards."
+        ):
+            print("Aborted by user -- nothing sent.")
+            return
+
+        try:
+            result = await robot.edit_map(p2map_id, drop_command)
+        except TypeError as exc:
+            # LOCAL BUG, never reached the network. Reported as such
+            # rather than as a server answer -- doing otherwise cost
+            # DaRealGuGu an evening once already (see stage 1).
+            report.add("Drop one wall", "FAILED", f"LOCAL BUG, not sent -- {exc}")
+            print(f"\n   NOT SENT -- bug in this script: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            report.add("Drop one wall", "FAILED", f"{type(exc).__name__}: {exc}")
+            print(f"\n   Rejected: {type(exc).__name__}: {exc}")
+            print(
+                "\nNOTHING WAS CHANGED -- a rejected edit leaves the map alone, so "
+                "no restore is needed. This is a real result: a changed list is "
+                "refused where an unchanged one is accepted."
+            )
+            return
+
+        report.add("Drop one wall", "OK", f"response: {result!r}")
+        print(f"\n   ACCEPTED: {result!r}")
+
+        # VERIFY BY READING, not by trusting the response. An accepted
+        # edit and a stored edit are different claims, and this project
+        # has confirmed several commands that were acknowledged and did
+        # nothing.
+        print("\n== Verifying: re-reading the map ==")
+        try:
+            _, after = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
+            print(f"Map now reports {len(after)} wall(s) (was {len(original)}).")
+            report.add(
+                "Verify removal", "OK" if len(after) == len(original) - 1 else "UNEXPECTED",
+                f"{len(after)} wall(s) after dropping 1 of {len(original)}",
+            )
+            if len(after) == len(original):
+                print(
+                    "\nACCEPTED BUT NOT STORED -- the count is unchanged. That is the "
+                    "most important outcome this script can produce: the write path "
+                    "reports success and the robot keeps its old list."
+                )
+        except Exception as exc:  # noqa: BLE001
+            report.add("Verify removal", "FAILED", f"{type(exc).__name__}: {exc}")
+            print(f"   could not re-read: {exc}")
+
+        # RESTORE, unconditionally and without asking. The tester agreed
+        # to a removal that is put back; leaving the decision to a second
+        # prompt would let a distracted "n" end the run with a zone
+        # missing.
+        print("\n== Restoring the original list ==")
+        try:
+            restore_result = await robot.edit_map(
+                p2map_id, SetVirtualWallsV1(walls=original)
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add("Restore", "FAILED", f"{type(exc).__name__}: {exc}")
+            print(
+                f"\n   RESTORE FAILED: {type(exc).__name__}: {exc}\n"
+                "\n*** YOUR MAP IS MISSING ONE ZONE. ***\n"
+                "\nThe restore payload is printed above. You can also simply redraw "
+                "the zone in the iRobot app -- it is a normal edit, nothing is "
+                "corrupted. Please report this: a failing restore is the one "
+                "outcome this script must never produce silently."
+            )
+            return
+
+        report.add("Restore", "OK", f"response: {restore_result!r}")
+        print(f"   restored: {restore_result!r}")
+
+        try:
+            _, final = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
+            ok = len(final) == len(original)
+            report.add("Verify restore", "OK" if ok else "UNEXPECTED",
+                       f"{len(final)} wall(s), expected {len(original)}")
+            print(
+                f"\nFinal count: {len(final)} wall(s), started with {len(original)}."
+                + ("  Map is back as it was." if ok else "  MISMATCH -- please check the app.")
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add("Verify restore", "FAILED", f"{type(exc).__name__}: {exc}")
+            print(f"   could not re-read: {exc}")
+
+        print(
+            "\nPlease also look at the map in the iRobot app. A count matching is "
+            "good evidence, but only your eyes can confirm the zone came back in "
+            "the right place."
+        )
+
+
+async def send_move_one_wall(
+    username: str, password: str, country_code: str, blid: str,
+    p2map_id: str, p2mapv_id: str, index: int, delta: float | None,
+) -> None:
+    """Stage 2b: move one existing zone, then put it back.
+
+    Answers two questions in one run that no previous stage could:
+    whether the robot stores a list whose CONTENT changed (not just its
+    length), and what the coordinates actually mean.
+    """
+    from roombapy_prime.models.map_editing import SetVirtualWallsV1
+
+    async with connected_robot(
+        username, password, country_code, blid
+    ) as (robot, report):
+
+        print("\n== Reading current policy zones ==")
+        try:
+            _, walls = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
+        except Exception as exc:  # noqa: BLE001
+            report.add("Reading current policy zones", "FAILED", f"{type(exc).__name__}: {exc}")
+            return
+        report.add("Reading current policy zones", "OK", f"{len(walls)} wall(s)")
+
+        if not walls:
+            print("\nThis map has no zones to move. Draw one in the iRobot app first.")
+            return
+        if not 0 <= index < len(walls):
+            print(f"\n--index {index} is out of range: {len(walls)} wall(s), 0-{len(walls)-1}.")
+            return
+
+        original = list(walls)
+        target = walls[index]
+
+        # DELTA SIZED FROM THE ZONE ITSELF, not from a guessed unit.
+        # A quarter of the zone's own longest side is visible in the app
+        # and cannot leave the map: the zone stays roughly where it was,
+        # overlapping its old position. A fixed number would be either
+        # invisible or off the floor plan depending on whether the frame
+        # turns out to be metres or millimetres -- which is the very
+        # thing this run is meant to find out.
+        extent = wall_extent(target)
+        if delta is None:
+            delta = extent / 4 if extent else 0.0
+        if not delta:
+            print(
+                "\nCould not size a delta from this zone (extent 0) and none was "
+                "given. Pass --delta explicitly if you know the frame."
+            )
+            return
+
+        print(f"\n== Moving wall {index} of {len(walls)} ==")
+        print(f"Zone extent (longest side): {extent}")
+        print(f"Shifting by (+{delta}, +{delta}) in the map's own units.")
+        print(
+            "\nTHE UNIT IS WHAT THIS RUN MEASURES. The numbers come from "
+            "policyZones.geojson and reach the robot untransformed, so this "
+            "delta is in whatever unit that file uses. Compare how far the "
+            "zone appears to move in the app against the zone's own size: a "
+            "quarter of its width is the expected shift."
+        )
+
+        try:
+            moved = shift_wall(target, delta, delta)
+        except TypeError as exc:
+            report.add("Move one wall", "FAILED", f"LOCAL: {exc}")
+            print(f"\n   NOT SENT -- {exc}")
+            return
+
+        changed = [moved if i == index else w for i, w in enumerate(original)]
+
+        restore_payload = SetVirtualWallsV1(walls=original).to_v1_command_body()
+        print(
+            "\nRESTORE PAYLOAD, printed before the change so it exists even if "
+            "this run dies partway:"
+        )
+        print(json.dumps(restore_payload, indent=2, ensure_ascii=False))
+
+        command = SetVirtualWallsV1(walls=changed)
+        print("\nAbout to send:")
+        print(json.dumps(command.to_v1_command_body(), indent=2, ensure_ascii=False))
+
+        if not confirm(
+            f"\nMove zone {index} by ({delta}, {delta})? It is moved back "
+            "immediately afterwards."
+        ):
+            print("Aborted by user -- nothing sent.")
+            return
+
+        try:
+            result = await robot.edit_map(p2map_id, command)
+        except TypeError as exc:
+            report.add("Move one wall", "FAILED", f"LOCAL BUG, not sent -- {exc}")
+            print(f"\n   NOT SENT -- bug in this script: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            report.add("Move one wall", "FAILED", f"{type(exc).__name__}: {exc}")
+            print(f"\n   Rejected: {type(exc).__name__}: {exc}")
+            print("\nNothing was changed -- a rejected edit leaves the map alone.")
+            return
+
+        report.add("Move one wall", "OK", f"response: {result!r}")
+        print(f"\n   ACCEPTED: {result!r}")
+        print(
+            "\n*** LOOK AT THE MAP IN THE IROBOT APP NOW, BEFORE CONTINUING. ***\n"
+            "\nThis is the only moment the moved zone exists. The restore below "
+            "puts it back, and no re-read can tell you what it LOOKED like.\n"
+            "\nWorth capturing: did it move at all, roughly how far compared to "
+            "the zone's own width, and in which direction."
+        )
+        confirm("\nSeen it? Press y to restore the original position.")
+
+        print("\n== Restoring the original position ==")
+        try:
+            restore_result = await robot.edit_map(
+                p2map_id, SetVirtualWallsV1(walls=original)
+            )
+        except Exception as exc:  # noqa: BLE001
+            report.add("Restore", "FAILED", f"{type(exc).__name__}: {exc}")
+            print(
+                f"\n   RESTORE FAILED: {type(exc).__name__}: {exc}\n"
+                "\n*** ONE ZONE IS IN THE WRONG PLACE. *** The restore payload is "
+                "printed above, and the zone can also simply be redrawn in the "
+                "iRobot app -- nothing is corrupted. Please report this."
+            )
+            return
+
+        report.add("Restore", "OK", f"response: {restore_result!r}")
+        print(f"   restored: {restore_result!r}")
+        print(
+            "\nPlease confirm in the app that the zone is back where it started."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -411,25 +804,50 @@ def main() -> None:
         "Both outcomes are informative, which was not true of the whole-list test "
         "on its own.",
     )
+    parser.add_argument(
+        "--drop-one-wall", action="store_true",
+        help="Stage 2: send the list MINUS one entry, verify the removal, then put "
+        "it back. The first write that CHANGES what the robot holds. Needs at "
+        "least 2 walls, and restores automatically.",
+    )
+    parser.add_argument(
+        "--index", type=int, default=0,
+        help="Which wall --drop-one-wall removes (0-based, from --list-walls). "
+        "Default 0.",
+    )
+    parser.add_argument(
+        "--move-one-wall", action="store_true",
+        help="Stage 2b: move one existing zone by a delta sized from the zone "
+        "itself, pause so you can look at the app, then move it back. Answers "
+        "what the coordinates MEAN without needing to know it in advance.",
+    )
+    parser.add_argument(
+        "--delta", type=float, default=None,
+        help="How far --move-one-wall shifts, in the map's own units. Default: "
+        "a quarter of the zone's longest side, which is visible in the app and "
+        "cannot leave the floor plan whatever the unit turns out to be.",
+    )
     parser.add_argument("--i-understand-this-changes-real-map-zones", action="store_true")
     args = parser.parse_args()
     require_blid(args)
 
-    if not (args.list_maps or args.list_walls or args.update_unchanged):
+    if not (args.list_maps or args.list_walls or args.update_unchanged
+            or args.drop_one_wall or args.move_one_wall):
         print(
             "Nothing to do -- start with --list-maps (safe, sends nothing, and gives you the "
             "two IDs the other stages need)."
         )
         return
 
-    if (args.list_walls or args.update_unchanged) and not (args.p2map_id and args.p2mapv_id):
+    if (args.list_walls or args.update_unchanged or args.drop_one_wall
+            or args.move_one_wall) and not (args.p2map_id and args.p2mapv_id):
         print(
             "Aborted: --p2map-id and --p2mapv-id are both required for this stage. "
             "Run --list-maps first to get them."
         )
         sys.exit(1)
 
-    if args.update_unchanged and not args.i_understand_this_changes_real_map_zones:
+    if (args.update_unchanged or args.drop_one_wall or args.move_one_wall) and not args.i_understand_this_changes_real_map_zones:
         print("Aborted: --i-understand-this-changes-real-map-zones is missing.")
         sys.exit(1)
 
@@ -441,6 +859,24 @@ def main() -> None:
 
     if args.list_walls:
         sys.exit(run_script(list_walls(username, password, args.country_code, args.blid, args.p2map_id, args.p2mapv_id)))
+        return
+
+    if args.move_one_wall:
+        sys.exit(run_script(
+            send_move_one_wall(
+                username, password, args.country_code, args.blid,
+                args.p2map_id, args.p2mapv_id, args.index, args.delta,
+            )
+        ))
+        return
+
+    if args.drop_one_wall:
+        sys.exit(run_script(
+            send_drop_one_wall(
+                username, password, args.country_code, args.blid,
+                args.p2map_id, args.p2mapv_id, args.index,
+            )
+        ))
         return
 
     if args.update_unchanged:

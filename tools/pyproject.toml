@@ -1,6 +1,6 @@
 [project]
 name = "roombapy-prime-tools"
-version = "0.3.1"
+version = "0.3.2"
 description = "Diagnostic and field-test tooling for roombapy-prime (moves real robots -- read the safety notes)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,7 @@ dependencies = [
     # a direct-URL dependency and rejects the whole upload with it, so
     # the git pointer that was right while this lived only on GitHub
     # made the package unpublishable.
-    "roombapy-prime==0.3.1",
+    "roombapy-prime==0.3.2",
 ]
 
 [project.optional-dependencies]
