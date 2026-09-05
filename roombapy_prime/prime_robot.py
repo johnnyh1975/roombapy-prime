@@ -228,7 +228,33 @@ class PrimeRobot:
     enough that guessing its shape is the wrong trade. `svcConf` is
     read from the shadow; writing services has no observed request.
     Both go in when a real capture shows the shape -- the firmware
-    confirms the handlers exist, which is the useful half."""
+    confirms the handlers exist, which is the useful half.
+
+    HYPOTHESIS WORTH TESTING BEFORE ASSUMING THE UPLOAD IS UNKNOWABLE:
+    on CLASSIC firmware you do not send a map to a robot at all. You
+    tell it which one to fetch. ruby-0.7.12 (j9) carries a schema for
+    the command channel:
+
+        cloudFileXfer.downloadPMap = {pmap_id, pmapv_id, format}
+
+    with `cloudFileXferQuery{xferId}` and
+    `cloudFileXferCancel{xferId, xferType}` for progress, and a
+    `cloudFileXferResult` carrying `status`, `details` and a `cloudData`
+    block with `uploadId`, `url` and `headers` -- a presigned URL the
+    robot uses itself.
+
+    If Prime works the same way, "the unseen payload" is not a map at
+    all: it is three fields naming a version already in the cloud, and
+    both halves are partly here already -- `get_map_geojson_link()` and
+    `download_map_bundle()` are the same URL mechanism in the other
+    direction.
+
+    NOT EVIDENCE FOR PRIME. That firmware is Classic and its local
+    channel is roombapy's territory, not this library's. What makes it
+    worth writing down is that it is the same cloud behind both
+    generations (`disc-prod.iot.irobotapi.com`), so the architecture is
+    a reasonable thing to look for rather than a shape to guess at. See
+    docs/internal/vendor_schemas_ruby_0_7_12.json."""
 
     def __init__(
         self,
@@ -1936,19 +1962,54 @@ class PrimeRobot:
             # single failure is right; continuing after fifty is how a
             # dead stream stays invisible.
             while True:
+                backoff: float | None = None
                 try:
                     await self.get_live_map_stream()
                     self._live_map_ping_failures = 0
-                except Exception:
+                except Exception as exc:
                     self._live_map_ping_failures = (
                         getattr(self, "_live_map_ping_failures", 0) + 1
                     )
+                    # BACK OFF, AND ESPECIALLY ON 429.
+                    #
+                    # Retrying at the same cadence used to be the whole
+                    # behaviour, and against a rate limit it is the one
+                    # thing that cannot work: on a failure no message
+                    # arrives, so `expiry` is never set, so `next_delay`
+                    # falls back to `keep_alive_interval` -- ten seconds,
+                    # forever, at exactly the endpoint that just said
+                    # there were too many requests.
+                    #
+                    # It scales with robot count, which is why it stayed
+                    # invisible. @jpatchMC ran two Prime robots on one
+                    # account and got HTTP 429 from
+                    # /v1/p2maps/livemap?robotId=... twelve times a
+                    # minute between them. One robot's map and status
+                    # went quiet while the other kept working, commands
+                    # still went through on both -- those travel over
+                    # MQTT and never touch this endpoint -- and the only
+                    # sign was this warning repeating.
+                    #
+                    # He then reloaded the entries repeatedly to clear
+                    # it, which is what locked the account out. The
+                    # lockout was downstream of this.
+                    status = getattr(exc, "status", None)
+                    attempt = min(self._live_map_ping_failures, 6)
+                    backoff = min(keep_alive_interval * (2 ** attempt), 300.0)
+                    if status == 429:
+                        # A rate limit is a statement about the whole
+                        # account, not this robot: another watcher is
+                        # asking too, and both must give way or neither
+                        # recovers. Starting at a minute rather than at
+                        # the doubled interval reflects that.
+                        backoff = min(max(backoff, 60.0), 300.0)
                     _LOGGER.warning(
-                        "watch_live_map(): keep-alive ping failed (%d in a row), "
-                        "continuing anyway -- the robot only publishes while these "
-                        "pings succeed, so a run of failures means a silent, empty "
-                        "stream rather than a slow one",
-                        self._live_map_ping_failures, exc_info=True,
+                        "watch_live_map(): keep-alive ping failed (%d in a row, "
+                        "HTTP %s), retrying in %.0fs -- the robot only publishes "
+                        "while these pings succeed, so a run of failures means a "
+                        "silent, empty stream rather than a slow one",
+                        self._live_map_ping_failures, status or "?", backoff,
+                        exc_info=True,
                     )
                 # PACED BY THE ROBOT, not by a constant.
                 #
@@ -1968,13 +2029,97 @@ class PrimeRobot:
                 # never send the field. Pacing on a guessed expiry would
                 # risk the stream lapsing mid-mission, and this project
                 # has just spent a week on one silent stream.
-                await asyncio.sleep(expiry.next_delay(keep_alive_interval))
+                await asyncio.sleep(
+                    backoff if backoff is not None
+                    else expiry.next_delay(keep_alive_interval)
+                )
 
         await asyncio.to_thread(self._mqtt.subscribe, topic, _on_livemap_message)
         keep_alive_task = asyncio.ensure_future(_keep_alive_loop())
         try:
             while True:
-                item = await queue.get()
+                # WATCH FOR THE DROP, NOT JUST FOR MESSAGES.
+                #
+                # This used to be a bare `await queue.get()`, and the
+                # subscription above happened exactly once. The client
+                # does not restore subscriptions by itself -- on a
+                # disconnect it CLEARS `_subscribed_topics`, deliberately
+                # ("a new session grants nothing"), leaving
+                # re-subscription to the caller. `_watch_topic()` does
+                # that for every other stream. This one did not.
+                #
+                # So after the first reconnect the live map was
+                # permanently dead: no subscription, an empty queue, and
+                # a keep-alive still reporting success because the REST
+                # ping is a different transport entirely. No exception,
+                # no counter movement, nothing in the log.
+                #
+                # That is the shape @chairstacker reported -- every
+                # live-map counter at zero mid-mission with no error
+                # anywhere -- and it needs no missing topic prefix to
+                # explain it. @utkjmitch's instance reconnects on a
+                # 55-minute cycle, so on his robot the map would die
+                # within the hour, every hour.
+                #
+                # THE RECONNECT ITSELF IS NOT DONE HERE. Another watcher
+                # owns that, with the lock and generation counter in
+                # `_watch_topic()`; duplicating it would give two
+                # coordinators for one connection. This waits for the
+                # connection to come back and re-subscribes, which is
+                # the part that was missing.
+                get_task = asyncio.ensure_future(queue.get())
+                drop_task = asyncio.ensure_future(self._mqtt.wait_for_disconnect())
+                try:
+                    done, _pending = await asyncio.wait(
+                        {get_task, drop_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    for task in (get_task, drop_task):
+                        if not task.done():
+                            task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await task
+
+                if drop_task in done and get_task not in done:
+                    # JUST SUBSCRIBE AGAIN, and let the client sort the
+                    # connection out. `subscribe()` reaches
+                    # `_subscribe_and_wait()`, which reconnects when the
+                    # session is gone -- so there is no state to poll
+                    # and no second reconnect coordinator competing with
+                    # `_watch_topic()`'s lock.
+                    #
+                    # The subscription really is gone rather than merely
+                    # idle: `_on_disconnect` clears `_subscribed_topics`
+                    # on purpose, so this call does not dedup itself
+                    # away.
+                    #
+                    # RETRIED, BECAUSE THE FIRST TRY IS THE LIKELY ONE
+                    # TO FAIL. A drop is usually noticed here before
+                    # anyone has rebuilt the connection; giving up on
+                    # that would restore exactly the silence this
+                    # exists to end.
+                    delay = 1.0
+                    while True:
+                        try:
+                            await asyncio.to_thread(
+                                self._mqtt.subscribe, topic, _on_livemap_message
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            _LOGGER.debug(
+                                "watch_live_map(): re-subscribe to %s failed "
+                                "(%s), retrying in %.0fs", topic, exc, delay,
+                            )
+                            await asyncio.sleep(delay)
+                            delay = min(delay * 2, 60.0)
+                        else:
+                            _LOGGER.info(
+                                "watch_live_map(): re-subscribed to %s after a "
+                                "reconnect", topic,
+                            )
+                            break
+                    continue
+
+                item = get_task.result()
                 if isinstance(item, Exception):
                     raise item
                 yield item

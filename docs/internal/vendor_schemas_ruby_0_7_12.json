@@ -1,0 +1,2241 @@
+{
+ "_source": "opt/irobot/cleantrack/bin/cleantrack, firmware ruby-0.7.12+Firmware-Build+4625 (j9). Embedded JSON Schema blocks, extracted verbatim.",
+ "_channel": "LOCAL MQTT ONLY. These schemas describe what the robot accepts and emits on its own channel. They are NOT the contract for the same events as the cloud serialises them, and the two differ in both container and field names. The local timeline container is `eventArray`; the cloud mission history uses `finEvents`, which appears nowhere in this file. ha_roomba_plus's MissionArchive reads the CLOUD form.",
+ "_caveat": "cleantrack is built across product lines. A schema proves what the PARSER ACCEPTS, not that a j9 reports the field -- the command enum contains Astro verbs (patrol, sentry, waypoint_*) that this hardware has no use for. Presence here is not evidence of presence on the wire.",
+ "_scope": "CLASSIC-generation local vocabulary. Most of it belongs to roombapy, not to this library. Kept here because it is the first vendor contract with types, required lists and value ranges the project has -- something to CHECK against, rather than something to implement.",
+ "_a_mistake_made_with_this_file": "On the day it was extracted, `timeline.eventError.error` (required: ['value']) was compared against ha_roomba_plus reading `error.code` out of finEvents, and reported as a wire-key bug -- with the supporting observation that `code` appears in none of these properties. Both facts were right and the conclusion was wrong: one side is the local channel, the other the cloud, and `code` being absent here says nothing about what the cloud sends. The tell was in the code being checked, one comment above the loop: it cites MISSIONSTORE_FIELD_REGISTRY.md, which states the source is the cloud mission history. BEFORE USING THIS FILE AGAINST ANY CODE, establish which channel that code reads. Agreement across the two is a finding; disagreement is the default and means nothing on its own.",
+ "_enum_keys": "PATH-QUALIFIED. A first version keyed these on the property name alone, which collapsed every `type` in the file into whichever one was reached first -- JSON Schema uses `type` for its own keyword and for fields of that name. The comparison guard caught it on its first run.",
+ "properties": {
+  ".+": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "aCycleM": {
+   "type": "integer"
+  },
+  "aExpo": {
+   "type": "integer"
+  },
+  "aGain": {
+   "type": "integer"
+  },
+  "aMssnM": {
+   "type": "integer"
+  },
+  "aMtrack": {
+   "type": "integer"
+  },
+  "aSlots": {
+   "type": "integer"
+  },
+  "aborts": {
+   "type": "array"
+  },
+  "accessory": {
+   "type": "object"
+  },
+  "action": {
+   "type": "string"
+  },
+  "active": {
+   "type": "boolean"
+  },
+  "afCount": {
+   "type": "integer"
+  },
+  "amPressure": {
+   "type": "integer"
+  },
+  "app_notify_arg": {
+   "type": "string"
+  },
+  "app_notify_event": {
+   "type": "string"
+  },
+  "area": {
+   "type": "integer"
+  },
+  "associations": {
+   "type": "array"
+  },
+  "attCert": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "audibleFeedback": {
+   "type": "boolean"
+  },
+  "audio": {
+   "type": "object"
+  },
+  "bagRemoveCount": {
+   "type": "integer"
+  },
+  "bagRemoved": {
+   "type": "boolean"
+  },
+  "base_pmap_version_id": {
+   "type": "string"
+  },
+  "batAuthEnable": {
+   "type": "null"
+  },
+  "batInfo": {
+   "type": "object"
+  },
+  "batPct": {
+   "type": "integer"
+  },
+  "batt_current": {
+   "type": "number"
+  },
+  "batteryType": {
+   "type": "string"
+  },
+  "battery_status": {
+   "type": "array"
+  },
+  "bbchg": {
+   "type": "object"
+  },
+  "bbk": {
+   "type": "object"
+  },
+  "bbmssn": {
+   "type": "object"
+  },
+  "bbnav": {
+   "type": "object"
+  },
+  "bbpause": {
+   "type": "object"
+  },
+  "bbrstinfo": {
+   "type": "object"
+  },
+  "bbrun": {
+   "type": "object"
+  },
+  "bbswitch": {
+   "type": "object"
+  },
+  "bbsys": {
+   "type": "object"
+  },
+  "bdAddr": {
+   "type": "string"
+  },
+  "bdaddr": {
+   "type": "string"
+  },
+  "beacon_id": {
+   "type": "string"
+  },
+  "beacon_type": {
+   "type": "string"
+  },
+  "behaviorFwk": {
+   "type": "null"
+  },
+  "behs": {
+   "type": "object"
+  },
+  "bin": {
+   "type": "object"
+  },
+  "binPause": {
+   "type": "boolean"
+  },
+  "binStatus": {
+   "type": "boolean"
+  },
+  "binStatusReport": {
+   "type": "object"
+  },
+  "binTypeDetect": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "bin_was_full": {
+   "type": "boolean"
+  },
+  "bleDevInfo": {
+   "type": "array"
+  },
+  "bleDevLoc": {
+   "type": "boolean"
+  },
+  "bleRSSI": {
+   "type": "array"
+  },
+  "bmp": {
+   "type": "string"
+  },
+  "bssid": {
+   "type": "string"
+  },
+  "cCount": {
+   "type": "integer"
+  },
+  "cal_reason": {
+   "type": "integer"
+  },
+  "cal_success": {
+   "type": "boolean"
+  },
+  "calibrated_tx_power": {
+   "type": "number"
+  },
+  "cam": {
+   "type": "string"
+  },
+  "cap": {
+   "type": "object"
+  },
+  "capture_mode": {
+   "type": "integer"
+  },
+  "carpetBoost": {
+   "type": "boolean"
+  },
+  "causes": {
+   "type": "string"
+  },
+  "certificate": {
+   "type": "string"
+  },
+  "charge": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "charging_stopped": {
+   "type": "boolean"
+  },
+  "childLock": {
+   "type": [
+    "boolean",
+    "null"
+   ]
+  },
+  "chrgLrPtrn": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "chrgM": {
+   "type": "integer"
+  },
+  "chrgs": {
+   "type": "integer"
+  },
+  "cleanMissionStatus": {
+   "type": "object"
+  },
+  "closestDistToDock": {
+   "type": "number"
+  },
+  "cloud": {
+   "type": "integer"
+  },
+  "cloudData": {
+   "type": "object"
+  },
+  "cloudFileXfer": {
+   "type": "object"
+  },
+  "cloudFileXferCancel": {
+   "type": "object"
+  },
+  "cloudFileXferQuery": {
+   "type": "object"
+  },
+  "cloudFileXferResult": {
+   "type": "object"
+  },
+  "cloudMessage": {
+   "type": "object"
+  },
+  "cmd": {
+   "$ref": "#/definitions/cmd"
+  },
+  "cmdRejection": {
+   "type": "object"
+  },
+  "cmd_id": {
+   "type": "integer"
+  },
+  "cmd_status": {
+   "type": "string"
+  },
+  "cmd_type": {
+   "type": "string"
+  },
+  "command": {
+   "type": "string",
+   "enum": [
+    "viewpoint"
+   ]
+  },
+  "command_id": {
+   "type": "integer"
+  },
+  "conType": {
+   "type": "string",
+   "enum": [
+    "local",
+    "remote"
+   ]
+  },
+  "condNotReady": {
+   "type": "array"
+  },
+  "confPmapId": {
+   "type": "string"
+  },
+  "confPmapvId": {
+   "type": "string"
+  },
+  "confirm": {
+   "type": "string"
+  },
+  "contact_voltage_present": {
+   "type": "boolean"
+  },
+  "coords": {
+   "type": "array"
+  },
+  "copy": {
+   "type": [
+    "array",
+    "null"
+   ]
+  },
+  "crt": {
+   "type": "array"
+  },
+  "csscID": {
+   "type": "integer"
+  },
+  "cycle": {
+   "type": "string"
+  },
+  "dLangs": {
+   "type": "object"
+  },
+  "data": {
+   "type": "array"
+  },
+  "defaultLanguage": {
+   "type": "string"
+  },
+  "deleteWhenDone": {
+   "type": "boolean"
+  },
+  "dest": {
+   "type": "string",
+   "enum": [
+    "dock",
+    "room",
+    "zone",
+    "poly"
+   ]
+  },
+  "details": {
+   "type": "string"
+  },
+  "detectedPad": {
+   "type": "string"
+  },
+  "directedRoomClean": {
+   "type": "boolean"
+  },
+  "dirt": {
+   "type": "integer"
+  },
+  "disc": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "disconnectPeerDevice": {
+   "type": "string"
+  },
+  "disposable": {
+   "type": "integer"
+  },
+  "distancetodock": {
+   "type": "number"
+  },
+  "dock": {
+   "type": "object"
+  },
+  "dockFromJustObsv": {
+   "type": "boolean"
+  },
+  "dockId": {
+   "type": "string"
+  },
+  "dockPn": {
+   "type": "string"
+  },
+  "dockVer": {
+   "type": "string"
+  },
+  "dock_fault_map": {
+   "type": "integer"
+  },
+  "dock_side_voltage": {
+   "type": "array"
+  },
+  "dock_state": {
+   "type": "integer"
+  },
+  "dockedAtStart": {
+   "type": "boolean"
+  },
+  "docking": {
+   "type": "boolean"
+  },
+  "dockingJob": {
+   "type": "boolean"
+  },
+  "dockingReport": {
+   "type": "object"
+  },
+  "docking_job": {
+   "type": "boolean"
+  },
+  "docking_reason": {
+   "type": "integer"
+  },
+  "dockpathcost": {
+   "type": "integer"
+  },
+  "docksearchtype": {
+   "type": "integer"
+  },
+  "done": {
+   "type": "string"
+  },
+  "doneM": {
+   "type": "integer"
+  },
+  "downloadPMap": {
+   "type": "object"
+  },
+  "downloadPath": {
+   "type": "string"
+  },
+  "driveStatus": {
+   "type": "array"
+  },
+  "duration": {
+   "type": "integer"
+  },
+  "durationM": {
+   "type": "integer"
+  },
+  "eDock": {
+   "type": "integer"
+  },
+  "ecoCharge": {
+   "type": "boolean"
+  },
+  "elapsedTime": {
+   "type": "integer"
+  },
+  "elapsed_time_ms": {
+   "type": "integer"
+  },
+  "enabled": {
+   "type": "integer"
+  },
+  "endMobResult": {
+   "type": "string"
+  },
+  "endNavResult": {
+   "type": "string"
+  },
+  "endPose": {
+   "$ref": "#/definitions/data/dockingReport/startPose"
+  },
+  "endPressure": {
+   "type": "integer"
+  },
+  "endRobotResult": {
+   "type": "string"
+  },
+  "end_clean_result": {
+   "type": "string"
+  },
+  "end_robot_result": {
+   "type": "string"
+  },
+  "endedOnDock": {
+   "type": "boolean"
+  },
+  "endedOnEvac": {
+   "type": "boolean"
+  },
+  "endedOnStartDock": {
+   "type": "boolean"
+  },
+  "epoch": {
+   "type": "string"
+  },
+  "error": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "errorStates": {
+   "type": "array"
+  },
+  "ets": {
+   "type": "integer"
+  },
+  "evacAllowed": {
+   "type": "boolean"
+  },
+  "evacReport": {
+   "type": "object"
+  },
+  "evacType": {
+   "type": "string"
+  },
+  "evacs": {
+   "type": "integer"
+  },
+  "evacsSinceBagFull": {
+   "type": "integer"
+  },
+  "event": {
+   "type": "string"
+  },
+  "execute_in_place": {
+   "type": "boolean"
+  },
+  "expireM": {
+   "type": "integer"
+  },
+  "expireTm": {
+   "type": "integer"
+  },
+  "featureFlags": {
+   "type": "object"
+  },
+  "feedback_id": {
+   "type": "string"
+  },
+  "filename": {
+   "type": "string"
+  },
+  "files": {
+   "type": "array"
+  },
+  "flags": {
+   "type": "integer"
+  },
+  "format": {
+   "type": "string"
+  },
+  "freq": {
+   "type": "integer"
+  },
+  "full": {
+   "type": "boolean"
+  },
+  "fullTransition": {
+   "type": "boolean"
+  },
+  "fwVer": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "gLmk": {
+   "type": "integer"
+  },
+  "gentleMode": {
+   "type": "integer"
+  },
+  "get": {
+   "type": "string"
+  },
+  "getRrtp": {
+   "type": "object"
+  },
+  "h_drift": {
+   "type": "integer"
+  },
+  "h_squal": {
+   "type": "integer"
+  },
+  "headers": {
+   "type": "object"
+  },
+  "height": {
+   "type": "number"
+  },
+  "histTs": {
+   "type": "integer"
+  },
+  "homeMonitoringAllowed": {
+   "type": "boolean"
+  },
+  "homing": {
+   "type": "boolean"
+  },
+  "homingReport": {
+   "type": "object"
+  },
+  "hr": {
+   "type": "integer"
+  },
+  "hwPartsRev": {
+   "type": "object"
+  },
+  "hwRev": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "id": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "id_multipolys": {
+   "type": "array"
+  },
+  "identifier": {
+   "type": "string"
+  },
+  "identifiers": {
+   "type": "array"
+  },
+  "imgUpload": {
+   "type": "integer"
+  },
+  "imuPartNo": {
+   "type": "string"
+  },
+  "index": {
+   "type": "integer",
+   "minimum": 0,
+   "maximum": 3
+  },
+  "initiator": {
+   "type": "string"
+  },
+  "installReady": {
+   "type": "boolean"
+  },
+  "instance": {
+   "type": "string",
+   "enum": [
+    "Camera.Zoom",
+    "Camera.Pan"
+   ]
+  },
+  "jws": {
+   "type": "array"
+  },
+  "kdp": {
+   "type": "integer"
+  },
+  "known": {
+   "type": "boolean"
+  },
+  "l_drift": {
+   "type": "integer"
+  },
+  "l_squal": {
+   "type": "integer"
+  },
+  "langs": {
+   "type": "null"
+  },
+  "langs2": {
+   "type": "object"
+  },
+  "language": {
+   "type": "null"
+  },
+  "lastCommand": {
+   "$ref": "#/definitions/cmd"
+  },
+  "learnOneMore": {
+   "type": "boolean"
+  },
+  "left_intensity": {
+   "type": "integer"
+  },
+  "lidClosed": {
+   "type": "boolean"
+  },
+  "linked_mssn_id": {
+   "type": "string"
+  },
+  "lmk": {
+   "type": "integer"
+  },
+  "localizedAtStart": {
+   "type": "boolean"
+  },
+  "lrDrv": {
+   "type": "string"
+  },
+  "mData": {
+   "type": "string"
+  },
+  "mDate": {
+   "type": "string"
+  },
+  "mDaySerial": {
+   "type": "integer"
+  },
+  "mLife": {
+   "type": "string"
+  },
+  "mName": {
+   "type": "string"
+  },
+  "mTrk": {
+   "type": "integer"
+  },
+  "mac_address": {
+   "type": "string"
+  },
+  "mac_is_temporary": {
+   "type": "boolean"
+  },
+  "manualDocking": {
+   "type": "boolean"
+  },
+  "mapUploadAllowed": {
+   "type": "boolean"
+  },
+  "max_dist": {
+   "$ref": "#/definitions/positiveInteger"
+  },
+  "max_sprays": {
+   "type": "integer",
+   "minimum": 0
+  },
+  "mcb": {
+   "type": "string"
+  },
+  "metadata": {
+   "type": "object"
+  },
+  "mhdtag": {
+   "type": "string"
+  },
+  "midMssn": {
+   "type": "boolean"
+  },
+  "mid_mission": {
+   "type": "boolean"
+  },
+  "mid_mission_manual": {
+   "type": "boolean"
+  },
+  "min": {
+   "type": "integer"
+  },
+  "min_dist": {
+   "$ref": "#/definitions/positiveInteger"
+  },
+  "mission": {
+   "type": "object"
+  },
+  "missionId": {
+   "type": "string"
+  },
+  "missionTelemetry": {
+   "type": "object"
+  },
+  "mission_id": {
+   "type": "string"
+  },
+  "mob": {
+   "type": "string"
+  },
+  "mobBlid": {
+   "type": "string"
+  },
+  "mobBrd": {
+   "type": "integer"
+  },
+  "mobCliffsFreed": {
+   "type": "boolean"
+  },
+  "mobGyroCalDone": {
+   "type": "boolean"
+  },
+  "mobNumBumpsTurning": {
+   "type": "integer"
+  },
+  "mobNumUndockAttempts": {
+   "type": "integer"
+  },
+  "mobSWTDone": {
+   "type": "boolean"
+  },
+  "mobStalledDriveOut": {
+   "type": "boolean"
+  },
+  "mode": {
+   "type": "integer"
+  },
+  "monitor_mode": {
+   "type": "integer"
+  },
+  "mopReady": {
+   "type": "object"
+  },
+  "motorCount": {
+   "type": "integer"
+  },
+  "mpSt": {
+   "type": "string"
+  },
+  "mq": {
+   "type": "string"
+  },
+  "mssnM": {
+   "type": "integer"
+  },
+  "mssnNavStats": {
+   "type": "object"
+  },
+  "mssnStrtTm": {
+   "type": "integer"
+  },
+  "nAtNearBlindFrames": {
+   "type": "integer"
+  },
+  "nAtNearContactFrames": {
+   "type": "integer"
+  },
+  "nAtNearTotalFrames": {
+   "type": "integer"
+  },
+  "nBumper": {
+   "type": "integer"
+  },
+  "nCBump": {
+   "type": "integer"
+  },
+  "nChatters": {
+   "type": "integer"
+  },
+  "nChgOk": {
+   "type": "integer"
+  },
+  "nClean": {
+   "type": "integer"
+  },
+  "nCliffsF": {
+   "type": "integer"
+  },
+  "nCliffsR": {
+   "type": "integer"
+  },
+  "nDock": {
+   "type": "integer"
+  },
+  "nDocks": {
+   "type": "integer"
+  },
+  "nDocksIncompatible": {
+   "type": "integer"
+  },
+  "nDocksLoaded": {
+   "type": "integer"
+  },
+  "nDocksLoadedNotSeen": {
+   "type": "integer"
+  },
+  "nDrops": {
+   "type": "integer"
+  },
+  "nEvacs": {
+   "type": "integer"
+  },
+  "nGoodLmrks": {
+   "type": "integer"
+  },
+  "nKnockoffs": {
+   "type": "integer"
+  },
+  "nLithF": {
+   "type": "integer"
+  },
+  "nMBStll": {
+   "type": "integer"
+  },
+  "nMapLoadRst": {
+   "type": "integer"
+  },
+  "nMobBlockedOff": {
+   "type": "integer"
+  },
+  "nMobFailedState": {
+   "type": "integer"
+  },
+  "nMobLost": {
+   "type": "integer"
+  },
+  "nMobNoContact": {
+   "type": "integer"
+  },
+  "nMobRst": {
+   "type": "integer"
+  },
+  "nMobTimedOut": {
+   "type": "integer"
+  },
+  "nMobTries": {
+   "type": "integer"
+  },
+  "nMssn": {
+   "type": "integer"
+  },
+  "nMssnC": {
+   "type": "integer"
+  },
+  "nMssnF": {
+   "type": "integer"
+  },
+  "nMssnOk": {
+   "type": "integer"
+  },
+  "nNavRst": {
+   "type": "integer"
+  },
+  "nNoDockPing": {
+   "type": "integer"
+  },
+  "nOomRst": {
+   "type": "integer"
+  },
+  "nOpticalDD": {
+   "type": "integer"
+  },
+  "nOverallRobustDockAttempts": {
+   "type": "integer"
+  },
+  "nOvertemps": {
+   "type": "integer"
+  },
+  "nPanics": {
+   "type": "integer"
+  },
+  "nPathPlannerFail": {
+   "type": "integer"
+  },
+  "nPicks": {
+   "type": "integer"
+  },
+  "nPiezoDD": {
+   "type": "integer"
+  },
+  "nSafRst": {
+   "type": "integer"
+  },
+  "nScrubs": {
+   "type": "integer"
+  },
+  "nSpot": {
+   "type": "integer"
+  },
+  "nStates": {
+   "type": "array"
+  },
+  "nStuck": {
+   "type": "integer"
+  },
+  "nTries": {
+   "type": "integer"
+  },
+  "nVisualContacts": {
+   "type": "array"
+  },
+  "nVisualTag": {
+   "type": "array"
+  },
+  "nWStll": {
+   "type": "integer"
+  },
+  "nWiggleRetries": {
+   "type": "integer"
+  },
+  "name": {
+   "type": "string",
+   "enum": [
+    "ReportState"
+   ]
+  },
+  "nav": {
+   "type": "string"
+  },
+  "navRanWallFollow": {
+   "type": "boolean"
+  },
+  "navWallFollowTimedOut": {
+   "type": "boolean"
+  },
+  "ndef": {
+   "type": "string"
+  },
+  "nmc": {
+   "type": "integer"
+  },
+  "nmmc": {
+   "type": "integer"
+  },
+  "nmssn": {
+   "type": "integer"
+  },
+  "noAutoPasses": {
+   "type": "boolean"
+  },
+  "noKOZ": {
+   "type": "integer"
+  },
+  "notReady": {
+   "type": "integer"
+  },
+  "notify_error": {
+   "type": "boolean"
+  },
+  "nrmc": {
+   "type": "integer"
+  },
+  "numDocks": {
+   "type": "integer"
+  },
+  "numTanks": {
+   "type": "integer"
+  },
+  "num_attempts": {
+   "type": "integer"
+  },
+  "num_mission_attempts": {
+   "type": "integer"
+  },
+  "odncReport": {
+   "type": "object"
+  },
+  "odoaFeats": {
+   "type": [
+    "object",
+    "null"
+   ]
+  },
+  "odoaMode": {
+   "type": "integer"
+  },
+  "offset": {
+   "type": "integer"
+  },
+  "on": {
+   "type": "boolean"
+  },
+  "openOnly": {
+   "type": "boolean"
+  },
+  "operatingMode": {
+   "type": "integer"
+  },
+  "optFeats": {
+   "type": "object"
+  },
+  "ordered": {
+   "type": "integer"
+  },
+  "packId": {
+   "type": "string"
+  },
+  "pad": {
+   "type": "object"
+  },
+  "padWetness": {
+   "type": "object"
+  },
+  "params": {
+   "type": "object"
+  },
+  "passArea": {
+   "type": "integer"
+  },
+  "passCount": {
+   "type": "integer"
+  },
+  "path": {
+   "type": "string"
+  },
+  "patrol_id": {
+   "type": "string"
+  },
+  "patrol_spec_id": {
+   "type": "string"
+  },
+  "pauseId": {
+   "type": "integer"
+  },
+  "pauseM": {
+   "type": "integer"
+  },
+  "pauses": {
+   "type": "array",
+   "minItems": 10,
+   "maxItems": 10
+  },
+  "payload": {
+   "type": "object"
+  },
+  "peerBdAddr": {
+   "type": "string"
+  },
+  "peerDeviceError": {
+   "type": "object"
+  },
+  "peerOobData": {
+   "type": "object"
+  },
+  "peopleFilter": {
+   "type": "integer"
+  },
+  "percentagecharge": {
+   "type": "number"
+  },
+  "phase": {
+   "type": "string"
+  },
+  "plnErr": {
+   "type": "string"
+  },
+  "pmapAction": {
+   "type": "object"
+  },
+  "pmapCL": {
+   "type": "boolean"
+  },
+  "pmapFmt": {
+   "type": "null"
+  },
+  "pmapId": {
+   "type": "string"
+  },
+  "pmapLearningAllowed": {
+   "type": "boolean"
+  },
+  "pmapSGen": {
+   "type": "integer"
+  },
+  "pmapShare": {
+   "type": "object"
+  },
+  "pmap_download_complete": {
+   "type": "object"
+  },
+  "pmap_download_req": {
+   "type": "array"
+  },
+  "pmap_id": {
+   "type": "string"
+  },
+  "pmap_version_id": {
+   "type": "string"
+  },
+  "pmaps": {
+   "type": "array"
+  },
+  "pmaps_robot": {
+   "type": "array"
+  },
+  "pmapvId": {
+   "type": "string"
+  },
+  "pmapv_id": {
+   "type": "string"
+  },
+  "pn": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "points": {
+   "type": "array"
+  },
+  "poly": {
+   "type": "array"
+  },
+  "polyid": {
+   "type": "string"
+  },
+  "preMission": {
+   "type": "object"
+  },
+  "present": {
+   "type": "boolean"
+  },
+  "project": {
+   "type": "string"
+  },
+  "properties": {},
+  "pwr": {
+   "type": "string"
+  },
+  "queryBdAddr": {
+   "type": "string"
+  },
+  "r2a": {
+   "type": "object"
+  },
+  "ranSearch": {
+   "type": "boolean"
+  },
+  "random": {
+   "type": "string"
+  },
+  "rangeValue": {
+   "type": "integer"
+  },
+  "rangeValueDelta": {
+   "type": "integer"
+  },
+  "rangeValueDeltaDefault": {
+   "type": "boolean"
+  },
+  "rankOverlap": {
+   "type": "integer"
+  },
+  "rate": {
+   "type": "integer",
+   "minimum": 1,
+   "maximum": 30
+  },
+  "reLc": {
+   "type": "integer"
+  },
+  "realTimeLogStream": {
+   "type": "boolean"
+  },
+  "reason": {
+   "type": "integer",
+   "enum": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ]
+  },
+  "rechrgM": {
+   "type": "integer"
+  },
+  "rechrgTm": {
+   "type": "integer"
+  },
+  "reflex": {
+   "type": "string"
+  },
+  "reflexSettings": {
+   "type": "object"
+  },
+  "region_id": {
+   "type": "string"
+  },
+  "regions": {
+   "type": "array"
+  },
+  "reloc": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "relocSearchTries": {
+   "type": "integer"
+  },
+  "remainingruntime": {
+   "type": "number"
+  },
+  "reportType": {
+   "type": "string",
+   "enum": [
+    "historical",
+    "update",
+    "current",
+    "adjustment"
+   ]
+  },
+  "reqId": {
+   "type": "string"
+  },
+  "reqParams": {
+   "type": "object"
+  },
+  "reqType": {
+   "type": "string",
+   "enum": [
+    "historical",
+    "update",
+    "current",
+    "adjustment"
+   ]
+  },
+  "request": {
+   "type": "object"
+  },
+  "reschedule": {
+   "type": "boolean"
+  },
+  "reset_id": {
+   "type": "integer"
+  },
+  "reusable": {
+   "type": "integer"
+  },
+  "rid": {
+   "type": "string"
+  },
+  "right_intensity": {
+   "type": "integer"
+  },
+  "rlSensors": {},
+  "rlWheelDrop": {
+   "type": "object"
+  },
+  "robotId": {
+   "type": "string"
+  },
+  "robot_side_voltage": {
+   "type": "array"
+  },
+  "robotid": {
+   "type": "string"
+  },
+  "room": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "room_id": {
+   "type": "integer"
+  },
+  "rot": {
+   "type": "integer"
+  },
+  "rrtpData": {
+   "type": "object"
+  },
+  "rssi": {
+   "type": "integer"
+  },
+  "runM": {
+   "type": "integer"
+  },
+  "runtimeStats": {
+   "type": "object"
+  },
+  "sLang": {
+   "type": "string"
+  },
+  "sVer": {
+   "type": "string"
+  },
+  "safCauses": {
+   "type": "array",
+   "minItems": 10,
+   "maxItems": 10
+  },
+  "saves": {
+   "type": "integer"
+  },
+  "sawBuoys": {
+   "type": "boolean"
+  },
+  "sawHalo": {
+   "type": "boolean"
+  },
+  "sceneRecog": {
+   "type": "null"
+  },
+  "scheduled_cmds": {
+   "type": "array"
+  },
+  "sec_message": {
+   "type": "object"
+  },
+  "secureBoot": {
+   "type": "object"
+  },
+  "secureMessage": {
+   "type": "object"
+  },
+  "selfReplenishDock": {
+   "type": "object"
+  },
+  "seq": {
+   "type": "integer"
+  },
+  "servo_flashlight_pwm": {
+   "type": "integer"
+  },
+  "sfkdp": {
+   "type": "integer"
+  },
+  "sft": {
+   "type": "string"
+  },
+  "share": {
+   "type": [
+    "array",
+    "null"
+   ]
+  },
+  "sku": {
+   "type": "string"
+  },
+  "smartHome": {
+   "type": "object"
+  },
+  "smberr": {
+   "type": "integer"
+  },
+  "softwarever": {
+   "type": "string"
+  },
+  "soundVer": {
+   "type": "integer"
+  },
+  "speed": {
+   "type": "integer"
+  },
+  "spraySchedule": {
+   "type": "array",
+   "minItems": 4,
+   "maxItems": 4,
+   "uniqueItems": true
+  },
+  "sprayScheduleID": {
+   "$ref": "#/definitions/sprayScheduleID"
+  },
+  "spraySchedules": {
+   "type": "array",
+   "minItems": 4,
+   "maxItems": 4,
+   "uniqueItems": true
+  },
+  "sqft": {
+   "type": "integer"
+  },
+  "start": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "startPose": {
+   "type": "object"
+  },
+  "startPoseTransUncert": {
+   "type": "number"
+  },
+  "startPoseUncertValid": {
+   "type": "boolean"
+  },
+  "startPoseYawUncert": {
+   "type": "number"
+  },
+  "startTime": {
+   "type": "integer"
+  },
+  "start_docking": {
+   "type": "boolean"
+  },
+  "startedFromDock": {
+   "type": "boolean"
+  },
+  "state": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "status": {
+   "type": "integer",
+   "enum": [
+    0,
+    1,
+    3,
+    4,
+    5,
+    6
+   ]
+  },
+  "stream_on_route": {
+   "type": "boolean"
+  },
+  "subModSwVer": {
+   "type": "object"
+  },
+  "swScrub": {
+   "type": "integer"
+  },
+  "tankLvl": {
+   "type": "integer"
+  },
+  "tankLvlRecal": {
+   "type": "integer"
+  },
+  "tankPresent": {
+   "type": "boolean"
+  },
+  "tentativeLoc": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "theta": {
+   "type": "number"
+  },
+  "time": {
+   "type": "integer"
+  },
+  "timeLeft": {
+   "type": "integer"
+  },
+  "timeSpent": {
+   "type": "integer"
+  },
+  "time_milli": {
+   "type": "integer"
+  },
+  "timelineReport": {
+   "type": "object"
+  },
+  "timelineRequestId": {
+   "type": "integer"
+  },
+  "timestamp": {
+   "type": "integer"
+  },
+  "toggle_voltage_present": {
+   "type": "boolean"
+  },
+  "totalArea": {
+   "type": "integer"
+  },
+  "totalEvacTime": {
+   "type": "integer"
+  },
+  "totalEvacs": {
+   "type": "integer"
+  },
+  "trans": {
+   "type": "integer"
+  },
+  "travel": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "traversal": {
+   "$ref": "#/definitions/timeline/eventData"
+  },
+  "ts": {
+   "type": "integer"
+  },
+  "twoPass": {
+   "type": "boolean"
+  },
+  "type": {
+   "type": "string"
+  },
+  "tz": {
+   "type": "object"
+  },
+  "uLangs": {
+   "type": [
+    "object",
+    "null"
+   ]
+  },
+  "uap": {
+   "type": "boolean"
+  },
+  "undocking": {
+   "type": "boolean"
+  },
+  "undockingReport": {
+   "type": "object"
+  },
+  "upj": {
+   "type": "array"
+  },
+  "uploadId": {
+   "type": "string"
+  },
+  "uploadImagery": {
+   "type": "object"
+  },
+  "uploadMssnPMap": {
+   "type": "object"
+  },
+  "url": {
+   "type": "string"
+  },
+  "user_pmapv_id": {
+   "type": "string"
+  },
+  "vacHigh": {
+   "type": "boolean"
+  },
+  "value": {
+   "type": "integer"
+  },
+  "values": {
+   "$ref": "#/definitions/wetnessLevelValues"
+  },
+  "varID": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "ver": {
+   "type": "string"
+  },
+  "version": {
+   "type": "string"
+  },
+  "videoPing": {
+   "type": "integer"
+  },
+  "vleft": {
+   "type": "integer"
+  },
+  "volume": {
+   "$ref": "#/definitions/positiveInteger"
+  },
+  "vright": {
+   "type": "integer"
+  },
+  "wDevLoc": {
+   "type": "boolean"
+  },
+  "waypoint_id": {
+   "type": "string"
+  },
+  "wetnessLevels": {
+   "type": "array",
+   "minItems": 4,
+   "maxItems": 4,
+   "uniqueItems": true
+  },
+  "width": {
+   "type": "number"
+  },
+  "wifi": {
+   "type": "integer"
+  },
+  "wifiDevices": {
+   "type": "array"
+  },
+  "wifiScanResults": {
+   "type": "array"
+  },
+  "wifistat": {
+   "type": "object"
+  },
+  "wlBars": {
+   "type": "array",
+   "minItems": 5,
+   "maxItems": 5
+  },
+  "x": {
+   "type": "number"
+  },
+  "x-amz-meta-project": {
+   "type": "string"
+  },
+  "x_offset": {
+   "type": "number"
+  },
+  "xferDestination": {
+   "type": "string"
+  },
+  "xferId": {
+   "type": "integer"
+  },
+  "xferType": {
+   "type": "string"
+  },
+  "xyt": {
+   "type": "array"
+  },
+  "y": {
+   "type": "number"
+  },
+  "y_offset": {
+   "type": "number"
+  },
+  "zid": {
+   "type": "string"
+  },
+  "zone": {
+   "$ref": "#/definitions/timeline/eventData"
+  }
+ },
+ "enums": {
+  "cmd.command": [
+   "clean",
+   "train",
+   "spot",
+   "dock",
+   "evac",
+   "start",
+   "pause",
+   "resume",
+   "stop",
+   "wallfollow",
+   "find",
+   "stopevac",
+   "ipdone",
+   "provdone",
+   "provstart",
+   "provabort",
+   "provfail",
+   "addrobotstart",
+   "addrobotdone",
+   "addrobotfail",
+   "addrobotabort",
+   "softapconnect",
+   "sleep",
+   "wake",
+   "wipe",
+   "reset",
+   "querydock",
+   "ui",
+   "reset_id",
+   "teleop",
+   "click_drive",
+   "click_look",
+   "translate",
+   "rotate",
+   "stop",
+   "explore",
+   "waypoint",
+   "patrol",
+   "viewpoint",
+   "waypoint_create",
+   "waypoint_modify",
+   "waypoint_delete",
+   "zoom",
+   "start_stream",
+   "update_stream_viewers",
+   "end_stream",
+   "start_audio",
+   "end_audio",
+   "take_snapshot",
+   "drive_to_room",
+   "schedule_patrol",
+   "schedule_privacy",
+   "override_low_battery",
+   "sentry",
+   "schedule_sentry",
+   "tidy",
+   "bleconnect",
+   "cancel_optin",
+   "startlog",
+   "skip",
+   "joystick"
+  ],
+  "cmd.regions.type": [
+   "rid",
+   "zid",
+   "wid",
+   "tag"
+  ],
+  "cmd_adjustrange.command": [
+   "ptzcommand"
+  ],
+  "cmd_adjustrange.params.instance": [
+   "Camera.Zoom",
+   "Camera.Pan"
+  ],
+  "cmd_adjustrange.params.name": [
+   "AdjustRangeValue"
+  ],
+  "cmd_joystick.command": [
+   "joystick"
+  ],
+  "cmd_report_state.command": [
+   "ptzcommand"
+  ],
+  "cmd_report_state.params.name": [
+   "ReportState"
+  ],
+  "cmd_rotate.command": [
+   "rotate"
+  ],
+  "cmd_setrange.command": [
+   "ptzcommand"
+  ],
+  "cmd_setrange.params.instance": [
+   "Camera.Zoom",
+   "Camera.Pan"
+  ],
+  "cmd_setrange.params.name": [
+   "SetRangeValue"
+  ],
+  "cmd_translate.command": [
+   "translate"
+  ],
+  "cmd_viewpoint.command": [
+   "viewpoint"
+  ],
+  "data.cmdRejection.reason": [
+   "ROBOT_ERROR",
+   "SUBSCRIPTION_EXPIRED",
+   "FEATURE_DISABLED",
+   "SECURE_MESSAGE_TIMESTAMP",
+   "SECURE_MESSAGE_COUNTER",
+   "SECURE_MESSAGE_CONTEXT",
+   "SECURE_MESSAGE_SIGNATURE",
+   "SECURE_MESSAGE_APP_CERTIFICATE",
+   "SECURE_MESSAGE_BINDING_CERTIFICATE",
+   "SCHEMA_INVALID",
+   "MESSAGE_INVALID",
+   "UNKNOWN_MESSAGE",
+   "NO_MESSAGE_HANDLER",
+   "MESSAGE_NOT_SECURE",
+   "SECURE_MESSAGE_JWS_ERROR"
+  ],
+  "data.event": [
+   "addDevice",
+   "cleantrackConnected",
+   "defaultLanguage",
+   "externalConnectionOpen",
+   "provisioning",
+   "userConfirm",
+   "robotId",
+   "wipe",
+   "wipedone",
+   "btnpress",
+   "startWifiHistogramSampling",
+   "pauseWifiHistogramSampling",
+   "stopWifiHistogramSampling",
+   "startBleDeviceTracking",
+   "pauseBleDeviceTracking",
+   "stopBleDeviceTracking",
+   "startWifiDeviceTracking",
+   "pauseWifiDeviceTracking",
+   "stopWifiDeviceTracking",
+   "scheduledCmds",
+   "wifistat",
+   "sku",
+   "wakeup",
+   "cap"
+  ],
+  "data.getRrtp.conType": [
+   "local",
+   "remote"
+  ],
+  "data.getRrtp.reqType": [
+   "historical",
+   "update",
+   "current",
+   "adjustment"
+  ],
+  "data.rrtpData.reportType": [
+   "historical",
+   "update",
+   "current",
+   "adjustment"
+  ],
+  "sprayScheduleID": [
+   "EDGE_CLEAN",
+   "DISPOSABLE_WET",
+   "REUSABLE_WET",
+   "WET_SPOT_MODE"
+  ],
+  "timeline.eventBinFull.type": [
+   "binFull"
+  ],
+  "timeline.eventCharge.type": [
+   "charge"
+  ],
+  "timeline.eventData.dest": [
+   "dock",
+   "room",
+   "zone",
+   "poly"
+  ],
+  "timeline.eventData.reason": [
+   0,
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7
+  ],
+  "timeline.eventData.status": [
+   0,
+   1,
+   3,
+   4,
+   5,
+   6
+  ],
+  "timeline.eventDiscovery.type": [
+   "disc"
+  ],
+  "timeline.eventError.type": [
+   "error"
+  ],
+  "timeline.eventEvac.type": [
+   "evac"
+  ],
+  "timeline.eventExploration.type": [
+   "explore"
+  ],
+  "timeline.eventFinished.type": [
+   "fin"
+  ],
+  "timeline.eventKidnapped.type": [
+   "kidnap"
+  ],
+  "timeline.eventOverall.type": [
+   "oClean"
+  ],
+  "timeline.eventPaused.type": [
+   "pause"
+  ],
+  "timeline.eventReloc.type": [
+   "reloc"
+  ],
+  "timeline.eventRoom.type": [
+   "room"
+  ],
+  "timeline.eventStart.type": [
+   "start"
+  ],
+  "timeline.eventTankEmpty.type": [
+   "tankEmpty"
+  ],
+  "timeline.eventTentativeLoc.type": [
+   "tentativeLoc"
+  ],
+  "timeline.eventTravel.type": [
+   "travel"
+  ],
+  "timeline.eventTraversal.type": [
+   "traversal"
+  ],
+  "timeline.eventZone.type": [
+   "zone"
+  ]
+ },
+ "required": {
+  "cmd": [
+   "command"
+  ],
+  "cmd_adjustrange": [
+   "command",
+   "params"
+  ],
+  "cmd_adjustrange.params": [
+   "name",
+   "instance",
+   "payload"
+  ],
+  "cmd_adjustrange.params.payload": [
+   "rangeValueDelta"
+  ],
+  "cmd_joystick": [
+   "command",
+   "params"
+  ],
+  "cmd_joystick.params": [
+   "vleft",
+   "vright"
+  ],
+  "cmd_report_state": [
+   "command",
+   "params"
+  ],
+  "cmd_report_state.params": [
+   "name"
+  ],
+  "cmd_rotate": [
+   "command",
+   "params"
+  ],
+  "cmd_rotate.params": [
+   "rot"
+  ],
+  "cmd_setrange": [
+   "command",
+   "params"
+  ],
+  "cmd_setrange.params": [
+   "name",
+   "instance",
+   "payload"
+  ],
+  "cmd_setrange.params.payload": [
+   "rangeValue"
+  ],
+  "cmd_translate": [
+   "command",
+   "params"
+  ],
+  "cmd_translate.params": [
+   "trans"
+  ],
+  "cmd_viewpoint": [
+   "params"
+  ],
+  "cmd_viewpoint.points": [
+   "x",
+   "y",
+   "theta"
+  ],
+  "cmd_viewpoint.regions": [
+   "region_id",
+   "type"
+  ],
+  "data.bleDevInfo": [
+   "mac_address"
+  ],
+  "data.bleRSSI": [
+   "mac_address",
+   "rssi"
+  ],
+  "data.cmdRejection": [
+   "ver",
+   "reason",
+   "request"
+  ],
+  "data.getRrtp": [
+   "reqType",
+   "reqId",
+   "conType"
+  ],
+  "data.langs2": [
+   "sLang"
+  ],
+  "data.langs2.dLangs": [
+   "ver",
+   "langs"
+  ],
+  "data.mission": [
+   "nMssn",
+   "missionId",
+   "done",
+   "pauseId",
+   "runM"
+  ],
+  "data.not": [
+   "command"
+  ],
+  "data.optFeats.anyOf": [
+   "exp"
+  ],
+  "data.peerDeviceError": [
+   "peerBdAddr",
+   "reason"
+  ],
+  "data.peerOobData": [
+   "peerBdAddr",
+   "bdaddr",
+   "random",
+   "confirm"
+  ],
+  "data.preMission": [
+   "cmd"
+  ],
+  "data.reflexSettings.rlWheelDrop": [
+   "enabled"
+  ],
+  "data.rrtpData": [
+   "reportType",
+   "reqId",
+   "ver",
+   "data"
+  ],
+  "data.rrtpData.data": [
+   "coords"
+  ],
+  "data.rrtpData.data.coords": [
+   "type",
+   "ts"
+  ],
+  "data.secureMessage": [
+   "cloudMessage",
+   "epoch"
+  ],
+  "data.secureMessage.cloudMessage": [
+   "sec_message"
+  ],
+  "data.secureMessage.cloudMessage.sec_message": [
+   "jws",
+   "crt"
+  ],
+  "data.selfReplenishDock": [
+   "peerBdAddr"
+  ],
+  "data.smartHome": [
+   "homeMonitoringAllowed"
+  ],
+  "data.timelineReport": [
+   "ver",
+   "cmd",
+   "event"
+  ],
+  "data.wifiScanResults": [
+   "bssid",
+   "rssi",
+   "freq"
+  ],
+  "doc": [
+   "spraySchedules",
+   "wetnessLevels"
+  ],
+  "spraySchedule": [
+   "index",
+   "min_dist",
+   "max_dist",
+   "volume",
+   "max_sprays"
+  ],
+  "spraySchedulesItem": [
+   "sprayScheduleID",
+   "spraySchedule"
+  ],
+  "timeline.eventBinFull": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventCharge": [
+   "type"
+  ],
+  "timeline.eventDiscovery": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventDiscovery.disc": [
+   "pmapId",
+   "pmapvId",
+   "rid"
+  ],
+  "timeline.eventError": [
+   "type",
+   "ts",
+   "error"
+  ],
+  "timeline.eventError.error": [
+   "value"
+  ],
+  "timeline.eventEvac": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventExploration": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventFinished": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventKidnapped": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventOverall": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventPaused": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventReloc": [
+   "type",
+   "ts",
+   "reloc"
+  ],
+  "timeline.eventReloc.reloc": [
+   "pmapId",
+   "pmapvId"
+  ],
+  "timeline.eventRoom": [
+   "type",
+   "ts",
+   "room"
+  ],
+  "timeline.eventRoom.room": [
+   "pmapId",
+   "pmapvId",
+   "rid"
+  ],
+  "timeline.eventStart": [
+   "type"
+  ],
+  "timeline.eventStart.start": [
+   "ts"
+  ],
+  "timeline.eventTankEmpty": [
+   "type",
+   "ts"
+  ],
+  "timeline.eventTentativeLoc": [
+   "type",
+   "ts",
+   "tentativeLoc"
+  ],
+  "timeline.eventTentativeLoc.tentativeLoc": [
+   "pmapId",
+   "pmapvId"
+  ],
+  "timeline.eventTravel": [
+   "type",
+   "ts",
+   "travel"
+  ],
+  "timeline.eventTravel.travel": [
+   "dest"
+  ],
+  "timeline.eventTraversal": [
+   "type",
+   "ts",
+   "traversal"
+  ],
+  "timeline.eventTraversal.traversal": [
+   "pmapId",
+   "pmapvId",
+   "type"
+  ],
+  "timeline.eventZone": [
+   "type",
+   "ts",
+   "zone"
+  ],
+  "timeline.eventZone.zone": [
+   "pmapId",
+   "pmapvId",
+   "zid"
+  ],
+  "wetnessLevelItem": [
+   "sprayScheduleID",
+   "values"
+  ]
+ }
+}

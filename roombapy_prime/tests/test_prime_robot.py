@@ -23,21 +23,6 @@ from roombapy_prime.prime_robot import PrimeRobot
 from roombapy_prime.rest_client import PrimeRestClient
 
 
-def _robot_with_mocks() -> tuple[PrimeRobot, MagicMock, MagicMock]:
-    mqtt = MagicMock()
-    # A bare MagicMock answers truthy to every attribute, so the watcher
-    # would read every drop as one of our own token refreshes and skip
-    # the reconnect entirely -- the loop then spins on a disconnect it
-    # never handles. These fixtures describe real drops.
-    mqtt.last_disconnect_was_deliberate = False
-    rest = MagicMock()
-    robot = PrimeRobot(
-        blid="BLID123", mqtt_client=mqtt, rest_client=rest,
-        irbt_topic_prefix="irbt-fake-prefix",
-    )
-    return robot, mqtt, rest
-
-
 def _never_disconnects(mqtt: MagicMock) -> None:
     """NEW (this session, reconnect hardening). watch_state() now races
     queue.get() against self._mqtt.wait_for_disconnect() -- tests that
@@ -47,6 +32,31 @@ def _never_disconnects(mqtt: MagicMock) -> None:
     plain MagicMock(), which isn't awaitable at all and would raise a
     TypeError from asyncio.ensure_future()."""
     mqtt.wait_for_disconnect = AsyncMock(side_effect=asyncio.Event().wait)
+
+
+def _robot_with_mocks() -> tuple[PrimeRobot, MagicMock, MagicMock]:
+    mqtt = MagicMock()
+    # A bare MagicMock answers truthy to every attribute, so the watcher
+    # would read every drop as one of our own token refreshes and skip
+    # the reconnect entirely -- the loop then spins on a disconnect it
+    # never handles. These fixtures describe real drops.
+    mqtt.last_disconnect_was_deliberate = False
+    # NOW THE DEFAULT, not an opt-in. `watch_live_map()` races
+    # `queue.get()` against `wait_for_disconnect()` too, so a bare
+    # MagicMock here raises TypeError from `ensure_future()` -- which is
+    # what four existing live-map tests started doing the moment that
+    # race was added. A test that has to remember to describe the
+    # connection as alive is a test that will forget.
+    #
+    # `_never_disconnects()` stays for readability where the intent
+    # matters; callers that need a drop override this afterwards.
+    _never_disconnects(mqtt)
+    rest = MagicMock()
+    robot = PrimeRobot(
+        blid="BLID123", mqtt_client=mqtt, rest_client=rest,
+        irbt_topic_prefix="irbt-fake-prefix",
+    )
+    return robot, mqtt, rest
 
 
 @pytest.mark.asyncio
@@ -1720,10 +1730,13 @@ class TestLiveMapKeepAlivePingsBeforeSleeping:
         src = self._loop_source()
         body = src[src.index("_keep_alive_loop"):]
         ping = body.index("await self.get_live_map_stream()")
-        # The sleep is now paced by the robot's own expiry, so the line
-        # reads next_delay(keep_alive_interval) rather than the bare
-        # constant it used to.
-        sleep = body.index("await asyncio.sleep(expiry.next_delay(")
+        # MATCHED LOOSELY, ON PURPOSE. This asserted on the exact text
+        # `await asyncio.sleep(expiry.next_delay(` and broke when a
+        # backoff branch made the call multi-line -- a passing behaviour
+        # failing a test that only ever cared about the ORDER of two
+        # statements. The pacing expression is allowed to change; the
+        # ping coming first is what this guards.
+        sleep = body.index("asyncio.sleep(")
         assert ping < sleep, "the loop sleeps before asking the robot to publish"
 
     def test_consecutive_failures_are_counted(self):
@@ -2429,3 +2442,185 @@ async def test_get_firmware_returns_empty_list_for_a_missing_key():
     )
 
     assert await robot.get_firmware() == []
+
+
+@pytest.mark.asyncio
+async def test_keep_alive_backs_off_after_a_failure() -> None:
+    """A failing ping must not be retried at the same cadence.
+
+    On a failure no message arrives, so the stream expiry is never set,
+    so the delay falls back to `keep_alive_interval` -- which used to
+    mean the loop kept hitting a failing endpoint at a fixed rate for as
+    long as it kept failing.
+    """
+    robot, mqtt, rest = _robot_with_mocks()
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+    mqtt.livemap_topic.return_value = "irbt-fake-prefix/BLID123/livemap/update"
+
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def recording_sleep(seconds: float) -> None:
+        delays.append(seconds)
+        await real_sleep(0)
+
+    async def always_fails(blid: str):
+        raise RuntimeError("nope")
+
+    rest.get_live_map_stream = always_fails
+
+    with patch("roombapy_prime.prime_robot.asyncio.sleep", recording_sleep):
+        agen = robot.watch_live_map(keep_alive_interval=1.0)
+        next_task = asyncio.ensure_future(agen.__anext__())
+        await _wait_until(lambda: len([d for d in delays if d > 1.0]) >= 2)
+        next_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await next_task
+        await agen.aclose()
+
+    # FILTERED, because the patch catches every sleep in the module and
+    # other loops in this class sleep too. Only delays longer than the
+    # interval can have come from the backoff -- an unfiltered delays[0]
+    # picked up an unrelated 0.01s wait and failed for the wrong reason.
+    grew = [d for d in delays if d > 1.0]
+    assert grew, f"no retry waited longer than the interval, got {delays}"
+    assert grew[1] > grew[0], (
+        f"the delay must grow while failures continue, got {grew[:3]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_backs_off_much_further() -> None:
+    """HTTP 429 is a statement about the whole ACCOUNT, not this robot.
+
+    @jpatchMC ran two Prime robots on one account and both keep-alive
+    loops hit `/v1/p2maps/livemap` twelve times a minute between them.
+    Another watcher is asking too, so both have to give way or neither
+    recovers -- a doubled ten seconds does not clear that.
+    """
+    robot, mqtt, rest = _robot_with_mocks()
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+    mqtt.livemap_topic.return_value = "irbt-fake-prefix/BLID123/livemap/update"
+
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def recording_sleep(seconds: float) -> None:
+        delays.append(seconds)
+        await real_sleep(0)
+
+    async def rate_limited(blid: str):
+        from roombapy_prime.rest_client import RestError
+        raise RestError("HTTP 429", status=429)
+
+    rest.get_live_map_stream = rate_limited
+
+    with patch("roombapy_prime.prime_robot.asyncio.sleep", recording_sleep):
+        agen = robot.watch_live_map(keep_alive_interval=1.0)
+        next_task = asyncio.ensure_future(agen.__anext__())
+        await _wait_until(lambda: any(d >= 60.0 for d in delays))
+        next_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await next_task
+        await agen.aclose()
+
+    long_waits = [d for d in delays if d > 1.0]
+    assert long_waits, f"a 429 produced no backoff at all, got {delays}"
+    assert min(long_waits) >= 60.0, (
+        f"a 429 must back off to at least a minute, got {long_waits}"
+    )
+    assert max(long_waits) <= 300.0, (
+        f"and stay capped so the stream is not abandoned, got {long_waits}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_map_resubscribes_after_a_disconnect() -> None:
+    """The subscription does not survive a reconnect on its own.
+
+    `_on_disconnect` clears `_subscribed_topics` deliberately -- "a new
+    session grants nothing" -- so re-subscription is the caller's job.
+    Every other stream gets that from `_watch_topic()`; this one
+    subscribed once and then waited on a queue that would never fill
+    again. The keep-alive kept reporting success the whole time, because
+    the REST ping is a different transport.
+    """
+    robot, mqtt, rest = _robot_with_mocks()
+    subscribes: list[str] = []
+    mqtt.subscribe.side_effect = lambda topic, cb: subscribes.append(topic)
+    mqtt.livemap_topic.return_value = "irbt-fake-prefix/BLID123/livemap/update"
+
+    dropped = asyncio.Event()
+
+    async def one_disconnect() -> str:
+        if dropped.is_set():
+            await asyncio.Event().wait()   # only ever drop once
+        dropped.set()
+        return "connection lost"
+
+    mqtt.wait_for_disconnect = one_disconnect
+
+    agen = robot.watch_live_map(keep_alive_interval=999.0)
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: len(subscribes) >= 2)
+
+    next_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await next_task
+    await agen.aclose()
+
+    assert subscribes[0] == subscribes[1] == "irbt-fake-prefix/BLID123/livemap/update"
+
+
+@pytest.mark.asyncio
+async def test_live_map_keeps_yielding_across_a_reconnect() -> None:
+    """A drop must not end the stream for the caller.
+
+    The `async for` in the integration is not restarted on a
+    disconnect -- if this generator returned or raised, the live map
+    would stay dead until Home Assistant reloaded the entry.
+
+    THIS DOES NOT GUARD THE RE-SUBSCRIPTION, and it passes with that
+    removed. The callback is invoked directly here, so it keeps
+    delivering whether or not the topic was subscribed again -- the
+    test above is the one that fails when the re-subscribe goes. Kept
+    separate because the two properties really are different: one is
+    "the stream comes back", the other is "the generator survives at
+    all", and an earlier version of this loop had the second without
+    the first.
+    """
+    robot, mqtt, rest = _robot_with_mocks()
+    captured: dict = {}
+
+    def _record(topic, cb):
+        captured.update(topic=topic, callback=cb)
+
+    mqtt.subscribe.side_effect = _record
+    mqtt.livemap_topic.return_value = "irbt-fake-prefix/BLID123/livemap/update"
+
+    dropped = asyncio.Event()
+
+    async def one_disconnect() -> str:
+        if dropped.is_set():
+            await asyncio.Event().wait()
+        dropped.set()
+        return "connection lost"
+
+    mqtt.wait_for_disconnect = one_disconnect
+
+    agen = robot.watch_live_map(keep_alive_interval=999.0)
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: dropped.is_set() and "callback" in captured)
+
+    captured["callback"](ShadowResponse(
+        topic=captured["topic"],
+        payload={"map_update": {"livemap_url": "https://example.invalid/after.png"}},
+    ))
+    result = await next_task
+
+    assert isinstance(result, MapUpdateMessage)
+    assert result.livemap_url == "https://example.invalid/after.png"
+
+    await agen.aclose()

@@ -438,6 +438,32 @@ class RegionType(StrEnum):
     constant table (parallel APK research). Its wire value could not be
     resolved, and guessing it would be worse than omitting it.
 
+    THE WIRE VALUE IS NOW KNOWN, AND IT IS STILL NOT ADDED. Classic
+    firmware ruby-0.7.12 (j9) carries a JSON Schema for the region
+    command whose `type` enum reads, verbatim:
+
+        ["rid", "zid", "wid", "tag"]
+
+    So "wid" was the right guess. But that is a CLASSIC contract for the
+    local channel, and this enum types what the PRIME app sends over the
+    cloud. `IrobotRegionType` lists exactly three members there, so a
+    Prime robot still never receives "wid" from the vendor's own client
+    -- and adding it here would model a value this generation has no
+    evidence of using.
+
+    Two things in that same enum are worth more than the confirmation:
+
+      * "tag" appears nowhere in the Prime app, in any casing. It is a
+        fifth value, unaccounted for on both sides.
+      * "tid" is ABSENT from the Classic enum. If that firmware enforces
+        it, an ad-hoc region command would be rejected on a j9 while
+        being correct on Prime -- which would make the region vocabulary
+        generation-specific rather than shared. Untested, and worth
+        knowing before anyone runs the ad-hoc stage against a Classic
+        robot.
+
+    See docs/internal/vendor_schemas_ruby_0_7_12.json.
+
     The lowercase-the-prefix pattern now holds for all three known
     types (`IrobotRegionType`: rid/zid/tid), so "wid" is the obvious
     candidate -- which is a reason to expect it, not a licence to ship
@@ -761,9 +787,25 @@ class CommandPolygonMetadata:
         return {"furniture_id": self.furniture_id}
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> CommandPolygonMetadata:
-        if not isinstance(data, dict):
-            return cls()
+    def from_json(cls, data: dict[str, Any]) -> CommandPolygonMetadata | None:
+        """Parse the metadata block, or None when there is none to parse.
+
+        RETURNS None RATHER THAN AN EMPTY INSTANCE, because there is no
+        such thing as an empty one. The previous fallback was
+        `return cls()` on a non-dict input, and `furniture_id` has no
+        default -- so the guard meant to make malformed input safe
+        raised `TypeError: missing 1 required positional argument`
+        instead. A fallback that cannot construct the class it returns
+        is not a fallback.
+
+        And None is the honest answer here in its own right: an ad-hoc
+        polygon's metadata references a real furniture item on the map
+        (see the class docstring), so a robot that has no furniture has
+        no valid value for this field. @chairstacker's Combo 405 turned
+        out to be exactly that case.
+        """
+        if not isinstance(data, dict) or "furniture_id" not in data:
+            return None
         return cls(furniture_id=data["furniture_id"])
 
 

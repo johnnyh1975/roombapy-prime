@@ -1,6 +1,6 @@
 # roombapy-prime — Write-path test status
 
-> **As of v0.3.2** (4 September 2026). Consolidated from every field
+> **As of v0.3.3** (5 September 2026). Consolidated from every field
 > session so far, so that nothing gets asked twice or quietly forgotten.
 >
 > That is this file's whole purpose, and it failed at it once: the header
@@ -205,8 +205,8 @@ disagreeing turned out to mean "the write did not take". Notably, only
 | 0a — `--list-maps` | ✅ | DaRealGuGu |
 | 0b — `--list-walls` | ✅ | DaRealGuGu |
 | 1 — `--update-unchanged` | ✅ | chairstacker, a31, 30 July 2026 |
-| 2 — **write a CHANGED list** (`--drop-one-wall`) | 🟡 **tool built, never run** | — |
-| 2b — **move a zone** (`--move-one-wall`) | 🟡 **tool built, never run** | — |
+| 2 — **write a CHANGED list** (`--drop-one-wall`) | ✅ | chairstacker, issue #89 |
+| 2b — **move a zone** (`--move-one-wall`) | ✅ | chairstacker, issue #89 |
 
 **Reads produced the first real zone data this project has seen**:
 `1 = KeepOutZone`, `6 = NoMopZone`, confirmed against hardware rather
@@ -277,7 +277,7 @@ or duplicated from it with an offset.
 
 ---
 
-## What is actually still open — v0.3.2
+## What is actually still open — v0.3.3
 
 Six items. Everything else on the write path is either confirmed live or
 answered as a dead end, and the dead ends are listed below them so nobody
@@ -285,7 +285,6 @@ re-opens one.
 
 | | Risk | Why it has not been done |
 |---|---|---|
-| **A virtual wall write carrying a CHANGED list** | **high** | Tool built (`--drop-one-wall`): drops one entry, verifies, restores. Needs a tester with **at least two zones** on a map they could rebuild. Nobody has run it. |
 | **Stage 4 — ad-hoc / TID zone** | **high** | The only region-command stage never run. It needs self-derived geometry rather than anything the robot supplies, which is what makes it risky. |
 | **`ecoCharge`, `noAutoPasses`, `vacHigh` — real effect** | low | All three write and read back cleanly. None has an easily observable effect, so "does it do anything" needs a deliberate before/after measurement, not a check run. |
 | **The discriminator inside `edit_cmd`** | low | The envelope shape and 8 of 9 commands' fields are confirmed. `SetRoomMetadata` and `VirtualWall` use custom serializers whose internals are not. |
@@ -293,6 +292,35 @@ re-opens one.
 | **Multi-robot household and teaming** beyond settings scoping | low | No tester with the setup has run it. |
 
 ### Answered — do not re-open these
+
+- **A virtual wall write carrying a CHANGED list** — confirmed twice
+  over (@chairstacker, issue #89). `--move-one-wall` shifted a zone and
+  he watched it move; `--drop-one-wall` sent the list minus one entry
+  and he watched that zone leave the map and come back with the restore.
+  So `set_virtual_wall` really does replace the whole list, the omitted
+  zone really does disappear, and resending the full list really does
+  bring it back — characterised now rather than assumed.
+
+  **THE COORDINATE SYSTEM CAME WITH IT.** The tool shifted by 1.4176 on
+  both axes, a quarter of the zone's longest side of 5.6703. He reported
+  "a quarter of its width right, half its height up" — which is the same
+  delta on a zone exactly twice as wide as tall. That fixes +x as right,
+  +y as up, and the unit as **metres**: 5.67 × 2.84 over a floor plan is
+  metres and nothing else. "Metres or millimetres" had been open on this
+  path since it was first modelled.
+
+  ⚠️ **The script's own count check was broken and said the opposite.**
+  It re-read the `p2mapv_id` passed on the command line, while every
+  accepted edit mints and returns a NEW one — so it reported "ACCEPTED
+  BUT NOT STORED", its loudest warning, for an edit that had worked. His
+  eyes were the evidence; the count was a convenience that could not
+  have produced any other answer. Fixed to read the returned version.
+
+  The lesson is worth more than the fix: **a broken tool nearly redefined
+  what counted as confirmation.** The question was "does a changed list
+  work", it was answered by observation, and a further run was almost
+  requested so a counter could agree.
+
 
 Each of these has cost someone a field session or nearly did.
 

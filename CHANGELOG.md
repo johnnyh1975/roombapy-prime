@@ -60,6 +60,54 @@ This file only tracks what changed from a user's point of view.
   field test against it and asked first. The file now says what is
   actually open and what is answered.
 
+## [0.3.3]
+
+### Fixed
+
+- **`watch_live_map()` never re-subscribed after a reconnect.** It
+  subscribed once; the client clears its subscriptions on disconnect by
+  design, leaving that to the caller, and every other stream gets it
+  from `_watch_topic()`. After the first reconnect the map was
+  permanently dead -- empty queue, no exception, and a keep-alive still
+  reporting success because the REST ping is a different transport. One
+  reconnect is enough, and one tester's instance reconnects hourly. Also
+  explains @chairstacker's zeroed live-map counters without needing the
+  missing-prefix theory.
+
+- **The keep-alive retried a rate limit at a fixed ten seconds.** On a
+  failure no message arrives, so the expiry is never set and the delay
+  falls back to the interval -- against the endpoint that just returned
+  429. @jpatchMC's two robots produced twelve requests a minute between
+  them. Now exponential with a five-minute cap, and a one-minute floor
+  for 429 specifically, since a rate limit is about the account rather
+  than one robot.
+
+- **A Gigya lockout no longer reads as a bad password.** The message
+  leads with not re-entering anything and to wait. The CLASSIFICATION is
+  unchanged on purpose: a rate-limit error would reach Home Assistant as
+  ConfigEntryNotReady and retry 11 times per entry in ten minutes
+  against an account locked for too many attempts, where the credentials
+  path retries zero times. Guarded by a test.
+
+- **`--drop-one-wall` verified the pre-edit map version**, so its
+  "ACCEPTED BUT NOT STORED" warning fired for an edit that had worked
+  (@chairstacker, issue #89). It reads the version the edit returned.
+
+- **`CommandPolygonMetadata.from_json()` raised `TypeError` on
+  malformed input** -- the fallback was `return cls()` and
+  `furniture_id` has no default. Returns None, which is also correct for
+  a robot that creates no furniture.
+
+### Added
+
+- **Vendor firmware schemas** (`docs/internal/vendor_schemas_ruby_0_7_12.json`)
+  and `scripts/check_vendor_schema_enums.py`, which compares this
+  library's enums against them and fails on an undecided divergence. It
+  resolved `wid` and surfaced `tag`. The file's `_channel` note is not
+  optional reading: these are Classic local-channel schemas.
+
+- **`check_vendor_value_sets.py` in CI**, where it had never run.
+
 ## [Unreleased]
 
 ### Packaging

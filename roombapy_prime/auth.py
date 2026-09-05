@@ -916,6 +916,34 @@ async def login(
     return result
 
 
+#: Gigya's lockout code. 403041 is "Account temporarily locked out" in
+#: Gigya's published error table; 403042 next to it is a genuinely wrong
+#: password, which must keep asking for one.
+#:
+#: NUMBER FIRST, TEXT AS A FALLBACK. The code is stable and the message
+#: is localised -- an account whose Gigya profile is not English would
+#: return the same 403041 with words this cannot match. The text check
+#: exists only for the case where a future response carries wording and
+#: no code we recognise, and it is deliberately narrow: "locked" alone
+#: would also catch a phrase like "account locked permanently", which is
+#: not a wait-and-retry situation.
+_GIGYA_LOCKOUT_CODE = 403041
+_GIGYA_LOCKOUT_PHRASES = ("temporarily locked", "locked out")
+
+
+def _is_temporary_lockout(result: dict[str, object], message: str) -> bool:
+    """Whether Gigya refused this login because the account is locked.
+
+    Not because the password is wrong -- see the caller for why the
+    difference decides whether Home Assistant asks the owner to type it
+    again.
+    """
+    if result.get("errorCode") == _GIGYA_LOCKOUT_CODE:
+        return True
+    lowered = message.lower()
+    return any(phrase in lowered for phrase in _GIGYA_LOCKOUT_PHRASES)
+
+
 async def _login_gigya(
     session: aiohttp.ClientSession,
     gigya_cfg: dict[str, Any],
@@ -955,7 +983,51 @@ async def _login_gigya(
         raise AuthError(f"Invalid Gigya response (not JSON): {text[:300]}") from exc
 
     if result.get("errorCode", 0) != 0:
-        raise AuthCredentialsError(f"Gigya login failed: {result.get('errorMessage', result)}", result)
+        message = str(result.get("errorMessage", result))
+
+        # A LOCKOUT IS DETECTED AND SAID PLAINLY -- BUT IT STAYS A
+        # CREDENTIALS ERROR, and that is the opposite of what it looks
+        # like it should be.
+        #
+        # The obvious move is AuthRateLimitedError: a lockout is not a
+        # wrong password, it clears by itself, and the class exists.
+        # That was written, measured, and withdrawn.
+        #
+        # WHAT THE MEASUREMENT SAID. AuthRateLimitedError reaches Home
+        # Assistant as ConfigEntryNotReady, which retries on
+        # `2 ** min(tries, 4) * 5` seconds -- 5, 10, 20, 40, then 80
+        # forever. That is **11 login attempts per config entry in ten
+        # minutes**, and an account with two robots has two entries: 22
+        # attempts against an account that is locked *because of* too
+        # many attempts. AuthCredentialsError produces **zero**: Home
+        # Assistant stops and opens a reauth dialog.
+        #
+        # So the well-meaning fix would have hammered exactly the
+        # counter it was meant to relieve, and the harm scales with the
+        # number of robots -- the same thing that triggers the lockout
+        # in the first place.
+        #
+        # WHAT IS FIXED IS THE WORDING. @jpatchMC's log carried the real
+        # reason, but Home Assistant framed it as authentication needing
+        # attention, so he reset his password several times to rule out
+        # a wrong one -- each reset another attempt against a locked
+        # account. The message now says not to, in its first clause,
+        # where it survives truncation.
+        #
+        # WHAT WOULD ACTUALLY FIX THE CAUSE is one login shared across
+        # the config entries of one account rather than one per entry.
+        # See ha_roomba_plus's __init__.py, where the multiplier lives.
+        if _is_temporary_lockout(result, message):
+            raise AuthCredentialsError(
+                "Do not re-enter your password: this account is "
+                "temporarily locked after too many login attempts, and "
+                "it clears by itself, usually within minutes. Trying "
+                "again now can extend it. Disable the integration, wait "
+                f"ten minutes, then re-enable it. ({message})",
+                result,
+            )
+
+        raise AuthCredentialsError(f"Gigya login failed: {message}", result)
 
     return {
         "uid": result["UID"],
