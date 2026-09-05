@@ -572,9 +572,35 @@ async def send_drop_one_wall(
         # edit and a stored edit are different claims, and this project
         # has confirmed several commands that were acknowledged and did
         # nothing.
-        print("\n== Verifying: re-reading the map ==")
+        #
+        # READ THE VERSION THE EDIT PRODUCED, NOT THE ONE ON THE COMMAND
+        # LINE. Every accepted edit mints a new p2mapv_id and returns it;
+        # the id the user passed in still points at the map as it was
+        # before. Re-reading that one reports "unchanged" whatever
+        # happened, which is not a weak check but a broken one -- it
+        # cannot produce any other answer.
+        #
+        # It did exactly that on the first real run (@chairstacker,
+        # issue #89): the script printed "ACCEPTED BUT NOT STORED", its
+        # loudest possible warning, while he watched the zone disappear
+        # from the app and come back. The robot was right and the check
+        # was wrong.
+        new_version = result.get("p2mapv_id") if isinstance(result, dict) else None
+        if not new_version:
+            print(
+                "\n   The edit response carried no new p2mapv_id, so there is "
+                "nothing to verify against. Skipping the check rather than "
+                "re-reading the old version, which would report 'unchanged' "
+                "no matter what happened."
+            )
+            report.add("Verify removal", "SKIPPED", "no p2mapv_id in response")
+            new_version = None
+
+        print(f"\n== Verifying: reading map version {new_version} ==")
         try:
-            _, after = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
+            if new_version is None:
+                raise RuntimeError("no new map version to read")
+            _, after = await _fetch_current_walls(robot, p2map_id, new_version)
             print(f"Map now reports {len(after)} wall(s) (was {len(original)}).")
             report.add(
                 "Verify removal", "OK" if len(after) == len(original) - 1 else "UNEXPECTED",
@@ -615,7 +641,12 @@ async def send_drop_one_wall(
         print(f"   restored: {restore_result!r}")
 
         try:
-            _, final = await _fetch_current_walls(robot, p2map_id, p2mapv_id)
+            restored_version = (
+                restore_result.get("p2mapv_id")
+                if isinstance(restore_result, dict)
+                else None
+            ) or p2mapv_id
+            _, final = await _fetch_current_walls(robot, p2map_id, restored_version)
             ok = len(final) == len(original)
             report.add("Verify restore", "OK" if ok else "UNEXPECTED",
                        f"{len(final)} wall(s), expected {len(original)}")

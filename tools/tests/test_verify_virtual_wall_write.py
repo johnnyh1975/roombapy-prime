@@ -553,3 +553,55 @@ def test_the_default_delta_is_a_quarter_of_the_zone():
         polygon=Polygon(coordinates=[[(0.0, 0.0), (4.0, 0.0), (4.0, 1.0), (0.0, 1.0)]]),
     )
     assert wall_extent(wall) == 4.0
+
+
+# ---------------------------------------------------------------------
+# Verification must read the version the edit PRODUCED.
+#
+# Every accepted edit mints a new p2mapv_id and returns it. The id from
+# the command line still points at the map as it was before, so
+# re-reading that one reports "unchanged" whatever happened -- a check
+# that cannot fail and cannot pass.
+#
+# It fired on the first real run (@chairstacker, issue #89): the script
+# printed "ACCEPTED BUT NOT STORED" while he watched the zone vanish
+# from the app and come back. The removal had worked.
+# ---------------------------------------------------------------------
+
+def test_the_verify_read_uses_the_returned_version():
+    from unittest.mock import patch
+
+    from roombapy_prime_tools import verify_virtual_wall_write as mod
+
+    robot = _walls_and_robot(3)
+    robot.edit_map = AsyncMock(
+        return_value={"status": "success", "p2mapv_id": "NEW-VERSION"}
+    )
+    report = MagicMock()
+
+    class _Ctx:
+        async def __aenter__(self):
+            return robot, report
+
+        async def __aexit__(self, *exc):
+            return False
+
+    with patch.object(mod, "connected_robot", lambda *a, **k: _Ctx()), \
+         patch.object(mod, "confirm", lambda *a, **k: True):
+        asyncio.run(
+            mod.send_drop_one_wall("u", "p", "DE", "BLID", "MAP1", "OLD-VERSION", 0)
+        )
+
+    versions = [c.args[1] for c in robot.get_map_geojson_link.await_args_list]
+    assert versions[0] == "OLD-VERSION", "the first read is the map as given"
+
+    # POSITIONAL, not membership. `"NEW-VERSION" in versions[1:]` passes
+    # even with the fix reverted, because the RESTORE verification reads
+    # the version its own response returned -- which this mock also
+    # calls NEW-VERSION. Checked by reverting: the membership form did
+    # not fail, this one does.
+    assert versions[1] == "NEW-VERSION", (
+        "the verify read straight after the drop must use the version the "
+        "edit returned; reading the command-line one reports 'unchanged' "
+        f"no matter what happened (got {versions!r})"
+    )
