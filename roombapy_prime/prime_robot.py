@@ -487,8 +487,29 @@ class PrimeRobot:
 
         KNOWN EXCEPTION -- schedHold: the write is accepted and the
         read-back confirms it, but the schedule STAYS ACTIVE in the
-        app. Writing schedHold here is evidently not the mechanism the
-        app itself uses to pause a schedule.
+        app. Writing schedHold here is not the mechanism the app itself
+        uses to pause a schedule.
+
+        AND THE FIRMWARE SAYS WHY. On Prime, `schedHold` appears
+        exactly ONCE in the whole root filesystem: as an entry in the
+        connectivity broker's key table. Not in `systemApp`, not in
+        `everest-server`, not persisted anywhere. The broker's own
+        scheduler path uses different identifiers entirely
+        (`create_schedule_command`, `rw-schedule`, `cleanSchedule2`)
+        and `schedHold` appears in none of them.
+
+        So the value is stored and echoed and nothing reads it. That is
+        the whole explanation, and it took a field observation plus a
+        firmware read to get there.
+
+        CLASSIC IS THE OPPOSITE, which is worth knowing before anyone
+        generalises this. There `schedHold` has a full handler in the
+        `scheduler` binary -- type check, value check, its own log line
+        on acceptance ("schedHold set to %d"), persisted to the
+        schedule keystore and reloaded at boot -- and the consumer sits
+        in the trigger path, between the throttle checks and the point
+        where a mission would start ("Scheduler is on hold"). It works
+        there.
 
         Worth knowing how that was caught: this project's own
         cross-check against the classic/unnamed shadow's schedHold

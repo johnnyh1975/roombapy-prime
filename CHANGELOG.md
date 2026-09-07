@@ -108,7 +108,23 @@ This file only tracks what changed from a user's point of view.
 
 - **`check_vendor_value_sets.py` in CI**, where it had never run.
 
-## [Unreleased]
+## [0.3.4]
+
+### Documented
+
+- **`create_schedules()` is one schedule per call**, despite taking a
+  list. With two entries the server answers 200 and keeps only the
+  last, silently (@Nguyen, Combo, cloud path). A warning is logged
+  rather than an exception raised -- the endpoint does accept the
+  request, and a 200 that drops data is worse than an error only
+  because nothing marks it.
+
+- **`delete_schedule()` wants the OUTER id.** A create response carries
+  `household_schedule_id` at the top and a `schedule_id` nested in
+  `schedules[]` that is the same string plus a robot suffix. The nested
+  one returns HTTP 500, which reads like a server fault rather than a
+  wrong argument.
+
 
 ### Packaging
 

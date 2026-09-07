@@ -66,7 +66,7 @@ from .prime_robot import PrimeRobot
 from .ids import id_problem, is_valid_id, normalise_id
 from .rest_client import RestConnectionError, RestError, RestSSLError, RestTimeoutError
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 __all__ = [
     "AuthConnectionError",

@@ -865,7 +865,26 @@ class PrimeRestClient:
 
     async def delete_schedule(self, household_id: str, household_schedule_id: str) -> dict[str, Any]:
         """DELETE /v1/households/{householdId}/settings/schedule/{id} --
-        CONFIRMED from DeleteSchedulesRequest (httpMethod = "DELETE")."""
+        CONFIRMED from DeleteSchedulesRequest (httpMethod = "DELETE").
+
+        THE OUTER ID, AND THE RESPONSE OFFERS TWO. A create response
+        carries `household_schedule_id` at the top and a `schedule_id`
+        nested inside `schedules[]` -- the second is the first plus a
+        robot suffix, and both look equally like "the id of this
+        schedule"::
+
+            household_schedule_id  hh_irbt.hh.<uuid>_<token>_s
+            schedules[0].schedule_id  hh_irbt.hh.<uuid>_<token>_s_K452
+
+        The nested one returns HTTP 500 here. Field-confirmed by
+        @Nguyen on a Combo: deleting by the outer id succeeded and was
+        verified with `get_schedules()` either side; the suffixed one
+        failed every time.
+
+        A 500 rather than a 404 is what makes this expensive to work
+        out -- it reads like a server fault rather than a wrong
+        argument, which is why the parameter is named for the field it
+        wants."""
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule/{_path_segment(household_schedule_id)}"
         return await self._request("DELETE", url)
 
@@ -912,7 +931,28 @@ class PrimeRestClient:
         already emits {schedule_id, options}. So toggling a schedule
         worked in the field while creating one never did, from the same
         module -- the two paths happened to disagree about a shape only
-        one of them had confirmed."""
+        one of them had confirmed.
+
+        ONE SCHEDULE PER CALL. The signature takes a list and the body
+        is an array, so this reads as a batch create. It is not: with two
+        entries the server answers HTTP 200 and keeps only the LAST one,
+        silently. @Nguyen sent "Sat/Sun deep clean" and "Wed spot
+        vacuum" together on a Combo, got a 200, and `get_schedules()`
+        came back with one household_schedule_id holding only the
+        second. Calling this once per schedule created both correctly.
+
+        A warning is logged rather than an exception raised: the
+        endpoint accepts the request, and refusing it here would break
+        any caller that happens to pass one item in a list built
+        elsewhere. But a 200 that drops data is worse than an error, so
+        it does not pass unremarked."""
+        if len(schedules) > 1:
+            _LOGGER.warning(
+                "create_schedules(): %d schedules in one call. The server "
+                "returns 200 and keeps only the last -- send one per call, "
+                "or the earlier ones are lost without an error",
+                len(schedules),
+            )
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule"
         body = {"schedules": [{"options": s.to_json()} for s in schedules]}
         return await self._request("POST", url, body=body)
