@@ -48,6 +48,7 @@ per-write-path testing status, see
 - [Error text](#error-text)
 - [Settings (DND, cleaning profiles, default routines, households)](#settings)
 - [Mission history](#mission-history)
+- [Classic robots (REST)](#classic-robots-rest)
 - [Teaming (multi-robot) — documented, not implemented](#teaming-multi-robot--documented-not-implemented)
 - [Account & app-UX surface — documented, not implemented](#account--app-ux-surface--documented-not-implemented)
 - [Model index](#model-index)
@@ -71,6 +72,36 @@ except where noted.
 ```python
 robot = await PrimeFactory.create_prime_robot(session, username, password, "US")
 await robot.connect()
+```
+
+### One account, every robot — `CloudAccount` (0.4.0)
+
+Login belongs to the account, not to a robot. `CloudAccount` logs in once
+and hands out what each robot on the account needs:
+
+| Member | Notes |
+|---|---|
+| `await CloudAccount.login(session, username, password, country_code, *, app_id="roombapy-prime", request_timeout=30.0)` | One login. Raises the `Auth*` errors. `request_timeout` applies to every login this account makes and every client it hands out. |
+| `account.robots -> dict[str, RobotLoginEntry]` | Every robot on the account, by BLID. |
+| `account.generation(blid) -> "prime" \| "classic" \| None` | From the SKU. `None` means **unknown** — the SKU tables are incomplete — and is not guessed. `KeyError` for a BLID not on the account. |
+| `account.rest(blid)` | `ClassicRestClient` or `PrimeRestClient` for that robot's generation; `ValueError` when it is unknown. `account.classic_rest()` / `account.prime_rest()` when you know better. |
+| `await account.prime_robot(blid, *, auto_refresh=False)` | A `PrimeRobot` from this login, no second one. Refuses a Classic robot. |
+| `await account.relogin()` | A fresh login now. |
+
+Every REST client the account hands out relogs **through the account** on
+HTTP 403: clients that hit it together share one login, and a client whose
+credentials were already replaced takes the new ones without logging in.
+`prime_robot()` still goes through `PrimeFactory`, which keeps its own
+relogin for the MQTT token.
+
+There is deliberately no robot class for both generations. It would carry
+methods that fail at runtime for one of them.
+
+```python
+account = await CloudAccount.login(session, username, password, "DE")
+for blid in account.robots:
+    if account.generation(blid) == "classic":
+        maps = await account.rest(blid).get_pmaps(blid)
 ```
 
 ---
@@ -329,7 +360,47 @@ in English, three run into the following word in Spanish and Polish — are repa
 | `robot.get_firmware_raw(sku, software_ver, track=None, dock_fw_ver=None, dock_fw_ver_sec=None, dock_hw_rev=None) -> Any` | 🟢 (confirmed live) | Available firmware releases from `GET https://content-prod.iot.irobotapi.com/v2/firmware`, **with no authentication**. An earlier version called this against the SigV4 gateway and got a 403, which was recorded as a permission problem; it was the wrong host. `FirmwareRequest` in app 3.0.0 declares six parameters -- `sku` and `softwareVer` required, the other four sent only when set. `softwareVer` must be URL-encoded: an unencoded `+` becomes a space and the lookup silently misses. **Returns raw**: nothing describes the response envelope, and modelling one nobody has seen is how this library got a `time_estimates` shape it had to replace wholesale. |
 | `robot.get_firmware(sku=None) -> list[FirmwareItem]` | 🟢 (confirmed live) | The same catalogue, parsed. The envelope is `{"firmware": [item, ...]}`, confirmed against a real response (SKU W155040). Returns the items; an **empty list means the catalogue had nothing for this sku**, not an error -- a Classic-generation sku returns exactly that, which is how the catalogue says it does not carry one. `FirmwareItem.fused` is an `int` (an eFuse level, observed as `3`), corrected from the `bool` the serializer-derived model had. |
 | `robot.get_map_region_ids(map_id, map_version) -> list[str]` | 🟢 | Every region id the CURRENT map version carries, named or not. The p2map's own `rooms_metadata` is a snapshot and can lag zone edits -- a tester with twelve zones saw eight from it. Use this when the question is "which regions exist"; use `get_map_region_names()` when the question is what they are called. |
-| `robot.get_mission_history(blid, *, max_reports=None, max_age=None, filter_type=None, exclusive_start_timestamp=None, supported_done_codes=None) -> dict` | 🟢 | Query params all confirmed from source, including the comma-join for `supported_done_codes`. The app's own default call uses `filter_type="omit_quickly_canceled_not_scheduled"` and `supported_done_codes=["dndEnd", "returnHomeEnd"]` (from `base_roomba_config.json`) — not required, but a reasonable default if you want to match the app's own behavior. |
+| `robot.get_mission_history(blid, *, max_reports=None, max_age=None, filter_type=None, exclusive_start_timestamp=None, supported_done_codes=None) -> Any` | 🟢 | **Returns a list of records**, not an object (annotated `dict` until 0.4.0; the Classic capture shows the list). Classic robots are asked with other parameter names — see [Classic robots (REST)](#classic-robots-rest). Query params all confirmed from source, including the comma-join for `supported_done_codes`. The app's own default call uses `filter_type="omit_quickly_canceled_not_scheduled"` and `supported_done_codes=["dndEnd", "returnHomeEnd"]` (from `base_roomba_config.json`) — not required, but a reasonable default if you want to match the app's own behavior. |
+
+---
+
+## Classic robots (REST)
+
+The cloud REST side serves **both generations**, through three classes in
+`roombapy_prime.rest_client` (all exported from the package):
+
+| Class | What it is |
+|---|---|
+| `CloudRestClient` | The base: SigV4 signing, request handling, one relogin on HTTP 403, and the calls both generations make identically — `get_robot_parts(blid)` / `get_robot_parts_raw(blid)`, `get_favorites_raw(app_edition=…)`, `get_automations_raw()`. |
+| `PrimeRestClient` | Prime/V4: everything above this section. Unchanged since 0.3.x — constructor, methods, import path. |
+| `ClassicRestClient` | Classic (900 series, i/s/j series): the calls below. New in 0.4.0. |
+
+Get them from a [`CloudAccount`](#one-account-every-robot--cloudaccount-040);
+constructing one directly takes `(session, http_base_auth, credentials,
+relogin=None, *, request_timeout=30.0)`, plus `app_id=None` for
+`ClassicRestClient`. Classic robots
+are **not** reached through `PrimeRobot` — controlling one stays local
+(roombapy); only its cloud calls live here.
+
+`ClassicRestClient` carries the calls ha_roomba_plus made for Classic robots
+through its own `cloud_api.py` up to 4.2.12, moved **unchanged**. The tests
+pin that literally: same query in the same order, same body bytes, same SigV4
+signature as 4.2.12 sent (`tests/test_rest_client.py`, "Classic parity").
+
+| Method | Confidence | Notes |
+|---|---|---|
+| `get_pmaps(blid) -> list[dict]` | 🟢 (confirmed on Classic) | `GET /v1/{blid}/pmaps?visible=true&activeDetails=2`. Classic's map system; Prime uses `p2maps`. Non-list answers come back as `[]`. |
+| `get_pmap_umf(blid, pmap_id, version_id) -> dict` | 🟢 (confirmed on Classic) | `…/pmaps/{pmap_id}/versions/{version_id}/umf?activeDetails=2` — room polygons. **Raises `RestError` for anything but a non-empty object**, empty body included: an empty map would be drawn blank instead of reported unavailable. |
+| `set_robot_part_counter(blid, part_id, counter) -> dict` | 🟢 (confirmed on Classic, `counter=0`) | Body `{"parts":[{"part_id":…,"counter":…}]}`, sent compact. `counter` is **percent used**; `0` means new, and `0` is the only value ever written in the field. The Prime client's `reset_robot_parts()` sends a different, unmeasured body. |
+| `get_mission_history(blid, *, app_id=None, filter_type=…, supported_done_codes=…, count=100, before=None) -> Any` | 🟢 (confirmed on Classic) | Classic parameter names, in Classic's order. **The defaults are the Classic app's** — `omit_quickly_canceled_not_scheduled`, `dndEnd,returnHomeEnd`, 100 records, and the client's `app_id` — so `get_mission_history(blid)` is the request ha_roomba_plus sent. `None` leaves a key out. Returns a **list**. |
+| `get_favorites() -> list[dict]` | 🟢 (confirmed on Classic) | Only favourites: an answer without a list is `[]`, not one favourite made of the whole answer. `get_favorites_raw()` (default: no `app_edition`) shows what the server sent. |
+| `get_automations() -> dict` | 🟢 (confirmed on Classic) | An object, or `{}`. The raw answer is `get_automations_raw()`. |
+| `get_robot_parts_raw(blid)`, `get_robot_parts(blid)` | 🟢 (confirmed on Classic) | From the base. Raw keeps every key; the typed one parses the Classic capture completely. |
+
+**Whether the Prime forms also work on Classic** — Prime parameter names
+for mission history, `app_edition=1`, the Prime part-counter body — is what
+`roombapy-prime-verify-classic-cloud` measures (tools package). If they
+hold, one variant per call can go.
 
 ---
 
@@ -398,9 +469,86 @@ mission remains available via `MissionHistoryEntry.raw`.
 ## Errors
 
 Every exception below is exported from `roombapy_prime` directly. Three
-independent hierarchies, one per transport, each deriving from
-`Exception` rather than a shared base — so catching "any error from this
-library" means catching all three.
+hierarchies, one per transport, and since 0.4.0 one base above them:
+**`CloudError`**. `except CloudError` catches anything from iRobot's cloud
+— login, REST, MQTT. The three stay apart: a `RestError` is never an
+`AuthError`, and every class kept its name and its subclasses.
+
+**Every failure is one of these** since 0.4.0. Until then a login stage or
+a REST call caught three aiohttp errors and let the rest escape: a
+connection dropped mid-answer came through as `aiohttp.ServerDisconnectedError`,
+a timeout as a bare `TimeoutError`, a login answer without an expected key
+as a `KeyError`. Now every aiohttp error, every timeout and every
+malformed login answer is mapped.
+
+**Every HTTP request has a time limit**, 30 seconds by default, from
+sending to having read the whole answer. `login()`, `CloudAccount.login()`
+and every REST client take `request_timeout=` (`None` for no limit). A
+403 relogin runs outside the limit; the retried request gets its own.
+
+### Why — `reason` (0.4.0)
+
+The class says which part failed. It does not say what to tell a person:
+`AuthSSLError` alone covers a machine that cannot check certificates
+(waiting will not help), an expired certificate on iRobot's side (waiting
+will) and a failure that cannot be told apart. So every `CloudError`
+carries **`reason`**, a member of `CloudErrorReason` — a `StrEnum`, so it
+is also the plain string shown in the table.
+
+The library does not translate. `reason` is the key an application
+translates from; the English message stays, for logs. Anything a
+translation needs rides along as an attribute, never inside the message:
+`status` on REST errors, `retry_after` on `RestRateLimitedError`.
+
+| `reason` | Meaning | Raised as |
+|---|---|---|
+| `connection_failed` | No connection at all: DNS, refused, unreachable | `AuthConnectionError`, `RestConnectionError`, `ShadowConnectionError`, `ShadowError` |
+| `connection_broken` | Connected, then broke off before the answer was complete | `AuthConnectionError`, `RestConnectionError` |
+| `timeout` | Sent, no complete answer in time | `AuthTimeoutError`, `RestTimeoutError`, `ShadowError` |
+| `ssl_local_trust_store` | This machine cannot check iRobot's certificate — local setup, waiting will not fix it | `AuthSSLError`, `RestSSLError`, `ShadowSSLError` |
+| `ssl_certificate_expired` | iRobot's certificate has expired — their side, usually fixed within hours | the three SSL errors |
+| `ssl_unverified` | Not verified, cause unknown | the three SSL errors |
+| `credentials_rejected` | Wrong username or password, or the login refused | `AuthCredentialsError` |
+| `account_locked` | Locked after too many attempts; clears by itself, re-entering the password extends it | `AuthCredentialsError` |
+| `too_many_sessions` | Too many active app sessions | `AuthRateLimitedError` |
+| `no_robots` | The account has no robots | `AuthError` from `primary_blid()` |
+| `robot_ambiguous` | Several robots and none named | `AuthError` from `primary_blid()` |
+| `request_refused` | HTTP 4xx other than 429. `status` | `RestClientError`, `AuthError` |
+| `rate_limited` | HTTP 429. `retry_after` on REST | `RestRateLimitedError`, `AuthError` |
+| `server_error` | HTTP 5xx. `status` | `RestServerError`, `AuthError` |
+| `response_malformed` | An answer arrived in a shape the call does not expect | `AuthError`, `RestError` |
+| `not_connected` | An MQTT operation before `connect()` — the caller's mistake | `ShadowError` |
+| `connect_refused` | The broker refused the MQTT connection after TLS succeeded | `ShadowError` |
+| `publish_not_delivered` | A message refused locally or never confirmed sent | `ShadowError` |
+| `subscription_not_sent` | A subscription failed before it reached the broker | `SubscriptionRejectedError` |
+| `subscription_rejected` | The broker's policy denied a subscription | `SubscriptionRejectedError` |
+| `shadow_rejected` | The device shadow refused a read or a write | `ShadowError` |
+| `unknown` | Never raised by this library — what an error built elsewhere without a reason carries | — |
+
+Two pairs share a class and need opposite advice, which is why `reason`
+exists and not only the class: an account lockout is an
+`AuthCredentialsError` (so Home Assistant stops retrying), but a person
+told "credentials rejected" re-enters the password and extends the
+lockout. `SubscriptionRejectedError` covers both a broker that refused and
+a request that never reached it.
+
+**The names are interface.** One is added, never renamed — a translation
+keyed on it would break. A test holds every raise in the library to a
+named reason, and `unknown` to never appearing.
+
+```python
+from roombapy_prime import CloudError, CloudErrorReason
+
+try:
+    await account.login()
+except CloudError as err:
+    key = f"cloud_{err.reason}"          # e.g. "cloud_account_locked"
+    if err.reason is CloudErrorReason.RATE_LIMITED:
+        wait = getattr(err, "retry_after", None)
+```
+
+`reason_for_status(status)` gives the reason for an HTTP status, the same
+way for login and REST.
 
 ### Authentication — `AuthError`
 
@@ -410,7 +558,7 @@ library" means catching all three.
 | `AuthRateLimitedError` | iRobot rejected the login for too many active app sessions | Later, and not immediately |
 | `AuthTimeoutError` | Sent, no response in time | Yes |
 | `AuthSSLError` | TLS or certificate verification failed | Only after investigating — a certificate failure is not transient |
-| `AuthConnectionError` | No connection established at all (DNS, refused) | Yes |
+| `AuthConnectionError` | No connection established at all (DNS, refused), or it broke off mid-answer | Yes |
 
 The distinction that matters in practice is the first row against the
 rest. A credentials failure will never succeed on retry; everything
@@ -418,12 +566,35 @@ else might.
 
 ### REST — `RestError`
 
-`RestConnectionError`, `RestSSLError`, `RestTimeoutError` — the same
-three transport conditions, for calls to iRobot's HTTP API.
+| Exception | Meaning | Retry? |
+|---|---|---|
+| `RestConnectionError` | No connection, or it broke off mid-answer | Yes |
+| `RestTimeoutError` | No complete answer within `request_timeout` | Yes |
+| `RestSSLError` | TLS or certificate verification failed | Only after investigating |
+| `RestHTTPError` | The server answered with an error status; `status` is set. Base of the three below (0.4.0) | — |
+| `RestClientError` | 4xx other than 429: the request itself was refused (not found, not allowed, malformed). A 403 arrives here only after the one relogin has not cured it | **No**, not unchanged |
+| `RestRateLimitedError` | 429. `retry_after` is the wait the server asked for, in seconds, or `None` | After `retry_after` |
+| `RestServerError` | 5xx: a problem on iRobot's side | Later |
+
+A plain `RestError` that is none of these means the answer arrived and was
+not what the call expects — not JSON, or not the shape it documents
+(`reason` `response_malformed`). One built elsewhere with an error `status`
+takes its `reason` from the status.
+
+**A certificate failure is diagnosed the same way as at login** since
+0.4.0. REST and MQTT used to say "almost always a temporary problem on
+iRobot's servers … not something wrong with your setup" for every
+certificate failure — wrong for a machine without a usable trust store,
+where waiting fixes nothing. Login had stopped saying it after a field
+report.
 
 ### Shadow/MQTT — `ShadowError`
 
-`ShadowConnectionError`, `ShadowSSLError`.
+`ShadowConnectionError`, `ShadowSSLError`, and `SubscriptionRejectedError`
+(a subscription the broker refused, or one that never reached it). A plain
+`ShadowError` covers several causes and always says which in `reason`.
+Since 0.4.0 the one path that raised a builtin `ConnectionError` raises a
+`ShadowError` too.
 
 ### Catching them
 
@@ -448,7 +619,8 @@ except AuthError:
 ```
 
 Ordering matters: `AuthError` is the base, so it must come last or it
-swallows the specific cases.
+swallows the specific cases. The same holds one level up — put
+`except CloudError` after everything more specific.
 
 ## Identifier helpers
 

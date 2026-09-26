@@ -15,17 +15,26 @@ real p2maps REST response was ever captured live.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from unittest.mock import MagicMock
 
 import aiohttp
 import pytest
 
 from roombapy_prime.auth import CloudCredentials
+from roombapy_prime.errors import CloudErrorReason, reason_for_status
 from roombapy_prime.models import HouseholdSchedule, MergeRooms, ScheduleFrequency, ScheduleOptions
 from roombapy_prime.rest_client import (
+    ClassicRestClient,
+    CloudRestClient,
     PrimeRestClient,
+    RestClientError,
     RestConnectionError,
     RestError,
+    RestHTTPError,
+    RestRateLimitedError,
+    RestServerError,
     RestSSLError,
     RestTimeoutError,
 )
@@ -41,11 +50,15 @@ def _dummy_credentials() -> CloudCredentials:
 
 
 class _FakeResponse:
-    def __init__(self, status: int, body: str, url: str, raw_bytes: bytes | None = None) -> None:
+    def __init__(
+        self, status: int, body: str, url: str, raw_bytes: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status = status
         self._body = body
         self.url = url
         self._raw_bytes = raw_bytes
+        self.headers = headers or {}
 
     async def text(self) -> str:
         return self._body
@@ -85,10 +98,12 @@ class _FakeSession:
 
     def queue_response(
         self, status: int = 200, payload: dict | None = None, raw_body: str | None = None,
-        raw_bytes: bytes | None = None,
+        raw_bytes: bytes | None = None, headers: dict[str, str] | None = None,
     ) -> None:
         body = raw_body if raw_body is not None else json.dumps(payload if payload is not None else {})
-        self._responses.append(_FakeResponse(status=status, body=body, url="", raw_bytes=raw_bytes))
+        self._responses.append(
+            _FakeResponse(status=status, body=body, url="", raw_bytes=raw_bytes, headers=headers)
+        )
 
     def get(self, url: str, params: dict | None = None, headers: dict | None = None, data: bytes | None = None) -> _FakeResponse:
         self.calls.append(_RecordedCall("GET", url, params, data, headers))
@@ -768,8 +783,10 @@ async def test_non_json_success_response_raises_rest_error() -> None:
     session.queue_response(status=200, raw_body="<html>not json</html>")
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    with pytest.raises(RestError, match="Non-JSON"):
+    with pytest.raises(RestError, match="Non-JSON") as excinfo:
         await client.get_map_metadata("map123")
+
+    assert excinfo.value.reason is CloudErrorReason.RESPONSE_MALFORMED
 
 
 # --- reactive 403 -> relogin -> retry (ported from cloud_api.py's _aws_get) --
@@ -1042,8 +1059,10 @@ async def test_request_chokepoint_ssl_error_gets_clear_message() -> None:
     with pytest.raises(RestSSLError) as excinfo:
         await client.get_map_metadata("map123")
 
-    assert "certificate" in str(excinfo.value).lower()
-    assert "temporary" in str(excinfo.value).lower()
+    # "certificate has expired" -- since 0.4.0 diagnosed as login does,
+    # no longer one fixed "almost always temporary" for every cause.
+    assert "certificate has expired" in str(excinfo.value)
+    assert excinfo.value.reason is CloudErrorReason.SSL_CERTIFICATE_EXPIRED
     assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
 
 
@@ -1100,6 +1119,244 @@ async def test_download_map_bundle_timeout_error_gets_clear_message() -> None:
         await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
 
     assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)
+
+
+# ── every transport failure is a RestError (0.4.0) ─────────────────────────
+#
+# Measured before this: against a local server, a connection dropped
+# mid-answer escaped as aiohttp.ServerDisconnectedError and a timeout from
+# the caller's session as a bare TimeoutError -- past every `except
+# RestError` and `except CloudError`.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc", "expected", "reason"),
+    [
+        (aiohttp.ServerDisconnectedError(), RestConnectionError, CloudErrorReason.CONNECTION_BROKEN),
+        (aiohttp.ClientPayloadError("transfer cut short"), RestConnectionError,
+         CloudErrorReason.CONNECTION_BROKEN),
+        (aiohttp.ClientOSError(104, "Connection reset by peer"), RestConnectionError,
+         CloudErrorReason.CONNECTION_BROKEN),
+        (aiohttp.ClientConnectorError(None, OSError("Name or service not known")), RestConnectionError,
+         CloudErrorReason.CONNECTION_FAILED),
+        (TimeoutError(), RestTimeoutError, CloudErrorReason.TIMEOUT),
+    ],
+    ids=["server-disconnected", "payload-cut", "connection-reset", "no-connection", "bare-timeout"],
+)
+@pytest.mark.parametrize("call", ["request", "bundle"])
+async def test_every_transport_failure_is_a_cloud_error(exc, expected, reason, call) -> None:
+    """`reason` separates the two RestConnectionError cases a person is
+    told different things about: a connection that broke off, and none
+    at all."""
+    from roombapy_prime.errors import CloudError
+
+    client = PrimeRestClient(_NetworkFailingSession(exc), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(expected) as excinfo:
+        if call == "request":
+            await client.get_map_metadata("map123")
+        else:
+            await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
+
+    assert isinstance(excinfo.value, CloudError)
+    assert excinfo.value.__cause__ is exc
+    assert excinfo.value.reason is reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected", "reason"),
+    [
+        (502, RestServerError, CloudErrorReason.SERVER_ERROR),
+        (404, RestClientError, CloudErrorReason.REQUEST_REFUSED),
+        (200, RestError, CloudErrorReason.RESPONSE_MALFORMED),
+    ],
+    ids=["502", "404", "200-not-json"],
+)
+async def test_a_response_error_is_a_rest_error_not_a_connection_error(status, expected, reason) -> None:
+    """The server answered; calling that a broken connection would send
+    someone to check their network for nothing. An error status gets its
+    HTTP class; a 200 whose body is the problem stays a plain RestError."""
+    exc = aiohttp.ContentTypeError(None, (), status=status, message="text/html")
+    client = PrimeRestClient(_NetworkFailingSession(exc), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestError) as excinfo:
+        await client.get_map_metadata("map123")
+
+    assert type(excinfo.value) is expected
+    assert not isinstance(excinfo.value, RestConnectionError)
+    assert excinfo.value.status == status
+    assert excinfo.value.reason is reason
+
+
+# ── HTTP status as error classes (0.4.0) ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (400, RestClientError), (404, RestClientError), (409, RestClientError),
+        (429, RestRateLimitedError),
+        (500, RestServerError), (502, RestServerError), (503, RestServerError),
+    ],
+)
+@pytest.mark.parametrize("call", ["request", "bundle"])
+async def test_each_error_status_has_its_class(status, expected, call) -> None:
+    session = _FakeSession()
+    session.queue_response(status=status, raw_body="server said no")
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(expected) as excinfo:
+        if call == "request":
+            await client.get_map_metadata("map123")
+        else:
+            await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
+
+    assert isinstance(excinfo.value, RestHTTPError)
+    assert excinfo.value.status == status
+    assert excinfo.value.reason is reason_for_status(status)
+    assert excinfo.value.raw_response == "server said no"
+
+
+@pytest.mark.asyncio
+async def test_a_403_the_relogin_did_not_cure_is_a_client_error() -> None:
+    session = _FakeSession()
+    session.queue_response(status=403, raw_body="forbidden")
+    session.queue_response(status=403, raw_body="still forbidden")
+
+    async def relogin():
+        result = MagicMock()
+        result.credentials = _dummy_credentials()
+        return result
+
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials(), relogin=relogin)
+
+    with pytest.raises(RestClientError) as excinfo:
+        await client.get_map_metadata("map123")
+
+    assert excinfo.value.status == 403
+    assert len(session.calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("12", 12.0),
+        ("0", 0.0),
+        ("-5", 0.0),
+        ("Wed, 21 Oct 2015 07:28:00 GMT", 0.0),  # a date in the past: go now
+        ("soon", None),
+        (None, None),
+    ],
+    ids=["seconds", "zero", "negative", "past-date", "garbage", "absent"],
+)
+async def test_a_429_carries_the_wait_the_server_asked_for(header, expected) -> None:
+    session = _FakeSession()
+    session.queue_response(
+        status=429, raw_body="slow down",
+        headers={"Retry-After": header} if header is not None else {},
+    )
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestRateLimitedError) as excinfo:
+        await client.get_map_metadata("map123")
+
+    assert excinfo.value.retry_after == expected
+
+
+def test_a_future_retry_after_date_is_the_seconds_until_then() -> None:
+    import datetime
+    import email.utils
+
+    from roombapy_prime.rest_client import _retry_after_seconds
+
+    in_a_minute = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=60)
+    seconds = _retry_after_seconds(email.utils.format_datetime(in_a_minute, usegmt=True))
+
+    assert seconds is not None and 55 <= seconds <= 60
+
+
+class _SlowResponse:
+    def __init__(self, delay: float, status: int = 200, body: str = "{}") -> None:
+        self.status = status
+        self.url = ""
+        self._delay = delay
+        self._body = body
+
+    async def text(self) -> str:
+        return self._body
+
+    async def read(self) -> bytes:
+        return self._body.encode()
+
+    async def __aenter__(self) -> _SlowResponse:
+        await asyncio.sleep(self._delay)
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+
+class _SlowSession:
+    """Answers after `delay` seconds; `statuses` in order, then 200."""
+
+    def __init__(self, delay: float, statuses: list[int] | None = None) -> None:
+        self._delay = delay
+        self._statuses = list(statuses or [])
+        self.calls = 0
+
+    def get(self, *args: object, **kwargs: object) -> _SlowResponse:
+        self.calls += 1
+        status = self._statuses.pop(0) if self._statuses else 200
+        return _SlowResponse(self._delay, status)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call", ["request", "bundle"])
+async def test_a_request_that_takes_too_long_is_a_timeout(call) -> None:
+    client = PrimeRestClient(
+        _SlowSession(delay=1.0), HTTP_BASE_AUTH, _dummy_credentials(), request_timeout=0.05
+    )
+
+    with pytest.raises(RestTimeoutError):
+        if call == "request":
+            await client.get_map_metadata("map123")
+        else:
+            await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
+
+
+@pytest.mark.asyncio
+async def test_the_default_timeout_is_thirty_seconds_and_none_means_no_limit() -> None:
+    assert PrimeRestClient(None, HTTP_BASE_AUTH, _dummy_credentials())._request_timeout == 30.0
+    client = PrimeRestClient(
+        _SlowSession(delay=0.05), HTTP_BASE_AUTH, _dummy_credentials(), request_timeout=None
+    )
+    await client.get_map_metadata("map123")
+
+
+@pytest.mark.asyncio
+async def test_a_slow_relogin_does_not_eat_the_requests_time() -> None:
+    """The relogin runs outside the timeout, and the retry gets its own."""
+    from roombapy_prime.auth import LoginResult
+
+    async def slow_relogin() -> LoginResult:
+        await asyncio.sleep(0.3)
+        result = MagicMock(spec=LoginResult)
+        result.credentials = _dummy_credentials()
+        return result
+
+    session = _SlowSession(delay=0.05, statuses=[403])
+    client = PrimeRestClient(
+        session, HTTP_BASE_AUTH, _dummy_credentials(),
+        relogin=slow_relogin, request_timeout=0.2,
+    )
+
+    await client.get_map_metadata("map123")
+
+    assert session.calls == 2
 
 
 class TestEditMapResponseType:
@@ -1577,3 +1834,415 @@ class TestFirmwareCatalogueParameters:
 
         assert "dockFwVerSec=2" in url
         assert "dockHwRev=A" in url
+
+
+# ── Classic parity (0.4.0) ─────────────────────────────────────────────────
+#
+# The Classic calls moved here from ha_roomba_plus' cloud_api.py must send
+# what 4.2.12 sent -- that request is the one confirmed on Classic robots.
+# The expected signatures below were recorded from cloud_api.py of
+# ha_roomba_plus 4.2.12 with the same host, credentials and clock, so an
+# equal signature proves an equal canonical request: method, path, every
+# query key and value, and the body bytes. The query and body are also
+# checked directly, so a failure says which part moved.
+#
+# Cross-checked once against a live local aiohttp server as well: both
+# implementations put the same raw path and query on the wire, key order
+# included.
+
+import datetime as _dt
+from pathlib import Path
+from unittest.mock import patch
+
+from roombapy_prime import aws_sigv4
+
+_CLASSIC_FIXTURES = Path(__file__).parent / "fixtures"
+_FROZEN = _dt.datetime(2026, 9, 24, 12, 0, 0, tzinfo=_dt.UTC)
+
+
+class _FrozenDatetime(_dt.datetime):
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return _FROZEN
+
+
+def _signature(call: _RecordedCall) -> str:
+    assert call.headers is not None
+    return call.headers["Authorization"].split("Signature=")[1]
+
+
+def _classic_fixture(name: str):
+    return json.loads((_CLASSIC_FIXTURES / name).read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_classic_get_pmaps_matches_4_2_12_and_parses_capture() -> None:
+    session = _FakeSession()
+    session.queue_response(raw_body=json.dumps(_classic_fixture("classic_pmaps_i3plus.json")))
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        result = await client.get_pmaps("BLID1")
+
+    call = session.calls[0]
+    assert (call.method, call.url) == ("GET", f"{HTTP_BASE_AUTH}/v1/BLID1/pmaps")
+    assert call.params == {"visible": "true", "activeDetails": "2"}
+    assert _signature(call) == "cc35dc4170f87a9721229eb465660c29a772501fdbaa739c2542f74084f4e233"
+    assert len(result) == 1
+    assert {"pmap_id", "active_pmapv_id", "active_pmapv_details"} <= set(result[0])
+
+
+@pytest.mark.asyncio
+async def test_classic_get_pmaps_non_list_is_empty() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"unexpected": True})
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    assert await client.get_pmaps("BLID1") == []
+
+
+@pytest.mark.asyncio
+async def test_classic_get_pmap_umf_matches_4_2_12() -> None:
+    """SYNTHETIC response: no capture of this endpoint's answer exists
+    (the integration's UMF fixture is a mission map, see fixtures/README)."""
+    session = _FakeSession()
+    session.queue_response(payload={"format_version": 1, "maps": []})
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        result = await client.get_pmap_umf("BLID1", "PM1", "V1")
+
+    call = session.calls[0]
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/BLID1/pmaps/PM1/versions/V1/umf"
+    assert call.params == {"activeDetails": "2"}
+    assert _signature(call) == "192725f36bd74d0539122420838a71ea2a937db2a193965edbc5acddbdb485b5"
+    assert result == {"format_version": 1, "maps": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ["[]", "[1]", '"x"', "", "{}"],
+                         ids=["empty-list", "list", "text", "empty-body", "empty-object"])
+async def test_classic_get_pmap_umf_without_a_map_is_an_error_not_an_empty_map(body) -> None:
+    """An empty dict would be drawn as a blank map; ha_roomba_plus
+    reported the map as unavailable instead, and still should. An empty
+    body is the sly one: the request layer turns it into `{}`."""
+    session = _FakeSession()
+    session.queue_response(raw_body=body)
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestError, match="not a non-empty object") as excinfo:
+        await client.get_pmap_umf("BLID1", "PM1", "V1")
+
+    assert excinfo.value.reason is CloudErrorReason.RESPONSE_MALFORMED
+
+
+@pytest.mark.asyncio
+async def test_classic_mission_history_matches_4_2_12_and_returns_the_list() -> None:
+    session = _FakeSession()
+    session.queue_response(
+        raw_body=json.dumps(_classic_fixture("classic_missionhistory_i3plus.json"))
+    )
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        result = await client.get_mission_history(
+            "BLID1",
+            app_id="IOS-APPID",
+            filter_type="omit_quickly_canceled_not_scheduled",
+            supported_done_codes=["dndEnd", "returnHomeEnd"],
+            count=50,
+            before=1780000000,
+        )
+
+    call = session.calls[0]
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/BLID1/missionhistory"
+    # Order is part of "the same request": dicts keep insertion order and
+    # aiohttp writes the query in that order.
+    assert list(call.params.items()) == [
+        ("app_id", "IOS-APPID"),
+        ("filterType", "omit_quickly_canceled_not_scheduled"),
+        ("supportedDoneCodes", "dndEnd,returnHomeEnd"),
+        ("count", "50"),
+        ("before", "1780000000"),
+    ]
+    assert _signature(call) == "2cbfe39884de19c6622c0fa6a6d3c7c5a941aa7f45d67663306360de5f88269b"
+    assert isinstance(result, list) and len(result) == 3
+
+
+@pytest.mark.asyncio
+async def test_classic_robot_parts_read_matches_4_2_12_and_parses_capture() -> None:
+    session = _FakeSession()
+    session.queue_response(raw_body=json.dumps(_classic_fixture("classic_parts_i3plus.json")))
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        result = await client.get_robot_parts("BLID1")
+
+    assert _signature(session.calls[0]) == (
+        "25c5dae5e04c05a8bada28ac0013ff9d15434cd53e01d7e596f6d3698c2ce641"
+    )
+    assert result.num_parts == 4
+    assert {p.part_id for p in result.parts} == {"35", "36", "37", "139"}
+    assert all(p.count_used is not None for p in result.parts)
+
+
+@pytest.mark.asyncio
+async def test_classic_set_robot_part_counter_matches_4_2_12_byte_for_byte() -> None:
+    session = _FakeSession()
+    session.queue_response(payload={"robot_id": "BLID1", "num_parts": 1, "parts": []})
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        result = await client.set_robot_part_counter("BLID1", "35", 0)
+
+    call = session.calls[0]
+    assert (call.method, call.url) == ("POST", f"{HTTP_BASE_AUTH}/v1/robots/BLID1/parts")
+    assert call.data == b'{"parts":[{"part_id":"35","counter":0}]}'
+    assert _signature(call) == "4968bb135d7e1cbbf1d5e980d36e04b0e2466626c72e35e9adfd1135029cb849"
+    assert result["num_parts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prime_bodies_keep_their_spacing() -> None:
+    """compact_body is Classic's; the Prime writes keep json.dumps()'s
+    default, the bytes their own field tests sent."""
+    session = _FakeSession()
+    session.queue_response(payload={})
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.reset_robot_parts("BLID1", ["35"])
+
+    assert b'"robot_id": "BLID1"' in session.calls[0].data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "expected_signature"),
+    [
+        ("get_favorites_raw", "/v1/user/favorites",
+         "9956b526066ce18e691e232e4406a3b27d52da67024e126c1b77978e042b5b83"),
+        ("get_automations_raw", "/v1/user/automations",
+         "b229f6a327460045cd8a107d85b763d6f618ae3f55a14df7e580520391a04021"),
+        ("get_favorites", "/v1/user/favorites",
+         "9956b526066ce18e691e232e4406a3b27d52da67024e126c1b77978e042b5b83"),
+        ("get_automations", "/v1/user/automations",
+         "b229f6a327460045cd8a107d85b763d6f618ae3f55a14df7e580520391a04021"),
+    ],
+)
+async def test_classic_account_reads_match_4_2_12(
+    method: str, path: str, expected_signature: str
+) -> None:
+    """Called with no arguments, as the integration will: Classic's
+    favorites default is no app_edition (the Prime client's is 1)."""
+    session = _FakeSession()
+    session.queue_response(raw_body="[]")
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        await getattr(client, method)()
+
+    call = session.calls[0]
+    assert call.url == f"{HTTP_BASE_AUTH}{path}"
+    assert not call.params
+    assert _signature(call) == expected_signature
+
+
+# ── One base, two generations (0.4.0) ──────────────────────────────────────
+
+
+def test_both_clients_share_the_base_and_keep_to_their_generation() -> None:
+    """Each client offers only what its generation answers. A Classic
+    robot has no p2maps and a Prime robot no pmaps, and a method that
+    exists on the wrong client is one somebody will call."""
+    assert issubclass(PrimeRestClient, CloudRestClient)
+    assert issubclass(ClassicRestClient, CloudRestClient)
+    for classic_only in ("get_pmaps", "get_pmap_umf", "set_robot_part_counter"):
+        assert hasattr(ClassicRestClient, classic_only)
+        assert not hasattr(PrimeRestClient, classic_only), classic_only
+    for prime_only in ("get_active_map_versions", "reset_robot_parts", "get_schedules"):
+        assert hasattr(PrimeRestClient, prime_only)
+        assert not hasattr(ClassicRestClient, prime_only), prime_only
+    for shared in ("get_robot_parts", "get_favorites_raw", "get_automations_raw"):
+        assert shared in vars(CloudRestClient), shared
+
+
+@pytest.mark.asyncio
+async def test_prime_favorites_default_is_unchanged() -> None:
+    """Moving get_favorites_raw() into the base must not change what the
+    Prime client sends by default."""
+    session = _FakeSession()
+    session.queue_response(raw_body="[]")
+    client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_favorites_raw()
+
+    assert session.calls[0].params == {"app_edition": "1"}
+
+
+@pytest.mark.asyncio
+async def test_each_mission_history_takes_only_its_own_parameters() -> None:
+    session = _FakeSession()
+    prime = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+    classic = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(TypeError):
+        await prime.get_mission_history("B", count=5)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await classic.get_mission_history("B", max_reports=5)  # type: ignore[call-arg]
+
+
+# ── Classic defaults and normalised answers (0.4.0) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_classic_mission_history_default_call_is_the_4_2_12_request() -> None:
+    """get_mission_history(blid) alone -- the call ha_roomba_plus makes
+    most -- sends the Classic app's defaults and the client's app id."""
+    session = _FakeSession()
+    session.queue_response(raw_body="[]")
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials(), app_id="IOS-APPID")
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        await client.get_mission_history("BLID1")
+
+    call = session.calls[0]
+    assert list(call.params.items()) == [
+        ("app_id", "IOS-APPID"),
+        ("filterType", "omit_quickly_canceled_not_scheduled"),
+        ("supportedDoneCodes", "dndEnd,returnHomeEnd"),
+        ("count", "100"),
+    ]
+    assert _signature(call) == "2e4072ec8e82de02c0d99a602f66b5065d3644bbef7abc35882d8c7b753ecc1f"
+
+
+@pytest.mark.asyncio
+async def test_classic_mission_history_none_leaves_a_key_out() -> None:
+    session = _FakeSession()
+    session.queue_response(raw_body="[]")
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_mission_history(
+        "BLID1", filter_type=None, supported_done_codes=None, count=None
+    )
+
+    assert session.calls[0].params == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ([{"favorite_id": "F"}], [{"favorite_id": "F"}]),
+        ({"favorites": [{"favorite_id": "F"}]}, [{"favorite_id": "F"}]),
+        ({"something_else": 1}, []),
+        ({"favorites": "not a list"}, []),
+        ("text", []),
+    ],
+    ids=["list", "wrapped", "object-without-favorites", "favorites-not-a-list", "scalar"],
+)
+async def test_classic_favorites_are_only_favorites(answer, expected) -> None:
+    """An object without a list is no favourites -- not one favourite
+    made of the whole answer, which became a nameless button."""
+    session = _FakeSession()
+    session.queue_response(raw_body=json.dumps(answer))
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    assert await client.get_favorites() == expected
+    assert not session.calls[0].params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [({"automations": []}, {"automations": []}), ([1, 2], {}), ("text", {})],
+    ids=["object", "list", "scalar"],
+)
+async def test_classic_automations_are_an_object(answer, expected) -> None:
+    session = _FakeSession()
+    session.queue_response(raw_body=json.dumps(answer))
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    assert await client.get_automations() == expected
+
+
+@pytest.mark.asyncio
+async def test_robot_parts_raw_keeps_every_key_the_model_would_drop() -> None:
+    capture = _classic_fixture("classic_parts_i3plus.json")
+    capture["parts"][0]["a_field_nobody_modelled"] = 7
+    session = _FakeSession()
+    session.queue_response(raw_body=json.dumps(capture))
+    session.queue_response(raw_body=json.dumps(capture))
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    raw = await client.get_robot_parts_raw("BLID1")
+    typed = await client.get_robot_parts("BLID1")
+
+    assert raw == capture
+    assert typed.num_parts == 4
+    assert session.calls[0].url == session.calls[1].url
+
+
+# ── reason: what to tell a person (0.4.0) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("openssl_says", "reason", "wording"),
+    [
+        ("unable to get local issuer certificate", CloudErrorReason.SSL_LOCAL_TRUST_STORE,
+         "waiting will not fix it"),
+        ("certificate has expired", CloudErrorReason.SSL_CERTIFICATE_EXPIRED, "on their end"),
+        ("some unfamiliar TLS failure", CloudErrorReason.SSL_UNVERIFIED, "trusted-root store"),
+    ],
+    ids=["local-trust-store", "expired", "unknown"],
+)
+@pytest.mark.parametrize("call", ["request", "bundle"])
+async def test_a_certificate_failure_is_diagnosed_as_login_diagnoses_it(
+    openssl_says, reason, wording, call
+) -> None:
+    """REST said "almost always a temporary problem on iRobot's servers
+    ... not something wrong with your setup" for every certificate
+    failure -- the claim login had dropped after a field report showed
+    it wrong for a local trust store. Now the same three causes, and
+    the one that says to wait is only the one where waiting helps."""
+    exc = aiohttp.ClientSSLError(None, OSError(openssl_says))
+    client = PrimeRestClient(_NetworkFailingSession(exc), HTTP_BASE_AUTH, _dummy_credentials())
+
+    with pytest.raises(RestSSLError) as excinfo:
+        if call == "request":
+            await client.get_map_metadata("map123")
+        else:
+            await client.download_map_bundle("https://presigned.example.invalid/bundle.tar.gz")
+
+    assert excinfo.value.reason is reason
+    assert wording in str(excinfo.value)
+    assert "almost always a temporary problem" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (None, CloudErrorReason.RESPONSE_MALFORMED),
+        (200, CloudErrorReason.RESPONSE_MALFORMED),
+        (404, CloudErrorReason.REQUEST_REFUSED),
+        (429, CloudErrorReason.RATE_LIMITED),
+        (502, CloudErrorReason.SERVER_ERROR),
+    ],
+)
+def test_a_plain_rest_error_takes_its_reason_from_its_status(status, reason) -> None:
+    """A RestError built elsewhere with an error status must not claim
+    the answer was malformed when the status says why."""
+    assert RestError("x", status=status).reason is reason
+
+
+def test_a_rest_error_subclass_keeps_its_own_reason_whatever_the_status() -> None:
+    assert RestConnectionError("x", status=502).reason is CloudErrorReason.CONNECTION_FAILED
+    assert RestSSLError("x", status=404).reason is CloudErrorReason.SSL_UNVERIFIED
+    assert RestRateLimitedError("x").reason is CloudErrorReason.RATE_LIMITED
+    assert RestHTTPError("x", 404).reason is CloudErrorReason.REQUEST_REFUSED
+    assert RestHTTPError("x", 503).reason is CloudErrorReason.SERVER_ERROR
+
+
+def test_an_explicit_reason_wins_over_the_status() -> None:
+    error = RestError("x", status=502, reason=CloudErrorReason.CONNECTION_BROKEN)
+    assert error.reason is CloudErrorReason.CONNECTION_BROKEN

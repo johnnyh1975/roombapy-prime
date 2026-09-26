@@ -64,9 +64,23 @@ from .mqtt_client import ShadowConnectionError, ShadowError, ShadowResponse, Sha
 from .prime_factory import PrimeFactory
 from .prime_robot import PrimeRobot
 from .ids import id_problem, is_valid_id, normalise_id
-from .rest_client import RestConnectionError, RestError, RestSSLError, RestTimeoutError
+from .account import CloudAccount
+from .errors import CloudError, CloudErrorReason
+from .rest_client import (
+    ClassicRestClient,
+    CloudRestClient,
+    PrimeRestClient,
+    RestClientError,
+    RestConnectionError,
+    RestError,
+    RestHTTPError,
+    RestRateLimitedError,
+    RestServerError,
+    RestSSLError,
+    RestTimeoutError,
+)
 
-__version__ = "0.3.4"
+__version__ = "0.4.0b1"
 
 __all__ = [
     "AuthConnectionError",
@@ -75,14 +89,24 @@ __all__ = [
     "AuthRateLimitedError",
     "AuthSSLError",
     "AuthTimeoutError",
+    "ClassicRestClient",
+    "CloudAccount",
+    "CloudError",
+    "CloudErrorReason",
+    "CloudRestClient",
     "LoginResult",
     "PrimeFactory",
+    "PrimeRestClient",
     "PrimeRobot",
     "id_problem",
     "is_valid_id",
     "normalise_id",
+    "RestClientError",
     "RestConnectionError",
     "RestError",
+    "RestHTTPError",
+    "RestRateLimitedError",
+    "RestServerError",
     "RestSSLError",
     "RestTimeoutError",
     "RobotLoginEntry",

@@ -1,0 +1,195 @@
+"""CloudAccount: one login per account, the right client per robot, and
+one relogin however many clients notice a 403 at once."""
+from __future__ import annotations
+
+import asyncio
+import json
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from roombapy_prime import account as account_module
+from roombapy_prime.account import CLASSIC, PRIME, CloudAccount
+from roombapy_prime.auth import CloudCredentials, LoginResult, RobotLoginEntry
+from roombapy_prime.rest_client import ClassicRestClient, PrimeRestClient
+
+_CLASSIC_BLID = "CLASSIC1"
+_PRIME_BLID = "PRIME1"
+_UNKNOWN_BLID = "UNKNOWN1"
+
+
+def _login_result(token: str = "t1") -> LoginResult:
+    return LoginResult(
+        mqtt_endpoint="mqtt.example.invalid",
+        http_base="https://base.example.invalid",
+        http_base_auth="https://auth.example.invalid",
+        credentials=CloudCredentials(
+            access_key_id="A", secret_key="S", session_token=token, cognito_id="us-east-1:0",
+        ),
+        robots={
+            _CLASSIC_BLID: RobotLoginEntry(sku="i355640"),
+            _PRIME_BLID: RobotLoginEntry(sku="W155020"),
+            _UNKNOWN_BLID: RobotLoginEntry(sku="Z000000"),
+        },
+        connection_tokens=[],
+        raw={},
+    )
+
+
+def _account(login_result: LoginResult | None = None, session=None) -> CloudAccount:
+    return CloudAccount(
+        session, "user", "secret", "DE", login_result or _login_result(), app_id="IOS-APP",
+    )
+
+
+class _Response:
+    def __init__(self, status: int, body: str) -> None:
+        self.status = status
+        self._body = body
+        self.url = ""
+
+    async def text(self) -> str:
+        return self._body
+
+    async def __aenter__(self) -> _Response:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _Session:
+    """Answers 403 to any request signed with a token in `expired`."""
+
+    def __init__(self, expired: set[str]) -> None:
+        self.expired = expired
+        self.tokens_seen: list[str] = []
+
+    def get(self, url, params=None, headers=None, data=None) -> _Response:
+        token = headers["x-amz-security-token"]
+        self.tokens_seen.append(token)
+        if token in self.expired:
+            return _Response(403, "{}")
+        return _Response(200, json.dumps({"robot_id": "X", "num_parts": 0, "parts": []}))
+
+
+@pytest.mark.asyncio
+async def test_login_logs_in_once_with_the_app_id() -> None:
+    fake_login = AsyncMock(return_value=_login_result())
+    with patch.object(account_module, "login", fake_login):
+        account = await CloudAccount.login(None, "user", "secret", "DE", app_id="IOS-APP")
+
+    fake_login.assert_awaited_once_with(
+        None, "user", "secret", "DE", app_id="IOS-APP", request_timeout=30.0
+    )
+    assert account.app_id == "IOS-APP"
+    assert set(account.robots) == {_CLASSIC_BLID, _PRIME_BLID, _UNKNOWN_BLID}
+
+
+def test_generation_has_three_answers_and_refuses_a_foreign_blid() -> None:
+    account = _account()
+
+    assert account.generation(_CLASSIC_BLID) == CLASSIC
+    assert account.generation(_PRIME_BLID) == PRIME
+    assert account.generation(_UNKNOWN_BLID) is None
+    with pytest.raises(KeyError):
+        account.generation("NOT-ON-THIS-ACCOUNT")
+
+
+def test_rest_hands_out_the_generations_client_and_never_guesses() -> None:
+    account = _account()
+
+    classic = account.rest(_CLASSIC_BLID)
+    prime = account.rest(_PRIME_BLID)
+
+    assert type(classic) is ClassicRestClient
+    assert type(prime) is PrimeRestClient
+    assert classic.app_id == "IOS-APP"
+    with pytest.raises(ValueError, match="neither SKU table"):
+        account.rest(_UNKNOWN_BLID)
+
+
+@pytest.mark.asyncio
+async def test_prime_robot_reuses_the_login_and_refuses_a_classic_robot() -> None:
+    account = _account()
+    create = AsyncMock(return_value="robot")
+    with patch.object(account_module.PrimeFactory, "create_prime_robot", create):
+        assert await account.prime_robot(_PRIME_BLID, auto_refresh=True) == "robot"
+        with pytest.raises(ValueError, match="Classic"):
+            await account.prime_robot(_CLASSIC_BLID)
+
+    create.assert_awaited_once()
+    assert create.await_args.kwargs["login_result"] is account.login_result
+    assert create.await_args.kwargs["auto_refresh"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_403_relogs_through_the_account_once() -> None:
+    session = _Session(expired={"t1"})
+    account = _account(session=session)
+    classic = account.classic_rest()
+    fresh = _login_result("t2")
+    fake_login = AsyncMock(return_value=fresh)
+
+    with patch.object(account_module, "login", fake_login):
+        await classic.get_robot_parts_raw(_CLASSIC_BLID)
+
+    fake_login.assert_awaited_once_with(
+        session, "user", "secret", "DE", app_id="IOS-APP", request_timeout=30.0
+    )
+    assert account.login_result is fresh
+    assert session.tokens_seen == ["t1", "t2"]
+
+
+@pytest.mark.asyncio
+async def test_a_client_with_replaced_credentials_takes_the_new_ones_without_a_login() -> None:
+    """The case that would otherwise cost one session per client."""
+    session = _Session(expired={"t1"})
+    account = _account(session=session)
+    first, second = account.classic_rest(), account.prime_rest()
+    fake_login = AsyncMock(return_value=_login_result("t2"))
+
+    with patch.object(account_module, "login", fake_login):
+        await first.get_robot_parts_raw(_CLASSIC_BLID)
+        await second.get_robot_parts_raw(_PRIME_BLID)
+
+    assert fake_login.await_count == 1
+    assert session.tokens_seen == ["t1", "t2", "t1", "t2"]
+
+
+@pytest.mark.asyncio
+async def test_clients_that_hit_403_together_share_one_login() -> None:
+    session = _Session(expired={"t1"})
+    account = _account(session=session)
+    clients = [account.classic_rest(), account.prime_rest(), account.classic_rest()]
+
+    async def slow_login(*_a, **_k):
+        await asyncio.sleep(0.01)
+        return _login_result("t2")
+
+    fake_login = AsyncMock(side_effect=slow_login)
+    with patch.object(account_module, "login", fake_login):
+        await asyncio.gather(*(c.get_robot_parts_raw(_CLASSIC_BLID) for c in clients))
+
+    assert fake_login.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_relogin_always_logs_in() -> None:
+    account = _account()
+    fresh = _login_result("t2")
+    with patch.object(account_module, "login", AsyncMock(return_value=fresh)):
+        assert await account.relogin() is fresh
+    assert account.login_result is fresh
+
+
+@pytest.mark.asyncio
+async def test_the_request_timeout_reaches_every_login_and_every_client() -> None:
+    fake_login = AsyncMock(return_value=_login_result())
+    with patch.object(account_module, "login", fake_login):
+        account = await CloudAccount.login(None, "u", "p", "DE", request_timeout=7.5)
+        await account.relogin()
+
+    assert [c.kwargs["request_timeout"] for c in fake_login.await_args_list] == [7.5, 7.5]
+    assert account.classic_rest()._request_timeout == 7.5
+    assert account.prime_rest()._request_timeout == 7.5

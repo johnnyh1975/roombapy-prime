@@ -47,8 +47,13 @@ from typing import Any
 from collections.abc import Callable
 
 import paho.mqtt.client as mqtt
+from paho.mqtt.enums import CallbackAPIVersion
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
 
-from .auth import ConnectionToken
+from .errors import CloudError, CloudErrorReason
+
+from .auth import ConnectionToken, _ssl_diagnosis
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,17 +103,22 @@ def _suback_is_failure(reason_code: Any) -> bool:
         return False
 
 
-class ShadowError(Exception):
+class ShadowError(CloudError):
     """Raised when a shadow operation is rejected or times out.
 
     Subclassed below (this session, ha_roomba_plus translation-key
     prep) -- see auth.py's AuthError docstring for the same reasoning:
     callers that only care about "something failed" keep catching
     ShadowError itself, callers that need to distinguish categories
-    for translation-key mapping catch the specific subclass."""
+    for translation-key mapping catch the specific subclass.
+
+    NO REASON OF ITS OWN. A plain ShadowError covers a refused publish,
+    a missing connection, a timeout and a rejected shadow write alike,
+    so every raise names its `reason` -- a test holds the library to
+    that."""
 
 
-class SubscriptionRejectedError(Exception):
+class SubscriptionRejectedError(CloudError):
     """NEW (this session) -- raised when the broker's own SUBACK
     reason code says a subscribe() call was REJECTED (MQTT's 0x80
     failure code, typically an IoT-policy/ACL denial in AWS IoT's
@@ -119,12 +129,19 @@ class SubscriptionRejectedError(Exception):
     watch_state(), watch_mission_timeline(), watch_rejected_commands(),
     watch_raw_topic(), and anything built on top of them -- gets this
     new distinction for free, without deliberately catching a
-    shadow-specific exception type for a subscribe-level problem)."""
+    shadow-specific exception type for a subscribe-level problem).
+
+    `reason` is SUBSCRIPTION_REJECTED when the broker refused, and
+    SUBSCRIPTION_NOT_SENT when the request never reached it."""
+
+    reason: CloudErrorReason = CloudErrorReason.SUBSCRIPTION_REJECTED
 
 
 class ShadowSSLError(ShadowError):
     """TLS/certificate verification failure -- see
-    _raise_clear_ssl_error()."""
+    _raise_clear_ssl_error(). `reason` says which of three causes."""
+
+    reason: CloudErrorReason = CloudErrorReason.SSL_UNVERIFIED
 
 
 class ShadowConnectionError(ShadowError):
@@ -139,6 +156,8 @@ class ShadowConnectionError(ShadowError):
     separately). Deliberately does NOT claim to know whether this is
     iRobot's fault or the caller's own network, same as
     AuthConnectionError/RestConnectionError."""
+
+    reason: CloudErrorReason = CloudErrorReason.CONNECTION_FAILED
 
 
 def _raise_clear_ssl_error(exc: ssl.SSLError) -> None:
@@ -159,14 +178,15 @@ def _raise_clear_ssl_error(exc: ssl.SSLError) -> None:
     failure in this project -- it's based on paho-mqtt's documented,
     stable connect() behavior, not a reverse-engineered assumption.
     Treat this path itself as reasoned-through, not live-confirmed,
-    until an actual iRobot cert incident is caught here."""
-    raise ShadowSSLError(
-        "Could not verify iRobot's cloud server certificate. This is "
-        "almost always a temporary problem on iRobot's servers (an "
-        "expired or currently-renewing TLS certificate), not something "
-        "wrong with your setup -- it should resolve on its own within a "
-        "few hours."
-    ) from exc
+    until an actual iRobot cert incident is caught here.
+
+    SINCE 0.4.0 THE SAME DIAGNOSIS AS LOGIN AND REST
+    (auth._ssl_diagnosis), replacing a fixed "almost always temporary,
+    not your setup" that was wrong for a machine without a usable trust
+    store. ssl.SSLCertVerificationError carries the same
+    verify_message the diagnosis reads."""
+    reason, message = _ssl_diagnosis(exc)
+    raise ShadowSSLError(message, reason=reason) from exc
 
 
 def _raise_clear_connection_error(exc: OSError) -> None:
@@ -231,18 +251,21 @@ def _publish_confirmed(
         why = f" The broker's last disconnect reason was: {disconnect_reason}." if disconnect_reason else ""
         raise ShadowError(
             f"PUBLISH to {topic} was refused by the client (paho rc={rc}) -- "
-            f"the request never left, so a timeout below would mean nothing.{why}"
+            f"the request never left, so a timeout below would mean nothing.{why}",
+            reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
         )
     try:
         info.wait_for_publish(timeout=timeout)
     except (RuntimeError, ValueError) as exc:
         raise ShadowError(
-            f"PUBLISH to {topic} could not be confirmed: {exc}"
+            f"PUBLISH to {topic} could not be confirmed: {exc}",
+            reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
         ) from exc
     if not info.is_published():
         raise ShadowError(
             f"PUBLISH to {topic} was queued but never sent within {timeout}s -- "
-            "the connection accepts messages and is not delivering them."
+            "the connection accepts messages and is not delivering them.",
+            reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
         )
 
 
@@ -349,7 +372,7 @@ class PrimeMqttClient:
 
     def _build_client(self) -> mqtt.Client:
         client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            callback_api_version=CallbackAPIVersion.VERSION2,
             client_id=self._token.client_id,
             protocol=mqtt.MQTTv311,
             transport="websockets",
@@ -388,7 +411,14 @@ class PrimeMqttClient:
         client.on_subscribe = self._on_subscribe
         return client
 
-    def _on_subscribe(self, client, userdata, mid, reason_codes, properties=None) -> None:
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        mid: int,
+        reason_codes: list[ReasonCode],
+        properties: Properties | None = None,
+    ) -> None:
         """NEW (session 33) -- records that the broker has actually
         confirmed the SUBSCRIBE with this mid (SUBACK). See __init__'s
         comment on _confirmed_mids for the bug this fixes.
@@ -462,8 +492,13 @@ class PrimeMqttClient:
             # because the alternative is an AttributeError on None from
             # inside the loop below, where the topic being subscribed
             # is no longer in the message.
-            msg = "MQTT client is not available after reconnect"
-            raise ConnectionError(msg)
+            # A ShadowError since 0.4.0, like the two identical checks in
+            # get_shadow()/update_shadow(): a builtin ConnectionError got
+            # past every `except CloudError`.
+            raise ShadowError(
+                "MQTT client is not available after reconnect",
+                reason=CloudErrorReason.CONNECTION_FAILED,
+            )
         mids = []
         not_sent: dict[str, int] = {}
         for topic in topics:
@@ -540,7 +575,8 @@ class PrimeMqttClient:
             raise SubscriptionRejectedError(
                 f"SUBSCRIBE was never sent for {not_sent} (paho error codes) -- the "
                 "client reported a failure before anything reached the broker. "
-                "Distinct from a rejection: the broker never saw this."
+                "Distinct from a rejection: the broker never saw this.",
+                reason=CloudErrorReason.SUBSCRIPTION_NOT_SENT,
             )
         if rejected:
             raise SubscriptionRejectedError(
@@ -635,9 +671,11 @@ class PrimeMqttClient:
             time.sleep(0.2)
             waited += 0.2
         if self._connect_error:
-            raise ShadowError(f"Connect failed: {self._connect_error}")
+            raise ShadowError(
+                f"Connect failed: {self._connect_error}", reason=CloudErrorReason.CONNECT_REFUSED
+            )
         if not self._connected:
-            raise ShadowError(f"Connect timed out after {timeout}s")
+            raise ShadowError(f"Connect timed out after {timeout}s", reason=CloudErrorReason.TIMEOUT)
 
     def disconnect(self, deliberate: bool = True) -> None:
         """`deliberate` marks this as our own close, so the watcher does
@@ -741,7 +779,8 @@ class PrimeMqttClient:
                 "once before any shadow read -- named shadows travel over MQTT, not REST. "
                 "If you are running one of the diagnostic scripts, this is a bug in the "
                 "script rather than anything you did: it asked for shadow data without "
-                "opening the connection first."
+                "opening the connection first.",
+                reason=CloudErrorReason.NOT_CONNECTED,
             )
         _LOGGER.info(
             "roombapy-prime MQTT: reconnecting (%d persistent subscription(s) to restore)",
@@ -781,13 +820,27 @@ class PrimeMqttClient:
         # callback entries, since _persistent already has them).
         self._subscribe_and_wait(topics_to_restore)
 
-    def _on_connect(self, client, userdata, connect_flags, reason_code, properties=None) -> None:
+    def _on_connect(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        connect_flags: mqtt.ConnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None = None,
+    ) -> None:
         if reason_code == 0:
             self._connected = True
         else:
             self._connect_error = str(reason_code)
 
-    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None) -> None:
+    def _on_disconnect(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        disconnect_flags: mqtt.DisconnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None = None,
+    ) -> None:
         """NEW (this session). Previously not wired up at all -- the
         client had zero visibility into a dropped connection, silently
         leaving any long-running watch_state() consumer hung on an
@@ -854,7 +907,7 @@ class PrimeMqttClient:
         await self._disconnect_event.wait()
         return self._disconnect_reason or "unknown"
 
-    def _on_message(self, client, userdata, msg) -> None:
+    def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
         try:
             payload = json.loads(msg.payload)
         except JSONDecodeError:
@@ -1073,7 +1126,8 @@ class PrimeMqttClient:
             # on None rather than saying what was wrong.
             raise ShadowError(
                 "Not connected. connect() must have been called before requesting a "
-                "mission timeline -- the request goes over MQTT."
+                "mission timeline -- the request goes over MQTT.",
+                reason=CloudErrorReason.NOT_CONNECTED,
             )
         info = self._client.publish(topic, payload=payload, qos=1)
         _publish_confirmed(info, topic)
@@ -1374,7 +1428,8 @@ class PrimeMqttClient:
             raise ShadowError(
                 "Not connected. connect() must have been called before publishing a command "
                 "-- commands go over MQTT. If you are running a diagnostic script, this is a "
-                "bug in the script rather than anything you did."
+                "bug in the script rather than anything you did.",
+                reason=CloudErrorReason.NOT_CONNECTED,
             )
         # Revive a dead connection before publishing, exactly as
         # get_shadow() already does.
@@ -1506,7 +1561,9 @@ class PrimeMqttClient:
                 result.append(resp)
 
             if self._client is None:  # pragma: no cover - reconnect() guarantees this
-                raise ShadowError("Connection unavailable after reconnect")
+                raise ShadowError(
+                    "Connection unavailable after reconnect", reason=CloudErrorReason.CONNECTION_FAILED
+                )
             topics = []
             for suffix in ("get/accepted", "get/rejected"):
                 topic = f"{base}/{suffix}"
@@ -1554,10 +1611,14 @@ class PrimeMqttClient:
                 time.sleep(0.2)
                 waited += 0.2
             if not result:
-                raise ShadowError(f"No response to GET on {base} within {timeout}s")
+                raise ShadowError(
+                    f"No response to GET on {base} within {timeout}s", reason=CloudErrorReason.TIMEOUT
+                )
             response = result[0]
             if response.topic.endswith("/get/rejected"):
-                raise ShadowError(f"GET rejected: {response.payload}")
+                raise ShadowError(
+                    f"GET rejected: {response.payload}", reason=CloudErrorReason.SHADOW_REJECTED
+                )
             return response
 
     def update_shadow(
@@ -1585,7 +1646,9 @@ class PrimeMqttClient:
                 result.append(resp)
 
             if self._client is None:  # pragma: no cover - reconnect() guarantees this
-                raise ShadowError("Connection unavailable after reconnect")
+                raise ShadowError(
+                    "Connection unavailable after reconnect", reason=CloudErrorReason.CONNECTION_FAILED
+                )
             topics = []
             for suffix in ("update/accepted", "update/rejected", "update/delta"):
                 topic = f"{base}/{suffix}"
@@ -1601,8 +1664,12 @@ class PrimeMqttClient:
                 time.sleep(0.2)
                 waited += 0.2
             if not result:
-                raise ShadowError(f"No response to UPDATE on {base} within {timeout}s")
+                raise ShadowError(
+                    f"No response to UPDATE on {base} within {timeout}s", reason=CloudErrorReason.TIMEOUT
+                )
             response = result[0]
             if response.topic.endswith("/update/rejected"):
-                raise ShadowError(f"UPDATE rejected: {response.payload}")
+                raise ShadowError(
+                    f"UPDATE rejected: {response.payload}", reason=CloudErrorReason.SHADOW_REJECTED
+                )
             return response

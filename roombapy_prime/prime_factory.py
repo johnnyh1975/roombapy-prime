@@ -90,7 +90,7 @@ class PrimeFactory:
         relogin = None
         if auto_refresh:
 
-            async def relogin():
+            async def relogin() -> LoginResult:
                 return await login(session, username, password, country_code)
 
         rest_client = PrimeRestClient(

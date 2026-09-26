@@ -1,0 +1,13 @@
+{
+  "_note": "Modules below the 95 % every other module must reach, each with the line coverage it had when listed, rounded down to a tenth (lowest across Python 3.11-3.14). A floor may only go up; an entry that reaches 95 % is removed. See scripts/check_coverage_per_module.py.",
+  "floors": {
+    "diagnostics.py": 52.3,
+    "models/favorites.py": 84.0,
+    "models/livemap.py": 81.3,
+    "models/map_bundle.py": 90.8,
+    "models/map_editing.py": 94.7,
+    "models/schedules_dnd.py": 85.7,
+    "models/time_estimates.py": 91.1,
+    "prime_robot.py": 87.7
+  }
+}

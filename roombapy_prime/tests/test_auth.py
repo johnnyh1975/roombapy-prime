@@ -15,6 +15,7 @@ in exactly the order login() actually triggers them.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from typing import Any
 import aiohttp
 import pytest
 
+from roombapy_prime.errors import CloudErrorReason
 from roombapy_prime.auth import (
     AuthConnectionError,
     AuthCredentialsError,
@@ -433,8 +435,26 @@ async def test_login_refetches_discovery_after_cache_expires(monkeypatch) -> Non
 async def test_login_discovery_http_error_raises() -> None:
     session = _FakeSequentialSession([_FakeResp(403)])
 
-    with pytest.raises(AuthError, match="Endpoint discovery failed"):
+    with pytest.raises(AuthError, match="Endpoint discovery failed") as excinfo:
         await login(session, "user@example.com", "hunter2", "US")
+
+    assert excinfo.value.reason is CloudErrorReason.REQUEST_REFUSED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [(429, CloudErrorReason.RATE_LIMITED), (503, CloudErrorReason.SERVER_ERROR)],
+)
+async def test_a_discovery_error_status_says_whose_side_it_is(status, reason) -> None:
+    """A plain AuthError is otherwise "the answer was malformed"; an
+    error status says more than that, and the same way REST says it."""
+    session = _FakeSequentialSession([_FakeResp(status)])
+
+    with pytest.raises(AuthError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert excinfo.value.reason is reason
 
 
 @pytest.mark.asyncio
@@ -474,8 +494,31 @@ async def test_login_gigya_error_code_raises() -> None:
         ]
     )
 
-    with pytest.raises(AuthCredentialsError, match="Gigya login failed"):
+    with pytest.raises(AuthCredentialsError, match="Gigya login failed") as excinfo:
         await login(session, "user@example.com", "hunter2", "US")
+
+    assert excinfo.value.reason is CloudErrorReason.CREDENTIALS_REJECTED
+
+
+@pytest.mark.asyncio
+async def test_a_gigya_lockout_is_account_locked_not_credentials_rejected() -> None:
+    """Same class -- see test_auth_lockout.py for why it must stay an
+    AuthCredentialsError -- but the opposite advice: a person told
+    "credentials rejected" re-enters the password, and each attempt
+    extends the lockout. `reason` is where the two part."""
+    session = _FakeSequentialSession(
+        [
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(
+                {"errorCode": 403041, "errorMessage": "Account temporarily locked out"}
+            )),
+        ]
+    )
+
+    with pytest.raises(AuthCredentialsError, match="Do not re-enter your password") as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert excinfo.value.reason is CloudErrorReason.ACCOUNT_LOCKED
 
 
 @pytest.mark.asyncio
@@ -526,8 +569,10 @@ async def test_login_irobot_mqtt_slot_rate_limit_gets_friendlier_message() -> No
         ]
     )
 
-    with pytest.raises(AuthRateLimitedError, match="rate-limited"):
+    with pytest.raises(AuthRateLimitedError, match="rate-limited") as excinfo:
         await login(session, "user@example.com", "hunter2", "US")
+
+    assert excinfo.value.reason is CloudErrorReason.TOO_MANY_SESSIONS
 
 
 @pytest.mark.asyncio
@@ -674,6 +719,7 @@ async def test_login_discovery_ssl_error_gets_clear_message() -> None:
     # SERVER-side cause, so the message must point there rather than
     # sending the user hunting through their own setup.
     assert "their end" in str(excinfo.value).lower()
+    assert excinfo.value.reason is CloudErrorReason.SSL_CERTIFICATE_EXPIRED
     assert isinstance(excinfo.value.__cause__, aiohttp.ClientSSLError)
 
 
@@ -802,6 +848,102 @@ async def test_login_irobot_timeout_error_gets_clear_message() -> None:
     assert isinstance(excinfo.value.__cause__, aiohttp.ServerTimeoutError)
 
 
+# ── every transport failure is an AuthError (0.4.0) ────────────────────────
+#
+# Each stage used to catch three aiohttp errors and let the rest escape.
+# Measured against a local server: a dropped connection came through as
+# aiohttp.ServerDisconnectedError, a session timeout as a bare
+# TimeoutError -- neither an AuthError, so neither a CloudError.
+
+_STAGE_RESPONSES = [
+    [],
+    [_FakeResp(200, json_body=_DISCOVERY_RESPONSE)],
+    [_FakeResp(200, json_body=_DISCOVERY_RESPONSE), _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE))],
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", [0, 1, 2], ids=["discovery", "gigya", "irobot"])
+@pytest.mark.parametrize(
+    ("make_exc", "expected", "reason"),
+    [
+        (aiohttp.ServerDisconnectedError, AuthConnectionError, CloudErrorReason.CONNECTION_BROKEN),
+        (lambda: aiohttp.ClientOSError(104, "Connection reset by peer"), AuthConnectionError,
+         CloudErrorReason.CONNECTION_BROKEN),
+        (_connector_error, AuthConnectionError, CloudErrorReason.CONNECTION_FAILED),
+        (TimeoutError, AuthTimeoutError, CloudErrorReason.TIMEOUT),
+        (lambda: aiohttp.ClientResponseError(None, (), status=502, message="Bad Gateway"), AuthError,
+         CloudErrorReason.SERVER_ERROR),
+    ],
+    ids=["server-disconnected", "connection-reset", "no-connection", "bare-timeout", "502"],
+)
+async def test_every_transport_failure_at_every_stage_is_an_auth_error(
+    stage, make_exc, expected, reason
+) -> None:
+    from roombapy_prime.errors import CloudError
+
+    exc = make_exc()
+    session = _NetworkFailingSession(
+        fail_at_call=stage, exc=exc, prior_responses=list(_STAGE_RESPONSES[stage])
+    )
+
+    with pytest.raises(expected) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert type(excinfo.value) is expected
+    assert isinstance(excinfo.value, CloudError)
+    assert excinfo.value.__cause__ is exc
+    assert excinfo.value.reason is reason
+
+
+class _SlowResp(_FakeResp):
+    async def __aenter__(self) -> _SlowResp:
+        await asyncio.sleep(1.0)
+        return self
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", [0, 1, 2], ids=["discovery", "gigya", "irobot"])
+async def test_a_stage_that_takes_too_long_is_a_timeout(stage) -> None:
+    responses = list(_STAGE_RESPONSES[stage]) + [_SlowResp(200, json_body={})]
+    session = _FakeSequentialSession(responses)
+
+    with pytest.raises(AuthTimeoutError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US", request_timeout=0.05)
+
+    assert excinfo.value.reason is CloudErrorReason.TIMEOUT
+
+
+class _NotJsonResp(_FakeResp):
+    async def json(self) -> Any:
+        raise aiohttp.ContentTypeError(None, (), status=200, message="text/html")
+
+
+@pytest.mark.asyncio
+async def test_a_discovery_answer_that_is_not_json_is_a_response_error() -> None:
+    """The server answered -- that must not read like a broken connection."""
+    session = _FakeSequentialSession([_NotJsonResp(200, text_body="<html>")])
+
+    with pytest.raises(AuthError) as excinfo:
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert type(excinfo.value) is AuthError
+    assert excinfo.value.reason is CloudErrorReason.RESPONSE_MALFORMED
+
+
+@pytest.mark.asyncio
+async def test_a_discovery_answer_that_is_not_an_object_is_not_cached() -> None:
+    """Cached, it would fail every login for an hour."""
+    from roombapy_prime import auth as auth_module
+
+    session = _FakeSequentialSession([_FakeResp(200, json_body=["not", "an", "object"])])
+
+    with pytest.raises(AuthError, match="not an object"):
+        await login(session, "user@example.com", "hunter2", "US")
+
+    assert "US" not in auth_module._DISCOVERY_CACHE
+
+
 @pytest.mark.asyncio
 async def test_ssl_error_with_missing_local_issuer_blames_the_local_trust_store() -> None:
     """CORRECTED BEHAVIOUR (this session, real field report): the old
@@ -820,6 +962,7 @@ async def test_ssl_error_with_missing_local_issuer_blames_the_local_trust_store(
     with pytest.raises(AuthSSLError) as excinfo:
         await login(session, "user@example.com", "hunter2", "US")
 
+    assert excinfo.value.reason is CloudErrorReason.SSL_LOCAL_TRUST_STORE
     message = str(excinfo.value)
     assert "LOCAL setup problem" in message
     assert "waiting will not fix it" in message.lower()
@@ -841,6 +984,7 @@ async def test_ssl_error_with_an_unrecognised_reason_offers_both_causes() -> Non
     with pytest.raises(AuthSSLError) as excinfo:
         await login(session, "user@example.com", "hunter2", "US")
 
+    assert excinfo.value.reason is CloudErrorReason.SSL_UNVERIFIED
     message = str(excinfo.value)
     assert "trusted-root store" in message
     assert "iRobot's servers" in message
@@ -883,6 +1027,7 @@ class TestPrimaryBlidRefusesToGuess:
         with pytest.raises(AuthError) as exc:
             self._result(FIRST="Roomba 505", SECOND="Roomba 980").primary_blid()
 
+        assert exc.value.reason is CloudErrorReason.ROBOT_AMBIGUOUS
         message = str(exc.value)
         assert "2 robots" in message
         assert "FIRST" in message and "SECOND" in message
@@ -901,8 +1046,9 @@ class TestPrimaryBlidRefusesToGuess:
     def test_no_robots_still_raises_its_own_error(self):
         from roombapy_prime.auth import AuthError
 
-        with pytest.raises(AuthError, match="no robots"):
+        with pytest.raises(AuthError, match="no robots") as exc:
             self._result().primary_blid()
+        assert exc.value.reason is CloudErrorReason.NO_ROBOTS
 
 
 class TestPrimeSkuDetection:
@@ -1205,3 +1351,144 @@ class TestAllThirteenDigitalCapabilities:
         say — and hiding a feature because a flag was missing is worse
         than offering one that fails."""
         assert self._caps().clean_while_away is None
+
+
+# ── no secret in any repr (0.4.0) ──────────────────────────────────────────
+#
+# repr(LoginResult) printed every robot's password and the AWS SecretKey,
+# through `raw`, while the typed fields kept them out of their own repr.
+
+_SECRET_KEYS = {"password", "secretkey", "sessiontoken", "iot_token", "iot_signature", "user_cert"}
+
+
+def _plant_secrets(node: Any, planted: list[str], path: str = "") -> Any:
+    """A copy of `node` with every secret-bearing value replaced by a
+    marker that cannot occur anywhere by accident."""
+    if isinstance(node, dict):
+        out = {}
+        for key, value in node.items():
+            if key.lower() in _SECRET_KEYS and isinstance(value, str):
+                marker = f"SECRET-MARKER-{len(planted)}-{key}"
+                planted.append(marker)
+                out[key] = marker
+            else:
+                out[key] = _plant_secrets(value, planted, f"{path}.{key}")
+        return out
+    if isinstance(node, list):
+        return [_plant_secrets(v, planted, path) for v in node]
+    return node
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fixture", ["login_response_smart_tier.json", "login_response_ephemeral.json"])
+async def test_no_secret_from_a_real_login_appears_in_any_repr(fixtures_dir: Path, fixture) -> None:
+    planted: list[str] = []
+    response = _plant_secrets(_load(fixtures_dir, fixture), planted)
+    assert len(planted) >= 4, planted  # the fixture really carries secrets
+    session = _FakeSequentialSession([
+        _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+        _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+        _FakeResp(200, text_body=json.dumps(response)),
+    ])
+
+    result = await login(session, "user@example.com", "hunter2", "US")
+    shown = "\n".join([
+        repr(result), str(result), repr(result.credentials),
+        *(repr(t) for t in result.connection_tokens),
+        *(repr(r) for r in result.robots.values()),
+    ])
+
+    leaked = [marker for marker in planted if marker in shown]
+    assert not leaked, leaked
+    # ...and the data is still there for a caller who asks for it.
+    assert all(marker in json.dumps(result.raw) for marker in planted)
+
+
+# ── every response-shape problem is an AuthError (0.4.0) ───────────────────
+#
+# The chain read keys it never checked: a discovery without `httpBase`, a
+# gigya block without its api key, a Gigya answer without `UID`, an answer
+# that is a list -- each failed with a bare KeyError, TypeError or
+# AttributeError, past `except AuthError` and `except CloudError`.
+
+
+def _with(base: dict, **changes: Any) -> dict:
+    out = json.loads(json.dumps(base))
+    for dotted, value in changes.items():
+        node = out
+        *parents, leaf = dotted.split("__")
+        for key in parents:
+            node = node[key]
+        if value is _DROP:
+            node.pop(leaf)
+        else:
+            node[leaf] = value
+    return out
+
+
+_DROP = object()
+
+_BAD_DISCOVERY = {
+    "no-httpBase": _with(_DISCOVERY_RESPONSE, deployments__prod__httpBase=_DROP),
+    "no-gigya-api-key": _with(_DISCOVERY_RESPONSE, gigya__api_key=_DROP),
+    "no-gigya-domain": _with(_DISCOVERY_RESPONSE, gigya__datacenter_domain=_DROP),
+    "deployments-a-list": _with(_DISCOVERY_RESPONSE, deployments=["prod"]),
+    "deployment-a-string": _with(_DISCOVERY_RESPONSE, deployments__prod="prod"),
+    "gigya-a-string": _with(_DISCOVERY_RESPONSE, gigya="eu1"),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("discovery", list(_BAD_DISCOVERY.values()), ids=list(_BAD_DISCOVERY))
+async def test_a_malformed_discovery_is_an_auth_error(discovery) -> None:
+    session = _FakeSequentialSession([
+        _FakeResp(200, json_body=discovery),
+        _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+        _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+    ])
+
+    with pytest.raises(AuthError):
+        await login(session, "user@example.com", "hunter2", "US")
+
+
+_BAD_GIGYA = {
+    "a-list": [],
+    "no-UID": _with(_GIGYA_RESPONSE, UID=_DROP),
+    "no-signature": _with(_GIGYA_RESPONSE, UIDSignature=_DROP),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gigya", list(_BAD_GIGYA.values()), ids=list(_BAD_GIGYA))
+async def test_a_malformed_gigya_answer_is_an_auth_error(gigya) -> None:
+    session = _FakeSequentialSession([
+        _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+        _FakeResp(200, text_body=json.dumps(gigya)),
+        _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+    ])
+
+    with pytest.raises(AuthError):
+        await login(session, "user@example.com", "hunter2", "US")
+
+
+_BAD_IROBOT = {
+    "a-list": [],
+    "credentials-a-string": _with(_IROBOT_LOGIN_RESPONSE, credentials="x"),
+    "robots-a-list": _with(_IROBOT_LOGIN_RESPONSE, robots=["BLID123"]),
+    "robot-entry-a-string": _with(_IROBOT_LOGIN_RESPONSE, robots__BLID123="x"),
+    "tokens-an-object": _with(_IROBOT_LOGIN_RESPONSE, connection_tokens={"a": 1}),
+    "token-a-string": _with(_IROBOT_LOGIN_RESPONSE, connection_tokens=["x"]),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", list(_BAD_IROBOT.values()), ids=list(_BAD_IROBOT))
+async def test_a_malformed_irobot_answer_is_an_auth_error(answer) -> None:
+    session = _FakeSequentialSession([
+        _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+        _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+        _FakeResp(200, text_body=json.dumps(answer)),
+    ])
+
+    with pytest.raises(AuthError):
+        await login(session, "user@example.com", "hunter2", "US")

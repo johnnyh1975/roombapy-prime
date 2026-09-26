@@ -40,14 +40,16 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 _REFERENCE = Path(__file__).with_name("vendor_reference.json")
 
 
 @lru_cache(maxsize=1)
 def _data() -> dict[str, Any]:
-    return json.loads(_REFERENCE.read_text(encoding="utf-8"))
+    # A file shipped inside this package, so its shape is ours: the type
+    # is stated, not checked.
+    return cast("dict[str, Any]", json.loads(_REFERENCE.read_text(encoding="utf-8")))
 
 
 class VendorReferenceError(LookupError):
