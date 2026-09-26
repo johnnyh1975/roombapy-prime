@@ -44,8 +44,17 @@ jobs:
 
       - name: Run test suite with coverage
         run: |
-          pytest roombapy_prime/tests/ -v --cov=roombapy_prime --cov-report=term-missing --cov-report=html
+          pytest roombapy_prime/tests/ -v --cov=roombapy_prime --cov-report=term-missing --cov-report=html --cov-report=xml
           pytest tools/tests/ -v
+
+      # PER MODULE, AND ON EVERY PYTHON (0.4.0). 95 % for every module
+      # except the ones named in scripts/coverage_floors.json, which may
+      # not fall below what they had. On every leg of the matrix because
+      # coverage differs by version -- prime_robot.py measured 87.7 % on
+      # one and 89.0 % on another -- and the floors are the lowest of the
+      # four.
+      - name: Check line coverage per module
+        run: python scripts/check_coverage_per_module.py coverage.xml
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -93,11 +102,25 @@ jobs:
         with:
           python-version: "3.12"
 
+      # mypy IS PINNED. A new mypy release adds checks, and an unpinned
+      # gate turns that into a red build on an unrelated change. Raising
+      # the pin is a deliberate edit, as it is in ha_roomba_plus.
       - name: Install package + typing dependencies
         run: |
           pip install -e ".[test,map]"
-          pip install mypy
+          pip install "mypy==2.3.1"
 
+      # --strict SINCE 0.4.0. The 57 findings it reported on production
+      # code were 52 missing type arguments and Any returns, five
+      # untyped paho callbacks -- and, found while fixing the Any
+      # returns, four places in the login chain that read keys of a
+      # server answer without checking it was an object: a discovery
+      # without httpBase or a Gigya answer without UID failed with a
+      # bare KeyError instead of an AuthError. Those are fixed and
+      # tested; the rest carry the type they always claimed.
+      #
+      # The history below describes the road here and is kept as such.
+      #
       # PRODUCTION CODE ONLY, AND NOT --strict. Both are deliberate.
       #
       # The full package under --strict reports 1399 errors; production
@@ -144,8 +167,8 @@ jobs:
       #
       # mypy's GitHub annotations come from the default output, which
       # Actions already parses; there is nothing to opt into.
-      - name: mypy (production code)
-        run: mypy roombapy_prime --exclude 'tests/'
+      - name: mypy --strict (production code)
+        run: mypy --strict roombapy_prime --exclude 'tests/'
 
   version-badge:
     name: README version/test-count check
