@@ -49,7 +49,10 @@ async def main() -> None:
 
         for blid, entry in account.robots.items():
             generation = account.generation(blid)
-            print(f"\n{entry.name or blid}  sku={entry.sku}  generation={generation or 'unknown'}")
+            # The BLID always, the name beside it: the diagnostic tools
+            # need the BLID, and a named robot used to show only its name.
+            print(f"\n{entry.name or '(unnamed)'}  blid={blid}  sku={entry.sku}  "
+                  f"generation={generation or 'unknown'}")
             if generation != CLASSIC:
                 # Prime robots: account.prime_robot(blid). Unknown SKUs are
                 # not guessed -- see CloudAccount.rest().
@@ -80,6 +83,12 @@ async def main() -> None:
 
             print("  part counters (percent used)")
             for part in parts.parts:
+                # A Roomba 980 lists three parts with counter -1 and no
+                # minutes: the cloud does not track them. Printed as such
+                # rather than as "-1 %".
+                if part.counter is None or part.counter < 0:
+                    print(f"    part {part.part_id}: not tracked by the cloud")
+                    continue
                 print(f"    part {part.part_id}: {part.counter} %  ({part.minutes_remaining} min left)")
 
 

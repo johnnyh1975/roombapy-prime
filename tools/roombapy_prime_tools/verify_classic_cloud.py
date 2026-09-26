@@ -138,6 +138,65 @@ async def _fetch(report: Report, label: str, call) -> Any:
         return None
 
 
+def _start_times(records: list[Any]) -> list[int]:
+    times = []
+    for record in records:
+        value = field(record, "startTime")
+        if isinstance(value, int):
+            times.append(value)
+    return times
+
+
+def _check_page_size(report: Report, label: str, records: list[Any], asked: int) -> None:
+    """Whether the server honoured the page size -- the question the
+    first field run answered for Classic: count=10 asked, 33 returned."""
+    if len(records) <= asked:
+        report.add(label, "OK", f"{asked} asked, {len(records)} returned")
+    else:
+        report.add(label, "FAILED", f"{asked} asked, {len(records)} returned -- the parameter is ignored")
+
+
+def _check_paging(
+    report: Report, label: str, first: list[Any], page: Any, asked: int
+) -> None:
+    """Whether the second page continues where the first ended.
+
+    EACH FORM PAGES FROM ITS OWN FIRST PAGE. The first version paged both
+    from the Classic page's last record, assuming Classic honoured its
+    page size. On a Roomba 980 it did not: the Classic page held all 33
+    missions, both second pages started below the oldest one, and an
+    empty Prime page could not say whether its paging worked.
+    """
+    if not isinstance(page, list):
+        report.add(label, "FAILED", f"not a list: {type(page).__name__}")
+        return
+    first_times = _start_times(first)
+    page_times = _start_times(page)
+    if len(first) < asked:
+        report.add(
+            label, "SKIPPED",
+            f"the first page ({len(first)} of {asked}) already reached the end of the history",
+        )
+        return
+    anchor = min(first_times) if first_times else None
+    if anchor is None:
+        report.add(label, "SKIPPED", "the first page carries no startTime to page from")
+        return
+    overlap = set(first_times) & set(page_times)
+    if overlap:
+        report.add(
+            label, "FAILED",
+            f"{len(overlap)} of {len(page)} record(s) repeat the first page -- the paging "
+            "parameter is ignored",
+        )
+    elif not page:
+        report.add(label, "FAILED", "empty, although the first page was full")
+    elif all(t < anchor for t in page_times):
+        report.add(label, "OK", f"{len(page)} older record(s), none repeated")
+    else:
+        report.add(label, "FAILED", "records newer than the first page's oldest")
+
+
 async def _compare_history(
     classic_client: ClassicRestClient, prime_client: PrimeRestClient,
     blid: str, count: int, report: Report,
@@ -152,28 +211,58 @@ async def _compare_history(
         blid, filter_type=_FILTER_TYPE,
         supported_done_codes=_SUPPORTED_DONE_CODES, max_reports=count,
     ))
-    if classic is None or prime is None:
+    if not isinstance(classic, list) or not isinstance(prime, list):
+        if classic is not None and prime is not None:
+            report.add(
+                "History, first page", "FAILED",
+                f"not both lists: classic={type(classic).__name__} prime={type(prime).__name__}",
+            )
         return
-    _compare_lists(report, "History, first page", classic, prime, _mission_identity)
+    print(f"  first page: classic {len(classic)} record(s), prime {len(prime)} record(s)")
+    _check_page_size(report, "History, Classic page size (count)", classic, count)
+    _check_page_size(report, "History, Prime page size (maxReports)", prime, count)
 
-    if not isinstance(classic, list) or not classic:
-        report.add("History, paging", "SKIPPED", "no records to page from")
-        return
-    before = field(classic[-1], "startTime")
-    if not before:
-        report.add("History, paging", "SKIPPED", "last record has no startTime")
-        return
-    classic_page = await _fetch(report, "History paging, Classic", classic_client.get_mission_history(
-        blid, app_id=app_id, filter_type=_FILTER_TYPE,
-        supported_done_codes=_SUPPORTED_DONE_CODES, count=count, before=int(before),
-    ))
-    prime_page = await _fetch(report, "History paging, Prime", prime_client.get_mission_history(
-        blid, filter_type=_FILTER_TYPE, supported_done_codes=_SUPPORTED_DONE_CODES,
-        max_reports=count, exclusive_start_timestamp=int(before),
-    ))
-    if classic_page is None or prime_page is None:
-        return
-    _compare_lists(report, "History, second page", classic_page, prime_page, _mission_identity)
+    only_classic = sorted(_keys(classic) - _keys(prime))
+    only_prime = sorted(_keys(prime) - _keys(classic))
+    if only_classic:
+        print(f"    keys only in the classic answer: {only_classic}")
+    if only_prime:
+        print(f"    keys only in the prime answer:   {only_prime}")
+    if classic and prime and not only_classic and not only_prime:
+        report.add("History, same fields", "OK", f"{len(_keys(classic))} field(s) in both")
+    elif classic and prime:
+        report.add(
+            "History, same fields", "FAILED",
+            f"only classic={len(only_classic)}, only prime={len(only_prime)}",
+        )
+    else:
+        report.add("History, same fields", "SKIPPED", "one of the answers is empty")
+
+    classic_times = _start_times(classic)
+    if classic_times:
+        classic_page = await _fetch(report, "History paging, Classic", classic_client.get_mission_history(
+            blid, app_id=app_id, filter_type=_FILTER_TYPE,
+            supported_done_codes=_SUPPORTED_DONE_CODES, count=count, before=min(classic_times),
+        ))
+        if classic_page is not None:
+            print(f"  classic second page: {len(classic_page) if isinstance(classic_page, list) else '?'} record(s)")
+            # Judged against what was ASKED only when the first page
+            # honoured it; a first page that ignored count is "full".
+            _check_paging(
+                report, "History, Classic paging (before)", classic, classic_page,
+                count if len(classic) <= count else len(classic),
+            )
+    prime_times = _start_times(prime)
+    if prime_times:
+        prime_page = await _fetch(report, "History paging, Prime", prime_client.get_mission_history(
+            blid, filter_type=_FILTER_TYPE, supported_done_codes=_SUPPORTED_DONE_CODES,
+            max_reports=count, exclusive_start_timestamp=min(prime_times),
+        ))
+        if prime_page is not None:
+            print(f"  prime second page: {len(prime_page) if isinstance(prime_page, list) else '?'} record(s)")
+            _check_paging(
+                report, "History, Prime paging (exclusiveStartTimestamp)", prime, prime_page, count,
+            )
 
 
 async def _compare_favorites(

@@ -968,6 +968,15 @@ async def test_ssl_error_with_missing_local_issuer_blames_the_local_trust_store(
     assert "waiting will not fix it" in message.lower()
     assert "Install" in message and "Certificates.command" in message
     assert "certifi" in message
+    # The running Python, not a fixed version: the first Mac tester had
+    # 3.14 and was sent to a 3.13 folder that did not exist.
+    import sys
+
+    running = f"Python\\ {sys.version_info.major}.{sys.version_info.minor}/"
+    assert running in message
+    # certifi alone changes nothing for Python's default SSL context;
+    # the hint has to say how to point it there.
+    assert "SSL_CERT_FILE" in message
 
 
 @pytest.mark.asyncio

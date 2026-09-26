@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -256,6 +257,17 @@ def _ssl_diagnosis(exc: BaseException) -> tuple[CloudErrorReason, str]:
     docs/internal/EVIDENCE_TRAIL.md#auth_raise_clear_ssl_error
     """
     reason = _ssl_verify_reason(exc)
+    # THE PYTHON THAT IS RUNNING, not a fixed one. The path named 3.13
+    # whatever ran it; the first tester to hit this on a Mac had 3.14.
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    # CERTIFI ONLY HELPS WHEN SOMETHING READS IT. The login and REST
+    # requests use Python's default SSL context, which does not look at
+    # certifi -- so "pip install --upgrade certifi" alone changed
+    # nothing. Pointing SSL_CERT_FILE at its bundle does.
+    certifi_fix = (
+        "  pip install --upgrade certifi\n"
+        '  export SSL_CERT_FILE="$(python -m certifi)"'
+    )
     hint = (
         "\n\nOpenSSL reported: " + reason if reason else ""
     )
@@ -266,10 +278,10 @@ def _ssl_diagnosis(exc: BaseException) -> tuple[CloudErrorReason, str]:
             "has no trusted root certificate to check it against. This is a LOCAL setup "
             "problem, not an iRobot outage -- waiting will not fix it.\n\n"
             "On macOS with Python from python.org, this is almost always the missing "
-            "one-time certificate install. Run (adjusting the version to match yours):\n"
-            "  /Applications/Python\\ 3.13/Install\\ Certificates.command\n\n"
-            "Otherwise, updating the certifi package usually fixes it:\n"
-            "  pip install --upgrade certifi\n\n"
+            "one-time certificate install. Run:\n"
+            f"  /Applications/Python\\ {version}/Install\\ Certificates.command\n\n"
+            "Otherwise, point Python at the certifi bundle:\n"
+            f"{certifi_fix}\n\n"
             "A corporate proxy or VPN that re-signs TLS traffic can produce the same "
             "error." + hint
         )
@@ -285,8 +297,9 @@ def _ssl_diagnosis(exc: BaseException) -> tuple[CloudErrorReason, str]:
         "Could not verify iRobot's cloud server certificate. Two causes are roughly "
         "equally likely and this error alone cannot tell them apart:\n"
         "  1. This machine's trusted-root store -- on macOS with Python from "
-        "python.org, run 'Install Certificates.command' once; otherwise try "
-        "'pip install --upgrade certifi'.\n"
+        f"python.org, run '/Applications/Python {version}/Install Certificates.command' "
+        "once; otherwise point Python at the certifi bundle "
+        '(pip install certifi, then export SSL_CERT_FILE="$(python -m certifi)").\n'
         "  2. A genuinely expired certificate on iRobot's servers, which resolves on "
         "its own.\n"
         "If it fails repeatedly across hours or versions, cause 1 is far likelier." + hint

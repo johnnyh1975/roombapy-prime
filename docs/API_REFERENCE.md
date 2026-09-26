@@ -399,8 +399,23 @@ signature as 4.2.12 sent (`tests/test_rest_client.py`, "Classic parity").
 
 **Whether the Prime forms also work on Classic** — Prime parameter names
 for mission history, `app_edition=1`, the Prime part-counter body — is what
-`roombapy-prime-verify-classic-cloud` measures (tools package). If they
-hold, one variant per call can go.
+`roombapy-prime-verify-classic-cloud` measures (tools package).
+
+**First measurement, Roomba 980 (R980040), 26 Sep 2026:**
+
+| Call | Classic form | Prime form |
+|---|---|---|
+| Mission history, page size | `count` **ignored**: 10 asked, all 33 missions returned | `maxReports` honoured: 10 asked, 10 returned |
+| Mission history, paging | `before` **ignored**: the same 33 missions again | `exclusiveStartTimestamp` works: the next 10, all older, none repeated |
+| Mission history, fields | — | the same fields as the Classic answer |
+| Favorites | the account's favourite | **nothing** with `app_edition=1` — the Classic form stays |
+| Part counters | parts 30, 31, 32 at `-1`, no minutes: the cloud does not track a 980's consumables | — |
+
+So on this robot the Classic history parameters do nothing and the Prime
+ones do what they say. Before the history call is unified, the same
+measurement is wanted on an i/j/s-series robot — the 980 is the oldest
+platform in the Classic table. The part-counter body is still unmeasured
+on Classic: a 980 has no counter to reset.
 
 ---
 

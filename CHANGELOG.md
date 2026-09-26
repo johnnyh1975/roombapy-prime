@@ -6,7 +6,37 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
-## [0.4.0b1]
+## [0.4.0b2] - 2026-09-26
+
+From the first field test of 0.4.0b1, on a Roomba 980.
+
+### Fixed
+
+- **The certificate hint named the wrong Python.** On a machine without
+  a usable trust store the message sent a Mac with Python 3.14 to
+  `/Applications/Python 3.13/`. It now names the running version.
+- **"pip install --upgrade certifi" alone changed nothing.** Login and
+  REST use Python's default SSL context, which does not read certifi.
+  The hint now also sets `SSL_CERT_FILE` to certifi's bundle.
+- **`examples/classic_cloud.py` printed a robot's name instead of its
+  BLID**, which the diagnostic tools need, and showed a part the cloud
+  does not track as "-1 %". Both now say what they are.
+- **`roombapy-prime-verify-classic-cloud` could not test Prime paging.**
+  It paged both forms from the Classic page's oldest record; on the 980
+  that page held every mission, so the Prime page was empty whatever the
+  parameter did. Each form now pages from its own first page, and the
+  report judges page size, fields and paging per form.
+
+### Documented
+
+- **Measured on a Roomba 980:** the Classic mission-history parameters
+  `count` and `before` are ignored (all 33 missions, twice); the Prime
+  ones, `maxReports` and `exclusiveStartTimestamp`, work, with the same
+  fields. Favorites come back only without `app_edition`. The 980 lists
+  three parts the cloud does not track (`-1`). Details in
+  docs/API_REFERENCE.md.
+
+## [0.4.0b1] - 2026-09-26
 
 ### Added
 

@@ -72,7 +72,7 @@ class TestCompareReads:
         prime.get_favorites_raw.return_value = favorites[1]
         classic.get_robot_parts.return_value = _parts(43)
 
-    def test_identical_answers_are_reported_identical(self):
+    def test_both_forms_working_are_reported_ok(self):
         classic, prime = _clients()
         self._answers(classic, prime, [_history(300, 200), _history(100)],
                       [_history(300, 200), _history(100)],
@@ -80,16 +80,17 @@ class TestCompareReads:
 
         results = _run("compare_reads", (classic, prime), 2)
 
-        assert results["History, first page"].status == "OK"
-        assert results["History, second page"].status == "OK"
-        assert results["Favorites"].status == "OK"
+        for name in ("History, Classic page size (count)", "History, Prime page size (maxReports)",
+                     "History, same fields", "History, Classic paging (before)",
+                     "History, Prime paging (exclusiveStartTimestamp)", "Favorites"):
+            assert results[name].status == "OK", name
         prime.reset_robot_parts.assert_not_awaited()
         classic.set_robot_part_counter.assert_not_awaited()
 
-    def test_each_client_sends_its_own_form_and_paging_starts_at_the_last_record(self):
+    def test_each_client_sends_its_own_form_and_pages_from_its_own_first_page(self):
         classic, prime = _clients()
         self._answers(classic, prime, [_history(300, 200), _history(100)],
-                      [_history(300, 200), _history(100)])
+                      [_history(310, 210), _history(110)])
 
         _run("compare_reads", (classic, prime), 2)
 
@@ -98,21 +99,66 @@ class TestCompareReads:
         assert page.kwargs["before"] == 200
         first, page = prime.get_mission_history.await_args_list
         assert first.kwargs["max_reports"] == 2
-        assert page.kwargs["exclusive_start_timestamp"] == 200
-        # Each client's own default is its generation's request.
+        assert page.kwargs["exclusive_start_timestamp"] == 210
         classic.get_favorites_raw.assert_awaited_once_with()
         prime.get_favorites_raw.assert_awaited_once_with()
 
-    def test_different_answers_are_a_finding(self):
+    def test_the_roomba_980_run(self):
+        """What a Roomba 980 answered on 2026-09-26: Classic ignored count
+        and before (all 33 missions, twice), Prime honoured maxReports,
+        the fields were the same, and favorites came back only without
+        app_edition. The first version of this script paged Prime from
+        the Classic page's oldest record and could not tell whether
+        exclusiveStartTimestamp works; paging from its own page it can."""
+        classic, prime = _clients()
+        everything = _history(*range(3300, 0, -100))            # 33 missions
+        self._answers(classic, prime, [everything, everything],
+                      [everything[:10], everything[10:20]],
+                      ([{"favorite_id": "F", "app_edition": 0}], []))
+
+        results = _run("compare_reads", (classic, prime), 10)
+
+        assert results["History, Classic page size (count)"].status == "FAILED"
+        assert "33 returned" in results["History, Classic page size (count)"].detail
+        assert results["History, Prime page size (maxReports)"].status == "OK"
+        assert results["History, same fields"].status == "OK"
+        assert results["History, Classic paging (before)"].status == "FAILED"
+        assert "ignored" in results["History, Classic paging (before)"].detail
+        assert results["History, Prime paging (exclusiveStartTimestamp)"].status == "OK"
+        assert results["Favorites"].status == "FAILED"
+        _first, page = prime.get_mission_history.await_args_list
+        assert page.kwargs["exclusive_start_timestamp"] == everything[9]["startTime"]
+
+    def test_a_short_first_page_cannot_test_paging(self):
+        classic, prime = _clients()
+        self._answers(classic, prime, [_history(300), _history(300)], [_history(300), []])
+
+        results = _run("compare_reads", (classic, prime), 5)
+
+        assert results["History, Classic paging (before)"].status == "SKIPPED"
+        assert results["History, Prime paging (exclusiveStartTimestamp)"].status == "SKIPPED"
+
+    def test_an_empty_or_newer_second_page_is_a_finding(self):
+        classic, prime = _clients()
+        self._answers(classic, prime, [_history(300, 200), _history(250)],
+                      [_history(300, 200), []])
+
+        results = _run("compare_reads", (classic, prime), 2)
+
+        assert results["History, Classic paging (before)"].status == "FAILED"
+        assert "newer" in results["History, Classic paging (before)"].detail
+        assert results["History, Prime paging (exclusiveStartTimestamp)"].status == "FAILED"
+        assert "empty" in results["History, Prime paging (exclusiveStartTimestamp)"].detail
+
+    def test_different_fields_and_favorites_are_a_finding(self):
         classic, prime = _clients()
         self._answers(classic, prime, [_history(300, 200), _history(100)],
-                      [_history(300), [{"startTime": 100, "extra": 1}]],
+                      [[{"startTime": 300, "extra": 1}], []],
                       ([{"favorite_id": "F"}], []))
 
         results = _run("compare_reads", (classic, prime), 2)
 
-        assert results["History, first page"].status == "FAILED"
-        assert results["History, second page"].status == "FAILED"
+        assert results["History, same fields"].status == "FAILED"
         assert results["Favorites"].status == "FAILED"
 
     def test_a_refused_prime_request_is_reported_not_raised(self):
@@ -123,7 +169,7 @@ class TestCompareReads:
 
         assert results["History, Prime parameters"].status == "FAILED"
         assert "HTTP 400" in results["History, Prime parameters"].detail
-        assert "History, first page" not in results
+        assert "History, same fields" not in results
 
     def test_a_prime_robot_is_refused_before_any_request(self):
         classic, prime = _clients()
