@@ -703,6 +703,27 @@ class TestExamplesUseRealNames:
 
         assert not missing, f"examples call methods that do not exist: {missing}"
 
+    def test_every_account_and_classic_client_call_exists(self):
+        """The same check for the objects classic_cloud.py works with.
+        The robot check above only knows PrimeRobot, so a misspelt
+        `classic.get_pmap()` would have passed it."""
+        import re
+
+        from roombapy_prime.account import CloudAccount
+        from roombapy_prime.rest_client import ClassicRestClient
+
+        missing = []
+        for path in self._example_files():
+            text = path.read_text(encoding="utf-8")
+            for variable, cls in (("account", CloudAccount), ("classic", ClassicRestClient)):
+                missing += [
+                    f"{path.name}: {variable}.{m}()"
+                    for m in sorted(set(re.findall(rf"\b{variable}\.(\w+)\(", text)))
+                    if not hasattr(cls, m)
+                ]
+
+        assert not missing, f"examples call methods that do not exist: {missing}"
+
     def test_every_model_import_exists(self):
         import ast
         import importlib

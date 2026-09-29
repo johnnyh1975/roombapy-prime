@@ -8,10 +8,13 @@ why they deserve tests the duplicated copies never had.
 from __future__ import annotations
 
 import argparse
-from unittest.mock import patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from roombapy_prime.diagnostics import Report
+from roombapy_prime_tools import _cli
 from roombapy_prime_tools._cli import (
     add_account_arguments,
     require_blid,
@@ -100,3 +103,56 @@ class TestResolveCredentials:
         flags = {a.option_strings[0] for a in parser._actions if a.option_strings}
 
         assert not any("password" in f for f in flags)
+
+
+class TestLoggedInCloudClients:
+    """The REST-only envelope: one login, both generations' clients on
+    one session, the target's SKU handed back, and the password
+    redacted however the block exits."""
+
+    @staticmethod
+    def _login_result():
+        from roombapy_prime.auth import CloudCredentials
+
+        result = MagicMock()
+        result.robots = {"BLID": {"sku": "i355640", "name": "Downstairs"}}
+        result.http_base_auth = "https://example.invalid"
+        result.credentials = CloudCredentials(
+            access_key_id="A", secret_key="S", session_token="T", cognito_id="us-east-1:0",
+        )
+        return result
+
+    def test_yields_both_clients_the_blid_and_the_sku(self):
+        from roombapy_prime.rest_client import ClassicRestClient, PrimeRestClient
+
+        seen: dict = {}
+
+        async def go():
+            async with _cli.logged_in_cloud_clients(
+                "user", "secret", "US", "BLID", print_summary=False
+            ) as (classic, prime, blid, sku, report):
+                seen.update(classic=classic, prime=prime, blid=blid, sku=sku, report=report)
+
+        with patch("roombapy_prime.account.login", AsyncMock(return_value=self._login_result())):
+            asyncio.run(go())
+
+        assert isinstance(seen["classic"], ClassicRestClient)
+        assert isinstance(seen["prime"], PrimeRestClient)
+        assert (seen["blid"], seen["sku"]) == ("BLID", "i355640")
+        assert seen["report"].results[0].name == "Login"
+
+    def test_the_password_is_redacted_when_the_block_raises(self):
+        report = Report()
+
+        async def go():
+            async with _cli.logged_in_cloud_clients(
+                "user", "secret", "US", "BLID", report=report, print_summary=False
+            ):
+                report.add("Something", "FAILED", "server said: secret was wrong")
+                raise RuntimeError("boom")
+
+        with patch("roombapy_prime.account.login", AsyncMock(return_value=self._login_result())), \
+             pytest.raises(RuntimeError):
+            asyncio.run(go())
+
+        assert "secret" not in report.results[-1].detail

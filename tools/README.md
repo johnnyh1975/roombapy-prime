@@ -102,6 +102,7 @@ command tells you what is missing without making you type credentials first.
 | `…-verify-virtual-wall-write` | Keep-out zones and virtual walls. **Writes work** — the HTTP 500 was solved before 0.2.0b1. Untested: a write carrying a *changed* list. |
 | `…-name-clean-zone` | Names a clean zone. **Full-list rewrite** — anything omitted is deleted. Dry run by default. |
 | `…-verify-settings-write` | Child lock, eco charge, schedule hold, … Writes confirmed; most effects untested. |
+| `…-verify-classic-cloud` | **Classic robots.** Do the Prime app's forms of mission history, favorites and the part-counter write work on a Classic robot? `--compare-reads` changes nothing; the reset is only for a part you have replaced anyway. |
 
 Every script has `--help`, and it is worth reading before a first run.
 

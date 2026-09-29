@@ -53,6 +53,12 @@ _SCRIPTS = [
         ["--blid", "B", "--toggle", "child_lock"],
         "--i-understand-this-changes-a-real-setting",
     ),
+    (
+        "verify_classic_cloud",
+        ["--blid", "B"],
+        ["--blid", "B", "--reset-part-with-prime-body", "35"],
+        "--i-understand-this-resets-a-real-part-counter",
+    ),
 ]
 
 

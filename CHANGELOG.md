@@ -6,109 +6,177 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
-## [0.3.2]
+## [0.4.0] - 2026-09-29
+
+The first stable release of the 0.4 line. The code is 0.4.0b3's,
+unchanged; this entry only marks the release. What changed since 0.3.4
+is in the three beta entries below: one login per account for both
+robot generations (`CloudAccount`), the Classic cloud calls
+(`ClassicRestClient`), a time limit on every request, one error base
+(`CloudError`) with a `reason` on every error, and paging of Classic
+mission history. Summary for upgraders: `release-notes/v0.4.0.md`.
+
+## [0.4.0b3] - 2026-09-27
 
 ### Added
 
-- **`verify-virtual-wall-write --drop-one-wall` and `--move-one-wall`** —
-  the first writes on this path that CHANGE the list rather than
-  restating it. Both preserve existing coordinates byte-for-byte, so the
-  unconfirmed CommandPolygon coordinate system is never touched; stage 2
-  had been deferred on the assumption that it needed new geometry, which
-  is true of adding and not of removing or moving.
+- **`ClassicRestClient.get_mission_history_page()`** pages a Classic
+  robot's mission history with the parameters that work on it:
+  `maxReports` and `exclusiveStartTimestamp`, with no `app_id`. The
+  request is the same, key for key, as
+  `PrimeRestClient.get_mission_history()` sends with those values. (The
+  parameter names come from `FetchMissionHistoryRequest`; the Roomba
+  Home app 3.0.0 itself asks with `maxAge=10` and does not page.)
 
-  Both capture the original before sending, print the restore payload
-  before the change, verify by re-reading rather than trusting the
-  response, and restore unconditionally. `--drop-one-wall` refuses a map
-  with fewer than two walls, because removing the only entry sends an
-  empty list and asks a different question.
+### Documented
 
-  `--move-one-wall` also **measures the coordinate system**: geometry
-  reaches the wire untransformed, so a known delta and a look at the app
-  give the scale. Metres or millimetres has been open on the edit path
-  since it was first modelled.
+- **Measured on an i7 (i755840):** the same result as on the 980. The
+  Classic `count` and `before` parameters are ignored (all 67 missions,
+  twice). `maxReports` and `exclusiveStartTimestamp` work, with the same
+  31 fields. Favorites come back only without `app_edition`. With two
+  Classic generations agreeing, paging uses `maxReports` and
+  `exclusiveStartTimestamp`. `get_mission_history()` keeps the Classic
+  form for the first page.
+- **A second-hand Roomba Plus 505 Combo dropped out of its account**
+  after validator logins. The cause was not found; see "Known broken" in
+  the README.
 
-- **Python 3.14 in the CI matrix.** The suite already passed there and
-  `requires-python = ">=3.11"` already promised it.
+## [0.4.0b2] - 2026-09-26
 
-- **PyPI badges** in the README: version, supported Pythons, monthly
-  downloads, license.
-
-### Fixed
-
-- **Four blocks of documentation were unreachable.** A second
-  triple-quoted string after a docstring is a discarded expression, not
-  documentation — `send_simple_command()`, `mission_control.py`,
-  `schedules_dnd.py` and `mqtt_client.py` each had one, including the
-  evidence trail for the corrected mission-control path and a correction
-  of four wire keys. All merged into their docstrings, with a test that
-  fails on the pattern and deliberately allows PEP 258 attribute
-  docstrings.
-
-### Documentation
-
-- `irbtTopics` / `iotTopics` confirmed independently by the app's own
-  service-discovery response, so the "best-guess field names" note is
-  gone. They remain optional reads because the VALUE is legitimately
-  absent sometimes — deployment-dependent, with vendor error causes for
-  both being empty. What its absence costs is now written down: two
-  subscriptions die silently and back off to five minutes.
-
-- `WRITE_PATH_TEST_STATUS.md` rewritten. Its header had said
-  `v0.1.11a29` for roughly twenty releases while section 6 still called
-  virtual-wall writes broken — solved before 0.2.0b1. A tester planned a
-  field test against it and asked first. The file now says what is
-  actually open and what is answered.
-
-## [0.3.3]
+From the first field test of 0.4.0b1, on a Roomba 980.
 
 ### Fixed
 
-- **`watch_live_map()` never re-subscribed after a reconnect.** It
-  subscribed once; the client clears its subscriptions on disconnect by
-  design, leaving that to the caller, and every other stream gets it
-  from `_watch_topic()`. After the first reconnect the map was
-  permanently dead -- empty queue, no exception, and a keep-alive still
-  reporting success because the REST ping is a different transport. One
-  reconnect is enough, and one tester's instance reconnects hourly. Also
-  explains @chairstacker's zeroed live-map counters without needing the
-  missing-prefix theory.
+- **The certificate hint named the wrong Python.** On a machine without
+  a usable trust store the message sent a Mac with Python 3.14 to
+  `/Applications/Python 3.13/`. It now names the running version.
+- **"pip install --upgrade certifi" alone changed nothing.** Login and
+  REST use Python's default SSL context, which does not read certifi.
+  The hint now also sets `SSL_CERT_FILE` to certifi's bundle.
+- **`examples/classic_cloud.py` printed a robot's name instead of its
+  BLID**, which the diagnostic tools need, and showed a part the cloud
+  does not track as "-1 %". Both now say what they are.
+- **`roombapy-prime-verify-classic-cloud` could not test Prime paging.**
+  It paged both forms from the Classic page's oldest record; on the 980
+  that page held every mission, so the Prime page was empty whatever the
+  parameter did. Each form now pages from its own first page, and the
+  report judges page size, fields and paging per form.
 
-- **The keep-alive retried a rate limit at a fixed ten seconds.** On a
-  failure no message arrives, so the expiry is never set and the delay
-  falls back to the interval -- against the endpoint that just returned
-  429. @jpatchMC's two robots produced twelve requests a minute between
-  them. Now exponential with a five-minute cap, and a one-minute floor
-  for 429 specifically, since a rate limit is about the account rather
-  than one robot.
+### Documented
 
-- **A Gigya lockout no longer reads as a bad password.** The message
-  leads with not re-entering anything and to wait. The CLASSIFICATION is
-  unchanged on purpose: a rate-limit error would reach Home Assistant as
-  ConfigEntryNotReady and retry 11 times per entry in ten minutes
-  against an account locked for too many attempts, where the credentials
-  path retries zero times. Guarded by a test.
+- **Measured on a Roomba 980:** the Classic mission-history parameters
+  `count` and `before` are ignored (all 33 missions, twice); the Prime
+  ones, `maxReports` and `exclusiveStartTimestamp`, work, with the same
+  fields. Favorites come back only without `app_edition`. The 980 lists
+  three parts the cloud does not track (`-1`). Details in
+  docs/API_REFERENCE.md.
 
-- **`--drop-one-wall` verified the pre-edit map version**, so its
-  "ACCEPTED BUT NOT STORED" warning fired for an edit that had worked
-  (@chairstacker, issue #89). It reads the version the edit returned.
-
-- **`CommandPolygonMetadata.from_json()` raised `TypeError` on
-  malformed input** -- the fallback was `return cls()` and
-  `furniture_id` has no default. Returns None, which is also correct for
-  a robot that creates no furniture.
+## [0.4.0b1] - 2026-09-26
 
 ### Added
 
-- **Vendor firmware schemas** (`docs/internal/vendor_schemas_ruby_0_7_12.json`)
-  and `scripts/check_vendor_schema_enums.py`, which compares this
-  library's enums against them and fails on an undecided divergence. It
-  resolved `wid` and surfaced `tag`. The file's `_channel` note is not
-  optional reading: these are Classic local-channel schemas.
+- **`CloudAccount`** — one login per iRobot account, the right client per
+  robot. `robots`, `generation(blid)` (`"prime"`, `"classic"`, or `None` for
+  an unknown SKU — not guessed), `rest(blid)`, `classic_rest()`,
+  `prime_rest()`, `prime_robot(blid)`, `relogin()`. Every REST client it
+  hands out relogs through the account: clients hitting 403 together share
+  one login, and a client with already-replaced credentials takes the new
+  ones without logging in.
+- **`CloudError`** — one base above `AuthError`, `RestError`, `ShadowError`
+  and `SubscriptionRejectedError`. No existing `except` changes.
+- **`ClassicRestClient`** — the cloud calls of Classic robots: `get_pmaps()`,
+  `get_pmap_umf()`, `set_robot_part_counter()`, `get_mission_history()` with
+  the Classic parameters and the Classic app's defaults, `get_favorites()`
+  and `get_automations()`. Moved from ha_roomba_plus' `cloud_api.py`
+  unchanged: tests pin the query, its order, the body bytes and the SigV4
+  signature against what ha_roomba_plus 4.2.12 sent.
+- **`CloudRestClient`** — the shared base of both clients: signing, request
+  handling, relogin on 403, and `get_robot_parts()`, the new
+  `get_robot_parts_raw()`, `get_favorites_raw()`, `get_automations_raw()`.
+  Moved out of `PrimeRestClient` unchanged.
+- **HTTP status as error classes** — `RestHTTPError` with
+  `RestClientError` (4xx: do not resend unchanged), `RestRateLimitedError`
+  (429, with `retry_after` from the header) and `RestServerError` (5xx:
+  later). All are `RestError`s, as every error status was before.
+- **A time limit per HTTP request**, 30 s by default, sending to reading the
+  whole answer. `request_timeout=` on `login()`, `CloudAccount.login()` and
+  every REST client; `None` for none. A 403 relogin runs outside it.
+- **`reason` on every `CloudError`** — why it was raised, as a member of
+  the new `CloudErrorReason` (a `StrEnum` of 22 names: `timeout`,
+  `account_locked`, `ssl_local_trust_store`, `rate_limited`, …). The class
+  says which part failed; `reason` says what to tell a person, as a key an
+  application translates from instead of passing the English message on.
+  It separates what one class covers — a Gigya lockout from wrong
+  credentials, the three certificate causes, a broken-off connection from
+  none at all. `reason_for_status()` maps an HTTP status the same way for
+  login and REST. `unknown` is never raised by the library; a test holds
+  every raise to a named reason.
+- `CloudAccount`, `CloudError`, `CloudErrorReason`, the three REST clients
+  and the four HTTP error classes are exported from the package.
+- **`roombapy-prime-verify-classic-cloud`** (tools) — measures whether the
+  Prime app's forms of those calls also work on a Classic robot.
+- **`examples/classic_cloud.py`** — one login, then maps, mission history
+  and part counters of every Classic robot on the account. Reads only.
+- Three Classic captures (i3+) in `tests/fixtures/`, and a `.gitignore`.
 
-- **`check_vendor_value_sets.py` in CI**, where it had never run.
+### Fixed
 
-## [0.3.4]
+- **Every failure is a `CloudError` now.** Login stages and REST calls
+  caught three aiohttp errors and let the rest escape: a connection dropped
+  mid-answer came through as `aiohttp.ServerDisconnectedError`, a timeout
+  as a bare `TimeoutError` — measured against a local server. Every
+  aiohttp error and every timeout is mapped now, and an answer that is not
+  a connection problem (a response error, a non-JSON body) no longer reads
+  like one.
+- **Malformed login answers are `AuthError`s.** A discovery answer without
+  `httpBase` or with an incomplete `gigya` block, a Gigya answer without
+  `UID`, and any stage answering with a list failed with a bare `KeyError`,
+  `TypeError` or `AttributeError`. A discovery answer that is not an object
+  is also no longer cached for an hour.
+- **REST and MQTT diagnose certificate failures as login does.** Both said
+  "almost always a temporary problem on iRobot's servers … not something
+  wrong with your setup" for every certificate failure — wrong for a
+  machine without a usable trust store, where waiting fixes nothing. Login
+  had stopped saying it after a field report; the three now share one
+  diagnosis.
+- **No builtin `ConnectionError` from MQTT.** A subscribe finding no client
+  after a reconnect raised one, past every `except CloudError`; it is a
+  `ShadowError` now, like the two identical checks next to it.
+- **`repr(LoginResult)` no longer shows secrets.** Through `raw`, the whole
+  login response, it printed every robot's password, the AWS `SecretKey`
+  and `SessionToken` and the IoT tokens — into any log line or test failure
+  that showed the object. The typed fields already kept them out.
+- **Releases are marked by their version.** The release workflow set
+  `prerelease: false` for every tag, so a beta would have shown as "Latest"
+  on GitHub. It now also refuses a tag that does not match
+  `pyproject.toml`, before anything is published.
+
+### Changed
+
+- **`mypy --strict`** is the CI gate, pinned to mypy 2.3.1. The findings
+  were type arguments, `Any` returns and five untyped paho callbacks — plus
+  the malformed-login gaps above, found while fixing them.
+- **Line coverage is gated per module** in CI, on every Python version:
+  95 % for every module, except eight listed in
+  `scripts/coverage_floors.json` with the coverage they had, which may only
+  rise. `vendor_reference.py`, shipped in the package and never loaded by a
+  test, went from 0 % to 100 %; `mqtt_client.py` went from 88 % to 97 % with
+  the `reason` tests and left the list.
+- `get_mission_history()` is annotated `-> Any`: the endpoint returns a
+  **list** of records, not an object.
+- The package describes itself as a client for both generations (README,
+  PyPI description), and declares Python 3.14, which CI already tested.
+- This changelog lists 0.3.2 to 0.3.4 newest first, with their dates.
+- `PrimeRestClient`, `PrimeRobot` and `PrimeFactory` are otherwise
+  unchanged. ha_roomba_plus 4.2.12, unmodified, passes its full test suite
+  and `mypy --strict` against this release.
+
+### Removed
+
+- `tools/build/` — fifteen build leftovers from 0.3.1 that were committed by
+  mistake and no longer matched the scripts.
+
+## [0.3.4] - 2026-09-07
 
 ### Documented
 
@@ -189,6 +257,107 @@ This file only tracks what changed from a user's point of view.
   is the first thing a new user copies, and it fails in a way that looks
   like their mistake.
 
+## [0.3.3] - 2026-09-05
+
+### Fixed
+
+- **`watch_live_map()` never re-subscribed after a reconnect.** It
+  subscribed once; the client clears its subscriptions on disconnect by
+  design, leaving that to the caller, and every other stream gets it
+  from `_watch_topic()`. After the first reconnect the map was
+  permanently dead -- empty queue, no exception, and a keep-alive still
+  reporting success because the REST ping is a different transport. One
+  reconnect is enough, and one tester's instance reconnects hourly. Also
+  explains @chairstacker's zeroed live-map counters without needing the
+  missing-prefix theory.
+
+- **The keep-alive retried a rate limit at a fixed ten seconds.** On a
+  failure no message arrives, so the expiry is never set and the delay
+  falls back to the interval -- against the endpoint that just returned
+  429. @jpatchMC's two robots produced twelve requests a minute between
+  them. Now exponential with a five-minute cap, and a one-minute floor
+  for 429 specifically, since a rate limit is about the account rather
+  than one robot.
+
+- **A Gigya lockout no longer reads as a bad password.** The message
+  leads with not re-entering anything and to wait. The CLASSIFICATION is
+  unchanged on purpose: a rate-limit error would reach Home Assistant as
+  ConfigEntryNotReady and retry 11 times per entry in ten minutes
+  against an account locked for too many attempts, where the credentials
+  path retries zero times. Guarded by a test.
+
+- **`--drop-one-wall` verified the pre-edit map version**, so its
+  "ACCEPTED BUT NOT STORED" warning fired for an edit that had worked
+  (@chairstacker, issue #89). It reads the version the edit returned.
+
+- **`CommandPolygonMetadata.from_json()` raised `TypeError` on
+  malformed input** -- the fallback was `return cls()` and
+  `furniture_id` has no default. Returns None, which is also correct for
+  a robot that creates no furniture.
+
+### Added
+
+- **Vendor firmware schemas** (`docs/internal/vendor_schemas_ruby_0_7_12.json`)
+  and `scripts/check_vendor_schema_enums.py`, which compares this
+  library's enums against them and fails on an undecided divergence. It
+  resolved `wid` and surfaced `tag`. The file's `_channel` note is not
+  optional reading: these are Classic local-channel schemas.
+
+- **`check_vendor_value_sets.py` in CI**, where it had never run.
+
+## [0.3.2] - 2026-09-04
+
+### Added
+
+- **`verify-virtual-wall-write --drop-one-wall` and `--move-one-wall`** —
+  the first writes on this path that CHANGE the list rather than
+  restating it. Both preserve existing coordinates byte-for-byte, so the
+  unconfirmed CommandPolygon coordinate system is never touched; stage 2
+  had been deferred on the assumption that it needed new geometry, which
+  is true of adding and not of removing or moving.
+
+  Both capture the original before sending, print the restore payload
+  before the change, verify by re-reading rather than trusting the
+  response, and restore unconditionally. `--drop-one-wall` refuses a map
+  with fewer than two walls, because removing the only entry sends an
+  empty list and asks a different question.
+
+  `--move-one-wall` also **measures the coordinate system**: geometry
+  reaches the wire untransformed, so a known delta and a look at the app
+  give the scale. Metres or millimetres has been open on the edit path
+  since it was first modelled.
+
+- **Python 3.14 in the CI matrix.** The suite already passed there and
+  `requires-python = ">=3.11"` already promised it.
+
+- **PyPI badges** in the README: version, supported Pythons, monthly
+  downloads, license.
+
+### Fixed
+
+- **Four blocks of documentation were unreachable.** A second
+  triple-quoted string after a docstring is a discarded expression, not
+  documentation — `send_simple_command()`, `mission_control.py`,
+  `schedules_dnd.py` and `mqtt_client.py` each had one, including the
+  evidence trail for the corrected mission-control path and a correction
+  of four wire keys. All merged into their docstrings, with a test that
+  fails on the pattern and deliberately allows PEP 258 attribute
+  docstrings.
+
+### Documentation
+
+- `irbtTopics` / `iotTopics` confirmed independently by the app's own
+  service-discovery response, so the "best-guess field names" note is
+  gone. They remain optional reads because the VALUE is legitimately
+  absent sometimes — deployment-dependent, with vendor error causes for
+  both being empty. What its absence costs is now written down: two
+  subscriptions die silently and back off to five minutes.
+
+- `WRITE_PATH_TEST_STATUS.md` rewritten. Its header had said
+  `v0.1.11a29` for roughly twenty releases while section 6 still called
+  virtual-wall writes broken — solved before 0.2.0b1. A tester planned a
+  field test against it and asked first. The file now says what is
+  actually open and what is answered.
 
 ## [0.3.1] - 2026-08-27
 
@@ -208,7 +377,6 @@ This file only tracks what changed from a user's point of view.
   snapshot has no entry to read a type from, but a name found in the
   bundle's zone layers is itself the answer. It now reads
   `'zid (from bundle)'`.
-
 
 ## [0.3.0] - 2026-08-27
 
@@ -253,7 +421,6 @@ The answer, once the search ran, is that it depends on the layer:
   tested. It used to be four lines inside a function that logs in,
   connects over MQTT and downloads a bundle.
 
-
 ## [0.3.0b18] - 2026-08-26
 
 ### Fixed
@@ -280,7 +447,6 @@ The answer, once the search ran, is that it depends on the layer:
   already answered.
 
   What remains open is narrower and now says so.
-
 
 ## [0.3.0b17] - 2026-08-26
 
@@ -323,7 +489,6 @@ The answer, once the search ran, is that it depends on the layer:
   switched over. b15's own notes named this failure mode for the
   `zone_layers` fixture; this was the same seam one function up.
 
-
 ## [0.3.0b16] - 2026-08-25
 
 ### Fixed
@@ -342,7 +507,6 @@ The answer, once the search ran, is that it depends on the layer:
   a reader could see where the tool had looked, it sat *after* the
   `except` — so the run that fails, which is when it matters, never
   showed it. The failure message now names the exception type as well.
-
 
 ## [0.3.0b15] - 2026-08-24
 
@@ -376,7 +540,6 @@ The answer, once the search ran, is that it depends on the layer:
   about a tester's data. Bundle contents also vary per map, so the file
   list is the first thing worth knowing when the answer is empty.
 
-
 ## [0.3.0b14] - 2026-08-23
 
 ### Fixed
@@ -407,7 +570,6 @@ The answer, once the search ran, is that it depends on the layer:
   `RobotReadinessState` names them in the next file over. Values stay
   plain ints so an unrecognised code reaches the caller rather than
   raising.
-
 
 ## [0.3.0b13] - 2026-08-23
 
@@ -503,7 +665,6 @@ The answer, once the search ran, is that it depends on the layer:
   intent.
 - **`clean_all` / `select_all` remain untested**, and the firmware
   read did not change that. No such field exists in firmware at all.
-
 
 ## [0.3.0b12] - 2026-08-21
 
@@ -655,7 +816,6 @@ app versions 2.2.4 and 3.0.0. Two things here were wrong.
   regionType)` resolves them one at a time via `fetchMapMetadata` — the
   same source we already read. Confirmed in the field: a tester's
   bundle carries them in the standard `cleanZones` GeoJSON layer.
-
 
 ## [0.3.0b10] - 2026-08-19
 
@@ -1024,7 +1184,6 @@ No breaking changes.
 - **`scripts/vendor_gap_report.py`** reports what the vendor knows and
   this library does not use, for enums and classes alike. Every entry
   needs a disposition; "not relevant" is a valid one, unreviewed is not.
-
 
 ## [0.3.0b4] - 2026-08-13
 
@@ -1732,7 +1891,6 @@ had.
   platforms nobody has field-tested, so False means "not known to be Prime", never "confirmed
   Classic" -- which is also why the tools mark and suggest rather than choosing silently.
 
-
 ## [0.1.11a23] - 2026-07-25
 
 ### Fixed — URGENT, a22 is broken
@@ -1836,7 +1994,6 @@ had.
 
 - **Tests for the shared scaffolding itself** — the duplicated copies never had any, and it is now
   reached by all ten scripts, so a regression there would break every one of them at once.
-
 
 ## [0.1.11a22] - 2026-07-25
 
@@ -3188,7 +3345,6 @@ advances the investigation rather than closing it out.
   running the exact real-shaped raw dict through the actual parsing pipeline end-to-end.
 
 350/350 tests green, ruff clean.
-
 
 ## [0.1.11a1] - 2026-07-17
 

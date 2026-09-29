@@ -852,7 +852,7 @@ class PrimeRobot:
 
     # --- REST-based p2maps operations (already natively async) -------
 
-    async def get_active_map_versions(self) -> list[dict]:
+    async def get_active_map_versions(self) -> list[dict[str, Any]]:
         """NEW (July 11, eleventh session) -- was missing as a wrapper
         until now, even though rest_client.py's version had already
         existed for a while."""
@@ -863,13 +863,13 @@ class PrimeRobot:
         rest_client.py::get_map_metadata()'s docstring."""
         return await self._rest.get_map_metadata(p2map_id)
 
-    async def set_map_name(self, p2map_id: str, name: str) -> dict:
+    async def set_map_name(self, p2map_id: str, name: str) -> dict[str, Any]:
         return await self._rest.set_map_name(p2map_id, name)
 
-    async def set_map_orientation(self, p2map_id: str, orientation_rad: float) -> dict:
+    async def set_map_orientation(self, p2map_id: str, orientation_rad: float) -> dict[str, Any]:
         return await self._rest.set_map_orientation(p2map_id, orientation_rad)
 
-    async def delete_map(self, p2map_id: str) -> dict:
+    async def delete_map(self, p2map_id: str) -> dict[str, Any]:
         """NEW (thirteenth session) -- was missing as a wrapper despite
         a rest_client.py version having existed for a while (found
         during a systematic review)."""
@@ -916,7 +916,7 @@ class PrimeRobot:
             await self._rest.get_map_version(map_id, map_version)
         )
 
-    async def get_map_geojson_link(self, map_id: str, map_version: str) -> dict:
+    async def get_map_geojson_link(self, map_id: str, map_version: str) -> dict[str, Any]:
         """NEW (thirteenth session) -- was missing as a wrapper. Returns
         the presigned download URL for download_map_bundle() (see
         there). CORRECTED (session 48, this docstring was outdated):
@@ -929,7 +929,7 @@ class PrimeRobot:
 
     async def get_map_raw_link(
         self, map_id: str, map_version: str, response_type: str | None = "link"
-    ) -> dict:
+    ) -> dict[str, Any]:
         """The same map version in the vendor's raw format -- see
         rest_client.py::get_map_raw_link().
 
@@ -949,7 +949,7 @@ class PrimeRobot:
     async def edit_map(
         self, p2map_id: str, command: MapEditCommandV1,
         response_type: str | None = "link",
-    ) -> dict:
+    ) -> dict[str, Any]:
         """command is one of the 9 V1 command dataclasses from
         models/map_editing.py (RenameRoomV1, SplitRoomV1, MergeRoomsV1,
         ...) -- the actually active path (see rest_client.py's
@@ -992,7 +992,7 @@ class PrimeRobot:
             await self._rest.edit_map(p2map_id, command, response_type=response_type)
         )
 
-    async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict:
+    async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict[str, Any]:
         """The V2 path never called by the app itself -- see
         edit_map()'s docstring and rest_client.py::edit_map_v2()."""
         return await self._rest.edit_map_v2(p2map_id, command)
@@ -1033,24 +1033,24 @@ class PrimeRobot:
 
     async def get_favorites_raw(
         self, app_edition: str | None = "1"
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """See rest_client.py::get_favorites_raw() -- diagnostic
         round-trip fidelity check, not part of the normal path."""
         if app_edition == "1":
             return await self._rest.get_favorites_raw()
         return await self._rest.get_favorites_raw(app_edition)
 
-    async def create_favorite(self, favorite: FavoriteV1) -> dict:
+    async def create_favorite(self, favorite: FavoriteV1) -> dict[str, Any]:
         """See rest_client.py::create_favorite() -- HTTP method
         (POST) confirmed (eighth session)."""
         return await self._rest.create_favorite(favorite)
 
-    async def update_favorite(self, favorite_id: str, favorite: FavoriteV1) -> dict:
+    async def update_favorite(self, favorite_id: str, favorite: FavoriteV1) -> dict[str, Any]:
         """See rest_client.py::update_favorite() -- HTTP method
         (PUT) confirmed (eighth session)."""
         return await self._rest.update_favorite(favorite_id, favorite)
 
-    async def delete_favorite(self, favorite_id: str) -> dict:
+    async def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
         return await self._rest.delete_favorite(favorite_id)
 
     async def order_favorite(
@@ -1060,7 +1060,7 @@ class PrimeRobot:
         insert_at: int | None = None,
         insert_before: str | None = None,
         insert_after: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await self._rest.order_favorite(
             favorite_id, insert_at=insert_at, insert_before=insert_before, insert_after=insert_after
         )
@@ -1074,9 +1074,10 @@ class PrimeRobot:
         filter_type: str | None = None,
         exclusive_start_timestamp: int | None = None,
         supported_done_codes: list[str] | None = None,
-    ) -> dict:
+    ) -> Any:
         """See rest_client.py::get_mission_history() -- fully
-        confirmed from FetchMissionHistoryRequest.java."""
+        confirmed from FetchMissionHistoryRequest.java. Returns a list
+        of records in practice (annotated `dict` until 0.4.0)."""
         return await self._rest.get_mission_history(
             blid,
             max_reports=max_reports,
@@ -1143,21 +1144,21 @@ class PrimeRobot:
         not part of the normal path."""
         return await self._rest.get_schedules_raw(household_id)
 
-    async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict:
+    async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict[str, Any]:
         """HTTP method (POST) confirmed (eighth session), see
         rest_client.py::create_schedules()."""
         return await self._rest.create_schedules(household_id, schedules)
 
     async def update_schedules(
         self, household_id: str, household_schedule_id: str, schedules: list[HouseholdSchedule]
-    ) -> dict:
+    ) -> dict[str, Any]:
         """HTTP method (PUT) confirmed (eighth session)."""
         return await self._rest.update_schedules(household_id, household_schedule_id, schedules)
 
-    async def delete_schedule(self, household_id: str, household_schedule_id: str) -> dict:
+    async def delete_schedule(self, household_id: str, household_schedule_id: str) -> dict[str, Any]:
         return await self._rest.delete_schedule(household_id, household_schedule_id)
 
-    async def get_user_households(self) -> dict:
+    async def get_user_households(self) -> dict[str, Any]:
         """Not used by the current app version -- see
         rest_client.py::get_user_households()'s docstring."""
         return await self._rest.get_user_households()
@@ -1223,10 +1224,10 @@ class PrimeRobot:
         DNDStatusResponse, see rest_client.py's docstring."""
         return await self._rest.get_dnd_settings(household_id)
 
-    async def set_dnd_settings(self, household_id: str, settings: dict) -> dict:
+    async def set_dnd_settings(self, household_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         return await self._rest.set_dnd_settings(household_id, settings)
 
-    async def get_cleaning_profiles(self, asset_id: str, p2map_id: str | None = None) -> dict:
+    async def get_cleaning_profiles(self, asset_id: str, p2map_id: str | None = None) -> dict[str, Any]:
         """NEW (session 6) -- see rest_client.py::get_cleaning_profiles(). `p2map_id` is
         optional, matching the real query construction (session 38)."""
         return await self._rest.get_cleaning_profiles(asset_id, p2map_id)
@@ -1245,7 +1246,7 @@ class PrimeRobot:
         self,
         part_ids: list[str] | None = None,
         counters: dict[str, int] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """NEW (session 15) -- see rest_client.py::reset_robot_parts().
 
         `counters` maps a part id to the value to write; anything not
@@ -1262,7 +1263,7 @@ class PrimeRobot:
         UPDATED (session 53) -- now returns a parsed RobotSerialInfo."""
         return await self._rest.get_serial_number_data(self.blid)
 
-    async def poll_echo_value(self) -> dict:
+    async def poll_echo_value(self) -> dict[str, Any]:
         """NEW (session 16) -- "find my robot" feature, see
         rest_client.py::poll_echo_value()."""
         return await self._rest.poll_echo_value(self.blid)
@@ -1272,7 +1273,7 @@ class PrimeRobot:
         smart_map_id: str | None = None,
         region_id: str | None = None,
         zone_id: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Per-room time estimates for this robot.
 
         Takes no arguments now: the request body is `{"robot_id": blid}`
@@ -1297,7 +1298,7 @@ class PrimeRobot:
         robot_password: str | None = None,
         synchronous: bool | None = None,
         send_wipe: bool | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """NEW (session 16) -- WARNING: likely a consequential action,
         see rest_client.py::reset_robot().
 
@@ -1309,7 +1310,7 @@ class PrimeRobot:
             self.blid, robot_password, synchronous, send_wipe
         )
 
-    async def get_notifications(self, app_version: str = "2.2.4") -> dict:
+    async def get_notifications(self, app_version: str = "2.2.4") -> dict[str, Any]:
         """NEW (session 16) -- see rest_client.py::get_notifications(). Default
         `app_version` updated in session 36, see that method's docstring."""
         return await self._rest.get_notifications(self.blid, app_version)

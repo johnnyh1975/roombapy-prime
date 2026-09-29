@@ -30,21 +30,38 @@ carry-over.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime
 from json.decoder import JSONDecodeError
-from typing import Any
+from typing import Any, NoReturn
 
 import aiohttp
+
+from .errors import CloudError, CloudErrorReason, reason_for_status
 
 _LOGGER = logging.getLogger(__name__)
 
 _USER_AGENT_APP = "iRobot/7.16.2.140449 CFNetwork/1568.100.1.2.1 Darwin/24.0.0"
 _APP_ID = "roombapy-prime"
+
+#: Seconds one HTTP request to iRobot's cloud may take, from sending it to
+#: having read the whole answer. Per request, not per call chain: a login
+#: is three requests, and each gets this much.
+#:
+#: NEW IN 0.4.0. Until then the library set no limit and relied on the
+#: caller's session -- and aiohttp sets none by default, so a server that
+#: accepted a request and never answered held the caller forever.
+#: ha_roomba_plus protected itself with its own asyncio.timeout(30) around
+#: a whole refresh; every other caller was unprotected.
+#:
+#: None disables the limit. Every entry point takes `request_timeout`.
+DEFAULT_REQUEST_TIMEOUT: float = 30.0
 
 # NEW (this session, prompted by a real "onboarding is slow" field report):
 # the full login chain (discovery -> Gigya -> iRobot cloud login) is
@@ -71,7 +88,12 @@ _DISCOVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _DISCOVERY_CACHE_TTL_SECONDS = 3600.0
 
 
-async def _get_discovery(session: aiohttp.ClientSession, country_code: str) -> dict[str, Any]:
+async def _get_discovery(
+    session: aiohttp.ClientSession,
+    country_code: str,
+    *,
+    request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
+) -> dict[str, Any]:
     """Fetches (or returns a cached copy of) the discovery response for
     this country_code. See _DISCOVERY_CACHE's own comment for why this
     specific response is safe to cache (no per-user data in or out) and
@@ -84,22 +106,33 @@ async def _get_discovery(session: aiohttp.ClientSession, country_code: str) -> d
             return response
 
     try:
-        async with session.get(_discovery_url(country_code)) as resp:
-            if resp.status != 200:
-                raise AuthError(f"Endpoint discovery failed: HTTP {resp.status}")
-            disc = await resp.json()
-    except aiohttp.ClientSSLError as exc:
-        _raise_clear_ssl_error(exc)
-    except aiohttp.ServerTimeoutError as exc:
-        _raise_clear_timeout_error(exc)
-    except aiohttp.ClientConnectorError as exc:
-        _raise_clear_connection_error(exc)
+        async with asyncio.timeout(request_timeout):
+            async with session.get(_discovery_url(country_code)) as resp:
+                if resp.status != 200:
+                    raise AuthError(
+                        f"Endpoint discovery failed: HTTP {resp.status}",
+                        reason=reason_for_status(resp.status),
+                    )
+                disc = await resp.json()
+    except aiohttp.ContentTypeError as exc:
+        # An answer, just not JSON -- a response problem, not a broken
+        # connection, so it must not read like one.
+        raise AuthError(f"Endpoint discovery answered with {exc.message!r}, not JSON") from exc
+    except JSONDecodeError as exc:
+        raise AuthError("Endpoint discovery answered with invalid JSON") from exc
+    except (aiohttp.ClientError, TimeoutError) as exc:
+        _raise_transport_error(exc)
 
+    # Checked HERE, before it is cached: a non-object would otherwise
+    # sit in the cache for an hour and fail every login in that hour
+    # with a TypeError deep in login().
+    if not isinstance(disc, dict):
+        raise AuthError(f"Endpoint discovery answered with {type(disc).__name__}, not an object", disc)
     _DISCOVERY_CACHE[country_code] = (time.monotonic(), disc)
     return disc
 
 
-class AuthError(Exception):
+class AuthError(CloudError):
     """Raised for any failure in the discovery/Gigya/login chain, with
     the offending stage's raw response attached where available.
 
@@ -111,10 +144,18 @@ class AuthError(Exception):
     ha_roomba_plus's config_flow.py: "invalid_cloud_credentials" vs
     "cannot_connect") can catch the specific subclass instead of
     string-matching the message text -- fragile, and exactly what
-    this change avoids."""
+    this change avoids.
 
-    def __init__(self, message: str, raw_response: Any = None) -> None:
-        super().__init__(message)
+    A PLAIN AuthError is a response-shape problem (see
+    AuthCredentialsError), so that is its reason unless a raise names
+    another."""
+
+    reason: CloudErrorReason = CloudErrorReason.RESPONSE_MALFORMED
+
+    def __init__(
+        self, message: str, raw_response: Any = None, *, reason: CloudErrorReason | None = None
+    ) -> None:
+        super().__init__(message, reason=reason)
         self.raw_response = raw_response
 
 
@@ -126,6 +167,8 @@ class AuthCredentialsError(AuthError):
     (those stay a plain AuthError -- they indicate a response-shape
     problem, not something a user did wrong)."""
 
+    reason: CloudErrorReason = CloudErrorReason.CREDENTIALS_REJECTED
+
 
 class AuthRateLimitedError(AuthError):
     """iRobot's backend rejected the login due to too many active app
@@ -134,10 +177,14 @@ class AuthRateLimitedError(AuthError):
     someone to re-check their password when the actual fix is "close
     the iRobot app and try again" would be actively misleading."""
 
+    reason: CloudErrorReason = CloudErrorReason.TOO_MANY_SESSIONS
+
 
 class AuthSSLError(AuthError):
     """TLS/certificate verification failure -- see
-    _raise_clear_ssl_error()."""
+    _raise_clear_ssl_error(). `reason` says which of three causes."""
+
+    reason: CloudErrorReason = CloudErrorReason.SSL_UNVERIFIED
 
 
 class AuthConnectionError(AuthError):
@@ -146,58 +193,125 @@ class AuthConnectionError(AuthError):
     Deliberately does NOT claim to know whether this is iRobot's fault
     or the caller's own network, unlike AuthSSLError's confident
     "definitely temporary, definitely not you" framing -- that
-    confidence isn't justified here."""
+    confidence isn't justified here.
+
+    `reason` is CONNECTION_BROKEN when a connection was made and broke
+    off mid-answer, CONNECTION_FAILED when none was made."""
+
+    reason: CloudErrorReason = CloudErrorReason.CONNECTION_FAILED
 
 
 class AuthTimeoutError(AuthError):
     """Request was sent but no response came back in time -- see
     _raise_clear_timeout_error()."""
 
+    reason: CloudErrorReason = CloudErrorReason.TIMEOUT
 
-def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> None:
-    """Re-raise an aiohttp SSL/certificate failure as a clear
-    AuthSSLError instead of letting the raw aiohttp exception bubble
-    up as an opaque "unknown error occurred".
+
+def _raise_transport_error(exc: BaseException) -> NoReturn:
+    """Maps ANY failure of a login request to its AuthError.
+
+    NEW IN 0.4.0. Each stage used to catch three aiohttp errors --
+    ClientSSLError, ServerTimeoutError, ClientConnectorError -- and let
+    everything else escape as raw aiohttp or asyncio. Measured against a
+    local server, a connection dropped mid-answer came through as
+    aiohttp.ServerDisconnectedError and a timeout from the caller's
+    session as a bare TimeoutError: neither is an AuthError, so neither
+    is a CloudError, and `except CloudError` missed both.
+
+    Order matters: ClientSSLError is a ClientConnectorError, and
+    aiohttp.ServerTimeoutError is a TimeoutError.
+    """
+    if isinstance(exc, aiohttp.ClientSSLError):
+        _raise_clear_ssl_error(exc)
+    if isinstance(exc, TimeoutError):
+        _raise_clear_timeout_error(exc)
+    if isinstance(exc, aiohttp.ClientConnectorError):
+        _raise_clear_connection_error(exc)
+    if isinstance(exc, aiohttp.ClientResponseError):
+        # The server answered; the answer was the problem.
+        raise AuthError(
+            f"iRobot's cloud answered unexpectedly: {exc.status} {exc.message}",
+            reason=reason_for_status(exc.status),
+        ) from exc
+    raise AuthConnectionError(
+        "The connection to iRobot's cloud broke off during login "
+        f"({type(exc).__name__}). This is usually temporary -- please try "
+        "again in a few minutes.",
+        reason=CloudErrorReason.CONNECTION_BROKEN,
+    ) from exc
+
+
+def _ssl_diagnosis(exc: BaseException) -> tuple[CloudErrorReason, str]:
+    """Which of three certificate problems this is, and what to say
+    about it -- for login, REST and MQTT alike.
+
+    SHARED SINCE 0.4.0. Login diagnosed the cause (below); REST and MQTT
+    raised one fixed message instead, "almost always a temporary problem
+    on iRobot's servers ... not something wrong with your setup" -- the
+    claim login dropped after a field report showed it wrong for a local
+    trust-store problem, where waiting fixes nothing. One diagnosis now,
+    and `reason` carries its answer.
 
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#auth_raise_clear_ssl_error
     """
     reason = _ssl_verify_reason(exc)
+    # THE PYTHON THAT IS RUNNING, not a fixed one. The path named 3.13
+    # whatever ran it; the first tester to hit this on a Mac had 3.14.
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    # CERTIFI ONLY HELPS WHEN SOMETHING READS IT. The login and REST
+    # requests use Python's default SSL context, which does not look at
+    # certifi -- so "pip install --upgrade certifi" alone changed
+    # nothing. Pointing SSL_CERT_FILE at its bundle does.
+    certifi_fix = (
+        "  pip install --upgrade certifi\n"
+        '  export SSL_CERT_FILE="$(python -m certifi)"'
+    )
     hint = (
         "\n\nOpenSSL reported: " + reason if reason else ""
     )
 
     if reason and ("local issuer" in reason or "self signed" in reason or "unable to get" in reason):
-        raise AuthSSLError(
+        return CloudErrorReason.SSL_LOCAL_TRUST_STORE, (
             "Could not verify iRobot's cloud server certificate, because this machine "
             "has no trusted root certificate to check it against. This is a LOCAL setup "
             "problem, not an iRobot outage -- waiting will not fix it.\n\n"
             "On macOS with Python from python.org, this is almost always the missing "
-            "one-time certificate install. Run (adjusting the version to match yours):\n"
-            "  /Applications/Python\\ 3.13/Install\\ Certificates.command\n\n"
-            "Otherwise, updating the certifi package usually fixes it:\n"
-            "  pip install --upgrade certifi\n\n"
+            "one-time certificate install. Run:\n"
+            f"  /Applications/Python\\ {version}/Install\\ Certificates.command\n\n"
+            "Otherwise, point Python at the certifi bundle:\n"
+            f"{certifi_fix}\n\n"
             "A corporate proxy or VPN that re-signs TLS traffic can produce the same "
             "error." + hint
-        ) from exc
+        )
 
     if reason and "expired" in reason:
-        raise AuthSSLError(
+        return CloudErrorReason.SSL_CERTIFICATE_EXPIRED, (
             "iRobot's cloud server certificate has expired. This is on their end, not "
             "yours -- nothing to fix locally; it usually resolves within a few hours "
             "once they renew it." + hint
-        ) from exc
+        )
 
-    raise AuthSSLError(
+    return CloudErrorReason.SSL_UNVERIFIED, (
         "Could not verify iRobot's cloud server certificate. Two causes are roughly "
         "equally likely and this error alone cannot tell them apart:\n"
         "  1. This machine's trusted-root store -- on macOS with Python from "
-        "python.org, run 'Install Certificates.command' once; otherwise try "
-        "'pip install --upgrade certifi'.\n"
+        f"python.org, run '/Applications/Python {version}/Install Certificates.command' "
+        "once; otherwise point Python at the certifi bundle "
+        '(pip install certifi, then export SSL_CERT_FILE="$(python -m certifi)").\n'
         "  2. A genuinely expired certificate on iRobot's servers, which resolves on "
         "its own.\n"
         "If it fails repeatedly across hours or versions, cause 1 is far likelier." + hint
-    ) from exc
+    )
+
+
+def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> NoReturn:
+    """Re-raise an aiohttp SSL/certificate failure as a clear
+    AuthSSLError instead of letting the raw aiohttp exception bubble
+    up as an opaque "unknown error occurred" -- see _ssl_diagnosis()."""
+    reason, message = _ssl_diagnosis(exc)
+    raise AuthSSLError(message, reason=reason) from exc
 
 
 def _ssl_verify_reason(exc: BaseException) -> str | None:
@@ -223,7 +337,7 @@ def _ssl_verify_reason(exc: BaseException) -> str | None:
         seen.add(id(current))
         if isinstance(current, ssl.SSLCertVerificationError):
             message = getattr(current, "verify_message", None)
-            if message:
+            if isinstance(message, str) and message:
                 return message
         for arg in getattr(current, "args", ()):
             if isinstance(arg, str):
@@ -235,7 +349,7 @@ def _ssl_verify_reason(exc: BaseException) -> str | None:
     return "; ".join(texts) or None
 
 
-def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> None:
+def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> NoReturn:
     """Re-raise a connection failure (DNS, connection refused, network
     unreachable) as a clear AuthConnectionError.
 
@@ -252,7 +366,7 @@ def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> None:
     ) from exc
 
 
-def _raise_clear_timeout_error(exc: BaseException) -> None:
+def _raise_clear_timeout_error(exc: BaseException) -> NoReturn:
     """Re-raise a request timeout as a clear AuthTimeoutError.
 
     NEW (this session). Accepts BaseException rather than a specific
@@ -742,7 +856,14 @@ class LoginResult:
     credentials: CloudCredentials
     robots: dict[str, RobotLoginEntry]
     connection_tokens: list[ConnectionToken]
-    raw: dict[str, Any]
+    # repr=False SINCE 0.4.0: `raw` is the whole login response, and it
+    # carries every robot's password, the AWS SecretKey and SessionToken
+    # and the IoT tokens -- all of which the typed fields above keep out
+    # of their own repr. Printed as part of this object, `raw` put them
+    # all back: any `%r` in a log line, any pytest failure showing the
+    # object, any diagnostics dump. ha_roomba_plus once shipped a robot
+    # password into user logs exactly this way.
+    raw: dict[str, Any] = field(repr=False)
     deployment: dict[str, Any] = field(default_factory=dict)
     """NEW (session 41). The raw discovery-response deployment object
     (`disc["deployments"][disc["current_deployment"]]`) -- previously a
@@ -794,7 +915,10 @@ class LoginResult:
         result looks like a protocol mystery instead of a
         misconfiguration."""
         if not self.robots:
-            raise AuthError("Login succeeded but no robots were returned", self.raw)
+            raise AuthError(
+                "Login succeeded but no robots were returned", self.raw,
+                reason=CloudErrorReason.NO_ROBOTS,
+            )
         if len(self.robots) > 1:
             listed = "\n".join(
                 f"  --blid {blid}   {getattr(entry, 'name', None) or '(unnamed)'}"
@@ -806,6 +930,7 @@ class LoginResult:
                 f"target -- please name one explicitly:\n{listed}\n"
                 "Set --blid, or the ROOMBAPY_PRIME_BLID environment variable.",
                 self.raw,
+                reason=CloudErrorReason.ROBOT_AMBIGUOUS,
             )
         return next(iter(self.robots.keys()))
 
@@ -820,24 +945,41 @@ async def login(
     password: str,
     country_code: str,
     app_id: str = _APP_ID,
+    *,
+    request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
 ) -> LoginResult:
     """Run the full discovery -> Gigya -> iRobot cloud login chain.
 
     Raises AuthError at whichever stage fails, with that stage's raw
-    response attached for diagnostics.
+    response attached for diagnostics. Since 0.4.0 that holds for every
+    failure: a transport problem aiohttp reports in any form, and a
+    stage that takes longer than `request_timeout` seconds, are
+    AuthError subclasses too (see _raise_transport_error()).
 
     UPDATE (this session): the discovery step is now served from an
     in-memory cache when a recent-enough one exists for this
     country_code -- see _get_discovery()'s own docstring for why this
     specific response (unlike credentials) is safe to cache at all.
     """
-    disc = await _get_discovery(session, country_code)
+    disc = await _get_discovery(session, country_code, request_timeout=request_timeout)
 
     try:
         deployment = disc["deployments"][disc["current_deployment"]]
         gigya_cfg = disc["gigya"]
-    except KeyError as exc:
+    except (KeyError, TypeError) as exc:
         raise AuthError(f"Unexpected discovery response shape, missing {exc}", disc) from exc
+    # EVERY SHAPE PROBLEM IS AN AuthError (0.4.0). The key lookups below
+    # were unchecked: a discovery without `httpBase`, or with a `gigya`
+    # block missing its api key, failed with a bare KeyError -- not an
+    # AuthError, so past every `except AuthError` and `except CloudError`.
+    if not isinstance(deployment, dict) or not isinstance(gigya_cfg, dict):
+        raise AuthError("Unexpected discovery response shape: deployment or gigya is not an object", disc)
+    for key in ("datacenter_domain", "api_key"):
+        if not gigya_cfg.get(key):
+            raise AuthError(f"No gigya {key} found in discovery response", disc)
+    http_base = deployment.get("httpBase")
+    if not http_base:
+        raise AuthError("No httpBase field found in discovery response", disc)
 
     mqtt_endpoint = deployment.get("mqtt") or deployment.get("mqttApp") or deployment.get("mqttAts")
     if not mqtt_endpoint:
@@ -847,17 +989,23 @@ async def login(
     if not http_base_auth:
         raise AuthError("No httpBaseAuth field found in discovery response", disc)
 
-    gigya_result = await _login_gigya(session, gigya_cfg, username, password)
-    login_result = await _login_irobot(session, deployment["httpBase"], gigya_result, app_id)
+    gigya_result = await _login_gigya(
+        session, gigya_cfg, username, password, request_timeout=request_timeout
+    )
+    login_result = await _login_irobot(
+        session, http_base, gigya_result, app_id, request_timeout=request_timeout
+    )
 
     tokens_raw = login_result.get("connection_tokens") or []
+    if not isinstance(tokens_raw, list) or not all(isinstance(t, dict) for t in tokens_raw):
+        raise AuthError("connection_tokens in iRobot login response is not a list of objects", login_result)
     connection_tokens = [ConnectionToken.from_json(t) for t in tokens_raw]
 
     # Validate-at-the-gate (lesson from ha_roomba_plus's cloud_api.py):
     # a response missing credentials should fail loudly here, not with
     # a confusing KeyError deep inside a later REST call.
     creds_raw = login_result.get("credentials")
-    if not creds_raw:
+    if not creds_raw or not isinstance(creds_raw, dict):
         raise AuthError("No credentials in iRobot login response", login_result)
     for key in ("CognitoId", "AccessKeyId", "SecretKey", "SessionToken"):
         if key not in creds_raw:
@@ -865,9 +1013,11 @@ async def login(
     credentials = CloudCredentials.from_json(creds_raw)
 
     raw_robots = login_result.get("robots") or {}
+    if not isinstance(raw_robots, dict) or not all(isinstance(v, dict) for v in raw_robots.values()):
+        raise AuthError("robots in iRobot login response is not an object of objects", login_result)
     result = LoginResult(
         mqtt_endpoint=mqtt_endpoint,
-        http_base=deployment["httpBase"],
+        http_base=http_base,
         http_base_auth=http_base_auth,
         credentials=credentials,
         robots={blid: RobotLoginEntry.from_json(v) for blid, v in raw_robots.items()},
@@ -949,6 +1099,8 @@ async def _login_gigya(
     gigya_cfg: dict[str, Any],
     username: str,
     password: str,
+    *,
+    request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
 ) -> dict[str, str]:
     base = f"https://accounts.{gigya_cfg['datacenter_domain']}/accounts."
     payload = {
@@ -968,19 +1120,20 @@ async def _login_gigya(
         "User-Agent": _USER_AGENT_APP,
     }
     try:
-        async with session.post(f"{base}login", headers=headers, data=urllib.parse.urlencode(payload)) as resp:
-            text = await resp.text()
-    except aiohttp.ClientSSLError as exc:
-        _raise_clear_ssl_error(exc)
-    except aiohttp.ServerTimeoutError as exc:
-        _raise_clear_timeout_error(exc)
-    except aiohttp.ClientConnectorError as exc:
-        _raise_clear_connection_error(exc)
+        async with asyncio.timeout(request_timeout):
+            async with session.post(
+                f"{base}login", headers=headers, data=urllib.parse.urlencode(payload)
+            ) as resp:
+                text = await resp.text()
+    except (aiohttp.ClientError, TimeoutError) as exc:
+        _raise_transport_error(exc)
 
     try:
         result = json.loads(text)
     except JSONDecodeError as exc:
         raise AuthError(f"Invalid Gigya response (not JSON): {text[:300]}") from exc
+    if not isinstance(result, dict):
+        raise AuthError(f"Invalid Gigya response (not an object): {text[:300]}")
 
     if result.get("errorCode", 0) != 0:
         message = str(result.get("errorMessage", result))
@@ -1025,15 +1178,21 @@ async def _login_gigya(
                 "again now can extend it. Disable the integration, wait "
                 f"ten minutes, then re-enable it. ({message})",
                 result,
+                reason=CloudErrorReason.ACCOUNT_LOCKED,
             )
 
         raise AuthCredentialsError(f"Gigya login failed: {message}", result)
 
-    return {
-        "uid": result["UID"],
-        "signature": result["UIDSignature"],
-        "timestamp": result["signatureTimestamp"],
-    }
+    try:
+        return {
+            "uid": result["UID"],
+            "signature": result["UIDSignature"],
+            "timestamp": result["signatureTimestamp"],
+        }
+    except KeyError as exc:
+        # Accepted, but without what the next stage needs -- a response
+        # problem, and until 0.4.0 a bare KeyError.
+        raise AuthError(f"Gigya login response is missing {exc}", result) from exc
 
 
 async def _login_irobot(
@@ -1041,6 +1200,8 @@ async def _login_irobot(
     http_base: str,
     gigya: dict[str, str],
     app_id: str,
+    *,
+    request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
 ) -> dict[str, Any]:
     payload = {
         "app_id": app_id,
@@ -1069,23 +1230,22 @@ async def _login_irobot(
         "skip_ownership_check": "0",
     }
     try:
-        async with session.post(
-            f"{http_base}/v2/login",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-        ) as resp:
-            text = await resp.text()
-    except aiohttp.ClientSSLError as exc:
-        _raise_clear_ssl_error(exc)
-    except aiohttp.ServerTimeoutError as exc:
-        _raise_clear_timeout_error(exc)
-    except aiohttp.ClientConnectorError as exc:
-        _raise_clear_connection_error(exc)
+        async with asyncio.timeout(request_timeout):
+            async with session.post(
+                f"{http_base}/v2/login",
+                headers={"Content-Type": "application/json"},
+                json=payload,
+            ) as resp:
+                text = await resp.text()
+    except (aiohttp.ClientError, TimeoutError) as exc:
+        _raise_transport_error(exc)
 
     try:
         result = json.loads(text)
     except JSONDecodeError as exc:
         raise AuthError(f"Invalid iRobot login response (not JSON): {text[:300]}") from exc
+    if not isinstance(result, dict):
+        raise AuthError(f"Invalid iRobot login response (not an object): {text[:300]}")
 
     if result.get("errorCode"):
         msg = result.get("errorMessage") or str(result)

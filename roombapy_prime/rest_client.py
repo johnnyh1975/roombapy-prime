@@ -35,18 +35,22 @@ Open questions, deliberately not guessed at:
 """
 from __future__ import annotations
 
+import asyncio
+import datetime
+import email.utils
 import json
 import logging
 import math
 import urllib.parse
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from json.decoder import JSONDecodeError
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import aiohttp
 
-from .auth import CloudCredentials, LoginResult
+from .auth import DEFAULT_REQUEST_TIMEOUT, CloudCredentials, LoginResult, _ssl_diagnosis
 from .aws_sigv4 import AwsSigV4Signer
+from .errors import CloudError, CloudErrorReason, reason_for_status
 from .models.enums_common import _enum_or_none
 from .models import (
     DNDStatusResponse,
@@ -95,31 +99,143 @@ def _path_segment(value: str) -> str:
     return urllib.parse.quote(str(value), safe="")
 
 
-class RestError(Exception):
+class RestError(CloudError):
     """Raised for any non-2xx response or unparseable body, with the
-    raw response text attached where available."""
+    raw response text attached where available.
 
-    def __init__(self, message: str, status: int | None = None, raw_response: str | None = None) -> None:
-        super().__init__(message)
+    A PLAIN RestError is an answer in a shape the call did not expect,
+    so that is its reason -- unless it carries an HTTP error status, in
+    which case the status says why (reason_for_status), exactly as for
+    the RestHTTPError subclasses. A subclass with a reason of its own
+    keeps it."""
+
+    reason: CloudErrorReason = CloudErrorReason.RESPONSE_MALFORMED
+
+    def __init__(
+        self,
+        message: str,
+        status: int | None = None,
+        raw_response: str | None = None,
+        *,
+        reason: CloudErrorReason | None = None,
+    ) -> None:
+        if (
+            reason is None
+            and status is not None
+            and status >= 400
+            and type(self).reason is CloudErrorReason.RESPONSE_MALFORMED
+        ):
+            reason = reason_for_status(status)
+        super().__init__(message, reason=reason)
         self.status = status
         self.raw_response = raw_response
 
 
 class RestSSLError(RestError):
     """TLS/certificate verification failure -- see
-    _raise_clear_ssl_error()."""
+    _raise_clear_ssl_error(). `reason` says which of three causes."""
+
+    reason: CloudErrorReason = CloudErrorReason.SSL_UNVERIFIED
 
 
 class RestConnectionError(RestError):
     """Could not establish a connection at all (DNS failure, connection
     refused, network unreachable) -- see _raise_clear_connection_error().
     Deliberately does NOT claim to know whether this is iRobot's fault
-    or the caller's own network."""
+    or the caller's own network.
+
+    `reason` is CONNECTION_BROKEN when a connection was made and broke
+    off mid-answer, CONNECTION_FAILED when none was made."""
+
+    reason: CloudErrorReason = CloudErrorReason.CONNECTION_FAILED
 
 
 class RestTimeoutError(RestError):
     """Request was sent but no response came back in time -- see
     _raise_clear_timeout_error()."""
+
+    reason: CloudErrorReason = CloudErrorReason.TIMEOUT
+
+
+class RestHTTPError(RestError):
+    """The server answered with an HTTP error status (4xx or 5xx);
+    `status` is always set.
+
+    NEW IN 0.4.0, and only a finer name for what was raised before:
+    until then every such answer was a plain RestError with the status
+    in an attribute, so a caller could not tell "do not send this again"
+    from "try again later" without reading numbers. The three subclasses
+    below say it. Every `except RestError` still catches all of them."""
+
+    status: int
+
+    def __init__(self, message: str, status: int, raw_response: str | None = None) -> None:
+        super().__init__(message, status=status, raw_response=raw_response)
+
+
+class RestClientError(RestHTTPError):
+    """4xx other than 429: the request itself was refused -- not found,
+    not allowed, malformed. Sending it again unchanged will not help.
+    A 403 reaches here only after the one relogin has not cured it."""
+
+    reason: CloudErrorReason = CloudErrorReason.REQUEST_REFUSED
+
+
+class RestRateLimitedError(RestHTTPError):
+    """429: too many requests. Try again later -- `retry_after` is the
+    wait in seconds the server asked for, or None when it named none."""
+
+    reason: CloudErrorReason = CloudErrorReason.RATE_LIMITED
+
+    def __init__(
+        self,
+        message: str,
+        status: int = 429,
+        raw_response: str | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message, status, raw_response)
+        self.retry_after = retry_after
+
+
+class RestServerError(RestHTTPError):
+    """5xx: the problem is on iRobot's side. Usually temporary."""
+
+    reason: CloudErrorReason = CloudErrorReason.SERVER_ERROR
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """A Retry-After header as seconds from now: either a number of
+    seconds or an HTTP date (RFC 9110). None when absent or unreadable,
+    and never negative."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.UTC)
+    return max(0.0, (when - datetime.datetime.now(datetime.UTC)).total_seconds())
+
+
+def _http_error(
+    status: int,
+    message: str,
+    raw_response: str | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> RestHTTPError:
+    """The RestHTTPError subclass for an error status."""
+    if status == 429:
+        retry_after = _retry_after_seconds((headers or {}).get("Retry-After"))
+        return RestRateLimitedError(message, status, raw_response, retry_after=retry_after)
+    if 400 <= status < 500:
+        return RestClientError(message, status, raw_response)
+    return RestServerError(message, status, raw_response)
 
 
 def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> NoReturn:
@@ -134,14 +250,16 @@ def _raise_clear_ssl_error(exc: aiohttp.ClientSSLError) -> NoReturn:
     editing all at once; download_map_bundle() is the one call that
     deliberately bypasses _request() (a different, unsigned host, see
     its own docstring) and is wrapped separately below for the same
-    reason."""
-    raise RestSSLError(
-        "Could not verify iRobot's cloud server certificate. This is "
-        "almost always a temporary problem on iRobot's servers (an "
-        "expired or currently-renewing TLS certificate), not something "
-        "wrong with your setup -- it should resolve on its own within a "
-        "few hours."
-    ) from exc
+    reason.
+
+    SINCE 0.4.0 THE SAME DIAGNOSIS AS LOGIN (auth._ssl_diagnosis). Until
+    then this said "almost always a temporary problem on iRobot's
+    servers ... not something wrong with your setup" for every
+    certificate failure -- wrong for a machine without a usable trust
+    store, where waiting fixes nothing. Login had stopped saying it
+    after a field report; REST had not."""
+    reason, message = _ssl_diagnosis(exc)
+    raise RestSSLError(message, reason=reason) from exc
 
 
 def _raise_clear_connection_error(exc: aiohttp.ClientConnectorError) -> NoReturn:
@@ -166,7 +284,36 @@ def _raise_clear_timeout_error(exc: BaseException) -> NoReturn:
     ) from exc
 
 
-def _either(data: dict, *names: str) -> Any:
+def _raise_transport_error(exc: BaseException) -> NoReturn:
+    """Maps ANY failure of a REST request to its RestError -- the REST
+    twin of auth._raise_transport_error(), and there for the same
+    measured reason: a dropped connection (ServerDisconnectedError) and
+    a timeout (bare TimeoutError) used to escape as raw aiohttp/asyncio,
+    past every `except RestError` and `except CloudError`.
+
+    Order matters: ClientSSLError is a ClientConnectorError, and
+    aiohttp.ServerTimeoutError is a TimeoutError."""
+    if isinstance(exc, aiohttp.ClientSSLError):
+        _raise_clear_ssl_error(exc)
+    if isinstance(exc, TimeoutError):
+        _raise_clear_timeout_error(exc)
+    if isinstance(exc, aiohttp.ClientConnectorError):
+        _raise_clear_connection_error(exc)
+    if isinstance(exc, aiohttp.ClientResponseError):
+        # The server answered; the answer was the problem.
+        message = f"iRobot's cloud answered unexpectedly: {exc.status} {exc.message}"
+        if exc.status >= 400:
+            raise _http_error(exc.status, message, headers=exc.headers) from exc
+        raise RestError(message, status=exc.status) from exc
+    raise RestConnectionError(
+        "The connection to iRobot's cloud broke off mid-request "
+        f"({type(exc).__name__}). This is usually temporary -- please try "
+        "again in a few minutes.",
+        reason=CloudErrorReason.CONNECTION_BROKEN,
+    ) from exc
+
+
+def _either(data: dict[str, Any], *names: str) -> Any:
     """The first of several spellings that is present.
 
     THE MODEL'S OWN `to_json` DISAGREES WITH THE FAVOURITE PARSER. It
@@ -203,20 +350,32 @@ def _either(data: dict, *names: str) -> Any:
     return None
 
 
-class PrimeRestClient:
-    """Thin wrapper around the p2maps REST surface. Takes an existing
-    aiohttp.ClientSession (same one used for auth.login(), so cookies/
-    connection pooling are shared) rather than owning its own.
+class CloudRestClient:
+    """The signed REST surface of iRobot's cloud, shared by both robot
+    generations -- the base of PrimeRestClient and ClassicRestClient.
+
+    NEW IN 0.4.0, and only a new name for what was already here: the
+    SigV4 signing, the request/response handling and the one-shot
+    relogin on HTTP 403 moved out of PrimeRestClient unchanged, together
+    with the three calls both generations make identically --
+    get_robot_parts(), get_favorites_raw() and get_automations_raw().
+
+    Takes an existing aiohttp.ClientSession (same one used for
+    auth.login(), so cookies/connection pooling are shared) rather than
+    owning its own.
 
     credentials: AWS Cognito credentials (see auth.CloudCredentials) --
-    every request is SigV4-signed with these, replacing the earlier
-    (never-populated) generic auth_headers passthrough.
+    every request is SigV4-signed with these.
 
     relogin: optional async callback that's called exactly once on an
-    HTTP 403, to fetch new credentials and retry the call (see
-    cloud_api.py's _aux_get() for the original of this pattern). None
+    HTTP 403, to fetch new credentials and retry the call. None
     (default) -- no automatic retry, a 403 is passed through as a
-    RestError."""
+    RestError.
+
+    request_timeout: seconds one request may take, sending to reading
+    the whole answer (auth.DEFAULT_REQUEST_TIMEOUT, 30 s, unless given;
+    None for no limit). A 403 relogin runs outside it, and the retried
+    request gets a fresh one."""
 
     def __init__(
         self,
@@ -224,11 +383,239 @@ class PrimeRestClient:
         http_base_auth: str,
         credentials: CloudCredentials,
         relogin: Relogin | None = None,
+        *,
+        request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         self._session = session
         self._http_base_auth = http_base_auth.rstrip("/")
         self._credentials = credentials
         self._relogin = relogin
+        self._request_timeout = request_timeout
+
+    async def get_robot_parts(self, blid: str) -> RobotPartsInfo:
+        """GET /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
+        from the actual APK configuration file
+        (res/raw/base_roomba_config.json, commandId "GetRobotParts":
+        httpMethod=GET, urlPath="/v1/robots/%s/parts",
+        networkList=["awsApiGateway"]) -- a primary source, not
+        bytecode interpretation.
+
+        Response shape confirmed (session 27, real live response from
+        chairstacker): robot_id, num_parts, parts (list with part_id,
+        counter, minutes_remaining, count_type e.g.
+        "combo_missions"/"pad_washes_used"/"minutes"/"evacs",
+        count_remaining, count_used, counter_category, reset_by).
+
+        CORRECTED (session 53): actually parsed into RobotPartsInfo
+        now, rather than returning raw JSON with a docstring pointing
+        at a parser that was never called -- a genuine architectural
+        gap found during a broader review, not new field-level
+        information."""
+        return RobotPartsInfo.from_json(await self.get_robot_parts_raw(blid))
+
+    async def get_robot_parts_raw(self, blid: str) -> Any:
+        """GET /v1/robots/{blid}/parts, unparsed -- the object the server
+        sent, every key of it. NEW (0.4.0) for callers that keep the
+        answer as it came, as ha_roomba_plus has for Classic robots:
+        RobotPartsInfo carries the fields known today and drops any
+        other, and converting back would lose them."""
+        url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
+        return await self._request("GET", url)
+
+    async def get_favorites_raw(
+        self, app_edition: str | None = "1"
+    ) -> list[dict[str, Any]]:
+        """Same endpoint as get_favorites(), but returns the UNPARSED
+        response. Added (this session) for a round-trip fidelity check:
+        if a stored favorite carries fields our own models don't know
+        about, parsing and re-serializing it would silently DROP them,
+        and we would resend a command that is subtly less complete than
+        what the app itself sends -- a failure mode that looks exactly
+        like this project's central symptom (structurally valid,
+        no effect, no error). Diagnostic use only; nothing in the
+        library's normal path should need this."""
+        url = f"{self._http_base_auth}/v1/user/favorites"
+        query = {"app_edition": app_edition} if app_edition else {}
+        data = await self._request("GET", url, query=query)
+        # THE DIAGNOSTIC HAD THE BUG IT EXISTS TO DIAGNOSE.
+        #
+        # This returned `data if isinstance(data, list) else []`, so a
+        # wrapped `{"favorites": [...]}` response captured as an empty
+        # list -- the same shape that made get_favorites() report an
+        # empty account, in the one place built to reveal it.
+        #
+        # A diagnostics download taken to answer "does the server return
+        # anything?" therefore answered "no" whether or not it did.
+        return self._unwrap_favorites_payload(data)
+
+    @staticmethod
+    def _unwrap_favorites_payload(data: Any) -> list[dict[str, Any]]:
+        """The favourites list out of whatever wraps it.
+
+        THE OUTER KEYS ARE THE FINDING when there is no list, so an
+        object with no `favorites` key is handed back whole rather than
+        discarded -- that is precisely the case a download is taken to
+        investigate."""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            wrapped = data.get("favorites")
+            if isinstance(wrapped, list):
+                return wrapped
+            return [data]
+        return []
+
+    async def get_automations_raw(self) -> Any:
+        """GET /v1/user/automations -- third-party triggers and
+        geofencing. NOT the schedule endpoint.
+
+        WHAT THIS SUBSYSTEM IS (APK, 2 August 2026). RoutineConstants
+        holds 66 entries, and they settle the purpose: hard-coded
+        service ids for August Home, Ecobee, Leviton, MyQ and Wyze;
+        geofencing keys (kLatitude, kLongitude, kRadius,
+        kEnterRegionLocationTriggerId); and behaviour options
+        (kContinueCleaning, kPauseAndNotify, kEndJob). So: "when I leave
+        the house, run favourite X", or "when Ecobee goes to Away".
+
+        `favorite_id` and `robot_commands` in the payload show it drives
+        the same command structures as favourites do.
+
+        A DIFFERENT DATA MODEL FROM SCHEDULES, not an alternative to
+        them -- automation_id vs schedule_id, time_window{hour,minute}
+        vs start/end, plus service_id/trigger_id, which schedules have
+        no counterpart for. Schedule management stays on
+        /v1/households/{id}/settings/schedule, the only path active in
+        the app's Kotlin.
+
+        THE ENDPOINT MAY NOT BE LIVE, and that is the open question this
+        method exists to settle. In liblegacyCore.so the string has
+        exactly ONE reference -- a static initialiser, recognisable by
+        the __cxa_atexit pattern, sitting between two IFTTT URLs. No
+        reader. Same signature as `sec_message` and `koz-v1.0.0`, both
+        of which turned out to be dead; actively used URLs show two or
+        three real consumers.
+
+        The app reaches the data through
+        AutomationDataUseCaseImpl::fetchAllAutomations() and on across
+        the Djinni boundary, so its real path is not resolvable
+        statically. A second Home Assistant integration
+        (a-mavrides/roomba_v4) calls this URL -- but reading its code,
+        that is NOT evidence the endpoint answers. It swallows any
+        exception into a debug log, defaults the result to {}, writes it
+        to a debug file, and no entity ever reads it. A 404 would look
+        identical to an empty response there, and nobody would notice.
+
+        So there is currently NO evidence for or against, only an
+        untested call in someone else's integration and a dead constant
+        here.
+
+        One read attempt on an account with automations configured
+        settles it either way, and costs nothing if the answer is no.
+        """
+        url = f"{self._http_base_auth}/v1/user/automations"
+        return await self._request("GET", url)
+
+    def _signer(self) -> AwsSigV4Signer:
+        return AwsSigV4Signer(
+            self._credentials.access_key_id,
+            self._credentials.secret_key,
+            self._credentials.session_token,
+        )
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        query: dict[str, str] | None = None,
+        body: dict[str, Any] | None = None,
+        _retry: bool = True,
+        compact_body: bool = False,
+    ) -> Any:
+        parsed = urllib.parse.urlparse(url)
+        # compact_body: the Classic calls send JSON without spaces, as
+        # the integration did. Every Prime call keeps json.dumps()'s
+        # default -- those bytes are what the Prime field tests sent.
+        separators = (",", ":") if compact_body else None
+        body_str = json.dumps(body, separators=separators) if body is not None else ""
+        headers = self._signer().signed_headers(
+            method=method,
+            service="execute-api",
+            region=self._credentials.region,
+            host=parsed.netloc,
+            path=parsed.path,
+            query_params=query or {},
+            body=body_str,
+        )
+
+        request_kwargs: dict[str, Any] = {"params": query, "headers": headers}
+        if body is not None:
+            # NOTE: must send the EXACT same bytes we hashed for the
+            # signature -- aiohttp's json= would re-serialize
+            # independently (possibly different key order/whitespace)
+            # and invalidate the signature. data= sends our own string
+            # verbatim.
+            request_kwargs["data"] = body_str.encode()
+
+        method_fn = getattr(self._session, method.lower())
+        try:
+            async with asyncio.timeout(self._request_timeout):
+                async with method_fn(url, **request_kwargs) as resp:
+                    if not (resp.status == 403 and _retry and self._relogin is not None):
+                        return await self._parse_response(resp)
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            _raise_transport_error(exc)
+
+        # Only a 403 with a relogin gets here -- AFTER the timeout block,
+        # so a slow login does not eat the request's time, and the retry
+        # below gets a timeout of its own.
+        _LOGGER.debug("roombapy-prime REST: 403 -- reauthenticating")
+        assert self._relogin is not None
+        login_result = await self._relogin()
+        self._credentials = login_result.credentials
+        return await self._request(
+            method, url, query, body, _retry=False, compact_body=compact_body
+        )
+
+    async def _request_object(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        """_request() for endpoints documented to answer with an object.
+
+        THE TYPE IS A PROMISE, NOT A CHECK. The answer is returned
+        unchanged, whatever it is, exactly as these methods always did;
+        this only states in one place what their `-> dict[str, Any]`
+        annotations claim, so `mypy --strict` can hold the rest of the
+        library to it. A method that has to rely on the shape checks it
+        itself (see get_pmap_umf()). The arguments pass through exactly as
+        given, so every call reaches _request() in the form it always had."""
+        return cast("dict[str, Any]", await self._request(method, url, **kwargs))
+
+    async def _parse_response(self, resp: aiohttp.ClientResponse) -> Any:
+        text = await resp.text()
+        if resp.status >= 400:
+            raise _http_error(
+                resp.status, f"HTTP {resp.status} from {resp.url}", text,
+                # getattr: a real response always has headers; the check
+                # keeps minimal test doubles working.
+                getattr(resp, "headers", None),
+            )
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except JSONDecodeError as exc:
+            raise RestError(
+                f"Non-JSON response from {resp.url}: {text[:300]}", status=resp.status, raw_response=text
+            ) from exc
+
+
+class PrimeRestClient(CloudRestClient):
+    """The Prime/V4 robots' REST surface: p2maps, favorites with their
+    command definitions, mission history as the Prime app asks for it,
+    households, schedules, DND, time estimates and the rest.
+
+    Built on CloudRestClient since 0.4.0; constructor, methods and
+    import path are unchanged. Everything here is either Prime-only or
+    unmeasured on Classic robots -- see ClassicRestClient for what
+    Classic robots are confirmed to answer."""
 
     async def get_map_metadata(self, p2map_id: str) -> P2MapData:
         """GET /v1/p2maps/{p2mapId}. CORRECTED (session 51): response
@@ -377,7 +764,7 @@ class PrimeRestClient:
     docs/internal/EVIDENCE_TRAIL.md#rest_clientget_map_geojson_link
     """
         url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(map_id)}/versions/{_path_segment(map_version)}/geojson"
-        return await self._request("GET", url, query={"response_type": "link"})
+        return await self._request_object("GET", url, query={"response_type": "link"})
 
     async def get_map_raw_link(
         self, map_id: str, map_version: str, response_type: str | None = "link"
@@ -412,7 +799,7 @@ class PrimeRestClient:
             f"/versions/{_path_segment(map_version)}/raw"
         )
         query = {"response_type": response_type} if response_type else {}
-        return await self._request("GET", url, query=query)
+        return await self._request_object("GET", url, query=query)
 
     async def download_map_bundle(self, url: str) -> bytes:
         """NEW (July 11, fifth session). Downloads the raw tar.gz map
@@ -434,21 +821,20 @@ class PrimeRestClient:
         host) and therefore shouldn't go through this class's SigV4
         signing scheme."""
         try:
-            async with self._session.get(url) as resp:
-                if resp.status >= 400:
-                    text = await resp.text()
-                    raise RestError(
-                        f"HTTP {resp.status} downloading map bundle from {url}",
-                        status=resp.status,
-                        raw_response=text,
-                    )
-                return await resp.read()
-        except aiohttp.ClientSSLError as exc:
-            _raise_clear_ssl_error(exc)
-        except aiohttp.ServerTimeoutError as exc:
-            _raise_clear_timeout_error(exc)
-        except aiohttp.ClientConnectorError as exc:
-            _raise_clear_connection_error(exc)
+            async with asyncio.timeout(self._request_timeout):
+                async with self._session.get(url) as resp:
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise _http_error(
+                            resp.status,
+                            f"HTTP {resp.status} downloading map bundle from {url}",
+                            text,
+                            getattr(resp, "headers", None),
+                        )
+                    body: bytes = await resp.read()
+                    return body
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            _raise_transport_error(exc)
 
     async def set_map_name(self, p2map_id: str, name: str) -> dict[str, Any]:
         """POST /v1/p2maps/{p2mapId}/settings, body {"name": ...}.
@@ -494,7 +880,7 @@ class PrimeRestClient:
 
     async def _post_settings(self, p2map_id: str, body: dict[str, Any]) -> dict[str, Any]:
         url = f"{self._http_base_auth}/v1/p2maps/{_path_segment(p2map_id)}/settings"
-        return await self._request("POST", url, query={"trigger_fast_updates": "true"}, body=body)
+        return await self._request_object("POST", url, query={"trigger_fast_updates": "true"}, body=body)
 
     async def edit_map_v2(self, p2map_id: str, command: MapEditCommand) -> dict[str, Any]:
         """POST /v2/p2maps/{p2mapId}/versions -- NOTE (July 11, fourth
@@ -510,7 +896,7 @@ class PrimeRestClient:
         Response shape (the updated P2PersistentMap, per the Kotlin
         repository interfaces) not modeled -- raw JSON."""
         url = f"{self._http_base_auth}/v2/p2maps/{_path_segment(p2map_id)}/versions"
-        return await self._request("POST", url, body=command.to_command_body())
+        return await self._request_object("POST", url, body=command.to_command_body())
 
     async def edit_map(
         self, p2map_id: str, command: MapEditCommandV1,
@@ -562,7 +948,7 @@ class PrimeRestClient:
         body: dict[str, Any] = {"edit_cmd": command.to_v1_command_body()}
         if response_type is not None:
             body["response_type"] = response_type
-        return await self._request("POST", url, body=body)
+        return await self._request_object("POST", url, body=body)
 
     async def get_live_map_stream(self, blid: str) -> LiveMapStreamInit:
         """GET /v1/p2maps/livemap?robotId={blid} -> the MQTT topic to
@@ -687,49 +1073,6 @@ class PrimeRestClient:
             )
         return parsed
 
-    async def get_favorites_raw(
-        self, app_edition: str | None = "1"
-    ) -> list[dict[str, Any]]:
-        """Same endpoint as get_favorites(), but returns the UNPARSED
-        response. Added (this session) for a round-trip fidelity check:
-        if a stored favorite carries fields our own models don't know
-        about, parsing and re-serializing it would silently DROP them,
-        and we would resend a command that is subtly less complete than
-        what the app itself sends -- a failure mode that looks exactly
-        like this project's central symptom (structurally valid,
-        no effect, no error). Diagnostic use only; nothing in the
-        library's normal path should need this."""
-        url = f"{self._http_base_auth}/v1/user/favorites"
-        query = {"app_edition": app_edition} if app_edition else {}
-        data = await self._request("GET", url, query=query)
-        # THE DIAGNOSTIC HAD THE BUG IT EXISTS TO DIAGNOSE.
-        #
-        # This returned `data if isinstance(data, list) else []`, so a
-        # wrapped `{"favorites": [...]}` response captured as an empty
-        # list -- the same shape that made get_favorites() report an
-        # empty account, in the one place built to reveal it.
-        #
-        # A diagnostics download taken to answer "does the server return
-        # anything?" therefore answered "no" whether or not it did.
-        return self._unwrap_favorites_payload(data)
-
-    @staticmethod
-    def _unwrap_favorites_payload(data: Any) -> list[dict[str, Any]]:
-        """The favourites list out of whatever wraps it.
-
-        THE OUTER KEYS ARE THE FINDING when there is no list, so an
-        object with no `favorites` key is handed back whole rather than
-        discarded -- that is precisely the case a download is taken to
-        investigate."""
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            wrapped = data.get("favorites")
-            if isinstance(wrapped, list):
-                return wrapped
-            return [data]
-        return []
-
     async def create_favorite(self, favorite: FavoriteV1) -> dict[str, Any]:
         """POST /v1/user/favorites?app_edition=1 -- CONFIRMED (eighth
         session: CreateFavoriteRequest.<init> sets httpMethod = "POST"
@@ -742,7 +1085,7 @@ class PrimeRestClient:
         as raw JSON (not worth a dedicated dataclass for one field),
         but callers can now reliably do `result["favorite_id"]`."""
         url = f"{self._http_base_auth}/v1/user/favorites"
-        return await self._request(
+        return await self._request_object(
             "POST", url, query=self._FAVORITES_QUERY, body=favorite.to_json()
         )
 
@@ -751,7 +1094,7 @@ class PrimeRestClient:
         CONFIRMED (eighth session: UpdateFavoriteRequest.<init> sets
         httpMethod = "PUT" directly -- previously only assumed)."""
         url = f"{self._http_base_auth}/v1/user/favorites/{_path_segment(favorite_id)}"
-        return await self._request(
+        return await self._request_object(
             "PUT", url, query=self._FAVORITES_QUERY, body=favorite.to_json()
         )
 
@@ -759,7 +1102,7 @@ class PrimeRestClient:
         """DELETE /v1/user/favorites/{favoriteId}?app_edition=1 --
         CONFIRMED (DeleteFavoriteRequest, httpMethod = "DELETE")."""
         url = f"{self._http_base_auth}/v1/user/favorites/{_path_segment(favorite_id)}"
-        return await self._request("DELETE", url, query=self._FAVORITES_QUERY)
+        return await self._request_object("DELETE", url, query=self._FAVORITES_QUERY)
 
     async def order_favorite(
         self,
@@ -787,7 +1130,7 @@ class PrimeRestClient:
             query["insert_before"] = insert_before
         if insert_after is not None:
             query["insert_after"] = insert_after
-        return await self._request("PUT", url, query=query)
+        return await self._request_object("PUT", url, query=query)
 
     async def get_mission_history(
         self,
@@ -798,7 +1141,7 @@ class PrimeRestClient:
         filter_type: str | None = None,
         exclusive_start_timestamp: int | None = None,
         supported_done_codes: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """GET /v1/{blid}/missionhistory -- NEW (July 11, sixth
         session). CONFIRMED from FetchMissionHistoryRequest.java
         (httpMethod = "GET", urlString = "/v1/" + robotId +
@@ -815,7 +1158,16 @@ class PrimeRestClient:
         models/mission_history.py::parse_mission_history() converts this method's
         result into a list of typed MissionHistoryEntry objects
         (analogous to parse_map_bundle() -- a separate, optional step
-        rather than automatic conversion here)."""
+        rather than automatic conversion here).
+
+        The Classic app asks the same endpoint with different parameter
+        names -- see ClassicRestClient.get_mission_history().
+
+        THE RESPONSE IS A LIST of mission records, not an object. This
+        was annotated `dict[str, Any]` until 0.4.0; the Classic capture
+        in tests/fixtures (irobot_missionhistory_i3plus.json) is a list,
+        and ha_roomba_plus once lost every cloud refresh to a caller that
+        believed the annotation. Returned as-is."""
         url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/missionhistory"
         query: dict[str, str] = {}
         if max_reports is not None:
@@ -886,7 +1238,7 @@ class PrimeRestClient:
         argument, which is why the parameter is named for the field it
         wants."""
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule/{_path_segment(household_schedule_id)}"
-        return await self._request("DELETE", url)
+        return await self._request_object("DELETE", url)
 
     async def create_schedules(self, household_id: str, schedules: list[ScheduleOptions]) -> dict[str, Any]:
         """POST /v1/households/{householdId}/settings/schedule --
@@ -955,7 +1307,7 @@ class PrimeRestClient:
             )
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule"
         body = {"schedules": [{"options": s.to_json()} for s in schedules]}
-        return await self._request("POST", url, body=body)
+        return await self._request_object("POST", url, body=body)
 
     async def update_schedules(
         self, household_id: str, household_schedule_id: str, schedules: list[HouseholdSchedule]
@@ -965,7 +1317,7 @@ class PrimeRestClient:
         httpMethod = "PUT" directly -- previously only assumed). Field
         structure confirmed, see models/schedules_dnd.py::HouseholdSchedule."""
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/schedule/{_path_segment(household_schedule_id)}"
-        return await self._request("PUT", url, body={"schedules": [s.to_json() for s in schedules]})
+        return await self._request_object("PUT", url, body={"schedules": [s.to_json() for s in schedules]})
 
     async def get_user_households(self) -> dict[str, Any]:
         """GET /v1/user/households -- NEW (July 11, seventh session).
@@ -983,7 +1335,7 @@ class PrimeRestClient:
         has_precise_location, household_robots, household_users. For a
         typed result use models/robot_info.py::parse_user_households()."""
         url = f"{self._http_base_auth}/v1/user/households"
-        return await self._request("GET", url)
+        return await self._request_object("GET", url)
 
     async def get_dnd_settings(self, household_id: str) -> DNDStatusResponse:
         """GET /v1/households/{householdId}/settings/dnd -- NEW (July
@@ -1080,7 +1432,7 @@ class PrimeRestClient:
         A SINGLE SUCCESSFUL WRITE WOULD SETTLE IT, and nothing short of
         one will."""
         url = f"{self._http_base_auth}/v1/households/{_path_segment(household_id)}/settings/dnd"
-        return await self._request("PUT", url, body=settings)
+        return await self._request_object("PUT", url, body=settings)
 
     async def get_cleaning_profiles(self, asset_id: str, p2map_id: str | None = None) -> dict[str, Any]:
         """GET /v1/profiles -- NEW (July 11, sixth session). CONFIRMED
@@ -1119,7 +1471,7 @@ class PrimeRestClient:
             query["p2map_id"] = p2map_id
         else:
             query["includeSmart"] = "false"
-        return await self._request("GET", url, query=query)
+        return await self._request_object("GET", url, query=query)
 
     async def get_default_routines(self, p2map_id: str) -> RoutinesDefaultsResponse:
         """GET /v1/p2maps/{p2mapId}/routines/defaults -- NEW (July 11,
@@ -1232,29 +1584,6 @@ class PrimeRestClient:
 
         return await self._request("GET", f"{base}?{urlencode(params)}")
 
-    async def get_robot_parts(self, blid: str) -> RobotPartsInfo:
-        """GET /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
-        from the actual APK configuration file
-        (res/raw/base_roomba_config.json, commandId "GetRobotParts":
-        httpMethod=GET, urlPath="/v1/robots/%s/parts",
-        networkList=["awsApiGateway"]) -- a primary source, not
-        bytecode interpretation.
-
-        Response shape confirmed (session 27, real live response from
-        chairstacker): robot_id, num_parts, parts (list with part_id,
-        counter, minutes_remaining, count_type e.g.
-        "combo_missions"/"pad_washes_used"/"minutes"/"evacs",
-        count_remaining, count_used, counter_category, reset_by).
-
-        CORRECTED (session 53): actually parsed into RobotPartsInfo
-        now, rather than returning raw JSON with a docstring pointing
-        at a parser that was never called -- a genuine architectural
-        gap found during a broader review, not new field-level
-        information."""
-        url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
-        data = await self._request("GET", url)
-        return RobotPartsInfo.from_json(data)
-
     async def reset_robot_parts(
         self,
         blid: str,
@@ -1294,7 +1623,7 @@ class PrimeRestClient:
             ]
             body["parts"] = entries
             body["num_parts"] = len(entries)
-        return await self._request("POST", url, body=body)
+        return await self._request_object("POST", url, body=body)
 
     async def get_serial_number_data(self, blid: str) -> RobotSerialInfo:
         """GET /v1/robots?robot_id={blid} -- NEW (session 15). CONFIRMED
@@ -1326,7 +1655,7 @@ class PrimeRestClient:
         empty or a simple trigger, no payload needed for the simplest
         case. No body included, until proven otherwise."""
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/echo"
-        return await self._request("POST", url)
+        return await self._request_object("POST", url)
 
     async def get_time_estimates(
         self,
@@ -1445,7 +1774,7 @@ RESOLVED (30 July 2026) -- and the earlier "not determinable"
             body["region_id"] = region_id
         if zone_id is not None:
             body["zone_id"] = zone_id
-        return await self._request("POST", url, body=body)
+        return await self._request_object("POST", url, body=body)
 
     async def get_clean_score_raw(self, p2map_id: str) -> Any:
         """POST /v1/p2maps/clean-score -- a per-ROOM cleanliness value.
@@ -1517,56 +1846,6 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         url = f"{self._http_base_auth}/v1/p2maps/clean-score"
         return await self._request("GET", url, query={"p2map_id": p2map_id})
 
-    async def get_automations_raw(self) -> Any:
-        """GET /v1/user/automations -- third-party triggers and
-        geofencing. NOT the schedule endpoint.
-
-        WHAT THIS SUBSYSTEM IS (APK, 2 August 2026). RoutineConstants
-        holds 66 entries, and they settle the purpose: hard-coded
-        service ids for August Home, Ecobee, Leviton, MyQ and Wyze;
-        geofencing keys (kLatitude, kLongitude, kRadius,
-        kEnterRegionLocationTriggerId); and behaviour options
-        (kContinueCleaning, kPauseAndNotify, kEndJob). So: "when I leave
-        the house, run favourite X", or "when Ecobee goes to Away".
-
-        `favorite_id` and `robot_commands` in the payload show it drives
-        the same command structures as favourites do.
-
-        A DIFFERENT DATA MODEL FROM SCHEDULES, not an alternative to
-        them -- automation_id vs schedule_id, time_window{hour,minute}
-        vs start/end, plus service_id/trigger_id, which schedules have
-        no counterpart for. Schedule management stays on
-        /v1/households/{id}/settings/schedule, the only path active in
-        the app's Kotlin.
-
-        THE ENDPOINT MAY NOT BE LIVE, and that is the open question this
-        method exists to settle. In liblegacyCore.so the string has
-        exactly ONE reference -- a static initialiser, recognisable by
-        the __cxa_atexit pattern, sitting between two IFTTT URLs. No
-        reader. Same signature as `sec_message` and `koz-v1.0.0`, both
-        of which turned out to be dead; actively used URLs show two or
-        three real consumers.
-
-        The app reaches the data through
-        AutomationDataUseCaseImpl::fetchAllAutomations() and on across
-        the Djinni boundary, so its real path is not resolvable
-        statically. A second Home Assistant integration
-        (a-mavrides/roomba_v4) calls this URL -- but reading its code,
-        that is NOT evidence the endpoint answers. It swallows any
-        exception into a debug log, defaults the result to {}, writes it
-        to a debug file, and no entity ever reads it. A 404 would look
-        identical to an empty response there, and nobody would notice.
-
-        So there is currently NO evidence for or against, only an
-        untested call in someone else's integration and a dead constant
-        here.
-
-        One read attempt on an account with automations configured
-        settles it either way, and costs nothing if the answer is no.
-        """
-        url = f"{self._http_base_auth}/v1/user/automations"
-        return await self._request("GET", url)
-
     async def reset_robot(
         self,
         blid: str,
@@ -1614,8 +1893,8 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         if send_wipe is not None:
             body["send_wipe"] = send_wipe
         if not body:
-            return await self._request("POST", url)
-        return await self._request("POST", url, body=body)
+            return await self._request_object("POST", url)
+        return await self._request_object("POST", url, body=body)
 
     async def get_notifications(self, blid: str, app_version: str = "2.2.4") -> dict[str, Any]:
         """GET /v1/robots/{blid}/timeline.
@@ -1660,7 +1939,7 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
         Do NOT treat this as working until this is
         resolved."""
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/timeline"
-        return await self._request(
+        return await self._request_object(
             "GET",
             url,
             query={
@@ -1786,67 +2065,237 @@ RESPONSE WIRE KEYS CONFIRMED (APK, 2 August 2026) -- as
             time_estimates=None,
         )
 
-    def _signer(self) -> AwsSigV4Signer:
-        return AwsSigV4Signer(
-            self._credentials.access_key_id,
-            self._credentials.secret_key,
-            self._credentials.session_token,
-        )
 
-    async def _request(
+class ClassicRestClient(CloudRestClient):
+    """The cloud calls of Classic robots (900 series, i/s/j series).
+
+    NEW IN 0.4.0. These are the requests ha_roomba_plus sent for Classic
+    robots through its own cloud_api.py up to 4.2.12, moved here
+    unchanged so both generations use one library. "Unchanged" is
+    literal and tested: the query and its order, the body bytes and so
+    the SigV4 signature match what 4.2.12 sent (tests/test_rest_client.py,
+    "Classic parity"). All of them are confirmed on Classic hardware in
+    the integration's field use.
+
+    Controlling a Classic robot is not part of this library -- that
+    stays local, over roombapy. Only its cloud calls live here.
+
+    Classic robots use pmaps; Prime robots use a different map system
+    (p2maps, PrimeRestClient.get_active_map_versions()). Where both
+    generations share an endpoint but the apps send it differently --
+    mission history, favorites, the part-counter write -- each client
+    sends its own generation's form. Whether the Prime forms also work
+    on a Classic robot is what `roombapy-prime-verify-classic-cloud`
+    (tools package) measures.
+
+    `app_id` is the id the account logged in with. The Classic app sends
+    it again with every mission-history request, so the client keeps it
+    and adds it by default (CloudAccount passes it in)."""
+
+    #: What the Classic app asks mission history for by default -- the
+    #: values ha_roomba_plus sent with every request up to 4.2.12.
+    MISSION_HISTORY_FILTER = "omit_quickly_canceled_not_scheduled"
+    MISSION_HISTORY_DONE_CODES = ("dndEnd", "returnHomeEnd")
+    MISSION_HISTORY_COUNT = 100
+
+    def __init__(
         self,
-        method: str,
-        url: str,
-        query: dict[str, str] | None = None,
-        body: dict[str, Any] | None = None,
-        _retry: bool = True,
-    ) -> Any:
-        parsed = urllib.parse.urlparse(url)
-        body_str = json.dumps(body) if body is not None else ""
-        headers = self._signer().signed_headers(
-            method=method,
-            service="execute-api",
-            region=self._credentials.region,
-            host=parsed.netloc,
-            path=parsed.path,
-            query_params=query or {},
-            body=body_str,
+        session: aiohttp.ClientSession,
+        http_base_auth: str,
+        credentials: CloudCredentials,
+        relogin: Relogin | None = None,
+        app_id: str | None = None,
+        *,
+        request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
+    ) -> None:
+        super().__init__(
+            session, http_base_auth, credentials, relogin, request_timeout=request_timeout
         )
+        self.app_id = app_id
 
-        request_kwargs: dict[str, Any] = {"params": query, "headers": headers}
-        if body is not None:
-            # NOTE: must send the EXACT same bytes we hashed for the
-            # signature -- aiohttp's json= would re-serialize
-            # independently (possibly different key order/whitespace)
-            # and invalidate the signature. data= sends our own string
-            # verbatim.
-            request_kwargs["data"] = body_str.encode()
+    async def get_mission_history(
+        self,
+        blid: str,
+        *,
+        app_id: str | None = None,
+        filter_type: str | None = MISSION_HISTORY_FILTER,
+        supported_done_codes: Sequence[str] | None = MISSION_HISTORY_DONE_CODES,
+        count: int | None = MISSION_HISTORY_COUNT,
+        before: int | None = None,
+    ) -> Any:
+        """GET /v1/{blid}/missionhistory with the Classic parameters --
+        `count` and `before` (a start time, for paging), where the Prime
+        app sends `maxReports` and `exclusiveStartTimestamp`.
 
-        method_fn = getattr(self._session, method.lower())
-        try:
-            async with method_fn(url, **request_kwargs) as resp:
-                if resp.status == 403 and _retry and self._relogin is not None:
-                    _LOGGER.debug("roombapy-prime REST: 403 -- reauthenticating")
-                    login_result = await self._relogin()
-                    self._credentials = login_result.credentials
-                    return await self._request(method, url, query, body, _retry=False)
-                return await self._parse_response(resp)
-        except aiohttp.ClientSSLError as exc:
-            _raise_clear_ssl_error(exc)
-        except aiohttp.ServerTimeoutError as exc:
-            _raise_clear_timeout_error(exc)
-        except aiohttp.ClientConnectorError as exc:
-            _raise_clear_connection_error(exc)
+        The query is built in Classic's own order -- app_id, filterType,
+        supportedDoneCodes, count, before -- so the request is the same
+        on the wire, not merely the same set of keys.
 
-    async def _parse_response(self, resp: aiohttp.ClientResponse) -> Any:
-        text = await resp.text()
-        if resp.status >= 400:
-            raise RestError(f"HTTP {resp.status} from {resp.url}", status=resp.status, raw_response=text)
-        if not text:
-            return {}
-        try:
-            return json.loads(text)
-        except JSONDecodeError as exc:
+        THE DEFAULTS ARE THE CLASSIC APP'S, so `get_mission_history(blid)`
+        is the request ha_roomba_plus sent: its filter, its two done
+        codes, 100 records, and the account's `app_id` (this client's
+        own, unless another is passed). Pass None to leave a key out.
+
+        `count` AND `before` DO NOTHING. Measured on a Roomba 980
+        (R980040) and an i7 (i755840): 10 asked, every mission of the
+        cloud's recent window returned (33 and 67); `before` answered
+        with that same window again. The request is kept as it is
+        because it is the one ha_roomba_plus has always sent for its
+        regular refresh. To page, use get_mission_history_page().
+
+        Returns a LIST of mission records (see
+        tests/fixtures/classic_missionhistory_i3plus.json), as-is."""
+        url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/missionhistory"
+        query: dict[str, str] = {}
+        app_id = app_id if app_id is not None else self.app_id
+        if app_id is not None:
+            query["app_id"] = app_id
+        if filter_type is not None:
+            query["filterType"] = filter_type
+        if supported_done_codes:
+            query["supportedDoneCodes"] = ",".join(supported_done_codes)
+        if count is not None:
+            query["count"] = str(count)
+        if before is not None:
+            query["before"] = str(before)
+        return await self._request("GET", url, query=query)
+
+    async def get_mission_history_page(
+        self,
+        blid: str,
+        *,
+        before: int | None = None,
+        page_size: int | None = MISSION_HISTORY_COUNT,
+        filter_type: str | None = MISSION_HISTORY_FILTER,
+        supported_done_codes: Sequence[str] | None = MISSION_HISTORY_DONE_CODES,
+    ) -> Any:
+        """GET /v1/{blid}/missionhistory with the parameters that page on
+        a Classic robot. NEW IN 0.4.0b3.
+
+        `page_size` is sent as `maxReports`, `before` (a mission start
+        time; only older missions come back) as `exclusiveStartTimestamp`
+        -- the names from `FetchMissionHistoryRequest`, as
+        PrimeRestClient.get_mission_history() sends them. No `app_id`:
+        the measurements below sent none. (The Roomba Home app 3.0.0 does
+        not page at all: it asks with `app_id` and `maxAge=10`.)
+
+        MEASURED ON TWO CLASSIC GENERATIONS with
+        `roombapy-prime-verify-classic-cloud`: a Roomba 980 (R980040) and
+        an i7 (i755840). Both returned exactly 10 records for 10 asked,
+        then, from the oldest start time, 10 older ones with none
+        repeated -- and the same fields as get_mission_history(). The
+        Classic parameters did neither (see get_mission_history()).
+
+        NOT MEASURED: a page size other than 10. The default is 100, the
+        Classic app's own count. A caller that pages should treat an
+        error as "no further pages" rather than as a failed refresh.
+
+        Returns a LIST of mission records, as-is."""
+        url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/missionhistory"
+        # PrimeRestClient.get_mission_history()'s order: maxReports,
+        # filterType, exclusiveStartTimestamp, supportedDoneCodes -- the
+        # request the measurements made, not merely the same keys.
+        query: dict[str, str] = {}
+        if page_size is not None:
+            query["maxReports"] = str(page_size)
+        if filter_type is not None:
+            query["filterType"] = filter_type
+        if before is not None:
+            query["exclusiveStartTimestamp"] = str(before)
+        if supported_done_codes:
+            query["supportedDoneCodes"] = ",".join(supported_done_codes)
+        return await self._request("GET", url, query=query)
+
+    async def get_favorites_raw(self, app_edition: str | None = None) -> list[dict[str, Any]]:
+        """The Classic request: no `app_edition`. The base default,
+        `app_edition=1`, is the Prime app's. Raw as in the base: an
+        object with no `favorites` key comes back whole, because that
+        is the case a diagnostics download is taken for."""
+        return await super().get_favorites_raw(app_edition=app_edition)
+
+    async def get_favorites(self) -> list[dict[str, Any]]:
+        """The favourites as a list, and ONLY favourites: an answer with
+        no list in it is no favourites, not one favourite made of the
+        whole answer. That is what ha_roomba_plus built its favourite
+        buttons from -- a button per entry, so an object passed through
+        whole became a button with no name and no id.
+
+        Use get_favorites_raw() to see what the server actually sent."""
+        url = f"{self._http_base_auth}/v1/user/favorites"
+        data = await self._request("GET", url)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get("favorites"), list):
+            return list(data["favorites"])
+        return []
+
+    async def get_automations(self) -> dict[str, Any]:
+        """GET /v1/user/automations as an object; anything else comes
+        back as `{}`, as it did in ha_roomba_plus. The raw answer is
+        get_automations_raw()."""
+        data = await self.get_automations_raw()
+        return data if isinstance(data, dict) else {}
+
+    async def get_pmaps(self, blid: str) -> list[dict[str, Any]]:
+        """GET /v1/{blid}/pmaps?visible=true&activeDetails=2 -- the
+        Classic persistent-map list. Each entry carries `pmap_id`,
+        `active_pmapv_id` and `active_pmapv_details` (regions, zones,
+        the UMF header). Anything other than a list comes back empty,
+        as it did in the integration."""
+        url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/pmaps"
+        data = await self._request(
+            "GET", url, query={"visible": "true", "activeDetails": "2"}
+        )
+        return data if isinstance(data, list) else []
+
+    async def get_pmap_umf(
+        self, blid: str, pmap_id: str, version_id: str
+    ) -> dict[str, Any]:
+        """GET /v1/{blid}/pmaps/{pmap_id}/versions/{version_id}/umf
+        ?activeDetails=2 -- one Classic map version in Unified Map
+        Format, with room polygons (get_pmaps() regions carry metadata
+        only).
+
+        AN ANSWER THAT IS NOT A NON-EMPTY OBJECT RAISES RestError --
+        including an empty body, which the request layer turns into `{}`.
+        An empty dict would be read as a map with nothing on it:
+        ha_roomba_plus shows a mission map from this, and a server
+        answering oddly would then draw a blank map instead of saying
+        the map is unavailable, which is what it said until 4.2.12."""
+        url = (
+            f"{self._http_base_auth}/v1/{_path_segment(blid)}"
+            f"/pmaps/{_path_segment(pmap_id)}"
+            f"/versions/{_path_segment(version_id)}/umf"
+        )
+        data = await self._request("GET", url, query={"activeDetails": "2"})
+        if not isinstance(data, dict) or not data:
             raise RestError(
-                f"Non-JSON response from {resp.url}: {text[:300]}", status=resp.status, raw_response=text
-            ) from exc
+                f"UMF for pmap {pmap_id} version {version_id} is not a non-empty object "
+                f"({type(data).__name__}, {len(data) if isinstance(data, (dict, list)) else '-'} entries)",
+                raw_response=str(data)[:300],
+            )
+        return data
+
+    async def set_robot_part_counter(
+        self, blid: str, part_id: str, counter: int
+    ) -> dict[str, Any]:
+        """POST /v1/robots/{blid}/parts with the body Classic robots
+        accept: `{"parts": [{"part_id": ..., "counter": ...}]}`, sent
+        compact, byte for byte what the integration sent.
+
+        `counter` is PERCENT USED, the field get_robot_parts() returns,
+        so 0 means "this part is new". Measured on Classic, where two
+        other bodies fail without saying so: a flat
+        `{"part_id": "35"}` is answered 200 with `num_parts: 0` and
+        changes nothing, and PUT/PATCH come back 403 as if the
+        credentials were wrong.
+
+        NOT reset_robot_parts(). That one sends the Prime app's DTO,
+        which adds `robot_id` and `num_parts`, and is inferred rather
+        than measured. Whether Classic accepts it is what
+        `verify-classic-cloud --compare-part-counter-body` answers; until
+        then the two stay apart."""
+        url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
+        body = {"parts": [{"part_id": str(part_id), "counter": int(counter)}]}
+        data = await self._request("POST", url, body=body, compact_body=True)
+        return data if isinstance(data, dict) else {}

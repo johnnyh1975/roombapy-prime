@@ -37,6 +37,8 @@ import aiohttp
 from roombapy_prime.diagnostics import Report
 from roombapy_prime.auth import is_prime_sku, login
 from roombapy_prime.prime_factory import PrimeFactory
+from roombapy_prime.account import CloudAccount
+from roombapy_prime.rest_client import ClassicRestClient, PrimeRestClient
 
 
 def add_account_arguments(parser: argparse.ArgumentParser) -> None:
@@ -302,6 +304,50 @@ async def connected_robot(
                 await robot.connect()
                 report.add("MQTT connection", "OK")
             yield robot, report
+        finally:
+            report.redact(username, password)
+            if print_summary:
+                report.print_final_summary()
+
+
+@asynccontextmanager
+async def logged_in_cloud_clients(
+    username: str, password: str, country_code: str, blid: str,
+    report: Report | None = None, print_summary: bool = True,
+) -> AsyncIterator[tuple[ClassicRestClient, PrimeRestClient, str, str | None, Report]]:
+    """connected_robot() without the robot: login and both REST clients,
+    for scripts that never touch MQTT.
+
+    WHY NOT connected_robot(). That builds a PrimeRobot, and a
+    PrimeRobot needs an MQTT connection token for its target. A Classic
+    robot's REST calls need none of that, and a script measuring
+    Classic accounts should not depend on a Prime-side assumption about
+    what their login response carries.
+
+    Same guarantees otherwise: one login, the account's robots shown
+    before anything happens, the password redacted from the report
+    however the block exits. Yields a ClassicRestClient and a
+    PrimeRestClient from one CloudAccount -- one session, one login, one
+    relogin; a script comparing the two generations' forms of a call
+    needs both -- then
+    the chosen BLID, that robot's SKU as the login response reports it
+    (None if absent), and the report."""
+    report = report if report is not None else Report()
+    async with aiohttp.ClientSession() as session:
+        try:
+            account = await CloudAccount.login(session, username, password, country_code)
+            login_result = account.login_result
+            chosen = pick_robot_interactively(login_result, blid)
+            if chosen is None:
+                raise RuntimeError(
+                    "No robot chosen -- aborting rather than picking one. Pass --blid or set "
+                    "ROOMBAPY_PRIME_BLID."
+                )
+            _report_account_robots(login_result, chosen, report)
+            robots = getattr(login_result, "robots", None) or {}
+            sku = field(robots.get(chosen), "sku", None)
+            report.add("Login", "OK", f"BLID={chosen} sku={sku or '?'}")
+            yield account.classic_rest(), account.prime_rest(), chosen, sku, report
         finally:
             report.redact(username, password)
             if print_summary:

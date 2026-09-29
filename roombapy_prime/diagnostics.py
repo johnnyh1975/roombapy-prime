@@ -697,7 +697,8 @@ async def run(
 
 
 async def _fetch_bundle(robot: Any, url: str) -> bytes:
-    return await robot.download_map_bundle(url)
+    bundle: bytes = await robot.download_map_bundle(url)
+    return bundle
 
 
 async def _try_watch_state_briefly(report: Report, robot: Any, timeout_seconds: float = 3.0) -> None:
@@ -760,8 +761,9 @@ def _extract_first_id(data: Any, keys: list[str]) -> str | None:
     docstring)."""
     if isinstance(data, dict):
         for key in keys:
-            if key in data and isinstance(data[key], str):
-                return data[key]
+            value = data.get(key)
+            if isinstance(value, str):
+                return value
         for value in data.values():
             found = _extract_first_id(value, keys)
             if found:

@@ -25,12 +25,14 @@ from collections.abc import Callable
 import pytest
 
 from roombapy_prime.auth import ConnectionToken
+from roombapy_prime.errors import CloudErrorReason
 from roombapy_prime.mqtt_client import (
     PrimeMqttClient,
     ShadowConnectionError,
     ShadowError,
     ShadowResponse,
     ShadowSSLError,
+    SubscriptionRejectedError,
     _shadow_base,
 )
 
@@ -206,8 +208,10 @@ def test_get_shadow_named_times_out_on_ephemeral() -> None:
     client, fake = _connected_client(blid="0000000000000000")
     fake.on_publish_react = None
 
-    with pytest.raises(ShadowError, match="No response"):
+    with pytest.raises(ShadowError, match="No response") as excinfo:
         client.get_shadow(named="rw-settings", timeout=0.5)
+
+    assert excinfo.value.reason is CloudErrorReason.TIMEOUT
 
 
 # --- get_shadow: rejected path (synthetic — no real rejected capture) --
@@ -219,8 +223,10 @@ def test_get_shadow_rejected() -> None:
     client, fake = _connected_client()
     fake.on_publish_react = _react_with(client, "get", "rejected", {"code": 404, "message": "no shadow"})
 
-    with pytest.raises(ShadowError, match="rejected"):
+    with pytest.raises(ShadowError, match="rejected") as excinfo:
         client.get_shadow(timeout=1.0)
+
+    assert excinfo.value.reason is CloudErrorReason.SHADOW_REJECTED
 
 
 # --- update_shadow: real accepted-write capture -------------------------
@@ -249,8 +255,10 @@ def test_get_shadow_before_connect_raises_a_readable_error() -> None:
     asserted, four frames down."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="x")
 
-    with pytest.raises(ShadowError, match="Not connected"):
+    with pytest.raises(ShadowError, match="Not connected") as excinfo:
         client.get_shadow(timeout=0.1)
+
+    assert excinfo.value.reason is CloudErrorReason.NOT_CONNECTED
 
 
 # --- persistent subscribe/unsubscribe (continuous dispatch) -------------
@@ -636,6 +644,7 @@ def test_reconnect_before_connect_raises_a_readable_error() -> None:
     message = str(exc.value)
     assert "Not connected" in message
     assert "MQTT, not REST" in message, "must say why a shadow read needs a connection"
+    assert exc.value.reason is CloudErrorReason.NOT_CONNECTED
 
 
 def test_on_disconnect_sets_connected_false_and_stores_reason() -> None:
@@ -830,8 +839,11 @@ def test_connect_ssl_error_gets_clear_message(monkeypatch) -> None:
     with pytest.raises(ShadowSSLError) as excinfo:
         client.connect()
 
-    assert "certificate" in str(excinfo.value).lower()
-    assert "temporary" in str(excinfo.value).lower()
+    # Since 0.4.0 diagnosed as login does -- "expired" is iRobot's side
+    # and resolves; this used to say "almost always temporary" for every
+    # certificate failure, the local trust store included.
+    assert "certificate has expired" in str(excinfo.value)
+    assert excinfo.value.reason is CloudErrorReason.SSL_CERTIFICATE_EXPIRED
     assert isinstance(excinfo.value.__cause__, ssl.SSLError)
 
 
@@ -984,6 +996,7 @@ class TestSubscribeAndWaitRejectionDetection:
             client.subscribe("restricted/topic", lambda msg: None)
 
         assert "restricted/topic" in str(exc_info.value)
+        assert exc_info.value.reason is CloudErrorReason.SUBSCRIPTION_REJECTED
 
     def test_mixed_success_and_rejection_across_multiple_topics_reports_only_the_rejected_one(self):
         """_subscribe_and_wait() takes a list of topics -- confirms the
@@ -1350,22 +1363,25 @@ class TestAShadowGetIsActuallySent:
     def test_a_refused_publish_says_the_request_never_left(self):
         from roombapy_prime.mqtt_client import ShadowError
 
-        with pytest.raises(ShadowError, match="never left"):
+        with pytest.raises(ShadowError, match="never left") as excinfo:
             self._confirm(rc=4)()
+        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
 
     def test_a_queued_but_unsent_publish_is_caught(self):
         """The connection accepts messages and does not deliver them --
         the state that looks healthiest and works least."""
         from roombapy_prime.mqtt_client import ShadowError
 
-        with pytest.raises(ShadowError, match="queued but never sent"):
+        with pytest.raises(ShadowError, match="queued but never sent") as excinfo:
             self._confirm(published=False)()
+        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
 
     def test_an_unconfirmable_publish_is_reported(self):
         from roombapy_prime.mqtt_client import ShadowError
 
-        with pytest.raises(ShadowError, match="could not be confirmed"):
+        with pytest.raises(ShadowError, match="could not be confirmed") as excinfo:
             self._confirm(raises=RuntimeError("loop not running"))()
+        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
 
     def test_a_stand_in_client_is_tolerated(self):
         """Refusing on None would fail tests rather than find bugs."""
@@ -1698,3 +1714,165 @@ def test_dispatch_survives_a_subscription_starting_mid_message() -> None:
     client._on_message(client, None, msg)
 
     assert seen == ["first"]
+
+
+# ── reason: what to tell a person (0.4.0) ──────────────────────────────────
+#
+# A plain ShadowError covers a refused publish, a missing connection, a
+# timeout and a rejected shadow write alike, so the class alone says
+# nothing a translation could use. These cover the raises the tests
+# above do not reach.
+
+
+@pytest.mark.parametrize(
+    ("openssl_says", "reason"),
+    [
+        ("unable to get local issuer certificate", CloudErrorReason.SSL_LOCAL_TRUST_STORE),
+        ("certificate has expired", CloudErrorReason.SSL_CERTIFICATE_EXPIRED),
+        ("some unfamiliar TLS failure", CloudErrorReason.SSL_UNVERIFIED),
+    ],
+    ids=["local-trust-store", "expired", "unknown"],
+)
+def test_connect_certificate_failure_is_diagnosed_as_login_diagnoses_it(
+    monkeypatch, openssl_says, reason
+) -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
+    monkeypatch.setattr(
+        client, "_build_client", lambda: _NetworkFailingRawClient(ssl.SSLCertVerificationError(openssl_says))
+    )
+
+    with pytest.raises(ShadowSSLError) as excinfo:
+        client.connect()
+
+    assert excinfo.value.reason is reason
+    assert "almost always a temporary problem" not in str(excinfo.value)
+
+
+def test_connect_without_any_connection_is_connection_failed(monkeypatch) -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
+    monkeypatch.setattr(
+        client, "_build_client", lambda: _NetworkFailingRawClient(OSError("Name or service not known"))
+    )
+
+    with pytest.raises(ShadowConnectionError) as excinfo:
+        client.connect()
+
+    assert excinfo.value.reason is CloudErrorReason.CONNECTION_FAILED
+
+
+class _BrokerRawClient(_NetworkFailingRawClient):
+    """connect() succeeds at the socket level; the broker then answers
+    with `connack` through the client's own _on_connect -- or, with
+    None, never answers at all."""
+
+    def __init__(self, client: PrimeMqttClient, connack: str | None) -> None:
+        super().__init__(OSError("unused"))
+        self._owner = client
+        self._connack = connack
+
+    def connect(self, endpoint: str, port: int = 443, keepalive: int = 300) -> None:
+        return None
+
+    def loop_start(self) -> None:
+        if self._connack is not None:
+            from paho.mqtt.packettypes import PacketTypes
+            from paho.mqtt.reasoncodes import ReasonCode
+
+            self._owner._on_connect(self, None, None, ReasonCode(PacketTypes.CONNACK, self._connack))
+
+
+def test_an_accepted_connack_connects(monkeypatch) -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
+    monkeypatch.setattr(client, "_build_client", lambda: _BrokerRawClient(client, "Success"))
+
+    client.connect(timeout=0.2)
+
+    assert client._connected is True
+
+
+def test_a_refused_connack_is_connect_refused(monkeypatch) -> None:
+    """TLS worked; the broker said no. Not a network problem."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
+    monkeypatch.setattr(client, "_build_client", lambda: _BrokerRawClient(client, "Not authorized"))
+
+    with pytest.raises(ShadowError, match="Connect failed: Not authorized") as excinfo:
+        client.connect(timeout=0.2)
+
+    assert excinfo.value.reason is CloudErrorReason.CONNECT_REFUSED
+
+
+def test_no_connack_in_time_is_a_timeout(monkeypatch) -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
+    monkeypatch.setattr(client, "_build_client", lambda: _BrokerRawClient(client, None))
+
+    with pytest.raises(ShadowError, match="timed out") as excinfo:
+        client.connect(timeout=0.2)
+
+    assert excinfo.value.reason is CloudErrorReason.TIMEOUT
+
+
+def test_update_shadow_rejected_and_unanswered() -> None:
+    client, fake = _connected_client()
+    fake.on_publish_react = _react_with(client, "update", "rejected", {"code": 400, "message": "no"})
+    with pytest.raises(ShadowError, match="UPDATE rejected") as rejected:
+        client.update_shadow({"binPause": False}, timeout=1.0)
+
+    client, fake = _connected_client()
+    fake.on_publish_react = None
+    with pytest.raises(ShadowError, match="No response to UPDATE") as unanswered:
+        client.update_shadow({"binPause": False}, timeout=0.3)
+
+    assert rejected.value.reason is CloudErrorReason.SHADOW_REJECTED
+    assert unanswered.value.reason is CloudErrorReason.TIMEOUT
+
+
+def test_publishing_before_connect_is_not_connected() -> None:
+    """A caller's mistake, not the cloud's -- a translation should not
+    send anyone to check their internet for it."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
+
+    with pytest.raises(ShadowError) as timeline:
+        client.request_mission_timeline("irbt-prefix", 1)
+    with pytest.raises(ShadowError) as command:
+        client.publish_cmd_payload("irbt-prefix", {"command": "start"})
+
+    assert timeline.value.reason is CloudErrorReason.NOT_CONNECTED
+    assert command.value.reason is CloudErrorReason.NOT_CONNECTED
+
+
+@pytest.mark.parametrize(
+    "answer", [(4, 1), (0, None)], ids=["paho-no-conn", "success-without-mid"]
+)
+def test_a_subscription_never_sent_is_not_a_rejection(answer) -> None:
+    """The broker never saw it, so "the broker's policy denied this"
+    would be the wrong thing to say."""
+    client, fake = _connected_client()
+    fake.subscribe = lambda topic, qos=1: answer
+
+    with pytest.raises(SubscriptionRejectedError, match="never sent") as excinfo:
+        client._subscribe_and_wait(["some/topic"], timeout=0.2)
+
+    assert excinfo.value.reason is CloudErrorReason.SUBSCRIPTION_NOT_SENT
+
+
+def test_no_client_after_reconnect_is_a_cloud_error() -> None:
+    """Was a builtin ConnectionError, past every `except CloudError`."""
+    from roombapy_prime.errors import CloudError
+
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
+    # The "unreachable in practice" case: a reconnect that leaves no client.
+    client.reconnect = lambda timeout=0.0: None  # type: ignore[method-assign]
+
+    with pytest.raises(CloudError) as excinfo:
+        client._subscribe_and_wait(["some/topic"], timeout=0.2)
+
+    assert isinstance(excinfo.value, ShadowError)
+    assert excinfo.value.reason is CloudErrorReason.CONNECTION_FAILED
+
+
+def test_a_mission_timeline_request_is_published_on_a_connection() -> None:
+    client, fake = _connected_client()
+
+    assert client.request_mission_timeline("irbt-prefix", 7) is True
+    topic, payload = fake.published[-1]
+    assert json.loads(payload) == {"timelineRequestId": 7}

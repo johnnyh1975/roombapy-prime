@@ -6,11 +6,20 @@
 [![CI](https://github.com/johnnyh1975/roombapy-prime/actions/workflows/ci.yml/badge.svg)](https://github.com/johnnyh1975/roombapy-prime/actions/workflows/ci.yml)
 [![License](https://img.shields.io/pypi/l/roombapy-prime)](LICENSE)
 
-An independent, async Python client library for iRobot's cloud-connected
-**"Prime"/V4-generation** robots — the successor line to the Classic
-protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
+An independent, async Python client library for **iRobot's cloud**, for both
+robot generations:
 
-> **Status: v0.3.4.** Reading and writing both work
+- **Prime/V4 robots** — the successor line to the Classic devices — are
+  reached entirely through it: login, cloud MQTT (state, commands, live
+  map) and the REST API (maps, favorites, schedules, mission history).
+- **Classic robots** (900 series, i/s/j series) are controlled locally by
+  [roombapy](https://github.com/pschmitt/roombapy). This library carries
+  their **cloud side**: maps (`pmaps`), mission history, part counters,
+  favorites and automations.
+
+One login per account serves every robot on it (`CloudAccount`).
+
+> **Status: v0.4.0.** Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -31,6 +40,13 @@ protocol devices supported by [roombapy](https://github.com/pschmitt/roombapy).
 > One thing has still never been tried: a write carrying a **modified**
 > list. Every confirmed write resent zones unchanged. See
 > [Confidence & known gaps](#confidence--known-gaps).
+>
+> **One account, both generations (0.4.0).** `CloudAccount` logs in once
+> per account and hands out the right client per robot. `ClassicRestClient`
+> carries the Classic cloud calls of ha_roomba_plus — maps (`pmaps`),
+> mission history, part counters, favorites, automations — byte for byte as
+> the integration sent them. Controlling a Classic robot stays local
+> (roombapy). See [Classic robots (REST)](docs/API_REFERENCE.md#classic-robots-rest).
 >
 > The diagnostic scripts live in a **separate distribution**
 > ([`tools/`](tools/README.md)) so that installing this library never puts
@@ -155,13 +171,14 @@ and model organized by feature area, with confidence markers per item —
 or the module docstrings in `roombapy_prime/` directly for the full
 evidence behind each one.
 
-Eleven runnable examples are in [`examples/`](examples/). Each reads
+Twelve runnable examples are in [`examples/`](examples/). Each reads
 credentials from environment variables; none hardcode a password, and
 every one that writes anything puts it behind a flag.
 
 | Example | Covers |
 |---|---|
 | `basic_usage.py` | Log in, connect, read state, watch for updates |
+| `classic_cloud.py` | Classic robots' cloud side: one login for the account, maps, mission history, part counters |
 | `clean_regions.py` | Send the robot to named rooms and zones |
 | `mission_control.py` | Start, pause, resume, dock |
 | `schedules.py` | Reading and writing cleaning schedules |
@@ -184,7 +201,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-1079+ tests for the library, plus 499 for the command-line tools —
+1301+ tests for the library, plus 526 for the command-line tools —
 structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, genuine
 multi-threading tests for the connection lock, and more. This validates
@@ -314,6 +331,15 @@ and commands carrying versions hours out of date started missions
 regardless.
 
 ### Known broken
+
+- **A robot dropped out of its owner's account after a login** — one
+  report, cause not found. A Roomba Plus 505 Combo bought second-hand
+  disappeared from the Roomba Home app three times, each right after
+  the validator logged in; signing out of every phone and back in
+  through the app kept it. The login sends nothing that adds, removes
+  or moves a robot, and the same login works on every other account
+  tested. **If a robot of yours has had a previous owner, keep this in
+  mind before running the tools.**
 
 - **A virtual wall write carrying a CHANGED list** — never attempted.
   The HTTP 500 that used to sit here was solved: `virwall` starts with a
