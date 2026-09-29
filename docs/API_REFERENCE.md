@@ -392,7 +392,8 @@ signature as 4.2.12 sent (`tests/test_rest_client.py`, "Classic parity").
 | `get_pmaps(blid) -> list[dict]` | 🟢 (confirmed on Classic) | `GET /v1/{blid}/pmaps?visible=true&activeDetails=2`. Classic's map system; Prime uses `p2maps`. Non-list answers come back as `[]`. |
 | `get_pmap_umf(blid, pmap_id, version_id) -> dict` | 🟢 (confirmed on Classic) | `…/pmaps/{pmap_id}/versions/{version_id}/umf?activeDetails=2` — room polygons. **Raises `RestError` for anything but a non-empty object**, empty body included: an empty map would be drawn blank instead of reported unavailable. |
 | `set_robot_part_counter(blid, part_id, counter) -> dict` | 🟢 (confirmed on Classic, `counter=0`) | Body `{"parts":[{"part_id":…,"counter":…}]}`, sent compact. `counter` is **percent used**; `0` means new, and `0` is the only value ever written in the field. The Prime client's `reset_robot_parts()` sends a different, unmeasured body. |
-| `get_mission_history(blid, *, app_id=None, filter_type=…, supported_done_codes=…, count=100, before=None) -> Any` | 🟢 (confirmed on Classic) | Classic parameter names, in Classic's order. **The defaults are the Classic app's** — `omit_quickly_canceled_not_scheduled`, `dndEnd,returnHomeEnd`, 100 records, and the client's `app_id` — so `get_mission_history(blid)` is the request ha_roomba_plus sent. `None` leaves a key out. Returns a **list**. |
+| `get_mission_history(blid, *, app_id=None, filter_type=…, supported_done_codes=…, count=100, before=None) -> Any` | 🟢 (confirmed on Classic) | Classic parameter names, in Classic's order. **The defaults are the Classic app's** — `omit_quickly_canceled_not_scheduled`, `dndEnd,returnHomeEnd`, 100 records, and the client's `app_id` — so `get_mission_history(blid)` is the request ha_roomba_plus sent. `None` leaves a key out. Returns a **list**. **`count` and `before` are ignored by the server** (measured on a 980 and an i7, below) — to page, use `get_mission_history_page()`. |
+| `get_mission_history_page(blid, *, before=None, page_size=100, filter_type=…, supported_done_codes=…) -> Any` | 🟢 (confirmed on Classic, page size 10) | **New in 0.4.0b3.** The parameters that page on Classic robots (`PrimeRestClient.get_mission_history()`'s names): `page_size` → `maxReports`, `before` → `exclusiveStartTimestamp` (only missions that started earlier). No `app_id`. Same keys, order and signature as `PrimeRestClient.get_mission_history()` with the same values. A page size other than 10 is not measured; treat an error as "no further pages". Returns a **list**. |
 | `get_favorites() -> list[dict]` | 🟢 (confirmed on Classic) | Only favourites: an answer without a list is `[]`, not one favourite made of the whole answer. `get_favorites_raw()` (default: no `app_edition`) shows what the server sent. |
 | `get_automations() -> dict` | 🟢 (confirmed on Classic) | An object, or `{}`. The raw answer is `get_automations_raw()`. |
 | `get_robot_parts_raw(blid)`, `get_robot_parts(blid)` | 🟢 (confirmed on Classic) | From the base. Raw keeps every key; the typed one parses the Classic capture completely. |
@@ -412,10 +413,31 @@ for mission history, `app_edition=1`, the Prime part-counter body — is what
 | Part counters | parts 30, 31, 32 at `-1`, no minutes: the cloud does not track a 980's consumables | — |
 
 So on this robot the Classic history parameters do nothing and the Prime
-ones do what they say. Before the history call is unified, the same
-measurement is wanted on an i/j/s-series robot — the 980 is the oldest
-platform in the Classic table. The part-counter body is still unmeasured
-on Classic: a 980 has no counter to reset.
+ones do what they say.
+
+**Second measurement, Roomba i7 (i755840), 27 Sep 2026:**
+
+| Call | Classic form | Prime form |
+|---|---|---|
+| Mission history, page size | `count` **ignored**: 10 asked, all 67 missions returned | `maxReports` honoured: 10 asked, 10 returned |
+| Mission history, paging | `before` **ignored**: the same 67 missions again | `exclusiveStartTimestamp` works: the next 10, all older, none repeated |
+| Mission history, fields | — | the same 31 fields as the Classic answer |
+| Favorites | the account's 7 favourites | **nothing** with `app_edition=1` — the Classic form stays |
+| Part counters | parts 6, 7, 8, 139, all tracked | — |
+
+Two Classic generations, the oldest and an i-series, agree, so paging
+now uses `maxReports`/`exclusiveStartTimestamp`
+(`get_mission_history_page()`, 0.4.0b3).
+
+"Prime form" in these tables means what `PrimeRestClient` sends. The
+names come from `FetchMissionHistoryRequest`. The Roomba Home app 3.0.0
+itself does not use them: its `MissionHistoryRequest` sends `app_id`,
+`maxAge=10`, `filterType` and `supportedDoneCodes`, and does not page
+(APK analysis, 27 Sep 2026). What the server does with the paging
+parameters is what the two measurements show.
+`get_mission_history()` keeps the Classic form: it is the request
+ha_roomba_plus has always made for its regular refresh. The part-counter
+body is still unmeasured on Classic: nobody has had a part to reset.
 
 ---
 

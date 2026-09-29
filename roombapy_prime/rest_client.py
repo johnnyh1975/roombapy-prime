@@ -2136,6 +2136,13 @@ class ClassicRestClient(CloudRestClient):
         codes, 100 records, and the account's `app_id` (this client's
         own, unless another is passed). Pass None to leave a key out.
 
+        `count` AND `before` DO NOTHING. Measured on a Roomba 980
+        (R980040) and an i7 (i755840): 10 asked, every mission of the
+        cloud's recent window returned (33 and 67); `before` answered
+        with that same window again. The request is kept as it is
+        because it is the one ha_roomba_plus has always sent for its
+        regular refresh. To page, use get_mission_history_page().
+
         Returns a LIST of mission records (see
         tests/fixtures/classic_missionhistory_i3plus.json), as-is."""
         url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/missionhistory"
@@ -2151,6 +2158,52 @@ class ClassicRestClient(CloudRestClient):
             query["count"] = str(count)
         if before is not None:
             query["before"] = str(before)
+        return await self._request("GET", url, query=query)
+
+    async def get_mission_history_page(
+        self,
+        blid: str,
+        *,
+        before: int | None = None,
+        page_size: int | None = MISSION_HISTORY_COUNT,
+        filter_type: str | None = MISSION_HISTORY_FILTER,
+        supported_done_codes: Sequence[str] | None = MISSION_HISTORY_DONE_CODES,
+    ) -> Any:
+        """GET /v1/{blid}/missionhistory with the parameters that page on
+        a Classic robot. NEW IN 0.4.0b3.
+
+        `page_size` is sent as `maxReports`, `before` (a mission start
+        time; only older missions come back) as `exclusiveStartTimestamp`
+        -- the names from `FetchMissionHistoryRequest`, as
+        PrimeRestClient.get_mission_history() sends them. No `app_id`:
+        the measurements below sent none. (The Roomba Home app 3.0.0 does
+        not page at all: it asks with `app_id` and `maxAge=10`.)
+
+        MEASURED ON TWO CLASSIC GENERATIONS with
+        `roombapy-prime-verify-classic-cloud`: a Roomba 980 (R980040) and
+        an i7 (i755840). Both returned exactly 10 records for 10 asked,
+        then, from the oldest start time, 10 older ones with none
+        repeated -- and the same fields as get_mission_history(). The
+        Classic parameters did neither (see get_mission_history()).
+
+        NOT MEASURED: a page size other than 10. The default is 100, the
+        Classic app's own count. A caller that pages should treat an
+        error as "no further pages" rather than as a failed refresh.
+
+        Returns a LIST of mission records, as-is."""
+        url = f"{self._http_base_auth}/v1/{_path_segment(blid)}/missionhistory"
+        # PrimeRestClient.get_mission_history()'s order: maxReports,
+        # filterType, exclusiveStartTimestamp, supportedDoneCodes -- the
+        # request the measurements made, not merely the same keys.
+        query: dict[str, str] = {}
+        if page_size is not None:
+            query["maxReports"] = str(page_size)
+        if filter_type is not None:
+            query["filterType"] = filter_type
+        if before is not None:
+            query["exclusiveStartTimestamp"] = str(before)
+        if supported_done_codes:
+            query["supportedDoneCodes"] = ",".join(supported_done_codes)
         return await self._request("GET", url, query=query)
 
     async def get_favorites_raw(self, app_edition: str | None = None) -> list[dict[str, Any]]:

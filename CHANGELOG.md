@@ -6,6 +6,41 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.4.0] - 2026-09-29
+
+The first stable release of the 0.4 line. The code is 0.4.0b3's,
+unchanged; this entry only marks the release. What changed since 0.3.4
+is in the three beta entries below: one login per account for both
+robot generations (`CloudAccount`), the Classic cloud calls
+(`ClassicRestClient`), a time limit on every request, one error base
+(`CloudError`) with a `reason` on every error, and paging of Classic
+mission history. Summary for upgraders: `release-notes/v0.4.0.md`.
+
+## [0.4.0b3] - 2026-09-27
+
+### Added
+
+- **`ClassicRestClient.get_mission_history_page()`** pages a Classic
+  robot's mission history with the parameters that work on it:
+  `maxReports` and `exclusiveStartTimestamp`, with no `app_id`. The
+  request is the same, key for key, as
+  `PrimeRestClient.get_mission_history()` sends with those values. (The
+  parameter names come from `FetchMissionHistoryRequest`; the Roomba
+  Home app 3.0.0 itself asks with `maxAge=10` and does not page.)
+
+### Documented
+
+- **Measured on an i7 (i755840):** the same result as on the 980. The
+  Classic `count` and `before` parameters are ignored (all 67 missions,
+  twice). `maxReports` and `exclusiveStartTimestamp` work, with the same
+  31 fields. Favorites come back only without `app_edition`. With two
+  Classic generations agreeing, paging uses `maxReports` and
+  `exclusiveStartTimestamp`. `get_mission_history()` keeps the Classic
+  form for the first page.
+- **A second-hand Roomba Plus 505 Combo dropped out of its account**
+  after validator logins. The cause was not found; see "Known broken" in
+  the README.
+
 ## [0.4.0b2] - 2026-09-26
 
 From the first field test of 0.4.0b1, on a Roomba 980.

@@ -19,7 +19,7 @@ robot generations:
 
 One login per account serves every robot on it (`CloudAccount`).
 
-> **Status: v0.4.0-beta.** Reading and writing both work
+> **Status: v0.4.0.** Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -331,6 +331,15 @@ and commands carrying versions hours out of date started missions
 regardless.
 
 ### Known broken
+
+- **A robot dropped out of its owner's account after a login** — one
+  report, cause not found. A Roomba Plus 505 Combo bought second-hand
+  disappeared from the Roomba Home app three times, each right after
+  the validator logged in; signing out of every phone and back in
+  through the app kept it. The login sends nothing that adds, removes
+  or moves a robot, and the same login works on every other account
+  tested. **If a robot of yours has had a previous owner, keep this in
+  mind before running the tools.**
 
 - **A virtual wall write carrying a CHANGED list** — never attempted.
   The HTTP 500 that used to sit here was solved: `virwall` starts with a

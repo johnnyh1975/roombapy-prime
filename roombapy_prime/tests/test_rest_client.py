@@ -2116,6 +2116,61 @@ async def test_classic_mission_history_default_call_is_the_4_2_12_request() -> N
 
 
 @pytest.mark.asyncio
+async def test_classic_mission_history_page_is_the_measured_prime_request() -> None:
+    """0.4.0b3. The page request must be the one the 980 and the i7
+    answered correctly -- PrimeRestClient's, key for key and in its
+    order -- not the Classic one they ignored. No app_id, even though
+    this client has one: the measured request carried none."""
+    classic_session, prime_session = _FakeSession(), _FakeSession()
+    classic_session.queue_response(raw_body="[]")
+    prime_session.queue_response(raw_body="[]")
+    classic = ClassicRestClient(
+        classic_session, HTTP_BASE_AUTH, _dummy_credentials(), app_id="IOS-APPID"
+    )
+    prime = PrimeRestClient(prime_session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    with patch.object(aws_sigv4, "datetime", _FrozenDatetime):
+        result = await classic.get_mission_history_page("BLID1", before=1780000000, page_size=10)
+        await prime.get_mission_history(
+            "BLID1", max_reports=10, filter_type="omit_quickly_canceled_not_scheduled",
+            exclusive_start_timestamp=1780000000,
+            supported_done_codes=["dndEnd", "returnHomeEnd"],
+        )
+
+    call = classic_session.calls[0]
+    assert (call.method, call.url) == ("GET", f"{HTTP_BASE_AUTH}/v1/BLID1/missionhistory")
+    assert list(call.params.items()) == [
+        ("maxReports", "10"),
+        ("filterType", "omit_quickly_canceled_not_scheduled"),
+        ("exclusiveStartTimestamp", "1780000000"),
+        ("supportedDoneCodes", "dndEnd,returnHomeEnd"),
+    ]
+    assert list(call.params.items()) == list(prime_session.calls[0].params.items())
+    assert _signature(call) == _signature(prime_session.calls[0])
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_classic_mission_history_first_page_and_none_leave_keys_out() -> None:
+    session = _FakeSession()
+    session.queue_response(raw_body="[]")
+    session.queue_response(raw_body="[]")
+    client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    await client.get_mission_history_page("BLID1")
+    await client.get_mission_history_page(
+        "BLID1", page_size=None, filter_type=None, supported_done_codes=None
+    )
+
+    assert list(session.calls[0].params.items()) == [
+        ("maxReports", "100"),
+        ("filterType", "omit_quickly_canceled_not_scheduled"),
+        ("supportedDoneCodes", "dndEnd,returnHomeEnd"),
+    ]
+    assert session.calls[1].params == {}
+
+
+@pytest.mark.asyncio
 async def test_classic_mission_history_none_leaves_a_key_out() -> None:
     session = _FakeSession()
     session.queue_response(raw_body="[]")

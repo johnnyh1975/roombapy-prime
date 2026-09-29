@@ -329,6 +329,39 @@ def _full_success_session() -> _FakeSequentialSession:
     )
 
 
+class _RecordingSession(_FakeSequentialSession):
+    """Also keeps what each POST sent, for the payload tests."""
+
+    def __init__(self, responses: list[_FakeResp]) -> None:
+        super().__init__(responses)
+        self.posted: list[dict[str, object]] = []
+
+    def post(self, url: str, **kwargs: object) -> _FakeResp:
+        self.posted.append(kwargs)
+        return super().post(url, **kwargs)
+
+
+def _recording_success_session() -> _RecordingSession:
+    return _RecordingSession(
+        [
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_login_sends_the_callers_app_id_when_given() -> None:
+    session = _recording_success_session()
+
+    await login(session, "user@example.com", "hunter2", "US", app_id="IOS-CALLER")
+
+    body = session.posted[1]["json"]
+    assert body["app_id"] == "IOS-CALLER"
+    assert body["app_info"]["device_id"] == "IOS-CALLER"
+
+
 @pytest.mark.asyncio
 async def test_login_full_success_chain() -> None:
     session = _full_success_session()
