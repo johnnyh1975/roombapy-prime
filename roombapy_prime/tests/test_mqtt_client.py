@@ -1,31 +1,34 @@
-"""Tests for roombapy_prime.mqtt_client — shadow topic construction and
-get_shadow/update_shadow response handling.
+"""Tests for roombapy_prime.mqtt_client — shadow topic construction,
+get_shadow/update_shadow response handling, subscriptions, the
+connection lifecycle and its errors.
 
-No real network or real paho.mqtt.Client involved. FakeMqttClient below
-stands in for paho's Client: records subscribe/publish calls, and lets
-each test wire publish() to synchronously invoke the module's own
-_on_message() with a fixture payload — simulating "the broker responded"
-without any real timing/threading dependency.
+No network. Since 0.5.0 the transport is aiomqtt, and _FakeAioClient
+below stands in for `aiomqtt.Client`: it records subscribe/publish
+calls, answers SUBACKs and PUBACKs the way a test asks it to, and lets
+publish() deliver a fixture payload straight into the client's own
+_dispatch() -- "the broker responded", without timing.
 
-This tests the module's message-handling and error paths against real
-(anonymized) captured payloads; it does not test the actual network
-connect() path (TLS, WebSocket headers, AWS IoT auth) since that needs
-a real or heavily mocked socket layer and is integration-shaped.
+The field history behind each behaviour is kept in the test docstrings:
+most of these exist because a tester hit the failure they guard.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import ssl
-import threading
 import time
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiomqtt import MqttCodeError, MqttError
+from aiomqtt.exceptions import MqttConnectError
 
 from roombapy_prime.auth import ConnectionToken
-from roombapy_prime.errors import CloudErrorReason
+from roombapy_prime.errors import CloudError, CloudErrorReason
 from roombapy_prime.mqtt_client import (
     PrimeMqttClient,
     ShadowConnectionError,
@@ -34,99 +37,96 @@ from roombapy_prime.mqtt_client import (
     ShadowSSLError,
     SubscriptionRejectedError,
     _shadow_base,
+    _suback_is_failure,
 )
+
+#: A SUBACK that never comes.
+NEVER = object()
 
 
 def _load(fixtures_dir: Path, name: str) -> dict:
     return json.loads((fixtures_dir / name).read_text())
 
 
-class _FakeMsg:
-    def __init__(self, topic: str, payload: bytes) -> None:
-        self.topic = topic
-        self.payload = payload
+class _FakeAioClient:
+    """Stand-in for aiomqtt.Client. No sockets involved.
 
+    `suback(topic)` decides each SUBACK: a list of reason codes, an
+    exception to raise (MqttCodeError: never sent), NEVER (no SUBACK),
+    or a coroutine function awaited first (a delayed SUBACK)."""
 
-class _FakeMessageInfo:
-    """Stand-in for paho.mqtt.client.MQTTMessageInfo -- just enough of
-    the real interface (wait_for_publish()/is_published()) for
-    publish_cmd_payload()'s new PUBACK-confirmation logic to exercise
-    against. Defaults to "successfully published" -- tests that need
-    to simulate a broker-level failure/no-confirmation pass
-    published=False explicitly."""
-
-    def __init__(self, published: bool = True) -> None:
-        self._published = published
-
-    def wait_for_publish(self, timeout: float | None = None) -> None:
-        pass
-
-    def is_published(self) -> bool:
-        return self._published
-
-
-class _FakeMqttClient:
-    """Stand-in for paho.mqtt.client.Client. No sockets involved."""
-
-    def __init__(self, on_subscribe: Callable[[int], None] | None = None) -> None:
+    def __init__(self, suback: Callable[[str], Any] | None = None) -> None:
         self.subscribed: list[str] = []
         self.unsubscribed: list[str] = []
-        self.published: list[tuple[str, object]] = []
-        self.on_publish_react: Callable[[str, object], None] | None = None
-        self.publish_confirmed: bool = True
-        self._on_subscribe = on_subscribe
-        self._next_mid = 1
+        self.published: list[tuple[str, Any]] = []
+        self.on_publish_react: Callable[[str, Any], None] | None = None
+        #: False: no PUBACK (aiomqtt raises "Operation timed out").
+        self.publish_confirmed = True
+        #: Raised by publish() instead, e.g. MqttCodeError(4, ...).
+        self.publish_error: BaseException | None = None
+        self.suback = suback or (lambda _topic: [0])
+        self.order: list[str] = []
+        self.exited = False
 
-    def subscribe(self, topic: str, qos: int = 0) -> tuple[int, int]:
-        """NEW (session 33): now returns (result, mid) like the real
-        Paho client -- and immediately reports a simulated SUBACK
-        confirmation (timing itself isn't the test target here)."""
+    async def subscribe(self, topic: str, qos: int = 0, timeout: float | None = None) -> Any:
         self.subscribed.append(topic)
-        mid = self._next_mid
-        self._next_mid += 1
-        if self._on_subscribe is not None:
-            self._on_subscribe(mid)
-        return (0, mid)
+        self.order.append(f"subscribe:{topic}")
+        answer = self.suback(topic)
+        if asyncio.iscoroutine(answer):
+            answer = await answer
+        if answer is NEVER:
+            await asyncio.Event().wait()
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
-    def unsubscribe(self, topic: str) -> None:
+    async def unsubscribe(self, topic: str, timeout: float | None = None) -> None:
         self.unsubscribed.append(topic)
 
-    def publish(self, topic: str, payload: object = None, qos: int = 0) -> _FakeMessageInfo:
+    async def publish(self, topic: str, payload: Any = None, qos: int = 0, timeout: float | None = None) -> None:
         self.published.append((topic, payload))
+        self.order.append(f"publish:{topic}")
+        if self.publish_error is not None:
+            raise self.publish_error
         if self.on_publish_react is not None:
             self.on_publish_react(topic, payload)
-        return _FakeMessageInfo(published=self.publish_confirmed)
+        if not self.publish_confirmed:
+            raise MqttError("Operation timed out")
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        self.exited = True
 
 
-def _dummy_token() -> ConnectionToken:
+def _dummy_token(client_id: str = "x") -> ConnectionToken:
     return ConnectionToken(
-        client_id="x", iot_token="t", iot_signature="s",
+        client_id=client_id, iot_token="t", iot_signature="s",
         iot_authorizer_name="a", expires=None, devices=[],
     )
 
 
-def _connected_client(blid: str = "0000000000000000") -> tuple[PrimeMqttClient, _FakeMqttClient]:
+def _connected_client(
+    blid: str = "0000000000000000", fake: _FakeAioClient | None = None
+) -> tuple[PrimeMqttClient, _FakeAioClient]:
     client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid=blid)
-    fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
-    client._client = fake  # bypass real connect() — no network in these tests
+    fake = fake or _FakeAioClient()
+    client._client = fake  # type: ignore[assignment]  # bypass connect() -- no network
     client._connected = True
     return client, fake
 
 
 def _react_with(client: PrimeMqttClient, verb: str, response_topic_suffix: str, payload: dict) -> Callable:
-    """Build an on_publish_react callback: when publish() is called on
-    the .../{verb} topic, immediately deliver `payload` on
-    .../{verb}/{response_topic_suffix} via the client's own _on_message."""
+    """When publish() goes to .../{verb}, deliver `payload` on
+    .../{verb}/{response_topic_suffix} through the client's _dispatch()."""
 
     def react(topic: str, _payload: object) -> None:
         if topic.endswith(f"/{verb}"):
             response_topic = topic[: -len(f"/{verb}")] + f"/{verb}/{response_topic_suffix}"
-            client._on_message(None, None, _FakeMsg(response_topic, json.dumps(payload).encode()))
+            client._dispatch(response_topic, json.dumps(payload).encode())
 
     return react
 
 
-# --- _shadow_base ------------------------------------------------------
+# --- _shadow_base and topic builders ------------------------------------
 
 def test_shadow_base_classic() -> None:
     assert _shadow_base("BLID123", None) == "$aws/things/BLID123/shadow"
@@ -135,137 +135,6 @@ def test_shadow_base_classic() -> None:
 def test_shadow_base_named() -> None:
     assert _shadow_base("BLID123", "rw-settings") == "$aws/things/BLID123/shadow/name/rw-settings"
 
-
-# --- get_shadow: classic/unnamed, both tiers ----------------------------
-
-def test_get_shadow_classic_ephemeral(fixtures_dir: Path) -> None:
-    client, fake = _connected_client(blid="0000000000000000")
-    payload = _load(fixtures_dir, "shadow_get_classic_ephemeral.json")
-    fake.on_publish_react = _react_with(client, "get", "accepted", payload)
-
-    response = client.get_shadow(timeout=1.0)
-
-    assert response.payload["state"]["reported"]["sku"] == "R980040"
-    assert response.payload["state"]["reported"]["cap"]["pose"] == 1
-    assert response.payload["version"] == 90131
-
-
-def test_get_shadow_reconnects_first_when_connection_known_down(fixtures_dir: Path) -> None:
-    """NEW (this session, prompted by a real field report + a known AWS
-    IoT MQTT SDK behavior -- see aws/aws-iot-device-sdk-js-v2#117): a
-    caller doing a plain sequential series of get_shadow() calls with
-    no reconnect logic of its own (e.g. verify_named_shadows.py) would,
-    after a single silent mid-run disconnect, have every subsequent
-    call time out forever with no way to recover. get_shadow() must
-    reconnect proactively when it already knows the connection is
-    down, not just try to subscribe/publish on a dead client."""
-    client, fake = _connected_client(blid="0000000000000000")
-    client._connected = False  # simulates a disconnect that happened earlier
-
-    def fake_reconnect(timeout=10.0):
-        client._connected = True  # simulates a successful reconnect
-
-    client.reconnect = fake_reconnect
-    payload = _load(fixtures_dir, "shadow_get_classic_ephemeral.json")
-    fake.on_publish_react = _react_with(client, "get", "accepted", payload)
-
-    response = client.get_shadow(timeout=1.0)
-
-    assert response.payload["state"]["reported"]["sku"] == "R980040"
-
-
-def test_get_shadow_classic_smart_tier(fixtures_dir: Path) -> None:
-    client, fake = _connected_client(blid="1111111111111111")
-    payload = _load(fixtures_dir, "shadow_get_classic_smart_tier.json")
-    fake.on_publish_react = _react_with(client, "get", "accepted", payload)
-
-    response = client.get_shadow(timeout=1.0)
-
-    assert response.payload["state"]["reported"]["sku"] == "i755640"
-    assert response.payload["state"]["reported"]["cap"]["pose"] == 2
-    assert response.payload["state"]["reported"]["cap"]["pmaps"] == 9
-
-
-# --- get_shadow: named shadow, tier-dependent behaviour -----------------
-
-def test_get_shadow_named_responds_on_smart_tier(fixtures_dir: Path) -> None:
-    client, fake = _connected_client(blid="1111111111111111")
-    payload = _load(fixtures_dir, "shadow_get_rw_settings_smart_tier.json")
-    fake.on_publish_react = _react_with(client, "get", "accepted", payload)
-
-    response = client.get_shadow(named="rw-settings", timeout=1.0)
-
-    assert response.payload["state"]["reported"]["audio"]["volume"] == 100
-    assert response.payload["state"]["desired"]["binTypeDetect"] == 2
-
-
-def test_get_shadow_named_times_out_on_ephemeral() -> None:
-    """No real fixture for this — EPHEMERAL's named-shadow behaviour IS
-    total silence (see CLOUD_SHADOW_PUSH_FINDINGS.md section on tier
-    boundary). Confirmed here by simply not wiring any react callback:
-    publish() happens, nothing ever arrives, get_shadow must time out
-    rather than hang or raise the wrong error."""
-    client, fake = _connected_client(blid="0000000000000000")
-    fake.on_publish_react = None
-
-    with pytest.raises(ShadowError, match="No response") as excinfo:
-        client.get_shadow(named="rw-settings", timeout=0.5)
-
-    assert excinfo.value.reason is CloudErrorReason.TIMEOUT
-
-
-# --- get_shadow: rejected path (synthetic — no real rejected capture) --
-
-def test_get_shadow_rejected() -> None:
-    """SYNTHETIC — no real captured .../get/rejected payload was
-    provided; this only confirms the rejected-topic branch is actually
-    reachable and raises ShadowError rather than returning silently."""
-    client, fake = _connected_client()
-    fake.on_publish_react = _react_with(client, "get", "rejected", {"code": 404, "message": "no shadow"})
-
-    with pytest.raises(ShadowError, match="rejected") as excinfo:
-        client.get_shadow(timeout=1.0)
-
-    assert excinfo.value.reason is CloudErrorReason.SHADOW_REJECTED
-
-
-# --- update_shadow: real accepted-write capture -------------------------
-
-def test_update_shadow_accepted(fixtures_dir: Path) -> None:
-    client, fake = _connected_client()
-    payload = _load(fixtures_dir, "shadow_update_accepted.json")
-    fake.on_publish_react = _react_with(client, "update", "accepted", payload)
-
-    response = client.update_shadow({"binPause": False}, timeout=1.0)
-
-    assert response.payload["state"]["desired"]["binPause"] is False
-    assert response.payload["version"] == 90132
-    # the actual publish() call carried our desired-state write
-    publish_topic, publish_payload = fake.published[0]
-    assert publish_topic.endswith("/update")
-    assert json.loads(publish_payload)["state"]["desired"] == {"binPause": False}
-
-
-# --- calling before connect() -------------------------------------------
-
-def test_get_shadow_before_connect_raises_a_readable_error() -> None:
-    """This is the exact path a field tester hit: a diagnostic script
-    asked for a named shadow without ever opening the connection. The
-    script was at fault, but the error blamed nobody legibly -- it just
-    asserted, four frames down."""
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="x")
-
-    with pytest.raises(ShadowError, match="Not connected") as excinfo:
-        client.get_shadow(timeout=0.1)
-
-    assert excinfo.value.reason is CloudErrorReason.NOT_CONNECTED
-
-
-# --- persistent subscribe/unsubscribe (continuous dispatch) -------------
-#
-# Separate from get_shadow/update_shadow's one-shot _pending mechanism --
-# these tests only exercise the new subscribe()/unsubscribe() additions,
-# not the existing tested get/update paths above.
 
 def test_shadow_topic_helper() -> None:
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
@@ -277,11 +146,6 @@ def test_shadow_topic_helper() -> None:
 
 
 def test_livemap_topic_helper() -> None:
-    """UPDATED (session 39) -- now includes "things/" by analogy to
-    cmd_topic()'s much more strongly evidenced pattern (independently
-    confirmed by native disassembly and a third-party implementation).
-    See livemap_topic()'s docstring: still an analogy for THIS specific
-    topic, not a direct confirmation."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
     assert client.livemap_topic("irbt-prefix") == "irbt-prefix/things/BLID1/livemap/update"
 
@@ -290,17 +154,11 @@ def test_dock_report_topic_named_and_wildcard() -> None:
     """dock/{reportType}/report family. `paddry` is confirmed live;
     the no-argument form is a `+` wildcard for discovering siblings."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
-    assert (
-        client.dock_report_topic("pfx", "paddry")
-        == "pfx/things/BLID1/dock/paddry/report"
-    )
-    # No type -> single-level wildcard, not a literal or a `#`.
+    assert client.dock_report_topic("pfx", "paddry") == "pfx/things/BLID1/dock/paddry/report"
     assert client.dock_report_topic("pfx") == "pfx/things/BLID1/dock/+/report"
 
 
 def test_dock_report_model_reads_the_family_key() -> None:
-    """The model keys off `reportType`, which is why one class covers
-    the whole family and DockReport aliases it."""
     from roombapy_prime.models import DockPadDryReport, DockReport
 
     assert DockReport is DockPadDryReport
@@ -309,87 +167,14 @@ def test_dock_report_model_reads_the_family_key() -> None:
     assert report.dock_id == "NA"
 
 
-def test_persistent_wildcard_subscription_receives_matching_messages() -> None:
-    """BUG FOUND AND FIXED (this session): a live wildcard capture came
-    back with zero messages despite matching traffic demonstrably
-    existing (chairstacker) -- _on_message() dispatched persistent
-    subscribers via an exact dict-key lookup on msg.topic, but a
-    wildcard registration's key is the literal pattern string (e.g.
-    "prefix/things/BLID/#"), which msg.topic (always the CONCRETE
-    topic a message arrived on) can never equal. The wildcard
-    watcher's callback was therefore structurally unreachable,
-    regardless of how much matching traffic existed."""
-    client, _fake = _connected_client(blid="BLID1")
-    received: list[ShadowResponse] = []
-    client.subscribe("prefix/things/BLID1/#", received.append)
-
-    client._on_message(
-        client, None,
-        _FakeMsg("prefix/things/BLID1/mission/timeline/report", b'{"phase": "run"}'),
-    )
-
-    assert len(received) == 1
-    assert received[0].payload == {"phase": "run"}
-
-
-def test_persistent_exact_and_wildcard_subscriptions_both_fire_for_same_message() -> None:
-    """Confirms the fix handles the exact scenario that surfaced the
-    bug: an exact-topic watcher and an overlapping wildcard watcher
-    registered at the same time, both must receive a message that
-    matches both patterns."""
-    client, _fake = _connected_client(blid="BLID1")
-    exact_received: list[ShadowResponse] = []
-    wildcard_received: list[ShadowResponse] = []
-    topic = "prefix/things/BLID1/mission/timeline/report"
-    client.subscribe(topic, exact_received.append)
-    client.subscribe("prefix/things/BLID1/#", wildcard_received.append)
-
-    client._on_message(client, None, _FakeMsg(topic, b'{"phase": "run"}'))
-
-    assert len(exact_received) == 1
-    assert len(wildcard_received) == 1
-
-
-def test_persistent_wildcard_subscription_ignores_non_matching_topics() -> None:
-    client, _fake = _connected_client(blid="BLID1")
-    received: list[ShadowResponse] = []
-    client.subscribe("prefix/things/BLID1/mission/#", received.append)
-
-    client._on_message(
-        client, None,
-        _FakeMsg("prefix/things/BLID1/rejected/report", b'{"reason": "busy"}'),
-    )
-
-    assert received == []
-
-
 def test_cmd_topic_helper() -> None:
-    """NEW (session 39) -- confirmed both by this library's own native
-    disassembly (libcorebase.so's literal "/things/%s/cmd" format
-    string) and independently by a third-party, unaffiliated project
-    that reports this exact topic working against a real device. See
-    cmd_topic()'s docstring for the full evidence trail."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
     assert client.cmd_topic("irbt-prefix") == "irbt-prefix/things/BLID1/cmd"
 
 
-def test_mission_timeline_topic_helper_report() -> None:
-    """NEW (this session) -- topic name/existence confirmed via native
-    decompilation (AssetIotTopicFactory::createMissionTimelineTopic),
-    prompted by a live idle-vs-mid-mission diff showing the classic
-    shadow never carries mission status at all. See
-    mission_timeline_topic()'s own docstring for the full confidence
-    breakdown (topic existence: confirmed; irbt_topic_prefix applying
-    here: strong inference, not independently live-confirmed)."""
+def test_mission_timeline_topic_helper_report_and_request() -> None:
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
-    assert (
-        client.mission_timeline_topic("irbt-prefix")
-        == "irbt-prefix/things/BLID1/mission/timeline/report"
-    )
-
-
-def test_mission_timeline_topic_helper_request() -> None:
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+    assert client.mission_timeline_topic("irbt-prefix") == "irbt-prefix/things/BLID1/mission/timeline/report"
     assert (
         client.mission_timeline_topic("irbt-prefix", report=False)
         == "irbt-prefix/things/BLID1/mission/timeline/request"
@@ -397,1331 +182,1151 @@ def test_mission_timeline_topic_helper_request() -> None:
 
 
 def test_rejected_report_topic_helper() -> None:
-    """NEW (this session) -- found via the same native decompilation
-    pass as mission_timeline_topic() (AssetIotTopicFactory's third
-    method, createCommandRejectedTopic())."""
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
     assert client.rejected_report_topic("irbt-prefix") == "irbt-prefix/things/BLID1/rejected/report"
 
 
-def test_publish_cmd_sends_expected_payload_shape() -> None:
-    """NEW (session 39) -- payload shape {"command", "time", "initiator"}
-    matches the third-party project's documented, reportedly-working
-    format exactly."""
-    client, fake = _connected_client(blid="BLID1")
-    client.publish_cmd("irbt-prefix", "start", initiator="localApp")
-    assert len(fake.published) == 1
-    topic, payload = fake.published[0]
-    assert topic == "irbt-prefix/things/BLID1/cmd"
-    body = json.loads(payload)
-    assert body["command"] == "start"
-    assert body["initiator"] == "localApp"
-    assert isinstance(body["time"], int)
+# --- get_shadow / update_shadow ------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_shadow_classic_ephemeral(fixtures_dir: Path) -> None:
+    client, fake = _connected_client(blid="0000000000000000")
+    fake.on_publish_react = _react_with(
+        client, "get", "accepted", _load(fixtures_dir, "shadow_get_classic_ephemeral.json")
+    )
+
+    response = await client.get_shadow(timeout=1.0)
+
+    assert response.payload["state"]["reported"]["sku"] == "R980040"
+    assert response.payload["state"]["reported"]["cap"]["pose"] == 1
+    assert response.payload["version"] == 90131
 
 
-def test_publish_cmd_payload_sends_arbitrary_dict_via_cmd_topic() -> None:
-    """NEW (session 46) -- EXPERIMENTAL, UNCONFIRMED path (see
-    prime_robot.py's send_routine_command_via_cmd_topic() for the full
-    hypothesis this supports). Verifies the payload passed through
-    unchanged except for the added "time" field."""
-    client, fake = _connected_client(blid="BLID1")
-    client.publish_cmd_payload("irbt-prefix", {"command": "start", "robot_id": "BLID1", "regions": []})
-    assert len(fake.published) == 1
-    topic, payload = fake.published[0]
-    assert topic == "irbt-prefix/things/BLID1/cmd"
-    body = json.loads(payload)
-    assert body["command"] == "start"
-    assert body["robot_id"] == "BLID1"
-    assert body["regions"] == []
-    assert isinstance(body["time"], int)
+@pytest.mark.asyncio
+async def test_get_shadow_classic_smart_tier(fixtures_dir: Path) -> None:
+    client, fake = _connected_client(blid="1111111111111111")
+    fake.on_publish_react = _react_with(
+        client, "get", "accepted", _load(fixtures_dir, "shadow_get_classic_smart_tier.json")
+    )
+
+    response = await client.get_shadow(timeout=1.0)
+
+    assert response.payload["state"]["reported"]["sku"] == "i755640"
+    assert response.payload["state"]["reported"]["cap"]["pmaps"] == 9
 
 
-def test_publish_cmd_payload_does_not_override_existing_time_field() -> None:
-    """If the caller's payload already has a "time" key, it must not
-    be silently overwritten -- setdefault(), not unconditional
-    assignment."""
-    client, fake = _connected_client(blid="BLID1")
-    client.publish_cmd_payload("irbt-prefix", {"command": "start", "time": 12345})
-    _, payload = fake.published[0]
-    assert json.loads(payload)["time"] == 12345
+@pytest.mark.asyncio
+async def test_get_shadow_named_responds_on_smart_tier(fixtures_dir: Path) -> None:
+    client, fake = _connected_client(blid="1111111111111111")
+    fake.on_publish_react = _react_with(
+        client, "get", "accepted", _load(fixtures_dir, "shadow_get_rw_settings_smart_tier.json")
+    )
+
+    response = await client.get_shadow(named="rw-settings", timeout=1.0)
+
+    assert response.payload["state"]["reported"]["audio"]["volume"] == 100
+    assert fake.subscribed == [
+        "$aws/things/1111111111111111/shadow/name/rw-settings/get/accepted",
+        "$aws/things/1111111111111111/shadow/name/rw-settings/get/rejected",
+    ]
 
 
-def test_subscribe_delivers_every_message_not_just_first() -> None:
+@pytest.mark.asyncio
+async def test_get_shadow_reconnects_first_when_connection_known_down(fixtures_dir: Path) -> None:
+    """A caller doing sequential get_shadow() calls with no reconnect
+    logic of its own (verify_named_shadows.py) would, after one silent
+    mid-run disconnect, time out forever. get_shadow() reconnects when it
+    already knows the connection is down."""
     client, fake = _connected_client()
-    received: list[dict] = []
-    client.subscribe("some/topic", lambda resp: received.append(resp.payload))
+    client._connected = False
 
-    client._on_message(None, None, _FakeMsg("some/topic", b'{"n": 1}'))
-    client._on_message(None, None, _FakeMsg("some/topic", b'{"n": 2}'))
-    client._on_message(None, None, _FakeMsg("some/topic", b'{"n": 3}'))
+    async def fake_reconnect(timeout: float = 10.0) -> None:
+        client._connected = True
+
+    client.reconnect = fake_reconnect  # type: ignore[method-assign]
+    fake.on_publish_react = _react_with(
+        client, "get", "accepted", _load(fixtures_dir, "shadow_get_classic_ephemeral.json")
+    )
+
+    response = await client.get_shadow(timeout=1.0)
+
+    assert response.payload["state"]["reported"]["sku"] == "R980040"
+
+
+@pytest.mark.asyncio
+async def test_get_shadow_named_times_out_on_ephemeral() -> None:
+    """EPHEMERAL's named-shadow behaviour IS total silence: the publish
+    goes out, nothing arrives, and get_shadow times out rather than
+    hanging or raising the wrong error."""
+    client, _fake = _connected_client()
+
+    with pytest.raises(ShadowError, match="No response to GET") as excinfo:
+        await client.get_shadow(named="rw-settings", timeout=0.1)
+
+    assert excinfo.value.reason is CloudErrorReason.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_read_leaves_no_waiter_behind() -> None:
+    """Up to 0.4.x the waiter stayed registered after a timeout and took
+    the next answer on that topic. Harmless under the lock, but a waiter
+    nobody awaits is a leak."""
+    client, _fake = _connected_client()
+
+    with pytest.raises(ShadowError):
+        await client.get_shadow(timeout=0.05)
+
+    assert client._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_get_shadow_rejected() -> None:
+    client, fake = _connected_client()
+    fake.on_publish_react = _react_with(client, "get", "rejected", {"code": 404, "message": "no shadow"})
+
+    with pytest.raises(ShadowError, match="rejected") as excinfo:
+        await client.get_shadow(timeout=1.0)
+
+    assert excinfo.value.reason is CloudErrorReason.SHADOW_REJECTED
+
+
+@pytest.mark.asyncio
+async def test_update_shadow_accepted(fixtures_dir: Path) -> None:
+    client, fake = _connected_client()
+    fake.on_publish_react = _react_with(
+        client, "update", "accepted", _load(fixtures_dir, "shadow_update_accepted.json")
+    )
+
+    response = await client.update_shadow({"binPause": False}, timeout=1.0)
+
+    assert response.payload["version"] == 90132
+    publish_topic, publish_payload = fake.published[0]
+    assert publish_topic.endswith("/update")
+    assert json.loads(publish_payload)["state"]["desired"] == {"binPause": False}
+
+
+@pytest.mark.asyncio
+async def test_update_shadow_rejected_and_unanswered() -> None:
+    client, fake = _connected_client()
+    fake.on_publish_react = _react_with(client, "update", "rejected", {"code": 400, "message": "no"})
+    with pytest.raises(ShadowError, match="UPDATE rejected") as rejected:
+        await client.update_shadow({"binPause": False}, timeout=1.0)
+
+    client, fake = _connected_client()
+    with pytest.raises(ShadowError, match="No response to UPDATE") as unanswered:
+        await client.update_shadow({"binPause": False}, timeout=0.1)
+
+    assert rejected.value.reason is CloudErrorReason.SHADOW_REJECTED
+    assert unanswered.value.reason is CloudErrorReason.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_get_shadow_before_connect_raises_a_readable_error() -> None:
+    """The exact path a field tester hit: a diagnostic script asked for
+    a named shadow without opening the connection. The error used to be
+    a bare assert four frames down."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="x")
+
+    with pytest.raises(ShadowError, match="Not connected") as excinfo:
+        await client.get_shadow(timeout=0.1)
+
+    assert excinfo.value.reason is CloudErrorReason.NOT_CONNECTED
+    assert "MQTT, not REST" in str(excinfo.value)
+
+
+class TestAShadowGetIsActuallySent:
+    """A queued-but-unsent request produced exactly the symptom
+    @DaRealGuGu reported: no answer within eight seconds, no error, and
+    nothing to distinguish "this robot has no such shadow" from "we
+    never asked"."""
+
+    @pytest.mark.asyncio
+    async def test_a_refused_publish_says_the_request_never_left(self) -> None:
+        client, fake = _connected_client()
+        fake.publish_error = MqttCodeError(4, "Could not publish message")
+
+        with pytest.raises(ShadowError, match="never left") as excinfo:
+            await client.get_shadow(timeout=1.0)
+
+        assert "rc=4" in str(excinfo.value)
+        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
+
+    @pytest.mark.asyncio
+    async def test_a_publish_without_puback_is_caught(self) -> None:
+        """The connection accepts messages and does not deliver them --
+        the state that looks healthiest and works least."""
+        client, fake = _connected_client()
+        fake.publish_confirmed = False
+
+        with pytest.raises(ShadowError, match="not acknowledged") as excinfo:
+            await client.get_shadow(timeout=1.0)
+
+        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
+
+    @pytest.mark.asyncio
+    async def test_an_answer_that_arrived_anyway_wins(self, fixtures_dir: Path) -> None:
+        """No PUBACK, but the answer came: the request evidently arrived."""
+        client, fake = _connected_client()
+        fake.publish_confirmed = False
+        fake.on_publish_react = _react_with(
+            client, "get", "accepted", _load(fixtures_dir, "shadow_get_classic_ephemeral.json")
+        )
+
+        response = await client.get_shadow(timeout=1.0)
+
+        assert response.topic.endswith("/get/accepted")
+
+
+class TestTheBrokersReasonIsCarriedIntoTheError:
+    """Three accounts, three symptoms, one wall: @DaRealGuGu (publish
+    queued, never sent), @jouwdan (no SUBACK, then no response),
+    @utkjmitch (publish refused, rc=4). A broker that drops a client for
+    an unauthorised subscribe says why on disconnect, and the library
+    recorded that reason and never showed it."""
+
+    async def _refuse(self, reason: str | None) -> str:
+        client, fake = _connected_client()
+        client._disconnect_reason = reason
+        fake.publish_error = MqttCodeError(4, "Could not publish message")
+        with pytest.raises(ShadowError) as excinfo:
+            await client.request_mission_timeline("pfx", 1)
+        return str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_the_reason_reaches_the_message(self) -> None:
+        assert "Not authorized to subscribe" in await self._refuse("Not authorized to subscribe")
+
+    @pytest.mark.asyncio
+    async def test_without_a_reason_the_message_does_not_invent_one(self) -> None:
+        message = await self._refuse(None)
+        assert "rc=4" in message
+        assert "disconnect reason" not in message
+
+    def test_the_suback_warning_says_when_the_socket_looks_open(self) -> None:
+        import inspect
+
+        from roombapy_prime import mqtt_client
+
+        source = inspect.getsource(mqtt_client)
+        assert "the socket is" in source
+        assert "probably still open" in source
+
+
+# --- SUBSCRIBE before PUBLISH, and not twice -----------------------------
+
+@pytest.mark.asyncio
+async def test_get_shadow_waits_for_subscribe_confirmation_before_publishing() -> None:
+    """Session 33: publish() may only happen AFTER the SUBACKs. A
+    response arriving before the SUBACK was lost -- chairstacker's
+    "get_settings() sometimes responds, sometimes doesn't"."""
+
+    async def late(_topic: str) -> list[int]:
+        await asyncio.sleep(0.02)
+        return [1]
+
+    fake = _FakeAioClient(suback=late)
+    client, fake = _connected_client(blid="X", fake=fake)
+    fake.on_publish_react = lambda topic, _p: client._dispatch(
+        "$aws/things/X/shadow/get/accepted", b"{}"
+    ) if topic.endswith("/get") else None
+
+    await client.get_shadow(timeout=2.0)
+
+    publish_index = next(i for i, e in enumerate(fake.order) if e.startswith("publish:"))
+    assert all(
+        i < publish_index for i, e in enumerate(fake.order) if e.startswith("subscribe:")
+    )
+
+
+class TestARepeatReadDoesNotResubscribe:
+    """@DaRealGuGu's second `rw-settings` read in one session got no
+    SUBACK within three seconds and then no response within eight,
+    while the first read had worked: every read re-subscribed to topics
+    the broker had already granted."""
+
+    @pytest.mark.asyncio
+    async def test_a_second_read_of_the_same_shadow_does_not_subscribe(self) -> None:
+        client, fake = _connected_client(blid="B")
+        fake.on_publish_react = _react_with(client, "get", "accepted", {})
+
+        await client.get_shadow(named="rw-settings", timeout=1.0)
+        await client.get_shadow(named="rw-settings", timeout=1.0)
+
+        assert len(fake.subscribed) == 2  # accepted + rejected, once
+
+    @pytest.mark.asyncio
+    async def test_a_different_shadow_still_subscribes(self) -> None:
+        client, fake = _connected_client(blid="B")
+        fake.on_publish_react = _react_with(client, "get", "accepted", {})
+
+        await client.get_shadow(named="rw-settings", timeout=1.0)
+        await client.get_shadow(timeout=1.0)
+
+        assert len(fake.subscribed) == 4
+
+    def test_a_disconnect_forgets_everything(self) -> None:
+        """A NEW SESSION GRANTS NOTHING."""
+        client, _fake = _connected_client()
+        client._subscribed_topics.update(["a/get/accepted", "b/get/rejected"])
+
+        client._connection_lost("session ended")
+
+        assert client._subscribed_topics == set()
+
+
+# --- persistent subscribe / unsubscribe / dispatch -----------------------
+
+@pytest.mark.asyncio
+async def test_persistent_wildcard_subscription_receives_matching_messages() -> None:
+    """A live wildcard capture came back empty despite matching traffic
+    (chairstacker): persistent subscribers were looked up by exact key,
+    and a message never arrives on the literal wildcard string."""
+    client, _fake = _connected_client(blid="BLID1")
+    received: list[ShadowResponse] = []
+    await client.subscribe("prefix/things/BLID1/#", received.append)
+
+    client._dispatch("prefix/things/BLID1/mission/timeline/report", b'{"phase": "run"}')
+
+    assert [r.payload for r in received] == [{"phase": "run"}]
+
+
+@pytest.mark.asyncio
+async def test_persistent_exact_and_wildcard_subscriptions_both_fire_for_same_message() -> None:
+    client, _fake = _connected_client(blid="BLID1")
+    exact: list[ShadowResponse] = []
+    wildcard: list[ShadowResponse] = []
+    topic = "prefix/things/BLID1/mission/timeline/report"
+    await client.subscribe(topic, exact.append)
+    await client.subscribe("prefix/things/BLID1/#", wildcard.append)
+
+    client._dispatch(topic, b'{"phase": "run"}')
+
+    assert len(exact) == 1 and len(wildcard) == 1
+
+
+@pytest.mark.asyncio
+async def test_persistent_wildcard_subscription_ignores_non_matching_topics() -> None:
+    client, _fake = _connected_client(blid="BLID1")
+    received: list[ShadowResponse] = []
+    await client.subscribe("prefix/things/BLID1/mission/#", received.append)
+
+    client._dispatch("prefix/things/BLID1/rejected/report", b'{"reason": "busy"}')
+
+    assert received == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_delivers_every_message_not_just_first() -> None:
+    client, _fake = _connected_client()
+    received: list[Any] = []
+    await client.subscribe("some/topic", lambda resp: received.append(resp.payload))
+
+    for n in (1, 2, 3):
+        client._dispatch("some/topic", json.dumps({"n": n}).encode())
 
     assert received == [{"n": 1}, {"n": 2}, {"n": 3}]
 
 
-def test_subscribe_only_calls_broker_subscribe_once_per_topic() -> None:
+def test_a_payload_that_is_not_json_arrives_as_text() -> None:
+    client, _fake = _connected_client()
+    received: list[Any] = []
+    client._persistent["t"] = [lambda resp: received.append(resp.payload)]
+
+    client._dispatch("t", b"\xffnot json")
+    client._dispatch("t", None)
+
+    assert received[0].endswith("not json") and received[1] == ""
+
+
+@pytest.mark.asyncio
+async def test_subscribe_only_calls_broker_subscribe_once_per_topic() -> None:
     client, fake = _connected_client()
-    client.subscribe("t", lambda resp: None)
-    client.subscribe("t", lambda resp: None)  # second callback, same topic
+    await client.subscribe("t", lambda resp: None)
+    await client.subscribe("t", lambda resp: None)
 
     assert fake.subscribed.count("t") == 1
 
 
-def test_unsubscribe_removes_only_that_callback() -> None:
+@pytest.mark.asyncio
+async def test_unsubscribe_removes_only_that_callback() -> None:
     client, fake = _connected_client()
-    received_a: list[dict] = []
-    received_b: list[dict] = []
-    cb_a = lambda resp: received_a.append(resp.payload)  # noqa: E731
-    cb_b = lambda resp: received_b.append(resp.payload)  # noqa: E731
+    received_a: list[Any] = []
+    received_b: list[Any] = []
 
-    client.subscribe("t", cb_a)
-    client.subscribe("t", cb_b)
-    client.unsubscribe("t", cb_a)
-    client._on_message(None, None, _FakeMsg("t", b'{"x": 1}'))
+    def cb_a(resp: ShadowResponse) -> None:
+        received_a.append(resp.payload)
 
-    assert received_a == []
-    assert received_b == [{"x": 1}]
+    def cb_b(resp: ShadowResponse) -> None:
+        received_b.append(resp.payload)
+
+    await client.subscribe("t", cb_a)
+    await client.subscribe("t", cb_b)
+    await client.unsubscribe("t", cb_a)
+    client._dispatch("t", b'{"x": 1}')
+
+    assert received_a == [] and received_b == [{"x": 1}]
 
 
-def test_unsubscribe_last_callback_unsubscribes_at_broker_level() -> None:
-    """Regression guard for the multi-watcher bug this was designed to
-    avoid: broker-level unsubscribe must only happen once, when the
-    LAST callback for a topic is removed -- not on every removal."""
+@pytest.mark.asyncio
+async def test_unsubscribe_last_callback_unsubscribes_at_broker_level() -> None:
+    """Broker-level unsubscribe only when the LAST callback goes, so two
+    watchers on one topic don't kill each other's subscription."""
     client, fake = _connected_client()
-    cb_a = lambda resp: None  # noqa: E731
-    cb_b = lambda resp: None  # noqa: E731
 
-    client.subscribe("t", cb_a)
-    client.subscribe("t", cb_b)
-    client.unsubscribe("t", cb_a)
+    def cb_a(_resp: ShadowResponse) -> None: ...
+
+    def cb_b(_resp: ShadowResponse) -> None: ...
+
+    await client.subscribe("t", cb_a)
+    await client.subscribe("t", cb_b)
+    await client.unsubscribe("t", cb_a)
     assert "t" not in fake.unsubscribed
 
-    client.unsubscribe("t", cb_b)
+    await client.unsubscribe("t", cb_b)
     assert "t" in fake.unsubscribed
 
 
-def test_unsubscribe_unknown_topic_is_a_noop() -> None:
+@pytest.mark.asyncio
+async def test_unsubscribe_unknown_topic_is_a_noop() -> None:
     client, fake = _connected_client()
-    client.unsubscribe("never/subscribed", lambda resp: None)  # must not raise
-
-
-# --- proactive token refresh --------------------------------------------
-
-def test_seconds_until_token_refresh_due_applies_margin() -> None:
-    import time as time_module
-
-    token = ConnectionToken(
-        client_id="x", iot_token="t", iot_signature="s",
-        iot_authorizer_name="a", expires=time_module.time() + 1000, devices=[],
-    )
-    client = PrimeMqttClient(token=token, endpoint="e", blid="x")
-    # margin is 300s (see REFRESH_MARGIN_SECONDS) -- allow small timing slop
-    assert 695 < client.seconds_until_token_refresh_due() <= 700
-
-
-def test_seconds_until_token_refresh_due_never_negative() -> None:
-    import time as time_module
-
-    token = ConnectionToken(
-        client_id="x", iot_token="t", iot_signature="s",
-        iot_authorizer_name="a", expires=time_module.time() + 10, devices=[],
-    )
-    client = PrimeMqttClient(token=token, endpoint="e", blid="x")
-    # already within/past the margin -- clamped to 0, not negative
-    assert client.seconds_until_token_refresh_due() == 0.0
-
-
-def test_seconds_until_token_refresh_due_unknown_expiry_is_none() -> None:
-    client, _fake = _connected_client()  # _dummy_token() has expires=None
-    assert client.seconds_until_token_refresh_due() is None
-
-
-def test_replace_token_swaps_token_reconnects_and_restores_subscriptions() -> None:
-    client, fake = _connected_client()
-    client.subscribe("topic/a", lambda resp: None)
-    client.subscribe("topic/b", lambda resp: None)
-
-    new_fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
-    reconnect_calls: list[float] = []
-    disconnect_calls: list[int] = []
-
-    def fake_connect(timeout: float = 10.0) -> None:
-        reconnect_calls.append(timeout)
-        client._client = new_fake
-        client._connected = True
-
-    def fake_disconnect() -> None:
-        disconnect_calls.append(1)
-
-    client.connect = fake_connect  # type: ignore[method-assign]
-    client.disconnect = fake_disconnect  # type: ignore[method-assign]
-
-    new_token = ConnectionToken(
-        client_id="new", iot_token="t2", iot_signature="s2",
-        iot_authorizer_name="a2", expires=None, devices=[],
-    )
-    client.replace_token(new_token, timeout=7.0)
-
-    assert client._token is new_token
-    assert disconnect_calls == [1]
-    assert reconnect_calls == [7.0]
-    # persistent subscriptions re-established on the NEW paho client
-    assert set(new_fake.subscribed) == {"topic/a", "topic/b"}
-    # the callbacks themselves are untouched -- still delivering
-    received: list[dict] = []
-    client._persistent["topic/a"][0] = lambda resp: received.append(resp.payload)
-    client._on_message(None, None, _FakeMsg("topic/a", b'{"ok": true}'))
-    assert received == [{"ok": True}]
-
-
-def test_replace_token_before_connect_raises() -> None:
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
-    new_token = ConnectionToken(
-        client_id="new", iot_token="t2", iot_signature="s2",
-        iot_authorizer_name="a2", expires=None, devices=[],
-    )
-    with pytest.raises(ShadowError):
-        client.replace_token(new_token)
-
-
-# =========================================================================
-# reconnect() / on_disconnect / wait_for_disconnect() (this session,
-# reconnect hardening). Previously there was no on_disconnect handling
-# at all -- the client had zero visibility into a dropped connection.
-# =========================================================================
-
-
-def test_reconnect_reconnects_and_restores_subscriptions() -> None:
-    """Same-token counterpart to replace_token()'s equivalent test --
-    reconnect() must restore persistent subscriptions on the new paho
-    client the same way, without touching self._token."""
-    client, fake = _connected_client()
-    client.subscribe("topic/a", lambda resp: None)
-    client.subscribe("topic/b", lambda resp: None)
-
-    new_fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
-    reconnect_calls: list[float] = []
-
-    def fake_connect(timeout: float = 10.0) -> None:
-        reconnect_calls.append(timeout)
-        client._client = new_fake
-        client._connected = True
-
-    def fake_disconnect() -> None:
-        pass
-
-    client.connect = fake_connect  # type: ignore[method-assign]
-    client.disconnect = fake_disconnect  # type: ignore[method-assign]
-
-    original_token = client._token
-    client.reconnect(timeout=7.0)
-
-    # THE TOKEN IS UNTOUCHED, and b2 proved why it has to be.
-    #
-    # b2 rotated the client id on reconnect, on the theory that we were
-    # evicting ourselves. @DaRealGuGu's run made it worse in a way that
-    # was more useful than a success: the connection stopped being
-    # dropped after a subscribe and started FAILING OUTRIGHT --
-    # "Connect timed out after 8.0s", every time.
-    #
-    # The id comes from iRobot's login response, and the broker's policy
-    # evidently expects that one. It is issued, not chosen.
-    assert client._token is original_token  # NOT swapped, unlike replace_token()
-    assert reconnect_calls == [7.0]
-    assert set(new_fake.subscribed) == {"topic/a", "topic/b"}
-
-
-def test_reconnect_before_connect_raises_a_readable_error() -> None:
-    """Was an AssertionError. A field tester hit it through
-    get_shadow()'s lazy-reconnect path and got a bare traceback ending
-    in "call connect() first" -- a message written for whoever wrote the
-    calling code, not for the person running a diagnostic script, and
-    several frames removed from the actual cause."""
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
-
-    with pytest.raises(ShadowError) as exc:
-        client.reconnect()
-
-    message = str(exc.value)
-    assert "Not connected" in message
-    assert "MQTT, not REST" in message, "must say why a shadow read needs a connection"
-    assert exc.value.reason is CloudErrorReason.NOT_CONNECTED
-
-
-def test_on_disconnect_sets_connected_false_and_stores_reason() -> None:
-    client, _fake = _connected_client()
-    assert client._connected is True
-
-    client._on_disconnect(None, None, None, "network error")
-
-    assert client._connected is False
-    assert client._disconnect_reason == "network error"
+    await client.unsubscribe("never/subscribed", lambda resp: None)
+    assert fake.unsubscribed == []
 
 
 @pytest.mark.asyncio
-async def test_wait_for_disconnect_resolves_when_on_disconnect_fires() -> None:
-    """The real bridge this session added: _on_disconnect() runs on
-    paho's own callback thread (simulated here by calling it directly,
-    same as the existing _on_subscribe-callback pattern elsewhere in
-    this file), wait_for_disconnect() is a coroutine on the asyncio
-    event loop -- call_soon_threadsafe is what connects the two."""
-    client, _fake = _connected_client()
+async def test_unsubscribe_on_a_dead_connection_does_not_reconnect_or_raise() -> None:
+    """It runs from finally-blocks: raising would mask the original
+    error, and rebuilding a connection to tear it down is absurd."""
+    client, fake = _connected_client()
+    await client.subscribe("t", print)
+    client._connected = False
+    client.reconnect = AsyncMock()  # type: ignore[method-assign]
 
-    wait_task = asyncio.ensure_future(client.wait_for_disconnect())
-    await asyncio.sleep(0.01)  # let wait_for_disconnect() reach its .wait()
-    assert not wait_task.done()
+    await client.unsubscribe("t", print)
 
-    client._on_disconnect(None, None, None, "broker restarted")
-
-    reason = await wait_task
-    assert reason == "broker restarted"
+    client.reconnect.assert_not_awaited()
+    assert fake.unsubscribed == []
 
 
 @pytest.mark.asyncio
-async def test_wait_for_disconnect_can_be_awaited_again_after_reconnect() -> None:
-    """Each call creates a fresh asyncio.Event -- confirms a second
-    wait_for_disconnect() call after a reconnect doesn't just
-    immediately return because the FIRST event was already set."""
-    client, _fake = _connected_client()
-
-    first_wait = asyncio.ensure_future(client.wait_for_disconnect())
-    await asyncio.sleep(0.01)
-    client._on_disconnect(None, None, None, "first drop")
-    assert await first_wait == "first drop"
-
-    second_wait = asyncio.ensure_future(client.wait_for_disconnect())
-    await asyncio.sleep(0.01)
-    assert not second_wait.done()  # must NOT resolve immediately
-
-    client._on_disconnect(None, None, None, "second drop")
-    assert await second_wait == "second drop"
-
-
-# --- self._client_lock: real concurrency test --------------------------
-
-def test_client_lock_serializes_get_shadow_and_replace_token() -> None:
-    """Real test with OS threads (threading.Lock, not asyncio.Lock --
-    these methods run via asyncio.to_thread, so real threads).
-    Confirms that replace_token() waits until a running get_shadow()
-    call is done, instead of accessing self._client concurrently --
-    closes the previously documented gap."""
-    import threading
-    import time as time_module
-
+async def test_an_unconfirmed_unsubscribe_is_only_logged() -> None:
     client, fake = _connected_client()
+    await client.subscribe("t", print)
 
-    new_fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
-
-    def fake_connect(timeout: float = 10.0) -> None:
-        client._client = new_fake
-        client._connected = True
-
-    def fake_disconnect() -> None:
-        pass
-
-    client.connect = fake_connect  # type: ignore[method-assign]
-    client.disconnect = fake_disconnect  # type: ignore[method-assign]
-
-    order: list[str] = []
-
-    def slow_get_shadow() -> None:
-        order.append("get_shadow start")
-        # fake never delivers a response -> this genuinely blocks for
-        # ~0.3s inside the lock, polling via time.sleep()
-        with pytest.raises(ShadowError):
-            client.get_shadow(timeout=0.3)
-        order.append("get_shadow end")
-
-    t = threading.Thread(target=slow_get_shadow)
-    t.start()
-    time_module.sleep(0.05)  # let the thread acquire the lock and start polling
-
-    order.append("replace_token start")
-    client.replace_token(_dummy_token())
-    order.append("replace_token end")
-
-    t.join()
-
-    # If the lock works, replace_token() (main thread) must block until
-    # get_shadow() (background thread) releases it -- so "get_shadow
-    # end" must come before "replace_token end", even though
-    # "replace_token start" was appended earlier (that's just issuing
-    # the call, not acquiring the lock).
-    assert order.index("get_shadow end") < order.index("replace_token end")
-
-
-def test_get_shadow_waits_for_subscribe_confirmation_before_publishing() -> None:
-    """NEW (session 33) -- regression test against the found race:
-    publish() may only happen AFTER all SUBACKs have been confirmed.
-    Simulates a delayed SUBACK confirmation to check that publish()
-    actually waits for it, instead of sending immediately."""
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="X")
-    order: list[str] = []
-
-    class DelayedFake(_FakeMqttClient):
-        def subscribe(self, topic, qos=0):
-            order.append(f"subscribe:{topic}")
-            mid = self._next_mid
-            self._next_mid += 1
-            # Bestaetigung bewusst verzoegert (in einem eigenen Thread),
-            # NICHT sofort wie die Standard-Fake -- genau das Szenario,
-            # das publish() faelschlicherweise nicht abgewartet hatte.
-            def confirm_later():
-                time.sleep(0.05)
-                if self._on_subscribe is not None:
-                    self._on_subscribe(mid)
-            threading.Thread(target=confirm_later, daemon=True).start()
-            return (0, mid)
-
-        def publish(self, topic, payload=None, qos=0):
-            order.append(f"publish:{topic}")
-            super().publish(topic, payload, qos)
-
-    fake = DelayedFake(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, []))
-    client._client = fake
-    client._connected = True
-
-    def respond_after_publish(topic: str, payload: object) -> None:
-        if topic.endswith("/get"):
-            client._on_message(client, None, _FakeMsg("$aws/things/X/shadow/get/accepted", b"{}"))
-
-    fake.on_publish_react = respond_after_publish
-    client.get_shadow(timeout=2.0)
-
-    # Alle subscribe-Aufrufe muessen VOR dem publish-Aufruf stehen.
-    publish_index = next(i for i, e in enumerate(order) if e.startswith("publish:"))
-    subscribe_indices = [i for i, e in enumerate(order) if e.startswith("subscribe:")]
-    assert all(i < publish_index for i in subscribe_indices)
-
-
-def test_persistent_subscribe_waits_for_confirmation() -> None:
-    """NEW (session 33) -- the same fix as get_shadow(), now also
-    secured for the persistent subscribe() method (watch_state()/
-    watch_live_map())."""
-    client, fake = _connected_client()
-    client.subscribe("some/topic", lambda resp: None)
-    assert "some/topic" in fake.subscribed
-
-
-# =========================================================================
-# SSL certificate error clarity (this session, following the same fix
-# in auth.py/rest_client.py -- but a genuinely different mechanism
-# here, see _raise_clear_ssl_error()'s docstring: paho-mqtt's
-# synchronous Client.connect() raises ssl.SSLError directly on a TLS
-# handshake failure, never aiohttp.ClientSSLError).
-# =========================================================================
+    async def fails(topic: str, timeout: float | None = None) -> None:
+        raise MqttError("Operation timed out")
 
+    fake.unsubscribe = fails  # type: ignore[method-assign]
 
-class _NetworkFailingRawClient:
-    """Stand-in for the real paho.mqtt.client.Client returned by
-    _build_client() -- only connect() matters for this test.
-    Generalized (this session) from the SSL-only
-    _SSLFailingRawClient to also cover plain OSError (DNS, connection
-    refused, connect-level timeout)."""
+    await client.unsubscribe("t", print)  # must not raise
 
-    def __init__(self, exc: BaseException) -> None:
-        self._exc = exc
+    assert "t" not in client._persistent
 
-    def max_inflight_messages_set(self, count: int) -> None:
-        """Called before connect() now. A bare stand-in that omits it
-        fails on the attribute rather than on the error under test --
-        which is what happened when this was added."""
 
-    def connect(self, endpoint: str, port: int = 443, keepalive: int = 300) -> None:
-        raise self._exc
+class TestACallbackCannotTakeDownTheConnection:
+    """In 0.4.x a raising callback killed paho's network thread, and the
+    connection looked alive while delivering nothing (@jouwdan: 21 keys,
+    then silence; @DaRealGuGu: "queued but never sent"). Since 0.5.0 it
+    would end the message task -- the same silence."""
 
+    def test_a_raising_one_shot_callback_is_survived(self) -> None:
+        client, _fake = _connected_client()
+        client._pending["t/1"] = [lambda _r: (_ for _ in ()).throw(ValueError("x"))]
+        client._dispatch("t/1", b"{}")
 
-def test_connect_ssl_error_gets_clear_message(monkeypatch) -> None:
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
-    monkeypatch.setattr(
-        client, "_build_client", lambda: _NetworkFailingRawClient(ssl.SSLCertVerificationError("certificate has expired"))
-    )
+    def test_a_raising_watcher_is_survived(self) -> None:
+        client, _fake = _connected_client()
+        client._persistent["t/#"] = [lambda _r: (_ for _ in ()).throw(RuntimeError("x"))]
+        client._dispatch("t/1", b"{}")
 
-    with pytest.raises(ShadowSSLError) as excinfo:
-        client.connect()
+    def test_one_bad_callback_does_not_stop_the_others(self) -> None:
+        seen: list[ShadowResponse] = []
+        client, _fake = _connected_client()
+        client._pending["t/1"] = [lambda _r: (_ for _ in ()).throw(ValueError("x")), seen.append]
+        client._persistent["t/#"] = [lambda _r: (_ for _ in ()).throw(ValueError("y")), seen.append]
 
-    # Since 0.4.0 diagnosed as login does -- "expired" is iRobot's side
-    # and resolves; this used to say "almost always temporary" for every
-    # certificate failure, the local trust store included.
-    assert "certificate has expired" in str(excinfo.value)
-    assert excinfo.value.reason is CloudErrorReason.SSL_CERTIFICATE_EXPIRED
-    assert isinstance(excinfo.value.__cause__, ssl.SSLError)
+        client._dispatch("t/1", b"{}")
 
+        assert len(seen) == 2
 
-def test_connect_connection_error_gets_clear_message(monkeypatch) -> None:
-    """NEW (this session) -- DNS failure, connection refused, etc. all
-    surface as plain OSError subclasses from paho-mqtt's synchronous
-    connect(), distinct from the ssl.SSLError case above."""
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
-    monkeypatch.setattr(
-        client, "_build_client", lambda: _NetworkFailingRawClient(ConnectionRefusedError("Connection refused"))
-    )
 
-    with pytest.raises(ShadowConnectionError) as excinfo:
-        client.connect()
+def test_dispatch_survives_a_subscription_starting_mid_message() -> None:
+    """A watcher that registers another subscription while dispatch walks
+    the registrations must not break the walk ("dictionary changed
+    size during iteration" would end the message task)."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
+    seen: list[str] = []
 
-    assert "connect" in str(excinfo.value).lower()
-    assert isinstance(excinfo.value.__cause__, OSError)
+    def watcher(_response: object) -> None:
+        seen.append("first")
+        client._persistent.setdefault(f"other/{len(seen)}", []).append(lambda _r: None)
 
+    client._persistent["prefix/things/BLID1/#"] = [watcher]
 
-class TestPublishCmdPayloadPubackConfirmation:
-    """NEW (this session, per the parallel APK-research chat's own
-    finding): QoS=1 was already set, but nothing previously checked
-    whether the broker actually confirmed the publish (PUBACK) at the
-    MQTT protocol level -- "fire-and-forget" conflated "no
-    application-level ack topic" (still true) with "no protocol-level
-    ack either" (false). This matters because rejected/report is
-    published BY THE ROBOT -- a command the broker silently drops
-    never reaches the robot to be rejected, so "no rejection" was
-    never actually proof of delivery."""
+    client._dispatch("prefix/things/BLID1/livemap/update", b"{}")
 
-    def test_returns_true_when_broker_confirms_publish(self):
-        client, fake = _connected_client(blid="BLID1")
-        fake.publish_confirmed = True
+    assert seen == ["first"]
 
-        result = client.publish_cmd_payload("irbt-prefix", {"command": "start"})
 
-        assert result is True
+class TestAFailedSubscribeLeavesNoPoisonedTopic:
+    """@jouwdan's Max 705 stayed broken across retries (PR #62): the
+    callback was registered before the broker subscribe, so a failing
+    subscribe left the topic registered with no subscription, and every
+    later subscribe() skipped the broker call."""
 
-    def test_returns_false_when_broker_does_not_confirm_publish(self):
-        client, fake = _connected_client(blid="BLID1")
-        fake.publish_confirmed = False
+    @pytest.mark.asyncio
+    async def test_a_rejected_subscribe_registers_nothing_and_a_retry_subscribes(self) -> None:
+        client, _fake = _connected_client()
+        client._subscribe_and_wait = AsyncMock(  # type: ignore[method-assign]
+            side_effect=SubscriptionRejectedError("broker denied")
+        )
+        with pytest.raises(SubscriptionRejectedError):
+            await client.subscribe("things/x/shadow", MagicMock())
+        assert "things/x/shadow" not in client._persistent
 
-        result = client.publish_cmd_payload("irbt-prefix", {"command": "start"})
+        client._subscribe_and_wait.reset_mock(side_effect=True)
+        await client.subscribe("things/x/shadow", MagicMock())
 
-        assert result is False
+        assert client._subscribe_and_wait.await_count == 1
+        assert len(client._persistent["things/x/shadow"]) == 1
 
-    def test_publish_cmd_also_returns_the_confirmation(self):
-        """publish_cmd() (simple commands) delegates to
-        publish_cmd_payload() -- must propagate the same signal."""
-        client, fake = _connected_client(blid="BLID1")
-        fake.publish_confirmed = False
 
-        result = client.publish_cmd("irbt-prefix", "start")
+# --- SUBACK outcomes -----------------------------------------------------
 
-        assert result is False
+class TestSubscribeAndWaitOutcomes:
+    """Three outcomes, kept apart: never sent, rejected, unconfirmed.
+    A rejection used to be recorded exactly like a success -- chairstacker
+    triggered a favourite and a room clean while our wildcard watcher saw
+    nothing at all."""
 
-    def test_a_publish_failure_returns_false_not_an_exception(self):
-        """wait_for_publish()/is_published() can raise RuntimeError/
-        ValueError for real protocol-level failures (queue full,
-        publish failed) -- callers should get a clean False, not an
-        unhandled exception, since this runs inside asyncio.to_thread()
-        in the real call path."""
-        client, fake = _connected_client(blid="BLID1")
-
-        class _FailingMessageInfo:
-            def wait_for_publish(self, timeout=None):
-                raise RuntimeError("simulated: publish failed")
-
-        fake.publish = lambda topic, payload=None, qos=0: _FailingMessageInfo()
-
-        result = client.publish_cmd_payload("irbt-prefix", {"command": "start"})
-
-        assert result is False
-
-
-class TestNoUserAgentHeaderIsSent:
-    """REVERSED (a23). a22 added a User-Agent header on a third-party
-    project's documented but untested claim that AWS IoT's authorizer
-    inspects it. The parallel APK research then examined the real app's
-    own connection code: exactly three headers, no fourth.
-
-    Removed not because it was proven harmful, but because it shipped
-    to every consumer -- Home Assistant included -- in the same release
-    that broke Prime setup there. This test exists so it does not come
-    back without new evidence."""
-
-    def test_only_the_three_confirmed_headers_are_sent(self):
-        from unittest.mock import MagicMock, patch
-
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="e.example.com", blid="B")
-        fake = MagicMock()
-        with patch("paho.mqtt.client.Client", return_value=fake):
-            client._build_client()
-
-        headers = fake.ws_set_options.call_args.kwargs.get("headers", {})
-        assert set(headers) == {
-            "x-amz-customauthorizer-name",
-            "x-amz-customauthorizer-signature",
-            "x-irobot-auth",
-        }
-
-    def test_no_user_agent_key_under_any_casing(self):
-        from unittest.mock import MagicMock, patch
-
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="e.example.com", blid="B")
-        fake = MagicMock()
-        with patch("paho.mqtt.client.Client", return_value=fake):
-            client._build_client()
-
-        headers = fake.ws_set_options.call_args.kwargs.get("headers", {})
-        assert not any(k.lower() == "user-agent" for k in headers)
-
-class TestSubscribeAndWaitRejectionDetection:
-    """REAL BUG FOUND AND FIXED (this session, prompted directly by a
-    field result: chairstacker triggered a favorite AND a room clean
-    from the real app -- the robot genuinely reacted to both within 20
-    seconds -- while our own --watch-wildcard subscription saw NOTHING
-    during that exact window). _on_subscribe() received the broker's
-    SUBACK reason code for every subscribe() call ever made by this
-    library, but never checked it -- a REJECTED subscription (MQTT's
-    own 0x80 failure code) was recorded identically to a successful
-    one. See SubscriptionRejectedError's own docstring for the full
-    finding."""
-
-    def test_successful_suback_does_not_raise(self):
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
-        fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, [1]))
-        client._client = fake
-        client._connected = True
-
-        client.subscribe("some/topic", lambda msg: None)  # must not raise
-
+    @pytest.mark.asyncio
+    async def test_a_granted_subscription_does_not_raise(self) -> None:
+        client, fake = _connected_client(fake=_FakeAioClient(suback=lambda _t: [1]))
+        await client.subscribe("some/topic", lambda msg: None)
         assert "some/topic" in fake.subscribed
+        assert client.last_subscribe_unconfirmed == []
 
-    def test_rejected_suback_raises_subscription_rejected_error(self):
-        from roombapy_prime.mqtt_client import PrimeMqttClient, SubscriptionRejectedError
-
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
-        fake = _FakeMqttClient(on_subscribe=lambda mid: client._on_subscribe(client, None, mid, [0x80]))
-        client._client = fake
-        client._connected = True
+    @pytest.mark.asyncio
+    async def test_a_rejected_suback_raises(self) -> None:
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=lambda _t: [0x80]))
 
         with pytest.raises(SubscriptionRejectedError) as exc_info:
-            client.subscribe("restricted/topic", lambda msg: None)
+            await client.subscribe("restricted/topic", lambda msg: None)
 
         assert "restricted/topic" in str(exc_info.value)
         assert exc_info.value.reason is CloudErrorReason.SUBSCRIPTION_REJECTED
 
-    def test_mixed_success_and_rejection_across_multiple_topics_reports_only_the_rejected_one(self):
-        """_subscribe_and_wait() takes a list of topics -- confirms the
-        error message identifies WHICH topic failed, not just that
-        something somewhere did, when multiple topics are subscribed
-        to in the same call."""
-        from roombapy_prime.mqtt_client import PrimeMqttClient, SubscriptionRejectedError
-
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="BLID1")
-        codes_by_topic = {"good/topic": [1], "bad/topic": [0x80]}
-        subscribed_order: list[str] = []
-
-        def fake_subscribe(topic, qos=1):
-            subscribed_order.append(topic)
-            mid = len(subscribed_order)
-            client._on_subscribe(client, None, mid, codes_by_topic[topic])
-            return (0, mid)
-
-        fake = _FakeMqttClient()
-        fake.subscribe = fake_subscribe
-        client._client = fake
-        client._connected = True
+    @pytest.mark.asyncio
+    async def test_only_the_rejected_topic_is_named(self) -> None:
+        codes = {"good/topic": [1], "bad/topic": [0x80]}
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=codes.__getitem__))
 
         with pytest.raises(SubscriptionRejectedError) as exc_info:
-            client._subscribe_and_wait(["good/topic", "bad/topic"])
+            await client._subscribe_and_wait(["good/topic", "bad/topic"])
 
         assert "bad/topic" in str(exc_info.value)
         assert "good/topic" not in str(exc_info.value)
 
+    @pytest.mark.asyncio
+    async def test_a_subscription_never_sent_is_not_a_rejection(self) -> None:
+        """The broker never saw it, so "the broker's policy denied this"
+        would be the wrong thing to say."""
+        client, _fake = _connected_client(
+            fake=_FakeAioClient(suback=lambda _t: MqttCodeError(4, "Could not subscribe to topic"))
+        )
+
+        with pytest.raises(SubscriptionRejectedError, match="never sent") as excinfo:
+            await client._subscribe_and_wait(["some/topic"], timeout=0.2)
+
+        assert excinfo.value.reason is CloudErrorReason.SUBSCRIPTION_NOT_SENT
+
+    @pytest.mark.asyncio
+    async def test_no_suback_is_warned_about_not_raised(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Some Prime sessions deliver traffic without a visible SUBACK.
+        An unconfirmed subscription is RECORDED AS UNCONFIRMED and
+        warned about -- never raised (b3 onwards)."""
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=lambda _t: NEVER))
+
+        await client._subscribe_and_wait(["quiet/topic"], timeout=0.02)
+
+        assert client.last_subscribe_unconfirmed == ["quiet/topic"]
+        assert client.subscribe_unconfirmed_count == 1
+        assert "no SUBACK within" in caplog.text
+
+
+class TestALateSubackIsStillASuback:
+    """@utkjmitch (b7): EVERY reconnect logs `no SUBACK within 3.0s`, on
+    the 55-minute cycle. Acting on the snapshot at the deadline would
+    put him into a reconnect loop for subscriptions acknowledged a
+    moment later."""
+
+    @pytest.mark.asyncio
+    async def test_a_suback_arriving_after_the_wait_clears_the_topic(self) -> None:
+        release = asyncio.Event()
+
+        async def late(_topic: str) -> list[int]:
+            await release.wait()
+            return [1]
+
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=late))
+        client._persistent.update({"a/topic": [print], "b/topic": [print]})
+
+        await client._subscribe_and_wait(["a/topic", "b/topic"], timeout=0.02)
+        assert client.resubscribe_still_unconfirmed() == ["a/topic", "b/topic"]
+
+        release.set()
+        await asyncio.sleep(0.01)
+
+        assert client.resubscribe_still_unconfirmed() == []
+
+    @pytest.mark.asyncio
+    async def test_one_that_never_arrives_is_still_reported(self) -> None:
+        async def only_a(topic: str) -> Any:
+            return [1] if topic == "a/topic" else NEVER
+
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=only_a))
+        client._persistent.update({"a/topic": [print], "b/topic": [print]})
+
+        await client._subscribe_and_wait(["a/topic", "b/topic"], timeout=0.02)
+
+        assert client.resubscribe_still_unconfirmed() == ["b/topic"]
+
+    @pytest.mark.asyncio
+    async def test_it_asks_about_the_watchers_topics_not_the_last_subscribe(self) -> None:
+        """A shadow read in the second after a reconnect replaced the
+        list this checked, and the watcher then read "all acknowledged"
+        for subscriptions that were not (review finding)."""
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=lambda _t: NEVER))
+        client._persistent["watched/topic"] = [print]
+        await client._subscribe_and_wait(["watched/topic"], timeout=0.02)
+
+        _fake.suback = lambda _t: [1]
+        await client._subscribe_and_wait(["read/get/accepted"], timeout=0.02)
+
+        assert client.resubscribe_still_unconfirmed() == ["watched/topic"]
+
+    @pytest.mark.asyncio
+    async def test_a_late_rejection_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        release = asyncio.Event()
+
+        async def late_no(_topic: str) -> list[int]:
+            await release.wait()
+            return [0x80]
+
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=late_no))
+        await client._subscribe_and_wait(["a/topic"], timeout=0.02)
+
+        release.set()
+        await asyncio.sleep(0.01)
+
+        assert "late SUBACK REJECTED" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_stops_waiting_for_them(self) -> None:
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=lambda _t: NEVER))
+        await client._subscribe_and_wait(["a/topic"], timeout=0.02)
+        task = client._subscribe_tasks["a/topic"]
+
+        client._connection_lost("gone")
+        await asyncio.sleep(0)
+
+        assert task.cancelled()
+        assert client.resubscribe_still_unconfirmed() == []
+
+
+@pytest.mark.asyncio
+async def test_no_client_after_reconnect_is_a_cloud_error() -> None:
+    """Was a builtin ConnectionError, past every `except CloudError`."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
+    client.reconnect = AsyncMock()  # type: ignore[method-assign]  # leaves no client
+
+    with pytest.raises(CloudError) as excinfo:
+        await client._subscribe_and_wait(["some/topic"], timeout=0.2)
+
+    assert isinstance(excinfo.value, ShadowError)
+    assert excinfo.value.reason is CloudErrorReason.CONNECTION_FAILED
+
 
 class TestSubackReasonCodeHandling:
-    """REAL FIELD CRASH (DaRealGuGu, v0.1.11a22). The first version of
-    the SUBACK check did int(rc) >= 0x80. paho-mqtt 2.x passes
-    ReasonCode OBJECTS, int() on one raises TypeError -- on paho's own
-    network thread, which killed the client and sent it into an endless
-    reconnect loop.
-
-    The knock-on damage mattered more than the crash: every subsequent
-    shadow read and PUBACK timed out, and the resulting "broker did NOT
-    confirm receipt" was reported to the tester as evidence of a
-    policy-level block. It was our bug. Three stages of a real test run
-    produced a confident, wrong diagnosis."""
+    """REAL FIELD CRASH (DaRealGuGu, v0.1.11a22): `int(rc) >= 0x80` on a
+    paho 2.x ReasonCode OBJECT raised TypeError on paho's network thread,
+    killed the client, and every later read and PUBACK timed out -- which
+    was then reported to the tester as a policy-level block."""
 
     class _ReasonCode:
-        """Stands in for paho 2.x's ReasonCode: has .value and
-        .is_failure, and deliberately raises on int() exactly as the
-        real one does."""
-
-        def __init__(self, value, is_failure):
+        def __init__(self, value: int, is_failure: bool) -> None:
             self.value = value
             self.is_failure = is_failure
 
-        def __int__(self):
+        def __int__(self) -> int:
             raise TypeError("int() argument must be a string, a bytes-like object or a real number")
 
-    def test_paho2_reason_code_objects_do_not_raise(self):
-        from roombapy_prime.mqtt_client import _suback_is_failure
-
+    def test_paho2_reason_code_objects_do_not_raise(self) -> None:
         assert _suback_is_failure(self._ReasonCode(0, is_failure=False)) is False
         assert _suback_is_failure(self._ReasonCode(0x80, is_failure=True)) is True
 
-    def test_plain_ints_still_work(self):
-        """paho 1.x, and v3 callbacks, pass ints."""
-        from roombapy_prime.mqtt_client import _suback_is_failure
-
+    def test_plain_ints_still_work(self) -> None:
         assert _suback_is_failure(0) is False
         assert _suback_is_failure(0x80) is True
 
-    def test_an_unrecognised_type_is_treated_as_not_a_failure(self):
-        """A missed rejection is a far smaller harm than crashing the
-        MQTT thread again."""
-        from roombapy_prime.mqtt_client import _suback_is_failure
-
+    def test_an_unrecognised_type_is_treated_as_not_a_failure(self) -> None:
         assert _suback_is_failure(object()) is False
-
-    def test_the_callback_itself_never_raises(self):
-        """Whatever arrives, the network thread must survive it."""
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
-
-        client._on_subscribe(client, None, 1, [self._ReasonCode(0x80, True)])
-        client._on_subscribe(client, None, 2, None)
-        client._on_subscribe(client, None, 3, [object()])
-        client._on_subscribe(client, None, 4, "not even iterable in a useful way")
-
-        assert 1 in client._confirmed_mids
-        assert 1 in client._subscribe_failures
 
 
 class TestAgainstRealPahoReasonCodes:
-    """The stub-based tests above mimic ReasonCode. This one uses the
-    real class, because the crash happened precisely at the boundary
-    between what we assumed the type was and what it actually is.
+    """The real class, because the crash happened exactly at the
+    boundary between the assumed type and the actual one. The packet
+    type argument is `SUBACK >> 4`, not SUBACK."""
 
-    Constructing one is itself a trap: the packet type argument is
-    `SUBACK >> 4` (0x09), not SUBACK (0x90). Passing the latter raises
-    for every value, which is easy to mistake for "these codes don't
-    exist"."""
-
-    def _code(self, value):
+    def _code(self, value: int) -> Any:
         from paho.mqtt.client import SUBACK
         from paho.mqtt.reasoncodes import ReasonCode
 
         return ReasonCode(SUBACK >> 4, identifier=value)
 
     @pytest.mark.parametrize("value", [0x00, 0x01, 0x02])
-    def test_granted_qos_codes_are_not_failures(self, value):
-        from roombapy_prime.mqtt_client import _suback_is_failure
-
+    def test_granted_qos_codes_are_not_failures(self, value: int) -> None:
         assert _suback_is_failure(self._code(value)) is False
 
     @pytest.mark.parametrize("value", [0x80, 0x87, 0x8F, 0x9E, 0xA1])
-    def test_real_failure_codes_are_detected(self, value):
-        """0x87 is "Not authorized" -- the code an IoT policy refusal
-        would actually produce, and the whole reason this check exists."""
-        from roombapy_prime.mqtt_client import _suback_is_failure
-
+    def test_real_failure_codes_are_detected(self, value: int) -> None:
         assert _suback_is_failure(self._code(value)) is True
 
-    def test_our_verdict_matches_pahos_own_across_the_range(self):
-        from roombapy_prime.mqtt_client import _suback_is_failure
+    @pytest.mark.asyncio
+    async def test_a_real_rejection_code_from_the_client_raises(self) -> None:
+        client, _fake = _connected_client(fake=_FakeAioClient(suback=lambda _t: [self._code(0x87)]))
+        with pytest.raises(SubscriptionRejectedError):
+            await client._subscribe_and_wait(["t"])
 
-        for value in (0x00, 0x01, 0x02, 0x80, 0x87, 0x8F, 0x9E, 0xA1):
-            code = self._code(value)
-            assert _suback_is_failure(code) is code.is_failure, f"disagreed on {value:#04x}"
+
+# --- commands ------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_publish_cmd_sends_expected_payload_shape() -> None:
+    client, fake = _connected_client(blid="BLID1")
+
+    assert await client.publish_cmd("irbt-prefix", "start", initiator="localApp") is True
+
+    topic, payload = fake.published[0]
+    assert topic == "irbt-prefix/things/BLID1/cmd"
+    body = json.loads(payload)
+    assert body["command"] == "start" and body["initiator"] == "localApp"
+    assert isinstance(body["time"], int)
+
+
+@pytest.mark.asyncio
+async def test_publish_cmd_payload_sends_arbitrary_dict_via_cmd_topic() -> None:
+    client, fake = _connected_client(blid="BLID1")
+    await client.publish_cmd_payload("irbt-prefix", {"command": "start", "robot_id": "BLID1", "regions": []})
+
+    topic, payload = fake.published[0]
+    body = json.loads(payload)
+    assert topic == "irbt-prefix/things/BLID1/cmd"
+    assert body["robot_id"] == "BLID1" and body["regions"] == []
+    assert isinstance(body["time"], int)
+
+
+@pytest.mark.asyncio
+async def test_publish_cmd_payload_does_not_override_existing_time_field() -> None:
+    client, fake = _connected_client(blid="BLID1")
+    await client.publish_cmd_payload("irbt-prefix", {"command": "start", "time": 12345})
+    assert json.loads(fake.published[0][1])["time"] == 12345
+
+
+class TestPublishCmdPayloadPubackConfirmation:
+    """QoS 1 was set, but nothing checked the broker's PUBACK. That
+    matters: rejected/report is published BY THE ROBOT, so a command the
+    broker silently drops never reaches the robot to be rejected, and
+    "no rejection" is no proof of delivery."""
+
+    @pytest.mark.asyncio
+    async def test_true_when_the_broker_confirms(self) -> None:
+        client, _fake = _connected_client()
+        assert await client.publish_cmd_payload("p", {"command": "start"}) is True
+
+    @pytest.mark.asyncio
+    async def test_false_without_puback(self) -> None:
+        client, fake = _connected_client()
+        fake.publish_confirmed = False
+        assert await client.publish_cmd_payload("p", {"command": "start"}) is False
+        assert await client.publish_cmd("p", "start") is False
+
+    @pytest.mark.asyncio
+    async def test_a_refused_publish_is_false_not_an_exception(self) -> None:
+        client, fake = _connected_client()
+        fake.publish_error = MqttCodeError(4, "Could not publish message")
+        assert await client.publish_cmd_payload("p", {"command": "start"}) is False
 
 
 class TestPublishRevivesADeadConnection:
-    """FIELD EVIDENCE (DaRealGuGu, three consecutive sessions): the
-    FIRST send of every session got no PUBACK, while later sends in the
-    same session succeeded.
+    """@DaRealGuGu, three sessions: the FIRST send of every session got no
+    PUBACK. The connection was already dead before the send -- killed by
+    the interactive pause while a human read the payload -- and publish
+    only checked that a client object existed."""
 
-    The ordering in his logs is what identified it: the ro-currentstate
-    GET timed out FIRST, then the publish got no PUBACK, and only
-    afterwards did paho report drops. The connection was already dead
-    before the send.
-
-    What kills it is the interactive pause -- the tool prints a large
-    payload and waits for a human to read it and type y. get_shadow()
-    survived that because it reconnects; publish_cmd_payload() did not,
-    because it only checked whether a client object existed.
-
-    Publishing into a dead connection is the worst failure mode
-    available here: no error, no PUBACK, and the script then reports
-    the missing confirmation as though it said something about the
-    payload."""
-
-    def _client(self, *, connected: bool):
-        from unittest.mock import MagicMock
-
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
-        client._client = MagicMock()
+    def _client(self, *, connected: bool) -> PrimeMqttClient:
+        client, _fake = _connected_client()
         client._connected = connected
-        client.reconnect = MagicMock(
-            side_effect=lambda **_kw: setattr(client, "_connected", True)
-        )
+
+        async def revive(**_kw: Any) -> None:
+            client._connected = True
+
+        client.reconnect = AsyncMock(side_effect=revive)  # type: ignore[method-assign]
         return client
 
-    def test_a_dead_connection_is_reconnected_before_publishing(self):
+    @pytest.mark.asyncio
+    async def test_a_dead_connection_is_reconnected_before_publishing(self) -> None:
         client = self._client(connected=False)
+        assert await client.publish_cmd_payload("v005-irbthbu", {"command": "start"}) is True
+        client.reconnect.assert_awaited_once()
+        assert client._client.published  # type: ignore[union-attr]
 
-        client.publish_cmd_payload("v005-irbthbu", {"command": "start"})
-
-        client.reconnect.assert_called_once()
-
-    def test_a_live_connection_is_not_needlessly_reconnected(self):
-        """Reconnecting a healthy connection would drop subscriptions
-        that watchers depend on."""
+    @pytest.mark.asyncio
+    async def test_a_live_connection_is_not_needlessly_reconnected(self) -> None:
+        """Reconnecting a healthy connection would drop the
+        subscriptions watchers depend on."""
         client = self._client(connected=True)
-
-        client.publish_cmd_payload("v005-irbthbu", {"command": "start"})
-
-        client.reconnect.assert_not_called()
-
-    def test_the_publish_still_happens_after_the_reconnect(self):
-        client = self._client(connected=False)
-
-        client.publish_cmd_payload("v005-irbthbu", {"command": "start"})
-
-        client._client.publish.assert_called_once()
-
-
-def test_keepalive_is_short_enough_to_notice_a_dead_connection() -> None:
-    """MQTT declares a connection dead after 1.5x keepalive. At the
-    previous 300s that was a 450-SECOND blind window, during which
-    publish() succeeds locally while nothing reaches the broker.
-
-    If this ever gets raised again, the question to ask is what it buys
-    that is worth being unable to detect a broken connection for
-    minutes at a time."""
-    import inspect
-
-    from roombapy_prime.mqtt_client import PrimeMqttClient
-
-    source = inspect.getsource(PrimeMqttClient.connect)
-
-    assert "keepalive=60" in source
-    assert "keepalive=300" not in source
+        await client.publish_cmd_payload("v005-irbthbu", {"command": "start"})
+        client.reconnect.assert_not_awaited()
 
 
 class TestSubscribeAlsoRevivesADeadConnection:
-    """The last operation in this module that still used the client
-    without checking it was alive -- and the most damaging one to get
-    wrong.
+    """Subscribing to a dead connection fails SILENTLY: the watcher then
+    observes nothing, and a real robot reaction is reported as "nothing
+    happened"."""
 
-    Subscribing to a dead connection fails SILENTLY: the watcher then
-    observes nothing at all, and a real robot reaction gets reported as
-    "nothing happened". Field logs showed the full pattern in one
-    place: subscribe, then a shadow GET timing out, then a publish with
-    no PUBACK -- three symptoms of a single dead connection, of which
-    only the middle one surfaced as an error."""
+    @pytest.mark.asyncio
+    async def test_a_dead_connection_is_reconnected_before_subscribing(self) -> None:
+        client, fake = _connected_client()
+        client._connected = False
 
-    def _client(self, *, connected: bool):
-        from unittest.mock import MagicMock
+        async def revive(**_kw: Any) -> None:
+            client._connected = True
 
-        from roombapy_prime.mqtt_client import PrimeMqttClient
+        client.reconnect = AsyncMock(side_effect=revive)  # type: ignore[method-assign]
 
-        client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
-        client._client = MagicMock()
-        client._client.subscribe.return_value = (0, 1)
-        client._connected = connected
-        client.reconnect = MagicMock(
-            side_effect=lambda **_kw: setattr(client, "_connected", True)
-        )
-        return client
+        await client._subscribe_and_wait(["some/topic"], timeout=0.05)
 
-    def test_a_dead_connection_is_reconnected_before_subscribing(self):
-        client = self._client(connected=False)
+        client.reconnect.assert_awaited_once()
+        assert fake.subscribed == ["some/topic"]
 
-        client._subscribe_and_wait(["some/topic"], timeout=0.01)
-
-        client.reconnect.assert_called_once()
-
-    def test_a_live_connection_subscribes_without_reconnecting(self):
-        client = self._client(connected=True)
-
-        client._subscribe_and_wait(["some/topic"], timeout=0.01)
-
-        client.reconnect.assert_not_called()
-        client._client.subscribe.assert_called_once()
-
-    def test_no_bare_assert_remains_in_the_module(self):
-        """Three separate field reports surfaced a developer-facing
-        assert to someone running a diagnostic script. This checks the
-        pattern is gone rather than trusting that it is."""
+    def test_no_bare_assert_remains_in_the_module(self) -> None:
         import inspect
 
         from roombapy_prime import mqtt_client
 
-        source = inspect.getsource(mqtt_client)
-
-        assert 'assert self._client is not None' not in source
+        assert "assert self._client is not None" not in inspect.getsource(mqtt_client)
 
 
-class TestARepeatReadDoesNotResubscribe:
-    """`get_shadow()` subscribed on every call and never unsubscribed, so
-    a second read of the same shadow in one session re-subscribed to
-    topics the broker had already granted -- work that contributes
-    nothing and can still fail.
+@pytest.mark.asyncio
+async def test_a_mission_timeline_request_is_published_on_a_connection() -> None:
+    client, fake = _connected_client()
 
-    It did fail: @DaRealGuGu's second `rw-settings` read got no SUBACK
-    within three seconds and then no response within eight, while the
-    first read in the same session had worked.
-    """
+    assert await client.request_mission_timeline("irbt-prefix", 7) is True
+    assert json.loads(fake.published[-1][1]) == {"timelineRequestId": 7}
 
-    def _client(self):
-        from unittest.mock import MagicMock
 
-        from roombapy_prime.mqtt_client import PrimeMqttClient
+@pytest.mark.asyncio
+async def test_publishing_before_connect_is_not_connected() -> None:
+    """A caller's mistake, not the cloud's -- a translation should not
+    send anyone to check their internet for it."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
 
-        client = object.__new__(PrimeMqttClient)
-        # `__new__` skips the constructor, so anything `_on_disconnect`
-        # reads has to be supplied here.
-        client._deliberate_disconnect = False
-        client._was_deliberate = False
-        client._subscribed_topics = set()
+    with pytest.raises(ShadowError) as timeline:
+        await client.request_mission_timeline("irbt-prefix", 1)
+    with pytest.raises(ShadowError) as command:
+        await client.publish_cmd_payload("irbt-prefix", {"command": "start"})
+
+    assert timeline.value.reason is CloudErrorReason.NOT_CONNECTED
+    assert command.value.reason is CloudErrorReason.NOT_CONNECTED
+
+
+@pytest.mark.asyncio
+async def test_a_publish_on_a_dead_connection_says_so() -> None:
+    client, fake = _connected_client()
+    client._connected = False
+
+    with pytest.raises(ShadowError, match="no connection") as excinfo:
+        await client.request_mission_timeline("irbt-prefix", 1)
+
+    assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
+    assert fake.published == []
+
+
+# --- token refresh, reconnect --------------------------------------------
+
+def test_seconds_until_token_refresh_due_applies_margin() -> None:
+    token = ConnectionToken(
+        client_id="x", iot_token="t", iot_signature="s",
+        iot_authorizer_name="a", expires=time.time() + 1000, devices=[],
+    )
+    client = PrimeMqttClient(token=token, endpoint="e", blid="x")
+    assert 695 < client.seconds_until_token_refresh_due() <= 700  # type: ignore[operator]
+
+
+def test_seconds_until_token_refresh_due_never_negative() -> None:
+    token = ConnectionToken(
+        client_id="x", iot_token="t", iot_signature="s",
+        iot_authorizer_name="a", expires=time.time() + 10, devices=[],
+    )
+    client = PrimeMqttClient(token=token, endpoint="e", blid="x")
+    assert client.seconds_until_token_refresh_due() == 0.0
+
+
+def test_seconds_until_token_refresh_due_unknown_expiry_is_none() -> None:
+    client, _fake = _connected_client()
+    assert client.seconds_until_token_refresh_due() is None
+
+
+def _swap_connection(client: PrimeMqttClient, new_fake: _FakeAioClient, calls: list[Any]) -> None:
+    async def fake_open(timeout: float = 10.0) -> None:
+        calls.append(("connect", timeout))
+        client._client = new_fake  # type: ignore[assignment]
         client._connected = True
-        client._disconnect_loop = None
-        client._disconnect_event = None
-        client._disconnect_reason = None
-        client._subscribe_and_wait = MagicMock()
-        return client
+        client._generation += 1
+
+    async def fake_close(deliberate: bool = True) -> None:
+        calls.append(("disconnect", deliberate))
+        client._connected = False
+
+    client._open = fake_open  # type: ignore[method-assign]
+    client._close = fake_close  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_replace_token_swaps_token_reconnects_and_restores_subscriptions() -> None:
+    client, _fake = _connected_client()
+    received: list[Any] = []
+    await client.subscribe("topic/a", lambda resp: received.append(resp.payload))
+    await client.subscribe("topic/b", lambda resp: None)
+    new_fake = _FakeAioClient()
+    calls: list[Any] = []
+    _swap_connection(client, new_fake, calls)
+    new_token = _dummy_token("new")
+
+    await client.replace_token(new_token, timeout=7.0)
+
+    assert client._token is new_token
+    assert calls == [("disconnect", True), ("connect", 7.0)]
+    assert set(new_fake.subscribed) == {"topic/a", "topic/b"}
+    client._dispatch("topic/a", b'{"ok": true}')
+    assert received == [{"ok": True}]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_keeps_the_issued_client_id_and_restores_subscriptions() -> None:
+    """THE CLIENT ID IS NOT OURS TO CHOOSE. b2 rotated it on reconnect;
+    @DaRealGuGu's run then failed outright -- "Connect timed out" every
+    time. The id is issued by iRobot's login, and the broker expects it."""
+    client, _fake = _connected_client()
+    await client.subscribe("topic/a", lambda resp: None)
+    new_fake = _FakeAioClient()
+    calls: list[Any] = []
+    _swap_connection(client, new_fake, calls)
+    original = client._token
+
+    await client.reconnect(timeout=7.0)
+
+    assert client._token is original
+    assert calls == [("disconnect", True), ("connect", 7.0)]
+    assert new_fake.subscribed == ["topic/a"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_and_replace_token_before_connect_raise_readably() -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
+
+    with pytest.raises(ShadowError) as reconnect:
+        await client.reconnect()
+    with pytest.raises(ShadowError):
+        await client.replace_token(_dummy_token("new"))
+
+    assert "Not connected" in str(reconnect.value)
+    assert reconnect.value.reason is CloudErrorReason.NOT_CONNECTED
+
+
+@pytest.mark.asyncio
+async def test_the_lock_serializes_get_shadow_and_replace_token() -> None:
+    """A token swap must not tear the connection down in the middle of a
+    shadow read: replace_token() waits for the running get_shadow()."""
+    client, _fake = _connected_client()
+    calls: list[Any] = []
+    _swap_connection(client, _FakeAioClient(), calls)
+    order: list[str] = []
+
+    async def slow_read() -> None:
+        order.append("get start")
+        with pytest.raises(ShadowError):
+            await client.get_shadow(timeout=0.1)
+        order.append("get end")
+
+    read = asyncio.ensure_future(slow_read())
+    await asyncio.sleep(0.01)
+    order.append("replace start")
+    await client.replace_token(_dummy_token("new"))
+    order.append("replace end")
+    await read
+
+    assert order.index("get end") < order.index("replace end")
+    assert order.index("replace start") < order.index("get end")
+
+
+# --- the connection itself, against a stand-in aiomqtt client ------------
+
+class _LiveFake(_FakeAioClient):
+    """Also enters and yields messages, as aiomqtt.Client does."""
+
+    def __init__(self, enter_error: BaseException | None = None) -> None:
+        super().__init__()
+        self.enter_error = enter_error
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    async def __aenter__(self) -> _LiveFake:
+        if self.enter_error is not None:
+            raise self.enter_error
+        return self
 
-    def test_the_first_read_subscribes(self):
-        client = self._client()
-        topics = ["a/get/accepted", "a/get/rejected"]
+    async def __aexit__(self, *_exc: Any) -> None:
+        self.exited = True
+        await self.queue.put(MqttError("Disconnected during message iteration"))
 
-        fresh = [t for t in topics if t not in client._subscribed_topics]
-        if fresh:
-            client._subscribe_and_wait(fresh)
-            client._subscribed_topics.update(fresh)
+    def drop(self, cause: BaseException | None) -> None:
+        error = MqttError("Disconnected during message iteration")
+        error.__cause__ = cause
+        self.queue.put_nowait(error)
 
-        client._subscribe_and_wait.assert_called_once_with(topics)
+    @property
+    def messages(self) -> Any:
+        fake = self
 
-    def test_a_second_read_of_the_same_shadow_does_not(self):
-        client = self._client()
-        topics = ["a/get/accepted", "a/get/rejected"]
-        client._subscribed_topics.update(topics)
+        class _Messages:
+            def __aiter__(self) -> _Messages:
+                return self
 
-        fresh = [t for t in topics if t not in client._subscribed_topics]
-        if fresh:
-            client._subscribe_and_wait(fresh)
+            async def __anext__(self) -> Any:
+                item = await fake.queue.get()
+                if isinstance(item, BaseException):
+                    raise item
+                return item
 
-        client._subscribe_and_wait.assert_not_called()
+        return _Messages()
 
-    def test_a_different_shadow_still_subscribes(self):
-        client = self._client()
-        client._subscribed_topics.add("a/get/accepted")
-        topics = ["b/get/accepted", "b/get/rejected"]
 
-        fresh = [t for t in topics if t not in client._subscribed_topics]
-        if fresh:
-            client._subscribe_and_wait(fresh)
-
-        client._subscribe_and_wait.assert_called_once_with(topics)
-
-    def test_a_disconnect_forgets_everything(self):
-        """A NEW SESSION GRANTS NOTHING. Keeping the set across a
-        disconnect would make the next read skip a subscription it no
-        longer has -- the exact silence this change exists to avoid."""
-        from unittest.mock import MagicMock
-
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = self._client()
-        client._subscribed_topics.update(["a/get/accepted", "b/get/rejected"])
-
-        PrimeMqttClient._on_disconnect(
-            client, MagicMock(), None, None, "session ended"
-        )
-
-        assert client._subscribed_topics == set()
-
-
-class TestAShadowGetIsActuallySent:
-    """`publish()` returns a result code and a handle, and `get_shadow`
-    discarded both.
-
-    A queued-but-unsent request produces exactly the symptom
-    @DaRealGuGu reported: no answer within eight seconds, no error, and
-    nothing to distinguish "this robot has no such shadow" from "we
-    never asked". **This is the same class of gap b12 closed for
-    `subscribe`** — closed there, left open three lines away.
-    """
-
-    def _confirm(self, **attrs):
-        from unittest.mock import MagicMock
-
-        from roombapy_prime.mqtt_client import _publish_confirmed
-
-        info = MagicMock()
-        info.rc = attrs.get("rc", 0)
-        info.is_published.return_value = attrs.get("published", True)
-        if "raises" in attrs:
-            info.wait_for_publish.side_effect = attrs["raises"]
-        return lambda: _publish_confirmed(info, "topic")
-
-    def test_a_normal_publish_passes(self):
-        self._confirm()()
-
-    def test_a_refused_publish_says_the_request_never_left(self):
-        from roombapy_prime.mqtt_client import ShadowError
-
-        with pytest.raises(ShadowError, match="never left") as excinfo:
-            self._confirm(rc=4)()
-        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
-
-    def test_a_queued_but_unsent_publish_is_caught(self):
-        """The connection accepts messages and does not deliver them --
-        the state that looks healthiest and works least."""
-        from roombapy_prime.mqtt_client import ShadowError
-
-        with pytest.raises(ShadowError, match="queued but never sent") as excinfo:
-            self._confirm(published=False)()
-        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
-
-    def test_an_unconfirmable_publish_is_reported(self):
-        from roombapy_prime.mqtt_client import ShadowError
-
-        with pytest.raises(ShadowError, match="could not be confirmed") as excinfo:
-            self._confirm(raises=RuntimeError("loop not running"))()
-        assert excinfo.value.reason is CloudErrorReason.PUBLISH_NOT_DELIVERED
-
-    def test_a_stand_in_client_is_tolerated(self):
-        """Refusing on None would fail tests rather than find bugs."""
-        from roombapy_prime.mqtt_client import _publish_confirmed
-
-        _publish_confirmed(None, "topic")
-
-    def test_get_shadow_uses_it(self):
-        import inspect
-
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        source = inspect.getsource(PrimeMqttClient.get_shadow)
-        assert "_publish_confirmed(" in source
-
-
-class TestACallbackCannotTakeDownTheConnection:
-    """A callback that raises kills paho's network loop thread, and the
-    connection then looks alive while delivering nothing: publishes
-    queue and are never sent, subscribes get no SUBACK.
-
-    **That is exactly what two testers reported.** @jouwdan's first read
-    listed 21 keys and every operation after it failed. @DaRealGuGu's
-    b16 run said "PUBLISH was queued but never sent" — the same
-    connection in the same state, seen from the other side.
-    """
-
-    def _client(self):
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = object.__new__(PrimeMqttClient)
-        # `__new__` skips the constructor, so anything `_on_disconnect`
-        # reads has to be supplied here.
-        client._deliberate_disconnect = False
-        client._was_deliberate = False
-        client._pending = {}
-        client._persistent = {}
-        return client
-
-    def _message(self, topic="t/1"):
-        from unittest.mock import MagicMock
-
-        msg = MagicMock()
-        msg.topic = topic
-        msg.payload = b'{"state": {}}'
-        return msg
-
-    def test_a_raising_one_shot_callback_is_survived(self):
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = self._client()
-        client._pending["t/1"] = [lambda _r: (_ for _ in ()).throw(ValueError("x"))]
-
-        PrimeMqttClient._on_message(client, None, None, self._message())
-
-    def test_a_raising_watcher_is_survived(self):
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = self._client()
-        client._persistent["t/#"] = [
-            lambda _r: (_ for _ in ()).throw(RuntimeError("x"))
-        ]
-
-        PrimeMqttClient._on_message(client, None, None, self._message())
-
-    def test_one_bad_callback_does_not_stop_the_others(self):
-        """The message is lost for the one that raised, not for
-        everybody listening."""
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        seen = []
-        client = self._client()
-        client._pending["t/1"] = [
-            lambda _r: (_ for _ in ()).throw(ValueError("x")),
-            seen.append,
-        ]
-
-        PrimeMqttClient._on_message(client, None, None, self._message())
-
-        assert len(seen) == 1
-
-    def test_a_working_callback_still_receives(self):
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        seen = []
-        client = self._client()
-        client._pending["t/1"] = [seen.append]
-
-        PrimeMqttClient._on_message(client, None, None, self._message())
-
-        assert seen and seen[0].topic == "t/1"
-
-
-class TestTheBrokersReasonIsCarriedIntoTheError:
-    """Three accounts, three symptoms, one wall:
-
-        @DaRealGuGu   publish queued but never sent
-        @jouwdan      no SUBACK, then no response
-        @utkjmitch    publish refused, paho rc=4
-
-    **@utkjmitch's half-alive session ties them together:** shadow
-    subscribes dead, cmd-topic publishes working, same connection, robot
-    physically obeying the commands. Whatever kills it does so between
-    CONNACK and the first SUBACK, and paho notices only at the next
-    publish.
-
-    A broker that drops a client for an unauthorised subscribe produces
-    exactly that — and it says why on disconnect. This library recorded
-    that reason and never showed it.
-    """
-
-    def _refuse(self, reason=None):
-        from unittest.mock import MagicMock
-
-        from roombapy_prime.mqtt_client import ShadowError, _publish_confirmed
-
-        info = MagicMock()
-        info.rc = 4
-        try:
-            _publish_confirmed(info, "topic", disconnect_reason=reason)
-        except ShadowError as exc:
-            return str(exc)
-        raise AssertionError("expected a ShadowError")
-
-    def test_the_reason_reaches_the_message(self):
-        message = self._refuse("Not authorized to subscribe")
-
-        assert "Not authorized to subscribe" in message
-
-    def test_rc_four_is_still_named(self):
-        """`rc=4` is paho's MQTT_ERR_NO_CONN — it says the connection was
-        gone at publish time, not why. Both halves are useful."""
-        assert "rc=4" in self._refuse("x")
-
-    def test_without_a_reason_the_message_does_not_invent_one(self):
-        message = self._refuse(None)
-
-        assert "rc=4" in message
-        assert "disconnect reason" not in message
-
-    def test_the_suback_warning_says_when_the_socket_looks_open(self):
-        """No disconnect reported means the socket is probably fine and
-        the subscription simply unanswered — a different problem from a
-        broker that hung up, and worth telling apart."""
-        import inspect
-
-        from roombapy_prime import mqtt_client
-
-        source = inspect.getsource(mqtt_client)
-
-        assert "the socket is" in source
-        assert "probably still open" in source
-
-
-class TestAFailedSubscribeLeavesNoPoisonedTopic:
-    """@jouwdan's Max 705 stayed broken across retries rather than
-    failing once, and the ordering in subscribe() is why (PR #62).
-
-    The callback was appended to `_persistent` BEFORE the broker-level
-    subscribe was attempted. A failing subscribe therefore left the
-    topic registered with a callback and no subscription -- and the next
-    subscribe() for that topic read `is_new_topic = False` and skipped
-    the broker call entirely.
-
-    Permanently unsubscribed, permanently registered, and
-    indistinguishable from a robot that says nothing. No test covered
-    it: 925 passed with the bug in place.
-    """
-
-    @staticmethod
-    def _client():
-        from unittest.mock import MagicMock
-
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = PrimeMqttClient.__new__(PrimeMqttClient)
-        client._client = MagicMock()
-        client._connected = True
-        client._persistent = {}
-        return client
-
-    def test_a_rejected_subscribe_registers_nothing(self):
-        from unittest.mock import MagicMock
-
-        import pytest
-
-        from roombapy_prime.mqtt_client import SubscriptionRejectedError
-
-        client = self._client()
-        client._subscribe_and_wait = MagicMock(
-            side_effect=SubscriptionRejectedError("broker denied")
-        )
-
-        with pytest.raises(SubscriptionRejectedError):
-            client.subscribe("things/x/shadow", MagicMock())
-
-        assert "things/x/shadow" not in client._persistent
-
-    def test_a_later_attempt_subscribes_again(self):
-        """The recovery the old ordering made impossible. This is the
-        assertion that matters -- failing once is tolerable, failing
-        forever is not."""
-        from unittest.mock import MagicMock
-
-        import pytest
-
-        from roombapy_prime.mqtt_client import SubscriptionRejectedError
-
-        client = self._client()
-        client._subscribe_and_wait = MagicMock(
-            side_effect=SubscriptionRejectedError("broker denied")
-        )
-        with pytest.raises(SubscriptionRejectedError):
-            client.subscribe("things/x/shadow", MagicMock())
-
-        client._subscribe_and_wait.reset_mock(side_effect=True)
-        client.subscribe("things/x/shadow", MagicMock())
-
-        assert client._subscribe_and_wait.called
-        assert len(client._persistent["things/x/shadow"]) == 1
-
-    def test_a_successful_subscribe_still_registers(self):
-        """The fix must not cost the normal path."""
-        from unittest.mock import MagicMock
-
-        client = self._client()
-        client._subscribe_and_wait = MagicMock()
-        callback = MagicMock()
-
-        client.subscribe("things/x/shadow", callback)
-
-        assert client._persistent["things/x/shadow"] == [callback]
-
-    def test_a_second_callback_does_not_resubscribe(self):
-        """Multiple watchers on one topic still share a single
-        broker-level subscription."""
-        from unittest.mock import MagicMock
-
-        client = self._client()
-        client._subscribe_and_wait = MagicMock()
-
-        client.subscribe("things/x/shadow", MagicMock())
-        client.subscribe("things/x/shadow", MagicMock())
-
-        assert client._subscribe_and_wait.call_count == 1
-        assert len(client._persistent["things/x/shadow"]) == 2
-
-    def test_an_unconfirmed_subscription_is_not_a_failure(self):
-        """Both the PR summary and the report behind it describe a
-        missing SUBACK as fatal. It is not, and has not been since b3 --
-        it is recorded and warned about. Worth asserting, because the
-        stale docstring that said otherwise is what made the claim
-        plausible."""
-        import inspect
-
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        source = inspect.getsource(PrimeMqttClient._subscribe_and_wait)
-
-        assert "last_subscribe_unconfirmed" in source
-        assert "RECORDED AS UNCONFIRMED" in source
-
-
-class TestALateSubackIsStillASuback:
-    """@utkjmitch (second household, b7): EVERY reconnect on his
-    instance logs `no SUBACK within 3.0s`, on the 55-minute cycle.
-
-    `last_subscribe_unconfirmed` records which mids were missing when a
-    3-second wait expired — but paho keeps filling `_confirmed_mids`
-    from its own thread afterwards. Acting on that snapshot would have
-    put his instance into a reconnect loop every cycle, for
-    subscriptions acknowledged a moment later.
-    """
-
-    @staticmethod
-    def _client():
-        from roombapy_prime.mqtt_client import PrimeMqttClient
-
-        client = object.__new__(PrimeMqttClient)
-        client._confirmed_mids = set()
-        client._mid_to_topic = {1: "a/topic", 2: "b/topic"}
-        client._last_subscribe_mids = [1, 2]
-        return client
-
-    def test_a_suback_arriving_after_the_wait_clears_the_topic(self):
-        client = self._client()
-
-        assert client.resubscribe_still_unconfirmed() == ["a/topic", "b/topic"]
-
-        client._confirmed_mids.update({1, 2})      # late, but arrived
-
-        assert client.resubscribe_still_unconfirmed() == []
-
-    def test_one_that_never_arrives_is_still_reported(self):
-        client = self._client()
-        client._confirmed_mids.add(1)
-
-        assert client.resubscribe_still_unconfirmed() == ["b/topic"]
-
-
-def test_dispatch_survives_a_subscription_starting_mid_message() -> None:
-    """_on_message runs on paho's thread; subscribe() writes
-    `_persistent` from the caller's. Iterating the dict live raises
-    "dictionary keys changed during iteration", the exception escapes
-    into paho's dispatch loop, and every watcher on the client stops
-    receiving -- silently.
-
-    The callback below registers a new subscription while dispatch is
-    walking the dict, which is exactly the interleaving that breaks a
-    live iteration.
-    """
-    from unittest.mock import MagicMock
-
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="BLID1")
-
-    seen: list[str] = []
-
-    def watcher(_response: object) -> None:
-        seen.append("first")
-        # A second watcher starting up during dispatch.
-        client._persistent.setdefault(f"other/{len(seen)}", []).append(lambda _r: None)
-
-    client._persistent["prefix/things/BLID1/#"] = [watcher]
-
+def _message(topic: str, payload: bytes) -> Any:
     msg = MagicMock()
-    msg.topic = "prefix/things/BLID1/livemap/update"
-    msg.payload = b'{"state": {"reported": {}}}'
-
-    # Must not raise RuntimeError.
-    client._on_message(client, None, msg)
-
-    assert seen == ["first"]
+    msg.topic = topic
+    msg.payload = payload
+    return msg
 
 
-# ── reason: what to tell a person (0.4.0) ──────────────────────────────────
-#
-# A plain ShadowError covers a refused publish, a missing connection, a
-# timeout and a rejected shadow write alike, so the class alone says
-# nothing a translation could use. These cover the raises the tests
-# above do not reach.
+async def _live_client(monkeypatch: pytest.MonkeyPatch, fake: _LiveFake) -> PrimeMqttClient:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+    monkeypatch.setattr(client, "_build_client", lambda timeout: fake)
+    await client.connect(timeout=1.0)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_connect_starts_dispatching_incoming_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _LiveFake()
+    client = await _live_client(monkeypatch, fake)
+    received: list[Any] = []
+    await client.subscribe("t/#", lambda resp: received.append(resp.payload))
+
+    await fake.queue.put(_message("t/1", b'{"n": 1}'))
+    await asyncio.sleep(0.01)
+
+    assert client._connected is True
+    assert received == [{"n": 1}]
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_connection_is_reported_with_the_brokers_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _LiveFake()
+    client = await _live_client(monkeypatch, fake)
+    client._subscribed_topics.add("a/get/accepted")
+    waiting = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)
+    assert not waiting.done()
+
+    fake.drop(MqttCodeError(7, "Unexpected disconnection"))
+
+    reason = await asyncio.wait_for(waiting, 1.0)
+    assert "[code:7]" in reason
+    assert client._connected is False
+    assert client.last_disconnect_was_deliberate is False
+    assert client._subscribed_topics == set()
+
+
+@pytest.mark.asyncio
+async def test_our_own_disconnect_is_marked_deliberate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """@ratpic83: 26 "drops" a day, each 55 minutes apart -- our own
+    reconnects, which the watcher then answered with a second reconnect."""
+    fake = _LiveFake()
+    client = await _live_client(monkeypatch, fake)
+    waiting = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)
+
+    await client.disconnect()
+
+    assert await asyncio.wait_for(waiting, 1.0) == "deliberate: token refresh or reconnect"
+    assert client.last_disconnect_was_deliberate is True
+    assert fake.exited is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_disconnect_can_be_awaited_again_after_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each call waits for the NEXT drop; a second wait after a reconnect
+    must not return at once because the first one fired."""
+    first = _LiveFake()
+    client = await _live_client(monkeypatch, first)
+    first_wait = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)
+    first.drop(RuntimeError("first drop"))
+    assert await asyncio.wait_for(first_wait, 1.0) == "first drop"
+
+    second = _LiveFake()
+    monkeypatch.setattr(client, "_build_client", lambda timeout: second)
+    await client.reconnect(timeout=1.0)
+    second_wait = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)
+    assert not second_wait.done()
+
+    second.drop(RuntimeError("second drop"))
+    assert await asyncio.wait_for(second_wait, 1.0) == "second drop"
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_without_a_message_task_still_records_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _LiveFake()
+    client = await _live_client(monkeypatch, fake)
+    assert client._pump_task is not None
+    client._pump_task.cancel()
+    await asyncio.sleep(0)
+
+    await client.disconnect()
+
+    assert client._connected is False
+
+
+def _aiomqtt_style_failure(original: BaseException) -> MqttError:
+    """What aiomqtt's __aenter__ raises for a socket-level failure:
+    `raise MqttError(str(exc)) from None` inside the except block."""
+    try:
+        try:
+            raise original
+        except OSError as exc:
+            raise MqttError(str(exc)) from None
+    except MqttError as wrapped:
+        return wrapped
+    raise AssertionError("unreachable")
 
 
 @pytest.mark.parametrize(
@@ -1733,146 +1338,587 @@ def test_dispatch_survives_a_subscription_starting_mid_message() -> None:
     ],
     ids=["local-trust-store", "expired", "unknown"],
 )
-def test_connect_certificate_failure_is_diagnosed_as_login_diagnoses_it(
-    monkeypatch, openssl_says, reason
+@pytest.mark.asyncio
+async def test_connect_certificate_failure_is_diagnosed_as_login_diagnoses_it(
+    monkeypatch: pytest.MonkeyPatch, openssl_says: str, reason: CloudErrorReason
 ) -> None:
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
-    monkeypatch.setattr(
-        client, "_build_client", lambda: _NetworkFailingRawClient(ssl.SSLCertVerificationError(openssl_says))
-    )
+    """aiomqtt drops the original error from the chain (`from None`);
+    the certificate diagnosis needs it, and finds it as __context__."""
+    fake = _LiveFake(enter_error=_aiomqtt_style_failure(ssl.SSLCertVerificationError(openssl_says)))
 
     with pytest.raises(ShadowSSLError) as excinfo:
-        client.connect()
+        await _live_client(monkeypatch, fake)
 
     assert excinfo.value.reason is reason
+    assert isinstance(excinfo.value.__cause__, ssl.SSLError)
     assert "almost always a temporary problem" not in str(excinfo.value)
 
 
-def test_connect_without_any_connection_is_connection_failed(monkeypatch) -> None:
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
-    monkeypatch.setattr(
-        client, "_build_client", lambda: _NetworkFailingRawClient(OSError("Name or service not known"))
-    )
+@pytest.mark.parametrize(
+    "original", [ConnectionRefusedError("Connection refused"), OSError("Name or service not known")]
+)
+@pytest.mark.asyncio
+async def test_connect_without_any_connection_is_connection_failed(
+    monkeypatch: pytest.MonkeyPatch, original: OSError
+) -> None:
+    fake = _LiveFake(enter_error=_aiomqtt_style_failure(original))
 
     with pytest.raises(ShadowConnectionError) as excinfo:
-        client.connect()
+        await _live_client(monkeypatch, fake)
 
     assert excinfo.value.reason is CloudErrorReason.CONNECTION_FAILED
+    assert isinstance(excinfo.value.__cause__, OSError)
 
 
-class _BrokerRawClient(_NetworkFailingRawClient):
-    """connect() succeeds at the socket level; the broker then answers
-    with `connack` through the client's own _on_connect -- or, with
-    None, never answers at all."""
-
-    def __init__(self, client: PrimeMqttClient, connack: str | None) -> None:
-        super().__init__(OSError("unused"))
-        self._owner = client
-        self._connack = connack
-
-    def connect(self, endpoint: str, port: int = 443, keepalive: int = 300) -> None:
-        return None
-
-    def loop_start(self) -> None:
-        if self._connack is not None:
-            from paho.mqtt.packettypes import PacketTypes
-            from paho.mqtt.reasoncodes import ReasonCode
-
-            self._owner._on_connect(self, None, None, ReasonCode(PacketTypes.CONNACK, self._connack))
-
-
-def test_an_accepted_connack_connects(monkeypatch) -> None:
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
-    monkeypatch.setattr(client, "_build_client", lambda: _BrokerRawClient(client, "Success"))
-
-    client.connect(timeout=0.2)
-
-    assert client._connected is True
-
-
-def test_a_refused_connack_is_connect_refused(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_a_refused_connack_is_connect_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """TLS worked; the broker said no. Not a network problem."""
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
-    monkeypatch.setattr(client, "_build_client", lambda: _BrokerRawClient(client, "Not authorized"))
+    from paho.mqtt.packettypes import PacketTypes
+    from paho.mqtt.reasoncodes import ReasonCode
 
-    with pytest.raises(ShadowError, match="Connect failed: Not authorized") as excinfo:
-        client.connect(timeout=0.2)
+    fake = _LiveFake(enter_error=MqttConnectError(ReasonCode(PacketTypes.CONNACK, "Not authorized")))
 
+    with pytest.raises(ShadowError, match="Connect failed") as excinfo:
+        await _live_client(monkeypatch, fake)
+
+    assert "Not authorized" in str(excinfo.value)
     assert excinfo.value.reason is CloudErrorReason.CONNECT_REFUSED
 
 
-def test_no_connack_in_time_is_a_timeout(monkeypatch) -> None:
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="fake.example.com", blid="0000000000000000")
-    monkeypatch.setattr(client, "_build_client", lambda: _BrokerRawClient(client, None))
+@pytest.mark.asyncio
+async def test_no_connack_in_time_is_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _LiveFake(enter_error=MqttError("Operation timed out"))
 
-    with pytest.raises(ShadowError, match="timed out") as excinfo:
-        client.connect(timeout=0.2)
+    with pytest.raises(ShadowError, match="timed out after 1.0s") as excinfo:
+        await _live_client(monkeypatch, fake)
 
     assert excinfo.value.reason is CloudErrorReason.TIMEOUT
 
 
-def test_update_shadow_rejected_and_unanswered() -> None:
-    client, fake = _connected_client()
-    fake.on_publish_react = _react_with(client, "update", "rejected", {"code": 400, "message": "no"})
-    with pytest.raises(ShadowError, match="UPDATE rejected") as rejected:
-        client.update_shadow({"binPause": False}, timeout=1.0)
+@pytest.mark.asyncio
+async def test_any_other_connect_failure_is_still_a_shadow_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _LiveFake(enter_error=MqttError("something else"))
 
-    client, fake = _connected_client()
-    fake.on_publish_react = None
-    with pytest.raises(ShadowError, match="No response to UPDATE") as unanswered:
-        client.update_shadow({"binPause": False}, timeout=0.3)
+    with pytest.raises(ShadowError) as excinfo:
+        await _live_client(monkeypatch, fake)
 
-    assert rejected.value.reason is CloudErrorReason.SHADOW_REJECTED
-    assert unanswered.value.reason is CloudErrorReason.TIMEOUT
-
-
-def test_publishing_before_connect_is_not_connected() -> None:
-    """A caller's mistake, not the cloud's -- a translation should not
-    send anyone to check their internet for it."""
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
-
-    with pytest.raises(ShadowError) as timeline:
-        client.request_mission_timeline("irbt-prefix", 1)
-    with pytest.raises(ShadowError) as command:
-        client.publish_cmd_payload("irbt-prefix", {"command": "start"})
-
-    assert timeline.value.reason is CloudErrorReason.NOT_CONNECTED
-    assert command.value.reason is CloudErrorReason.NOT_CONNECTED
-
-
-@pytest.mark.parametrize(
-    "answer", [(4, 1), (0, None)], ids=["paho-no-conn", "success-without-mid"]
-)
-def test_a_subscription_never_sent_is_not_a_rejection(answer) -> None:
-    """The broker never saw it, so "the broker's policy denied this"
-    would be the wrong thing to say."""
-    client, fake = _connected_client()
-    fake.subscribe = lambda topic, qos=1: answer
-
-    with pytest.raises(SubscriptionRejectedError, match="never sent") as excinfo:
-        client._subscribe_and_wait(["some/topic"], timeout=0.2)
-
-    assert excinfo.value.reason is CloudErrorReason.SUBSCRIPTION_NOT_SENT
-
-
-def test_no_client_after_reconnect_is_a_cloud_error() -> None:
-    """Was a builtin ConnectionError, past every `except CloudError`."""
-    from roombapy_prime.errors import CloudError
-
-    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="x")
-    # The "unreachable in practice" case: a reconnect that leaves no client.
-    client.reconnect = lambda timeout=0.0: None  # type: ignore[method-assign]
-
-    with pytest.raises(CloudError) as excinfo:
-        client._subscribe_and_wait(["some/topic"], timeout=0.2)
-
-    assert isinstance(excinfo.value, ShadowError)
     assert excinfo.value.reason is CloudErrorReason.CONNECTION_FAILED
 
 
-def test_a_mission_timeline_request_is_published_on_a_connection() -> None:
+# --- what goes on the wire -----------------------------------------------
+
+class TestTheConnectionIsBuiltAsBefore:
+    """aiomqtt hands every setting to the same paho client 0.4.x used.
+    These pin the settings, since a changed one would only show in the
+    field."""
+
+    def _kwargs(self) -> dict[str, Any]:
+        client = PrimeMqttClient(token=_dummy_token("issued-id"), endpoint="e.example.com", blid="B")
+        with patch("roombapy_prime.mqtt_client.aiomqtt.Client") as factory:
+            client._build_client(8.0)
+        (args, kwargs) = factory.call_args
+        return {"_args": args, **kwargs}
+
+    def test_only_the_three_confirmed_headers_are_sent(self) -> None:
+        """REVERSED in a23: a User-Agent added on an untested third-party
+        claim shipped to every consumer in the release that broke Prime
+        setup. The app sends exactly three headers."""
+        headers = self._kwargs()["websocket_headers"]
+        assert set(headers) == {
+            "x-amz-customauthorizer-name",
+            "x-amz-customauthorizer-signature",
+            "x-irobot-auth",
+        }
+        assert not any(k.lower() == "user-agent" for k in headers)
+
+    def test_websocket_tls_and_the_issued_client_id(self) -> None:
+        import ssl as ssl_module
+
+        kwargs = self._kwargs()
+        assert kwargs["_args"] == ("e.example.com", 443)
+        assert kwargs["transport"] == "websockets"
+        assert kwargs["websocket_path"] == "/mqtt"
+        assert kwargs["identifier"] == "issued-id"
+        assert kwargs["tls_params"].tls_version == ssl_module.PROTOCOL_TLS_CLIENT
+        assert kwargs["tls_params"].ca_certs  # certifi's bundle
+        assert kwargs["timeout"] == 8.0
+
+    def test_keepalive_is_short_enough_to_notice_a_dead_connection(self) -> None:
+        """At 300 s a dead connection went unnoticed for up to 450 s,
+        during which publishes looked fine and reached nobody."""
+        assert self._kwargs()["keepalive"] == 60
+
+    def test_the_apps_in_flight_window(self) -> None:
+        assert self._kwargs()["max_inflight_messages"] == 1000
+
+
+# --- review findings on the aiomqtt port (0.5.0b1) ------------------------
+
+def _aiomqtt_connack_timeout() -> MqttError:
+    """Exactly how aiomqtt reports a CONNACK that did not come: raised
+    `from None` inside `except asyncio.TimeoutError`, so __context__ is a
+    TimeoutError -- an OSError subclass."""
+    try:
+        try:
+            raise TimeoutError
+        except TimeoutError:
+            raise MqttError("Operation timed out") from None
+    except MqttError as wrapped:
+        return wrapped
+    raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_a_connack_timeout_as_aiomqtt_raises_it_is_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Was CONNECTION_FAILED: the context is a TimeoutError, which the
+    OSError branch took first. The refresh loop recognises a timeout by
+    "timed out" in the message, and logged a full traceback otherwise."""
+    fake = _LiveFake(enter_error=_aiomqtt_connack_timeout())
+
+    with pytest.raises(ShadowError) as excinfo:
+        await _live_client(monkeypatch, fake)
+
+    assert excinfo.value.reason is CloudErrorReason.TIMEOUT
+    assert "timed out" in str(excinfo.value)
+    assert not isinstance(excinfo.value, ShadowConnectionError)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connect_closes_what_it_may_have_opened(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A late CONNACK completes a connection nobody owns, under the
+    robot's client id."""
+    fake = _LiveFake(enter_error=_aiomqtt_connack_timeout())
+    fake._client = MagicMock()  # the paho client aiomqtt wraps
+
+    with pytest.raises(ShadowError):
+        await _live_client(monkeypatch, fake)
+
+    fake._client.disconnect.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_lost_its_connection_is_subscribed_again_next_time() -> None:
+    """The drop cleared `_subscribed_topics`, and the read then added its
+    topics back -- so after the reconnect no read of that shadow ever
+    subscribed again, and every one timed out."""
     client, fake = _connected_client()
 
-    assert client.request_mission_timeline("irbt-prefix", 7) is True
-    topic, payload = fake.published[-1]
-    assert json.loads(payload) == {"timelineRequestId": 7}
+    async def drop_during_suback(_topic: str) -> list[int]:
+        client._connection_lost("dropped mid-SUBACK")
+        return [1]
+
+    fake.suback = drop_during_suback
+
+    async def revive(**_kw: Any) -> None:
+        client._connected = True
+
+    client.reconnect = AsyncMock(side_effect=revive)  # type: ignore[method-assign]
+    with pytest.raises(ShadowError):
+        await client.get_shadow(timeout=0.05)
+    assert client._subscribed_topics == set()
+
+    fake.suback = lambda _t: [1]
+    fake.subscribed.clear()
+    fake.on_publish_react = _react_with(client, "get", "accepted", {})
+    await client.get_shadow(timeout=1.0)
+
+    assert len(fake.subscribed) == 2
+
+
+@pytest.mark.asyncio
+async def test_connect_starts_with_nothing_subscribed(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+    client._subscribed_topics.add("stale/get/accepted")
+    monkeypatch.setattr(client, "_build_client", lambda timeout: _LiveFake())
+
+    await client.connect(timeout=1.0)
+
+    assert client._subscribed_topics == set()
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_subscribes_of_a_connection_that_dropped_meanwhile_are_not_kept() -> None:
+    client, _fake = _connected_client(fake=_FakeAioClient(suback=lambda _t: NEVER))
+
+    async def drop_soon() -> None:
+        await asyncio.sleep(0.005)
+        client._connection_lost("gone")
+
+    dropper = asyncio.ensure_future(drop_soon())
+    await client._subscribe_and_wait(["a/topic"], timeout=0.03)
+    await dropper
+    await asyncio.sleep(0)
+
+    assert client._subscribe_tasks == {}
+    assert client.resubscribe_still_unconfirmed() == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_subscribe_is_left_to_its_connection() -> None:
+    """A cancelled caller no longer cancels its SUBSCRIBE: aiomqtt then
+    forgets it, and the SUBACK arriving later is logged as an error with
+    a traceback (review finding). The connection cancels what is still
+    waiting when it ends -- and nothing is left over after that."""
+    fake = _FakeAioClient(suback=lambda _t: NEVER)
+    client, _fake = _connected_client(fake=fake)
+    started = asyncio.Event()
+    original = fake.subscribe
+
+    async def tracking(topic: str, qos: int = 0, timeout: float | None = None) -> Any:
+        started.set()
+        return await original(topic, qos, timeout)
+
+    fake.subscribe = tracking  # type: ignore[method-assign]
+    waiting = asyncio.ensure_future(client._subscribe_and_wait(["a/topic"], timeout=10.0))
+    await started.wait()
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    await asyncio.sleep(0)
+
+    assert len(client._inflight) == 1
+    assert client.resubscribe_still_unconfirmed() == []  # not a watcher's topic
+    client._connection_lost("gone")
+    await asyncio.sleep(0)
+
+    me = asyncio.current_task()
+    pending = [
+        t for t in asyncio.all_tasks()
+        if t is not me and "subscribe" in repr(t.get_coro()) and not t.done()
+    ]
+    assert pending == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_before_any_connect_leaves_no_deliberate_flag() -> None:
+    """The flag survived into the first real connection, and its first
+    real drop read as deliberate -- no reconnect."""
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+
+    await client.disconnect()
+
+    assert client._deliberate_disconnect is False
+
+
+@pytest.mark.asyncio
+async def test_a_subscribe_during_a_token_swap_does_not_open_a_second_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """watch_live_map re-subscribes on every disconnect, including the
+    token swap's own. Its lazy reconnect ran alongside the swap: two live
+    connections with one client id, which AWS IoT answers by evicting one."""
+    first = _LiveFake()
+    client = await _live_client(monkeypatch, first)
+    built: list[_LiveFake] = []
+
+    def build(timeout: float) -> _LiveFake:
+        fake = _LiveFake()
+        original_enter = fake.__aenter__
+
+        async def slow_enter() -> _LiveFake:
+            await asyncio.sleep(0.02)
+            return await original_enter()
+
+        fake.__aenter__ = slow_enter  # type: ignore[method-assign]
+        built.append(fake)
+        return fake
+
+    monkeypatch.setattr(client, "_build_client", build)
+    swap = asyncio.ensure_future(client.replace_token(_dummy_token("new"), timeout=1.0))
+    await asyncio.sleep(0.005)  # inside the swap: disconnected, not yet connected
+    await client.subscribe("t/#", print)
+    await swap
+
+    assert len(built) == 1
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_resubscribing_with_the_same_callback_does_not_duplicate_it() -> None:
+    """After N drops every message arrived N+1 times, and unsubscribe()
+    removed one copy -- the topic was never released."""
+    client, fake = _connected_client()
+    received: list[Any] = []
+
+    def on_message(resp: ShadowResponse) -> None:
+        received.append(resp.payload)
+
+    await client.subscribe("t", on_message)
+    await client.subscribe("t", on_message)
+    client._dispatch("t", b"1")
+    await client.unsubscribe("t", on_message)
+
+    assert received == [1]
+    assert "t" in fake.unsubscribed
+
+
+@pytest.mark.asyncio
+async def test_every_waiter_hears_of_a_drop() -> None:
+    """0.4.x kept one event, replaced by each wait_for_disconnect() call:
+    with several watchers only the last one armed was woken."""
+    client, _fake = _connected_client()
+    first = asyncio.ensure_future(client.wait_for_disconnect())
+    second = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.01)
+
+    client._connection_lost("gone")
+
+    assert await asyncio.wait_for(first, 1.0) == "gone"
+    assert await asyncio.wait_for(second, 1.0) == "gone"
+    assert client._disconnect_waiters == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reconnect_is_reported_to_the_watchers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A token swap consumes the planned disconnect; the watchers re-arm.
+    If the new connection then fails, no drop can come -- so the failure
+    is reported as one, and the watchers take over with their backoff."""
+    client = await _live_client(monkeypatch, _LiveFake())
+
+    class _SlowFailure(_LiveFake):
+        async def __aenter__(self) -> _LiveFake:
+            await asyncio.sleep(0.05)
+            raise MqttError("Operation timed out")
+
+    monkeypatch.setattr(client, "_build_client", lambda timeout: _SlowFailure())
+    generation = client.generation
+    planned = asyncio.ensure_future(client.wait_for_disconnect(generation))
+    await asyncio.sleep(0.01)
+    swap = asyncio.ensure_future(client.replace_token(_dummy_token("new"), timeout=1.0))
+
+    assert await asyncio.wait_for(planned, 1.0) == "deliberate: token refresh or reconnect"
+    with pytest.raises(ShadowError):
+        await swap
+
+    # Nothing is up and nothing is rebuilding: asking again answers at
+    # once, however late -- the watcher then rebuilds.
+    assert await asyncio.wait_for(client.wait_for_disconnect(generation), 0.1)
+    assert client.disconnect_reason is not None
+    assert client.disconnect_reason.startswith("reconnect failed")
+    assert client.last_disconnect_was_deliberate is False
+    assert not client.connected
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_reconnect_does_not_repeat_one_that_just_succeeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = await _live_client(monkeypatch, _LiveFake())
+    builds: list[int] = []
+
+    def build(timeout: float) -> _LiveFake:
+        builds.append(1)
+        return _LiveFake()
+
+    monkeypatch.setattr(client, "_build_client", build)
+
+    await asyncio.gather(client.reconnect(timeout=1.0), client.reconnect(timeout=1.0))
+
+    assert len(builds) == 1
+    await client.disconnect()
+
+
+# --- second review of 0.5.0b1 ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_subscribe_overlapping_a_reconnect_reaches_the_new_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reconnect restored the topics registered when it started; a new
+    topic registers only after its SUBACK wait. The new connection never
+    heard of it, and nothing reported it as unconfirmed (review finding;
+    0.4.x too)."""
+    first = _LiveFake()
+    first.suback = lambda _t: NEVER
+    client = await _live_client(monkeypatch, first)
+    client.SUBACK_TIMEOUT_SECONDS = 0.1
+    second = _LiveFake()
+    monkeypatch.setattr(client, "_build_client", lambda timeout: second)
+
+    subscribing = asyncio.ensure_future(client.subscribe("t/new", print))
+    await asyncio.sleep(0.02)
+    await client.reconnect(timeout=1.0)
+    await subscribing
+
+    assert "t/new" in second.subscribed
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_connect_closes_the_connection_it_leaves_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """aiomqtt's connect runs in a worker thread that a cancel does not
+    stop: the handshake completed, and the connection pinged on with
+    nobody holding it (review finding, new in 0.5)."""
+    class _SlowEnter(_LiveFake):
+        async def __aenter__(self) -> _LiveFake:
+            await asyncio.sleep(0.05)
+            return self
+
+    fake = _SlowEnter()
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+    monkeypatch.setattr(client, "_build_client", lambda timeout: fake)
+
+    connecting = asyncio.ensure_future(client.connect(timeout=1.0))
+    await asyncio.sleep(0.01)
+    connecting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await connecting
+    await asyncio.sleep(0.1)
+
+    assert fake.exited, "the late connection must be closed"
+    assert not client.connected
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_cancelled_after_its_close_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a ShadowError was reported, so a cancelled reconnect left the
+    watchers asleep on a connection it had closed (review finding)."""
+    client = await _live_client(monkeypatch, _LiveFake())
+    generation = client.generation
+
+    class _Slow(_LiveFake):
+        async def __aenter__(self) -> _LiveFake:
+            await asyncio.sleep(1.0)
+            return self
+
+    monkeypatch.setattr(client, "_build_client", lambda timeout: _Slow())
+    waiter = asyncio.ensure_future(client.wait_for_disconnect(generation))
+    rebuilding = asyncio.ensure_future(client.reconnect(timeout=2.0))
+    await asyncio.sleep(0.02)
+    rebuilding.cancel()
+    await asyncio.wait({rebuilding})
+
+    assert await asyncio.wait_for(waiter, 0.5)
+    assert client.disconnect_reason == "reconnect cancelled"
+    assert client.last_disconnect_was_deliberate is False
+
+
+@pytest.mark.asyncio
+async def test_disconnect_does_not_raise_a_cancel_it_did_not_receive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When aiomqtt gives up on its own DISCONNECT it cancels a future the
+    message task waits on; the task then ends cancelled, and wait_for()
+    raised that out of disconnect() as if the caller had been cancelled
+    (review finding)."""
+    fake = _LiveFake()
+    client = await _live_client(monkeypatch, fake)
+
+    async def aexit_that_cancels_the_pump(*_exc: Any) -> None:
+        assert client._pump_task is not None
+        client._pump_task.cancel()
+
+    fake.__aexit__ = aexit_that_cancels_the_pump  # type: ignore[method-assign]
+
+    await client.disconnect()  # must not raise
+
+    assert not client.connected
+
+
+@pytest.mark.asyncio
+async def test_connect_on_a_connected_client_builds_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builds: list[int] = []
+    client = await _live_client(monkeypatch, _LiveFake())
+
+    def build(timeout: float) -> _LiveFake:
+        builds.append(1)
+        return _LiveFake()
+
+    monkeypatch.setattr(client, "_build_client", build)
+    await client.connect(timeout=1.0)
+
+    assert builds == []
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_disconnect_answers_at_once_for_a_connection_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _LiveFake()
+    client = await _live_client(monkeypatch, fake)
+    generation = client.generation
+    fake.drop(RuntimeError("gone"))
+    await asyncio.sleep(0.01)
+
+    reason = await asyncio.wait_for(client.wait_for_disconnect(generation), 0.1)
+
+    assert reason == "gone"
+    assert client.ended(generation) == ("gone", False)
+
+
+def test_paho_and_aiomqtt_log_at_debug_only(caplog: pytest.LogCaptureFixture) -> None:
+    """aiomqtt switches paho's logging on: "failed to receive on socket"
+    at ERROR on every connection reset, and "Unexpected message ID" with
+    a traceback for a SUBACK nobody waits for. 0.4.0 logged neither
+    (review finding)."""
+    from roombapy_prime.mqtt_client import _DebugOnlyLogger
+
+    target = logging.getLogger("roombapy_prime.mqtt_client.paho")
+    quiet = _DebugOnlyLogger(target)
+
+    caplog.set_level(logging.WARNING, logger="roombapy_prime")
+    quiet.log(logging.ERROR, "failed to receive on socket: %s", "reset")
+    quiet.warning("There are %d pending publish calls.", 11)
+    assert caplog.records == []
+
+    caplog.set_level(logging.DEBUG, logger="roombapy_prime")
+    quiet.error("Unexpected message ID %d", 7)
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.DEBUG, "Unexpected message ID 7")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_client_hands_aiomqtt_the_quiet_logger() -> None:
+    from roombapy_prime.mqtt_client import _DebugOnlyLogger
+
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+    built = client._build_client(1.0)
+
+    assert isinstance(built._logger, _DebugOnlyLogger)
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_connect_leaves_paho_a_future_it_can_ask() -> None:
+    """A CONNACK wait cancelled with its caller leaves aiomqtt's
+    `_connected` cancelled; paho's disconnect callback then raised
+    CancelledError inside paho, before the socket was closed (review
+    finding)."""
+    from roombapy_prime.mqtt_client import _abandon
+
+    client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
+    built = client._build_client(1.0)
+    built._connected.cancel()
+
+    _abandon(built)
+
+    built._on_disconnect(built._client, None, None, 0)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_without_a_generation_the_wait_is_for_the_next_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller written for the old API loops on wait_for_disconnect()
+    after a drop. Answering at once with nothing up would make that loop
+    spin without ever yielding -- found re-running the review's
+    reproductions."""
+    fake = _LiveFake()
+    client = await _live_client(monkeypatch, fake)
+    fake.drop(RuntimeError("gone"))
+    await asyncio.sleep(0.01)
+
+    waiting = asyncio.ensure_future(client.wait_for_disconnect())
+    await asyncio.sleep(0.05)
+
+    assert not waiting.done()
+    waiting.cancel()

@@ -6,6 +6,112 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.5.0b1] - 2026-09-29
+
+### Changed
+
+- **The MQTT connection runs on aiomqtt.** It used to be paho on its
+  own network thread, with every call handed to a worker thread through
+  `asyncio.to_thread()`. It now runs on the event loop: nothing blocks
+  it, and no thread is started. `PrimeRobot` and `CloudAccount` keep
+  their API. What goes over the wire is unchanged: the same three
+  authorizer headers and no others, the client id the server issued,
+  TLS verified against certifi's bundle, MQTT 3.1.1 over WebSocket.
+- **`PrimeMqttClient`'s methods are coroutines** (`connect`,
+  `disconnect`, `reconnect`, `replace_token`, `get_shadow`,
+  `update_shadow`, `subscribe`, `unsubscribe`, `publish_cmd`,
+  `publish_cmd_payload`, `request_mission_timeline`). The class is not
+  exported from the package; only code that built one itself has to
+  add `await`.
+- **Watcher callbacks run on the event loop.** A callback that blocks
+  holds up every message on the connection; one that raises is logged
+  and the others still run.
+- **`disconnect()` closes for good.** Running watchers stay and wait;
+  shadow reads, commands and subscribes raise `NOT_CONNECTED`; nothing
+  reconnects until `connect()` is called again, which restores the
+  watchers' subscriptions. Before, `watch_live_map()` reconnected right
+  after a disconnect.
+- **Watchers resume by connection generation.** Each watcher remembers
+  the connection it watches (`PrimeMqttClient.generation`), and
+  `wait_for_disconnect(generation)` answers at once for one that has
+  already ended. One watcher at a time rebuilds the connection, under
+  the robot's lock; the others resume on it. Without a generation,
+  `wait_for_disconnect()` waits for the next drop, as before.
+- **paho's and aiomqtt's own log lines go to DEBUG** (logger
+  `roombapy_prime.mqtt_client.paho`). aiomqtt switches paho's logging
+  on, which 0.4.0 never did; it logged every connection reset at ERROR.
+- New dependency: `aiomqtt>=2.5,<3.0`, the range roombapy requires too.
+  `paho-mqtt` stays, beneath aiomqtt.
+
+### Fixed
+
+Found in three reviews of the port, each finding reproduced first and
+each fix checked by reverting it. Those marked *(0.4.x)* are in 0.4.0
+as well.
+
+Watchers across drops:
+- **A drop a watcher was not waiting for was lost, and the watcher went
+  silent for good** *(0.4.x)*: a drop while its consumer held a message,
+  one within the second after a reconnect (the eviction pattern), or one
+  arriving together with a message. The log said "watch resumed", then
+  nothing.
+- **With several watchers, only one heard of a drop** *(0.4.x)*.
+- **One drop was logged and counted once per watcher**, which tripped
+  the "3 disconnections in five minutes" warning on every ordinary drop
+  with Home Assistant's three watchers. Once per connection now.
+- **Unacknowledged subscriptions after a reconnect** were not retried
+  *(0.4.x)*; fixed, the retry had no bound and reconnected every minute
+  on sessions that never show a SUBACK. At most two retries now, then
+  the watch resumes. The check looks at the watchers' topics, not at
+  whatever subscribed last.
+- **A due token meant one login per watcher**, each swap tearing down
+  the connection the previous one had built. One login now.
+- **A watcher in its backoff tore down a connection a shadow read had
+  just rebuilt**, and the read failed. It adopts that connection now;
+  the backoff also ends early when the connection comes back.
+- **A cancel of a watcher could be swallowed** *(0.4.x)*.
+- **A watcher could receive every message twice** after reconnects
+  *(0.4.x)*, and `unsubscribe()` then never released the topic.
+- **A subscribe overlapping a reconnect never reached the new
+  connection** *(0.4.x)*.
+
+Connection lifecycle:
+- **`robot.disconnect()` was undone at once** by the live map, and by a
+  watcher in its backoff *(0.4.x)*: a connection nobody owned, under the
+  robot's client id. Also after a `disconnect()` during a reconnect, and
+  after a `connect()` racing a `disconnect()`.
+- **A cancelled connect left its handshake running**: aiomqtt's connect
+  runs in a worker thread a cancel does not stop. It is waited for and
+  closed now, before the next connect and before `disconnect()` returns.
+- **A reconnect cancelled after its own disconnect**, or one that
+  failed, left the watchers waiting.
+- **The token refresh loop could spin** on a new token that was due at
+  once, refreshed again after a watcher had, and survived a
+  `disconnect()` racing `connect()` *(0.4.x)*.
+- **A drop could be taken for a planned one** *(0.4.x)*, and **shadow
+  reads could time out for good after a drop mid-SUBACK** *(0.4.x)*.
+- **A missing CONNACK** is a `TIMEOUT` again; **`disconnect()` no longer
+  raises a cancel it did not receive**; **a subscribe cancelled by its
+  caller** is left to its connection instead of making aiomqtt log the
+  late SUBACK as an error.
+
+### Verified
+
+- 1340 library tests on Python 3.11 to 3.14, 526 for the tools. A new
+  test module runs the real client and the real robot together over a
+  fake transport (`tests/test_watch_reconnect.py`): the old watcher
+  tests used a scripted mock client, and passed with every one of the
+  bugs above present.
+- Against a local amqtt broker over WebSocket with TLS: headers and
+  path, a shadow read, watchers, commands confirmed by PUBACK, a broker
+  restart the robot's watchers recover from on their own, a token swap
+  that is not reported as a drop, a `disconnect()` that stays closed,
+  and an untrusted certificate (`ShadowSSLError`,
+  `ssl_local_trust_store`). A real iRobot account has not been tried
+  yet.
+- ha_roomba_plus 4.3 (dev) passes its 8650 tests against this build,
+  with no change to the integration.
+
 ## [0.4.0] - 2026-09-29
 
 The first stable release of the 0.4 line. The code is 0.4.0b3's,
