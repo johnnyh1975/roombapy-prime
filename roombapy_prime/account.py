@@ -32,13 +32,24 @@ wait for a single login, and a client still holding credentials the
 account has already replaced picks up the new ones instead of logging in
 again.
 
-NOT YET SHARED: prime_robot() goes through PrimeFactory, which keeps its
-own relogin for the MQTT token. Moving that onto the account is a
-separate step, left for when the Prime path is changed on purpose.
+ONE LOGIN FOR EVERY PRIME ROBOT TOO (0.5.0b2). prime_robot(auto_refresh=True)
+gives the robot the account's relogin instead of one of its own. A robot
+whose MQTT token is due takes the account's current login if that one
+already carries a fresh token for it -- another robot logged in a moment
+ago -- and only logs in when it does not. Three Prime robots from one
+login refresh with one login, not three, and the robot's REST client
+relogs through the account like every other client.
+
+A FAILED LOGIN ANSWERS FOR HALF A MINUTE. Against a locked account every
+attempt extends the lock; robots retrying on their own schedules would
+keep it locked. The failure is handed to anyone asking within
+FAILURE_REUSE_SECONDS instead of a new attempt.
 """
 from __future__ import annotations
 
 import asyncio
+import functools
+import time
 from typing import TypeVar
 
 import aiohttp
@@ -53,6 +64,7 @@ from .auth import (
     is_prime_sku,
     login,
 )
+from .mqtt_client import PrimeMqttClient
 from .prime_factory import PrimeFactory
 from .prime_robot import PrimeRobot
 from .rest_client import ClassicRestClient, CloudRestClient, PrimeRestClient
@@ -87,6 +99,8 @@ class CloudAccount:
         self._country_code = country_code
         self._login_result = login_result
         self._relogin_lock = asyncio.Lock()
+        #: The last failed login and when (monotonic), see _login().
+        self._failure: tuple[float, Exception] | None = None
         #: The id this account logged in with. Classic's mission history
         #: sends it again, so the Classic client gets it too.
         self.app_id = app_id
@@ -173,18 +187,44 @@ class CloudAccount:
 
     async def prime_robot(self, blid: str, *, auto_refresh: bool = False) -> PrimeRobot:
         """A PrimeRobot for this BLID, built from this account's login --
-        no second login. Refuses a robot known to be Classic."""
+        no second login. Refuses a robot known to be Classic.
+
+        auto_refresh=True: the robot renews its MQTT token through this
+        account, and its REST client relogs through it on HTTP 403 --
+        see the module docstring."""
         if self.generation(blid) == CLASSIC:
             raise ValueError(f"{blid} is a Classic robot; PrimeRobot is for Prime robots")
-        return await PrimeFactory.create_prime_robot(
+        robot = await PrimeFactory.create_prime_robot(
             session=self._session,
             username=self._username,
             password=self._password,
             country_code=self._country_code,
             blid=blid,
-            auto_refresh=auto_refresh,
             login_result=self._login_result,
+            relogin=functools.partial(self._prime_relogin, blid) if auto_refresh else None,
         )
+        if auto_refresh:
+            self._attach(robot._rest)  # noqa: SLF001 - the account owns its clients' relogin
+        return robot
+
+    #: A token with more than this many seconds left is fresh enough to
+    #: hand to a robot whose own is due. One minute above the robot's own
+    #: refresh margin, so a token handed over is not due again at once.
+    PRIME_TOKEN_FRESH_SECONDS = PrimeMqttClient.REFRESH_MARGIN_SECONDS + 60
+
+    #: How long a failed login answers for everyone who asks.
+    FAILURE_REUSE_SECONDS = 30.0
+
+    async def _prime_relogin(self, blid: str) -> LoginResult:
+        """A login whose MQTT token for `blid` is fresh: the current one
+        if it already is (another robot just logged in), a new one if not.
+        One login for every robot that asks at once."""
+        async with self._relogin_lock:
+            remaining = self._login_result.token_for_blid(blid).seconds_until_expiry()
+            if remaining is not None and remaining > self.PRIME_TOKEN_FRESH_SECONDS:
+                return self._login_result
+            self._login_result = await self._login()
+            return self._login_result
 
     async def relogin(self) -> LoginResult:
         """Logs in again now, with the same app id, and returns the new
@@ -213,7 +253,18 @@ class CloudAccount:
             return self._login_result
 
     async def _login(self) -> LoginResult:
-        return await login(
-            self._session, self._username, self._password, self._country_code,
-            app_id=self.app_id, request_timeout=self.request_timeout,
-        )
+        """A new login -- or the last failure, if it is recent. Called
+        under the relogin lock."""
+        now = time.monotonic()
+        if self._failure is not None and now - self._failure[0] < self.FAILURE_REUSE_SECONDS:
+            raise self._failure[1]
+        try:
+            result = await login(
+                self._session, self._username, self._password, self._country_code,
+                app_id=self.app_id, request_timeout=self.request_timeout,
+            )
+        except Exception as exc:
+            self._failure = (time.monotonic(), exc)
+            raise
+        self._failure = None
+        return result

@@ -6,6 +6,29 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.5.0b2] - 2026-10-01
+
+### Changed
+
+- **One login for every Prime robot of an account.**
+  `CloudAccount.prime_robot(blid, auto_refresh=True)` gives the robot
+  the account's relogin instead of one of its own:
+  - A robot whose MQTT token is due takes the account's current login
+    if that one already carries a token for it with more than six
+    minutes left, which is the case when another robot has just logged
+    in. Otherwise it logs in, once for every robot asking at the same
+    time.
+  - The robot's REST client relogs through the account on HTTP 403, like
+    every other client the account hands out.
+  - Before, three Prime robots from one login logged in three times when
+    their tokens ran out together, and with an app id of their own.
+- **A failed login answers for half a minute.** Any login the account
+  makes (its relogin, a client's 403, a Prime token) hands a recent
+  failure to whoever asks within 30 seconds instead of trying again.
+  Against a locked account every attempt extends the lock.
+- `PrimeFactory.create_prime_robot()` takes a `relogin` callback, which
+  wins over the robot's own credentials.
+
 ## [0.5.0b1] - 2026-09-29
 
 ### Changed
