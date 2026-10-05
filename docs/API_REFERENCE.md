@@ -66,8 +66,8 @@ except where noted.
 | Method | Confidence | Notes |
 |---|---|---|
 | `PrimeFactory.create_prime_robot(session, username, password, country_code, blid=None, *, auto_refresh=False)` | 🟢 | Logs in, picks a robot (first found if `blid` omitted), wires MQTT+REST. Returns a **not-yet-connected** `PrimeRobot` — call `.connect()` yourself. `auto_refresh=True` keeps credentials in a closure for automatic re-login before token expiry; see the module docstring in `prime_robot.py` for the credentials-in-memory tradeoff this implies. |
-| `robot.connect(timeout=10.0)` | 🟢 | Blocking paho handshake run in a worker thread. |
-| `robot.disconnect()` | 🟢 | |
+| `robot.connect(timeout=10.0)` | 🟢 | Asynchronous MQTT-over-WebSocket handshake (aiomqtt). Nothing blocks the event loop. |
+| `robot.disconnect()` | 🟢 | Stops the token refresh and closes the connection for good: running watchers stay and wait, shadow reads and commands raise `NOT_CONNECTED`, and nothing reconnects until `robot.connect()` is called again (since 0.5.0b1; before, a watcher could reconnect right after it). |
 
 ```python
 robot = await PrimeFactory.create_prime_robot(session, username, password, "US")
@@ -270,9 +270,16 @@ is a shorter list than it was.
 | `robot.watch_dock_reports(report_type=None, ...)` | the `dock/{reportType}/report` family. `dock/paddry/report` is confirmed live; with no argument this subscribes the whole family via a `+` wildcard, which is the only way to find out whether a `reportType` other than `paddry` exists. A `charge` or `battery` sibling would be the real find |
 | `robot.watch_raw_topic(topic, ...)` | anything else, including wildcards |
 
-A watcher that raises used to take down the whole MQTT client: a callback exception kills paho's
-network loop thread, and the connection then looks alive while delivering nothing. That is guarded
-now, but a watcher is still the wrong place to do slow work.
+Across connection drops, watchers resume on their own. Each remembers the connection it watches,
+so a drop that happens while it is busy is still seen; one watcher at a time rebuilds the
+connection (with backoff, and a fresh login only when the token is due), the others resume on it,
+and a drop is logged once however many watchers notice it. Our own token refresh is not logged
+as a drop. After a reconnect, subscriptions still unacknowledged a second later trigger at most
+two further reconnects; then the watch resumes regardless.
+
+Watchers run on the event loop (since 0.5.0; before that, on paho's network thread). A watcher
+that raises is logged and the others still run. A watcher must not block: it holds up every other
+message on the connection until it returns. Hand slow work to a task.
 
 `robot.trigger_echo_via_shadow()` is **disproven as a locate mechanism** — writing `echo` to
 `rw-constatus` does not make the robot chime (confirmed on real hardware). It is kept because it

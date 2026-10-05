@@ -20,11 +20,12 @@ wrong guess there cleans the whole house.
 Also part of this draft (see watch_state()/watch_live_map() below):
 continuous dispatch loops for shadow deltas and live-map/-position
 messages -- previously deliberately left out (see
-docs/internal/ROOMBAPY_COMPARISON.md section 3). Bridges from paho's background
-thread (drives mqtt_client.py's subscribe() callbacks) into the
-asyncio world: one asyncio.Queue PER watch_*() call, filled via
-loop.call_soon_threadsafe(). No lock needed -- each watcher gets its
-own queue, mqtt_client.py's subscribe()/unsubscribe() are already
+docs/internal/ROOMBAPY_COMPARISON.md section 3). One asyncio.Queue PER
+watch_*() call, filled from mqtt_client.py's subscribe() callbacks via
+loop.call_soon_threadsafe(). Since 0.5.0 those callbacks run on the
+event loop itself (aiomqtt, no paho thread); call_soon_threadsafe
+still works there and keeps each callback short. No lock needed --
+each watcher gets its own queue, and subscribe()/unsubscribe() are
 reference-counted for the case where two watchers observe the same
 topic (see its docstring).
 
@@ -40,12 +41,21 @@ of the PrimeRobot instance, not just for the one-time login moment as
 before. Anyone who doesn't want this can omit relogin and accept the
 ~1h expiry limit.
 
-Still NOT part of this draft:
-  - No backpressure handling -- the internal queue is unbounded. A
-    consumer that falls behind lets it grow without limit.
-  - replace_token() (see mqtt_client.py) is NOT safe against a
-    concurrently running get_shadow()/update_shadow() call -- a known,
-    accepted limitation, no lock in place.
+Connection drops (since 0.5.0b1): every watcher remembers the connection
+generation it watches, so a drop it was not waiting for is still seen.
+One watcher at a time rebuilds the connection, under this robot's lock;
+the others adopt the new connection. disconnect() closes the client for
+good: watchers then wait, and nothing reconnects until connect(). See
+_resume_after_end().
+
+Notes:
+  - Each watcher's queue is bounded (queue_maxsize, default 100); a
+    consumer that falls behind loses the oldest messages, each loss
+    logged -- see _put_with_backpressure().
+  - replace_token() and get_shadow()/update_shadow() share one lock in
+    mqtt_client.py, so a token swap never runs in the middle of a
+    shadow read or write. A watcher's plain reconnect does not take
+    that lock; a read it interrupts times out.
 """
 from __future__ import annotations
 
@@ -129,10 +139,26 @@ class _StreamExpiry:
         return min(max(remaining, 1.0), 3600.0)
 
 
-class _AlreadyReconnected(Exception):
-    """Internal signal: another watcher rebuilt the shared connection
-    while this one was waiting for the reconnect lock, so there is
-    nothing left to do but resume."""
+async def _first_of(*tasks: asyncio.Future[Any]) -> set[asyncio.Future[Any]]:
+    """Waits for the first task to finish; cancels the rest and waits for
+    them to end.
+
+    A CANCEL OF OUR OWN IS NEVER SWALLOWED. The losers used to be
+    awaited under `suppress(BaseException)` -- a cancel landing on this
+    task during that await was taken for the loser's, and the watcher
+    kept running (review finding; 0.4.x too). asyncio.wait() does not
+    raise the tasks' outcomes, only our own cancellation."""
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        raise
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending)
+    return done
 
 Relogin = Callable[[], Awaitable[LoginResult]]
 
@@ -294,7 +320,8 @@ class PrimeRobot:
         #: Timestamps of recent disconnections, for the eviction check.
         #: A blip does not recur every few seconds; an eviction loop does.
         self._recent_drops: list[float] = []
-        self._reconnect_generation = 0
+        #: The last connection whose drop was logged -- see _report_drop().
+        self._drop_reported_generation = 0
         self._rest = rest_client
         self._relogin = relogin
         self._irbt_topic_prefix = irbt_topic_prefix
@@ -316,22 +343,31 @@ class PrimeRobot:
     lifetime."""
 
     async def connect(self, timeout: float = 10.0) -> None:
-        """Blocking paho connection setup in a worker thread, so the
-        rest of the app can stay async (see mqtt_client.py -- the
-        client itself was deliberately not rebuilt). Also starts the
-        refresh loop in the background, if relogin was provided (see
-        class docstring)."""
-        await asyncio.to_thread(self._mqtt.connect, timeout)
-        if self._relogin is not None:
+        """Opens the MQTT connection (aiomqtt since 0.5.0; a paho worker
+        thread before). Also starts the refresh loop in the background,
+        if relogin was provided (see class docstring)."""
+        await self._mqtt.connect(timeout)
+        # ONE REFRESH LOOP, however often connect() is called: a second
+        # would log in and swap the token in parallel with the first.
+        # And none for a client a disconnect() closed while this connect
+        # was running: it would log in every token lifetime, forever,
+        # for a connection nobody opens again (review finding).
+        if (
+            self._relogin is not None
+            and not self._mqtt.closed
+            and (self._refresh_task is None or self._refresh_task.done())
+        ):
             self._refresh_task = asyncio.ensure_future(self._refresh_loop())
 
     async def disconnect(self) -> None:
+        """Stops the token refresh and closes the connection. Running
+        watchers stay, and wait: nothing reconnects until connect() is
+        called again."""
         if self._refresh_task is not None:
             self._refresh_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._refresh_task
+            await asyncio.wait({self._refresh_task})
             self._refresh_task = None
-        await asyncio.to_thread(self._mqtt.disconnect)
+        await self._mqtt.disconnect()
 
     async def _refresh_loop(self) -> None:
         """Proactively logs in again and swaps the MQTT token shortly
@@ -370,10 +406,39 @@ class PrimeRobot:
                 return
             await asyncio.sleep(wait_seconds)
             assert self._relogin is not None  # invariant: only started if set
+            if self._mqtt.closed:
+                # A disconnect() that ran while connect() was starting
+                # this loop: no login for a connection nobody reopens.
+                return
+            if self._reconnect_lock is None:
+                self._reconnect_lock = asyncio.Lock()
             try:
-                login_result = await self._relogin()
-                new_token = login_result.token_for_blid(self.blid)
-                await asyncio.to_thread(self._mqtt.replace_token, new_token)
+                # UNDER THE WATCHERS' LOCK, AND ONLY IF STILL DUE. A
+                # watcher that reconnected with a due token has logged in
+                # already; refreshing again on the old schedule would be
+                # a second login and a second reconnect for nothing
+                # (review finding).
+                async with self._reconnect_lock:
+                    still_due = self._mqtt.seconds_until_token_refresh_due()
+                    if still_due is None:
+                        return
+                    if still_due > 1.0:
+                        continue
+                    login_result = await self._relogin()
+                    new_token = login_result.token_for_blid(self.blid)
+                    await self._mqtt.replace_token(new_token)
+                # A TOKEN THAT IS DUE AT ONCE would make the next wait
+                # zero, and this loop would log in as fast as the server
+                # answers (review finding: thousands of logins in two
+                # seconds, for a server that hands back a cached token or
+                # a host clock that is off). One refresh a minute at most.
+                if self._mqtt.seconds_until_token_refresh_due() == 0.0:
+                    _LOGGER.warning(
+                        "roombapy-prime: the new token for %s is due for refresh at "
+                        "once -- is the system clock right? Next attempt in %.0fs",
+                        self.blid, self._REFRESH_RETRY_SECONDS,
+                    )
+                    await asyncio.sleep(self._REFRESH_RETRY_SECONDS)
             except Exception as exc:  # noqa: BLE001
                 # A CONNECT TIMEOUT HERE IS NOT AN ERROR, and logging it
                 # as one filled @ratpic83's log with a dozen tracebacks
@@ -425,7 +490,7 @@ class PrimeRobot:
         ClassicShadowState's own docstring, especially the CapabilityFlags
         sub-model (the only per-device capability data found anywhere
         in this project so far) and the schedHold duplication note."""
-        return await asyncio.to_thread(self._mqtt.get_shadow, None, timeout)
+        return await self._mqtt.get_shadow(None, timeout)
 
     async def get_settings(self, timeout: float = 8.0) -> ShadowResponse:
         """Named "rw-settings" shadow. IMPORTANT CORRECTION (session
@@ -453,7 +518,7 @@ class PrimeRobot:
         pad wash settings, language list, auto-evac frequency --
         resolves a large part of the settings vocabulary previously
         listed as unmodeled in docs/API_REFERENCE.md."""
-        return await asyncio.to_thread(self._mqtt.get_shadow, "rw-settings", timeout)
+        return await self._mqtt.get_shadow("rw-settings", timeout)
 
     async def get_named_shadow(self, name: str, timeout: float = 8.0) -> ShadowResponse:
         """NEW (this session, prompted by a person's own native-binary
@@ -469,7 +534,7 @@ class PrimeRobot:
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#prime_robotget_named_shadow
     """
-        return await asyncio.to_thread(self._mqtt.get_shadow, name, timeout)
+        return await self._mqtt.get_shadow(name, timeout)
 
     async def set_setting(self, key: str, value: object, timeout: float = 8.0) -> ShadowResponse:
         """Writes to the "rw-settings" shadow. Only meaningful on
@@ -580,7 +645,7 @@ class PrimeRobot:
         #
         # So a global wetness control is tenable, provided the command
         # sending it does not carry region-specific params of its own.
-        return await asyncio.to_thread(self._mqtt.update_shadow, {key: value}, "rw-settings", timeout)
+        return await self._mqtt.update_shadow({key: value}, "rw-settings", timeout)
 
     async def trigger_echo_via_shadow(self, value: object = True, timeout: float = 8.0) -> ShadowResponse:
         """DISPROVEN (this session, chairstacker, real device test) --
@@ -591,7 +656,7 @@ class PrimeRobot:
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#prime_robottrigger_echo_via_shadow
     """
-        return await asyncio.to_thread(self._mqtt.update_shadow, {"echo": value}, "rw-constatus", timeout)
+        return await self._mqtt.update_shadow({"echo": value}, "rw-constatus", timeout)
 
     async def send_mission_command(self, command: RoutineCommand, timeout: float = 8.0) -> ShadowResponse:
         """STRONGLY SUSPECTED WRONG (session 39) -- kept for the
@@ -604,9 +669,7 @@ class PrimeRobot:
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#prime_robotsend_mission_command
     """
-        return await asyncio.to_thread(
-            self._mqtt.update_shadow, command.to_shadow_desired(), None, timeout
-        )
+        return await self._mqtt.update_shadow(command.to_shadow_desired(), None, timeout)
 
     async def send_simple_command(self, command: str, initiator: str = "localApp") -> bool:
         """A CORRECT COMMAND CAN STILL DO NOTHING, and nothing on the
@@ -652,7 +715,7 @@ class PrimeRobot:
                 "send_simple_command() needs irbt_topic_prefix (from LoginResult) -- "
                 "missing here, so the correct topic can't be built."
             )
-        return await asyncio.to_thread(self._mqtt.publish_cmd, self._irbt_topic_prefix, command, initiator)
+        return await self._mqtt.publish_cmd(self._irbt_topic_prefix, command, initiator)
 
     async def send_routine_command_via_cmd_topic(self, command: RoutineCommand) -> bool:
         """FOR REGIONS. A whole-house clean is `send_simple_command("start")`.
@@ -829,9 +892,7 @@ class PrimeRobot:
         # recorded.
         payload = command.to_json()
         payload["initiator"] = "localApp"
-        return await asyncio.to_thread(
-            self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, payload
-        )
+        return await self._mqtt.publish_cmd_payload(self._irbt_topic_prefix, payload)
 
     async def send_umi_get_request(self, args: list[str], request_id: int = 1) -> None:
         """EXPERIMENTAL, UNCONFIRMED (this session) -- a well-reasoned
@@ -848,7 +909,7 @@ class PrimeRobot:
                 "missing here, so the correct topic can't be built."
             )
         payload = {"do": "get", "args": args, "id": request_id}
-        await asyncio.to_thread(self._mqtt.publish_cmd_payload, self._irbt_topic_prefix, payload)
+        await self._mqtt.publish_cmd_payload(self._irbt_topic_prefix, payload)
 
     # --- REST-based p2maps operations (already natively async) -------
 
@@ -1367,11 +1428,7 @@ class PrimeRobot:
                 "request_mission_timeline() needs irbt_topic_prefix (from LoginResult) -- "
                 "this was None."
             )
-        await asyncio.to_thread(
-            self._mqtt.request_mission_timeline,
-            self._irbt_topic_prefix,
-            request_id,
-        )
+        await self._mqtt.request_mission_timeline(self._irbt_topic_prefix, request_id)
         return request_id
 
     async def watch_mission_timeline(
@@ -1582,316 +1639,264 @@ class PrimeRobot:
         def _on_message(response: ShadowResponse) -> None:
             loop.call_soon_threadsafe(_put_with_backpressure, queue, response, topic)
 
-        await asyncio.to_thread(self._mqtt.subscribe, topic, _on_message)
-        backoff = 1.0
+        await self._mqtt.subscribe(topic, _on_message)
+        # THE CONNECTION THIS WATCHER WATCHES. A drop is "this generation
+        # has ended", which stays true however late the watcher asks --
+        # see wait_for_disconnect() for what an event missed before.
+        generation = self._mqtt.generation
         try:
             while True:
                 get_task = asyncio.ensure_future(queue.get())
-                disconnect_task = asyncio.ensure_future(self._mqtt.wait_for_disconnect())
-                tasks = {get_task, disconnect_task}
-                try:
-                    done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    # Unconditional cleanup, regardless of WHY we got here --
-                    # one task completing normally, or this whole generator
-                    # being cancelled from outside (agen.aclose()/task.cancel()
-                    # while both tasks are still pending). Without this, the
-                    # "loser" of the race (or both, on outer cancellation)
-                    # would be left running as an orphaned task.
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
-                    for t in tasks:
-                        with contextlib.suppress(BaseException):
-                            await t
+                end_task = asyncio.ensure_future(self._mqtt.wait_for_disconnect(generation))
+                done = await _first_of(get_task, end_task)
 
                 if get_task in done:
-                    backoff = 1.0  # a live message means the connection is healthy
+                    # A drop that arrived together with this message is
+                    # not lost: the next wait reports it at once.
                     yield get_task.result()
                     continue
 
-                # Connection dropped -- reconnect with exponential backoff,
-                # unbounded retries.
-                reason = disconnect_task.result()
+                generation = await self._resume_after_end(
+                    generation, topic, max_reconnect_backoff
+                )
+        finally:
+            await self._mqtt.unsubscribe(topic, _on_message)
 
-                # OUR OWN DISCONNECT IS NOT A DROP.
-                #
-                # @ratpic83 (2026-08-16) logged 26 disconnects in a day,
-                # each exactly 55 minutes apart, and the ordering told
-                # the story: authenticate, reconnect, THEN the "drop".
-                # "Normal disconnection" is paho's phrase for a clean
-                # client-initiated close -- ours, from the proactive
-                # token refresh.
-                #
-                # So this warned about a planned event and then started
-                # a SECOND reconnect on top of the one already running.
-                # The b5 warning text told users to close the iRobot
-                # app, which explains why closing it changed nothing for
-                # anyone whose drops arrive on a fixed interval.
-                #
-                # The refresh restores the subscriptions itself, so
-                # there is nothing to do here but keep watching.
-                if self._mqtt.last_disconnect_was_deliberate:
-                    # NOT LOGGED AT ALL. A scheduled refresh is expected,
-                    # takes about a second, restores its own
-                    # subscriptions, and happens every 55 minutes -- 26
-                    # lines a day saying the thing worked as designed.
-                    #
-                    # A refresh that leaves subscriptions unacknowledged
-                    # IS worth saying, and the check further down says
-                    # it. That is where the log entry belongs.
+    _MAX_UNCONFIRMED_RETRIES = 2
+    _SUBACK_RECHECK_SECONDS = 1.0
+    """How long after a reconnect a watcher looks again at the restored
+    subscriptions: a late SUBACK is still a SUBACK."""
+    _FIRST_RECONNECT_BACKOFF = 1.0
+    """How often a watcher reconnects because a restored subscription got
+    no SUBACK. Unbounded until 0.5.0b1's review: on a session that never
+    shows SUBACKs (@utkjmitch) one drop became a reconnect every minute,
+    each tearing down a connection that was delivering, and the watcher
+    delivered nothing while it looped."""
+
+    def _report_drop(self, generation: int, reason: str, topic: str) -> bool:
+        """Logs the end of connection `generation` -- once, however many
+        watchers notice it. Returns whether this call logged it.
+
+        ONCE PER CONNECTION. Since every watcher hears of a drop (0.4.x
+        woke only one), each one logged it and counted it: with Home
+        Assistant's three watchers one ordinary drop made three WARNING
+        lines and tripped the three-drops warning below on its own
+        (review finding, 0.5.0b1)."""
+        if generation <= self._drop_reported_generation:
+            return False
+        self._drop_reported_generation = generation
+        _LOGGER.warning(
+            "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
+            reason, topic,
+        )
+        # DROPS ARE NORMAL. EVICTION IS ONE CAUSE OF MANY.
+        #
+        # AN EARLIER VERSION OF THIS NOTE NAMED EVICTION AS THE
+        # EXPLANATION, and @ratpic83 disproved that within a day: he
+        # force-quit the iRobot app on every phone in the household and
+        # the drops continued, roughly 82 and 55 minutes apart. That
+        # spacing reads like a credential or session lifetime rather
+        # than a race, and the subscription recovered on its own each
+        # time -- his robot ran a full job and docked correctly during
+        # that window.
+        #
+        # So the useful question is not "who evicted whom" but
+        # "does the reconnect succeed", and on the evidence it does. A drop every
+        # hour with a recovery after it is working software.
+        #
+        # WHAT STILL POINTS AT EVICTION is FREQUENCY. A session lifetime
+        # does not expire every few seconds. Several drops inside five
+        # minutes is a different phenomenon from one an hour, and worth
+        # naming when it happens -- but as the first thing to rule out,
+        # not as the answer.
+        #
+        # AWS IoT disconnects the OLDER connection when a second one
+        # arrives with the same client_id, and this server issues the
+        # client_id -- it is not ours to randomise. So a phone app and
+        # this library talking to one robot take turns evicting each
+        # other, and each side sees an unexplained "Normal
+        # disconnection". @ratpic83's Home Assistant received nothing for
+        # fifteen minutes while `roombapy-prime-validate`, run from a
+        # SEPARATE machine on the same account, passed 28 checks on the
+        # first try.
+        now = _time.monotonic()
+        recent = [t for t in self._recent_drops if now - t < 300.0]
+        recent.append(now)
+        self._recent_drops = recent
+        if len(recent) >= 3:
+            _LOGGER.warning(
+                "roombapy-prime: %d disconnections in five minutes on "
+                "%s -- faster than a session lifetime, so something is "
+                "cutting them short. Our own token refresh is no "
+                "longer a candidate: those are recognised and not "
+                "reported here. Another client on the same account (a "
+                "second Home Assistant, a diagnostic script, the "
+                "iRobot app) is the thing to rule out -- AWS IoT "
+                "evicts the older connection when a second one uses "
+                "the same client_id, and this server assigns it. Each "
+                "drop reconnects on its own; watch for the 'watch "
+                "resumed' line.",
+                len(recent), topic,
+            )
+        return True
+
+    async def _resume_after_end(
+        self, generation: int, topic: str, max_reconnect_backoff: float
+    ) -> int:
+        """Called by a watcher whose connection `generation` has ended.
+        Returns the generation of the connection to watch next, once one
+        is up -- rebuilding it if nobody else does.
+
+        ONE COORDINATOR AT A TIME. The watcher holding this robot's lock
+        rebuilds, backs off and retries; the others wait for the lock and
+        then find the new connection up. Two watchers each reconnecting
+        take turns tearing down each other's connection -- the
+        ping-pong a live validation log once showed as dozens of
+        immediate drops, every reconnect succeeding and then being
+        evicted by the other task.
+
+        OUR OWN DISCONNECT IS NOT A DROP. @ratpic83 (2026-08-16) logged
+        26 disconnects in a day, each exactly 55 minutes apart:
+        authenticate, reconnect, THEN the "drop" -- ours, from the
+        proactive token refresh. A connection that is already up again,
+        whoever rebuilt it, is simply adopted; a deliberate end is not
+        logged at all (26 lines a day saying the thing worked as
+        designed).
+
+        A CLOSED CLIENT IS NOT REBUILT. After robot.disconnect() the
+        watcher waits until connect() opens it again (review finding:
+        watch_live_map() used to undo a disconnect at once)."""
+        mqtt = self._mqtt
+        # A token swap or another reconnect in progress finishes first:
+        # its result is the connection to watch.
+        await mqtt.wait_until_settled()
+        if self._reconnect_lock is None:
+            self._reconnect_lock = asyncio.Lock()
+        reported = False
+        async with self._reconnect_lock:
+            backoff = self._FIRST_RECONNECT_BACKOFF
+            while not mqtt.closed:
+                current = mqtt.generation
+                if mqtt.connected and current != generation:
+                    # Someone rebuilt it: a token swap, a shadow read's
+                    # lazy reconnect, or the watcher before us. A real
+                    # drop repaired that way is still worth its line.
+                    end = mqtt.ended(generation)
+                    if end is not None and not end[1]:
+                        reported = self._report_drop(generation, end[0], topic) or reported
+                    if reported:
+                        _LOGGER.warning(
+                            "roombapy-prime: MQTT reconnected, watch resumed for %s", topic
+                        )
+                    else:
+                        _LOGGER.debug(
+                            "roombapy-prime: resuming %s on connection %d", topic, current
+                        )
+                    return current
+
+                # Down, and nobody is rebuilding it: this watcher does.
+                reported = (
+                    self._report_drop(current, mqtt.disconnect_reason or "unknown", topic)
+                    or reported
+                )
+                try:
+                    # A FRESH TOKEN ONLY WHEN THE OLD ONE IS DUE. reconnect()
+                    # reuses the token it has; if a drop lands after it
+                    # expired (or the refresh task died), every attempt
+                    # would reuse a token that can no longer connect --
+                    # "stuck, restart doesn't help". But logging in on
+                    # every reconnect traded a fast MQTT reconnect for a
+                    # full Gigya + iRobot login on every blip. And only
+                    # ONE watcher does it now, under this lock: with
+                    # three watchers, a due token meant three logins and
+                    # three reconnects, each tearing down the connection
+                    # the one before had built (review finding).
+                    relogin = self._relogin
+                    if relogin is not None and mqtt.seconds_until_token_refresh_due() == 0.0:
+                        login_result = await relogin()
+                        await mqtt.replace_token(login_result.token_for_blid(self.blid))
+                    else:
+                        await mqtt.reconnect(if_generation=current)
+                except Exception as exc:  # noqa: BLE001
+                    if mqtt.closed:
+                        break
+                    _LOGGER.warning(
+                        "roombapy-prime: MQTT reconnect attempt failed (%s) -- retrying in %.0fs",
+                        exc, backoff,
+                    )
+                    # Ends early if a shadow read or a command rebuilds
+                    # the connection meanwhile: the other watchers wait
+                    # behind this lock (review finding).
+                    await mqtt.wait_for_state_change(backoff)
+                    backoff = min(backoff * 2, max_reconnect_backoff)
                     continue
 
-                _LOGGER.warning(
-                    "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
-                    reason, topic,
-                )
-
-                # DROPS ARE NORMAL. EVICTION IS ONE CAUSE OF MANY.
-                #
-                # AN EARLIER VERSION OF THIS NOTE NAMED EVICTION AS THE
-                # EXPLANATION, and @ratpic83 disproved that within a day:
-                # he force-quit the iRobot app on every phone in the
-                # household and the drops continued, roughly 82 and 55
-                # minutes apart. That spacing reads like a credential or
-                # session lifetime rather than a race, and the
-                # subscription recovered on its own each time -- his
-                # robot ran a full job and docked correctly during that
-                # window.
-                #
-                # So the useful question is not "who evicted whom" but
-                # "does the reconnect succeed", and on the evidence it
-                # does. A drop every hour with a recovery after it is
-                # working software.
-                #
-                # WHAT STILL POINTS AT EVICTION is FREQUENCY. A session
-                # lifetime does not expire every few seconds. Several
-                # drops inside five minutes is a different phenomenon
-                # from one an hour, and worth naming when it happens --
-                # but as the first thing to rule out, not as the answer.
-                #
-                # AWS IoT disconnects the OLDER connection when a second
-                # one arrives with the same client_id, and this server
-                # issues the client_id -- it is not ours to randomise.
-                # So a phone app and this library talking to one robot
-                # take turns evicting each other, and each side sees an
-                # unexplained "Normal disconnection".
-                #
-                # Three testers have now hit the same wall from
-                # different directions, and @ratpic83's case is the
-                # clearest: his Home Assistant received nothing for
-                # fifteen minutes while `roombapy-prime-validate`, run
-                # from a SEPARATE machine on the same account, passed 28
-                # checks on the first try. Authentication and the API
-                # were fine; the long-lived subscription was the only
-                # casualty. The iRobot app was open throughout.
-                #
-                # Repeated drops in quick succession are what
-                # distinguishes this from an ordinary network blip: a
-                # blip does not recur every few seconds, and an eviction
-                # loop does. Naming the suspicion in the log is the only
-                # thing this library can do about a client_id it does
-                # not choose -- and the remedy costs the reader nothing
-                # to try.
-                now = _time.monotonic()
-                recent = [t for t in self._recent_drops if now - t < 300.0]
-                recent.append(now)
-                self._recent_drops = recent
-                if len(recent) >= 3:
+                await self._confirm_subscriptions(topic, backoff, max_reconnect_backoff)
+                # WARNING, MATCHING THE DROP THAT PRECEDED IT. This used
+                # to be INFO, so at Home Assistant's default level a user
+                # saw the failure and never the recovery; @ratpic83 read
+                # "nothing further from roombapy_prime" as a dead
+                # reconnect and spent two hours on it.
+                if reported:
                     _LOGGER.warning(
-                        "roombapy-prime: %d disconnections in five minutes on "
-                        "%s -- faster than a session lifetime, so something is "
-                        "cutting them short. Our own token refresh is no "
-                        "longer a candidate: those are recognised and not "
-                        "reported here. Another client on the same account (a "
-                        "second Home Assistant, a diagnostic script, the "
-                        "iRobot app) is the thing to rule out -- AWS IoT "
-                        "evicts the older connection when a second one uses "
-                        "the same client_id, and this server assigns it. Each "
-                        "drop reconnects on its own; watch for the 'watch "
-                        "resumed' line.",
-                        len(recent), topic,
+                        "roombapy-prime: MQTT reconnected, watch resumed for %s", topic
                     )
-                if self._reconnect_lock is None:
-                    self._reconnect_lock = asyncio.Lock()
-                generation_seen = self._reconnect_generation
+                return mqtt.generation
 
-                while True:
-                    # If another watcher already rebuilt the shared
-                    # connection while we were noticing the drop, resume on
-                    # theirs instead of tearing it down again -- that is
-                    # exactly the ping-pong this guards against.
-                    if self._reconnect_generation != generation_seen:
-                        _LOGGER.info(
-                            "roombapy-prime: another watcher already reconnected -- "
-                            "resuming %s without a second reconnect", topic,
-                        )
-                        backoff = 1.0
-                        break
-                    try:
-                        # CORRECTED (this session, prompted by a real field
-                        # report: an integration stuck permanently
-                        # reconnecting-but-never-succeeding, surviving even
-                        # multiple full restarts of the calling application).
-                        # reconnect() on its own is "same-token" by design
-                        # (see its own docstring) -- it does NOT check
-                        # whether that token is still valid. The proactive
-                        # _refresh_loop() background task normally keeps the
-                        # token fresh well before expiry, but if a disconnect
-                        # happens to land after the token has already expired
-                        # (or that task died for any reason -- an exception,
-                        # a race with disconnect()/reconnect() happening
-                        # concurrently), every subsequent reconnect() attempt
-                        # here would keep reusing the same now-permanently-
-                        # invalid token, retrying forever at an
-                        # ever-increasing backoff but never actually able to
-                        # succeed -- exactly matching a "stuck, restart
-                        # doesn't help" symptom IF the restart itself
-                        # somehow reused stale state (this specific failure
-                        # mode is defended against below regardless of
-                        # whether that's the exact mechanism in any given
-                        # report). See the follow-up correction right below
-                        # for exactly when a fresh token gets fetched.
-                        #
-                        # CORRECTED AGAIN (this session, self-review): an
-                        # earlier version of this fix relogged in on EVERY
-                        # reconnect attempt whenever relogin was configured
-                        # at all -- including ordinary transient blips where
-                        # the token is still perfectly valid. That trades a
-                        # fast, simple MQTT reconnect for a full Gigya+
-                        # iRobot auth round-trip on every single disconnect,
-                        # adding real latency and a genuinely new failure
-                        # mode (if the login backend itself is slow, rate-
-                        # limiting, or briefly unavailable) to the COMMON
-                        # case, not just the rare one this was meant to fix.
-                        # Narrowed: only relogin when the token is ACTUALLY
-                        # at or near expiry (checked the same way
-                        # _refresh_loop() itself decides this) -- an
-                        # ordinary reconnect with a still-valid token uses
-                        # the fast, same-token path exactly as it always did
-                        # before either fix existed.
-                        # Bound to a local so the None check narrows:
-                        # via `needs_relogin` a checker cannot see that
-                        # self._relogin was tested, and the attribute
-                        # could in principle change between the two
-                        # reads anyway.
-                        relogin = self._relogin
-                        needs_relogin = (
-                            relogin is not None
-                            and self._mqtt.seconds_until_token_refresh_due() == 0.0
-                        )
-                        if needs_relogin and relogin is not None:
-                            login_result = await relogin()
-                            new_token = login_result.token_for_blid(self.blid)
-                            await asyncio.to_thread(self._mqtt.replace_token, new_token)
-                        else:
-                            async with self._reconnect_lock:
-                                # Second check under the lock: another
-                                # watcher may have finished reconnecting
-                                # while we waited for it.
-                                if self._reconnect_generation != generation_seen:
-                                    raise _AlreadyReconnected
-                                await asyncio.to_thread(self._mqtt.reconnect)
-                    except _AlreadyReconnected:
-                        _LOGGER.info(
-                            "roombapy-prime: another watcher reconnected first -- resuming %s", topic
-                        )
-                        backoff = 1.0
-                        break
-                    except Exception as exc:  # noqa: BLE001
-                        _LOGGER.warning(
-                            "roombapy-prime: MQTT reconnect attempt failed (%s) -- retrying in %.0fs",
-                            exc, backoff,
-                        )
-                        await asyncio.sleep(backoff)
-                        backoff = min(backoff * 2, max_reconnect_backoff)
-                    else:
-                        # Announce the new connection so any other watcher
-                        # that noticed the same drop resumes on it rather
-                        # than tearing it down to build its own.
-                        self._reconnect_generation += 1
-                        # WARNING, MATCHING THE DROP THAT PRECEDED IT.
-                        #
-                        # The drop is logged at WARNING and this used to
-                        # be INFO, so at Home Assistant's default level a
-                        # user saw the failure and never the recovery.
-                        # @ratpic83 read "nothing further from
-                        # roombapy_prime" as a dead reconnect and spent
-                        # two hours on it -- a reasonable reading of a
-                        # log that only ever reports bad news.
-                        #
-                        # A resolution belongs at the level of the
-                        # problem it resolves.
-                        # "RESUMED" HAS TO MEAN ACKNOWLEDGED.
-                        #
-                        # @ratpic83 (2026-08-16) caught these one
-                        # millisecond apart, twice in a day:
-                        #
-                        #   WARN  no SUBACK within 3.0s for [...]
-                        #   WARN  MQTT reconnected, watch resumed for ...
-                        #
-                        # The second line claimed success for a
-                        # subscription the first line said was never
-                        # acknowledged. An unacknowledged subscription
-                        # delivers nothing and looks exactly like a
-                        # robot with nothing to say -- which is how a
-                        # mission-end transition would go missing, the
-                        # failure he had been watching for.
-                        # ASK AGAIN BEFORE ACTING ON A DEADLINE.
-                        #
-                        # `last_subscribe_unconfirmed` is a snapshot of
-                        # the moment a 3-second wait expired, and paho
-                        # keeps filling `_confirmed_mids` afterwards --
-                        # a late SUBACK is still a SUBACK.
-                        #
-                        # @utkjmitch (second household, b7): EVERY
-                        # reconnect on his instance logs `no SUBACK
-                        # within 3.0s`, on the 55-minute cycle. Treating
-                        # that snapshot as failure would have put him
-                        # into a reconnect loop every cycle, for
-                        # subscriptions that were most likely
-                        # acknowledged a moment later. That would have
-                        # been worse than the silent watch it is meant
-                        # to prevent.
-                        await asyncio.sleep(1.0)
-                        recheck = getattr(
-                            self._mqtt, "resubscribe_still_unconfirmed", None
-                        )
-                        unconfirmed = (
-                            recheck() if callable(recheck)
-                            else getattr(
-                                self._mqtt, "last_subscribe_unconfirmed", None
-                            )
-                        )
-                        if unconfirmed:
-                            _LOGGER.warning(
-                                "roombapy-prime: MQTT reconnected for %s but %d "
-                                "subscription(s) were never acknowledged (%s) -- "
-                                "retrying rather than reporting a watch that may "
-                                "deliver nothing",
-                                topic, len(unconfirmed), unconfirmed,
-                            )
-                            # BACK OFF BEFORE TRYING AGAIN. This sits in
-                            # the `else` branch -- the connection came
-                            # up, only the subscriptions did not -- so
-                            # `continue` alone would retry immediately
-                            # and spin against a broker that is already
-                            # refusing or ignoring the subscribe.
-                            #
-                            # Same backoff the failure branch uses, for
-                            # the same reason.
-                            await asyncio.sleep(backoff)
-                            backoff = min(backoff * 2, max_reconnect_backoff)
-                            continue
+        await mqtt.wait_until_open()
+        return mqtt.generation
 
-                        _LOGGER.warning(
-                            "roombapy-prime: MQTT reconnected, watch resumed for %s",
-                            topic,
-                        )
-                        backoff = 1.0
-                        break
-        finally:
-            await asyncio.to_thread(self._mqtt.unsubscribe, topic, _on_message)
+    async def _confirm_subscriptions(
+        self, topic: str, backoff: float, max_reconnect_backoff: float
+    ) -> None:
+        """After a reconnect: are the restored subscriptions acknowledged?
+
+        "RESUMED" HAS TO MEAN ACKNOWLEDGED. @ratpic83 (2026-08-16) caught
+        "no SUBACK within 3.0s" and "watch resumed" one millisecond
+        apart, twice in a day. An unacknowledged subscription delivers
+        nothing and looks exactly like a robot with nothing to say.
+
+        ASK AGAIN BEFORE ACTING ON A DEADLINE. The 3-second wait is a
+        snapshot, and a late SUBACK is still a SUBACK. @utkjmitch
+        (second household, b7): EVERY reconnect on his instance logs
+        `no SUBACK within 3.0s`, on the 55-minute cycle. So this looks a
+        second later, reconnects at most _MAX_UNCONFIRMED_RETRIES times,
+        and then resumes anyway: a session that delivers without a
+        visible SUBACK must not be torn down forever."""
+        mqtt = self._mqtt
+        for attempt in range(self._MAX_UNCONFIRMED_RETRIES + 1):
+            await asyncio.sleep(self._SUBACK_RECHECK_SECONDS)
+            generation = mqtt.generation
+            unconfirmed = mqtt.resubscribe_still_unconfirmed()
+            if not unconfirmed or not mqtt.connected:
+                return
+            if attempt == self._MAX_UNCONFIRMED_RETRIES:
+                _LOGGER.warning(
+                    "roombapy-prime: after %d reconnects, %d subscription(s) are still "
+                    "unacknowledged (%s) -- resuming anyway. Some sessions deliver "
+                    "without a visible SUBACK; if %s stays silent, this is why.",
+                    attempt, len(unconfirmed), unconfirmed, topic,
+                )
+                return
+            _LOGGER.warning(
+                "roombapy-prime: MQTT reconnected for %s but %d subscription(s) were "
+                "never acknowledged (%s) -- reconnecting again in %.0fs (%d of %d)",
+                topic, len(unconfirmed), unconfirmed, backoff,
+                attempt + 1, self._MAX_UNCONFIRMED_RETRIES,
+            )
+            # BACK OFF BEFORE TRYING AGAIN: the broker is already
+            # refusing or ignoring the subscribe.
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_reconnect_backoff)
+            try:
+                await mqtt.reconnect(if_generation=generation)
+            except Exception as exc:  # noqa: BLE001
+                # The watcher's next wait sees the connection down and
+                # starts over, with its own backoff.
+                _LOGGER.warning(
+                    "roombapy-prime: MQTT reconnect attempt failed (%s)", exc
+                )
+                return
 
     async def watch_live_map(
         self,
@@ -2056,89 +2061,36 @@ class PrimeRobot:
                     else expiry.next_delay(keep_alive_interval)
                 )
 
-        await asyncio.to_thread(self._mqtt.subscribe, topic, _on_livemap_message)
+        await self._mqtt.subscribe(topic, _on_livemap_message)
+        generation = self._mqtt.generation
         keep_alive_task = asyncio.ensure_future(_keep_alive_loop())
         try:
             while True:
                 # WATCH FOR THE DROP, NOT JUST FOR MESSAGES.
                 #
-                # This used to be a bare `await queue.get()`, and the
-                # subscription above happened exactly once. The client
-                # does not restore subscriptions by itself -- on a
-                # disconnect it CLEARS `_subscribed_topics`, deliberately
-                # ("a new session grants nothing"), leaving
-                # re-subscription to the caller. `_watch_topic()` does
-                # that for every other stream. This one did not.
-                #
-                # So after the first reconnect the live map was
-                # permanently dead: no subscription, an empty queue, and
-                # a keep-alive still reporting success because the REST
-                # ping is a different transport entirely. No exception,
-                # no counter movement, nothing in the log.
-                #
+                # This used to be a bare `await queue.get()`, and after
+                # the first reconnect the live map was permanently dead: an
+                # empty queue, and a keep-alive still reporting success
+                # because the REST ping is a different transport entirely.
                 # That is the shape @chairstacker reported -- every
                 # live-map counter at zero mid-mission with no error
-                # anywhere -- and it needs no missing topic prefix to
-                # explain it. @utkjmitch's instance reconnects on a
-                # 55-minute cycle, so on his robot the map would die
-                # within the hour, every hour.
+                # anywhere.
                 #
-                # THE RECONNECT ITSELF IS NOT DONE HERE. Another watcher
-                # owns that, with the lock and generation counter in
-                # `_watch_topic()`; duplicating it would give two
-                # coordinators for one connection. This waits for the
-                # connection to come back and re-subscribes, which is
-                # the part that was missing.
+                # THE SAME RESUME AS EVERY OTHER WATCHER since 0.5.0b1.
+                # This used to subscribe again after a drop and let the
+                # client reconnect lazily -- a second reconnect path next
+                # to _watch_topic()'s, without its lock, its relogin or
+                # its backoff, and one that also reconnected after
+                # robot.disconnect() (review finding). A reconnect
+                # restores this topic like every other persistent one.
                 get_task = asyncio.ensure_future(queue.get())
-                drop_task = asyncio.ensure_future(self._mqtt.wait_for_disconnect())
-                try:
-                    done, _pending = await asyncio.wait(
-                        {get_task, drop_task}, return_when=asyncio.FIRST_COMPLETED
-                    )
-                finally:
-                    for task in (get_task, drop_task):
-                        if not task.done():
-                            task.cancel()
-                            with contextlib.suppress(asyncio.CancelledError):
-                                await task
+                end_task = asyncio.ensure_future(self._mqtt.wait_for_disconnect(generation))
+                done = await _first_of(get_task, end_task)
 
-                if drop_task in done and get_task not in done:
-                    # JUST SUBSCRIBE AGAIN, and let the client sort the
-                    # connection out. `subscribe()` reaches
-                    # `_subscribe_and_wait()`, which reconnects when the
-                    # session is gone -- so there is no state to poll
-                    # and no second reconnect coordinator competing with
-                    # `_watch_topic()`'s lock.
-                    #
-                    # The subscription really is gone rather than merely
-                    # idle: `_on_disconnect` clears `_subscribed_topics`
-                    # on purpose, so this call does not dedup itself
-                    # away.
-                    #
-                    # RETRIED, BECAUSE THE FIRST TRY IS THE LIKELY ONE
-                    # TO FAIL. A drop is usually noticed here before
-                    # anyone has rebuilt the connection; giving up on
-                    # that would restore exactly the silence this
-                    # exists to end.
-                    delay = 1.0
-                    while True:
-                        try:
-                            await asyncio.to_thread(
-                                self._mqtt.subscribe, topic, _on_livemap_message
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            _LOGGER.debug(
-                                "watch_live_map(): re-subscribe to %s failed "
-                                "(%s), retrying in %.0fs", topic, exc, delay,
-                            )
-                            await asyncio.sleep(delay)
-                            delay = min(delay * 2, 60.0)
-                        else:
-                            _LOGGER.info(
-                                "watch_live_map(): re-subscribed to %s after a "
-                                "reconnect", topic,
-                            )
-                            break
+                if get_task not in done:
+                    generation = await self._resume_after_end(
+                        generation, topic, max_reconnect_backoff=60.0
+                    )
                     continue
 
                 item = get_task.result()
@@ -2147,6 +2099,5 @@ class PrimeRobot:
                 yield item
         finally:
             keep_alive_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await keep_alive_task
-            await asyncio.to_thread(self._mqtt.unsubscribe, topic, _on_livemap_message)
+            await asyncio.wait({keep_alive_task})
+            await self._mqtt.unsubscribe(topic, _on_livemap_message)

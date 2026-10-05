@@ -111,16 +111,20 @@ def test_rest_hands_out_the_generations_client_and_never_guesses() -> None:
 
 @pytest.mark.asyncio
 async def test_prime_robot_reuses_the_login_and_refuses_a_classic_robot() -> None:
+    from unittest.mock import MagicMock
+
     account = _account()
-    create = AsyncMock(return_value="robot")
+    built = MagicMock()
+    create = AsyncMock(return_value=built)
     with patch.object(account_module.PrimeFactory, "create_prime_robot", create):
-        assert await account.prime_robot(_PRIME_BLID, auto_refresh=True) == "robot"
+        assert await account.prime_robot(_PRIME_BLID, auto_refresh=True) is built
         with pytest.raises(ValueError, match="Classic"):
             await account.prime_robot(_CLASSIC_BLID)
 
     create.assert_awaited_once()
     assert create.await_args.kwargs["login_result"] is account.login_result
-    assert create.await_args.kwargs["auto_refresh"] is True
+    # The account's relogin, not one of the robot's own (0.5.0b2).
+    assert create.await_args.kwargs["relogin"] is not None
 
 
 @pytest.mark.asyncio
@@ -193,3 +197,127 @@ async def test_the_request_timeout_reaches_every_login_and_every_client() -> Non
     assert [c.kwargs["request_timeout"] for c in fake_login.await_args_list] == [7.5, 7.5]
     assert account.classic_rest()._request_timeout == 7.5
     assert account.prime_rest()._request_timeout == 7.5
+
+
+# --- one login for every Prime robot (0.5.0b2) -------------------------------
+
+
+def _prime_login(token: str, expires_in: float | None, blids=(_PRIME_BLID, "PRIME2")) -> LoginResult:
+    import time as _time
+
+    from roombapy_prime.auth import ConnectionToken
+
+    result = _login_result(token)
+    return LoginResult(
+        mqtt_endpoint=result.mqtt_endpoint,
+        http_base=result.http_base,
+        http_base_auth=result.http_base_auth,
+        credentials=result.credentials,
+        robots={**result.robots, "PRIME2": RobotLoginEntry(sku="W155020")},
+        connection_tokens=[
+            ConnectionToken(
+                client_id=f"cid-{blid}", iot_token=token, iot_signature="s",
+                iot_authorizer_name="a",
+                expires=None if expires_in is None else int(_time.time() + expires_in),
+                devices=[blid],
+            )
+            for blid in blids
+        ],
+        raw={},
+    )
+
+
+class TestOneLoginForEveryPrimeRobot:
+    """b1 of ha_roomba_plus 4.3 promised it: Prime robots renew their MQTT
+    token through the account's login. Until 0.5.0b2 every robot had a
+    relogin of its own, so three robots from one login logged in three
+    times when their tokens ran out together."""
+
+    @pytest.mark.asyncio
+    async def test_two_robots_due_together_log_in_once(self) -> None:
+        account = _account(_prime_login("old", expires_in=60))
+        first = await account.prime_robot(_PRIME_BLID, auto_refresh=True)
+        second = await account.prime_robot("PRIME2", auto_refresh=True)
+        fresh = _prime_login("new", expires_in=3600)
+        fake_login = AsyncMock(return_value=fresh)
+
+        with patch.object(account_module, "login", fake_login):
+            got = await asyncio.gather(first._relogin(), second._relogin())
+
+        fake_login.assert_awaited_once()
+        assert got[0] is fresh and got[1] is fresh
+        assert account.login_result is fresh
+
+    @pytest.mark.asyncio
+    async def test_a_robot_takes_a_fresh_login_another_made(self) -> None:
+        account = _account(_prime_login("fresh", expires_in=3600))
+        robot = await account.prime_robot(_PRIME_BLID, auto_refresh=True)
+        fake_login = AsyncMock()
+
+        with patch.object(account_module, "login", fake_login):
+            got = await robot._relogin()
+
+        fake_login.assert_not_awaited()
+        assert got is account.login_result
+
+    @pytest.mark.asyncio
+    async def test_a_token_without_expiry_logs_in(self) -> None:
+        """Nothing says it is fresh, and the robot only asks when it
+        believes its token is due."""
+        account = _account(_prime_login("t", expires_in=None))
+        robot = await account.prime_robot(_PRIME_BLID, auto_refresh=True)
+        fresh = _prime_login("new", expires_in=3600)
+
+        with patch.object(account_module, "login", AsyncMock(return_value=fresh)):
+            assert await robot._relogin() is fresh
+
+    @pytest.mark.asyncio
+    async def test_the_robots_rest_client_relogs_through_the_account(self) -> None:
+        account = _account(_prime_login("t1", expires_in=3600))
+        robot = await account.prime_robot(_PRIME_BLID, auto_refresh=True)
+        fresh = _prime_login("t2", expires_in=3600)
+        fake_login = AsyncMock(return_value=fresh)
+
+        with patch.object(account_module, "login", fake_login):
+            await robot._rest._relogin()
+
+        fake_login.assert_awaited_once()
+        assert account.login_result is fresh
+
+    @pytest.mark.asyncio
+    async def test_without_auto_refresh_there_is_no_relogin(self) -> None:
+        account = _account(_prime_login("t", expires_in=3600))
+        robot = await account.prime_robot(_PRIME_BLID)
+
+        assert robot._relogin is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_login_answers_for_half_a_minute(self) -> None:
+        """Against a locked account every attempt extends the lock."""
+        from roombapy_prime.auth import AuthRateLimitedError
+
+        account = _account(_prime_login("old", expires_in=60))
+        robot = await account.prime_robot(_PRIME_BLID, auto_refresh=True)
+        fake_login = AsyncMock(side_effect=AuthRateLimitedError("locked"))
+
+        with patch.object(account_module, "login", fake_login):
+            for _ in range(3):
+                with pytest.raises(AuthRateLimitedError):
+                    await robot._relogin()
+
+        fake_login.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_after_half_a_minute_it_tries_again(self) -> None:
+        from roombapy_prime.auth import AuthRateLimitedError
+
+        account = _account(_prime_login("old", expires_in=60))
+        robot = await account.prime_robot(_PRIME_BLID, auto_refresh=True)
+        fresh = _prime_login("new", expires_in=3600)
+
+        with patch.object(account_module, "login", AsyncMock(side_effect=AuthRateLimitedError("x"))):
+            with pytest.raises(AuthRateLimitedError):
+                await robot._relogin()
+        account._failure = (account._failure[0] - 31, account._failure[1])
+        with patch.object(account_module, "login", AsyncMock(return_value=fresh)):
+            assert await robot._relogin() is fresh

@@ -27,7 +27,7 @@ import aiohttp
 
 from .auth import LoginResult, login
 from .mqtt_client import PrimeMqttClient
-from .prime_robot import PrimeRobot
+from .prime_robot import PrimeRobot, Relogin
 from .rest_client import PrimeRestClient
 
 
@@ -45,6 +45,7 @@ class PrimeFactory:
         *,
         auto_refresh: bool = False,
         login_result: LoginResult | None = None,
+        relogin: Relogin | None = None,
     ) -> PrimeRobot:
         """Logs in, selects the robot (first one found if blid isn't
         given), wires up the MQTT and REST clients, returns a
@@ -75,7 +76,12 @@ class PrimeFactory:
         method does not check an expiry itself, since it has no way to
         know how the caller obtained or aged the result) -- see
         ha_roomba_plus's own short-lived, single-use cache for the
-        actual freshness/reuse policy this parameter was built for."""
+        actual freshness/reuse policy this parameter was built for.
+
+        relogin: the callback to renew with, instead of one holding this
+        robot's own credentials. CloudAccount.prime_robot() passes the
+        account's, so robots of one account share their logins (0.5.0b2).
+        Implies auto_refresh."""
         if login_result is None:
             login_result = await login(session, username, password, country_code)
         target_blid = blid or login_result.primary_blid()
@@ -87,11 +93,14 @@ class PrimeFactory:
             blid=target_blid,
         )
 
-        relogin = None
-        if auto_refresh:
+        # A relogin handed in -- CloudAccount's, shared by every robot of
+        # the account -- wins over one of the robot's own.
+        if relogin is None and auto_refresh:
 
-            async def relogin() -> LoginResult:
+            async def _own_relogin() -> LoginResult:
                 return await login(session, username, password, country_code)
+
+            relogin = _own_relogin
 
         rest_client = PrimeRestClient(
             session=session,

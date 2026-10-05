@@ -19,7 +19,7 @@ robot generations:
 
 One login per account serves every robot on it (`CloudAccount`).
 
-> **Status: v0.4.0.** Reading and writing both work
+> **Status: v0.5.0-beta.** Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -124,7 +124,7 @@ PATH of a Home Assistant installation that only consumes the library.
 See [`tools/README.md`](tools/README.md) for what they do and how to use
 them safely.
 
-Requires Python 3.11+. Dependencies: `aiohttp`, `paho-mqtt`, `certifi`.
+Requires Python 3.11+. Dependencies: `aiohttp`, `aiomqtt` (with `paho-mqtt` beneath it), `certifi`.
 
 ## Quick start
 
@@ -201,10 +201,10 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-1301+ tests for the library, plus 526 for the command-line tools —
+1347+ tests for the library, plus 526 for the command-line tools —
 structural checks against decompiled source,
-a byte-for-byte regression pin for the SigV4 signer, genuine
-multi-threading tests for the connection lock, and more. This validates
+a byte-for-byte regression pin for the SigV4 signer, concurrency
+tests for the connection lock and reconnects, and more. This validates
 internal consistency (the library builds the requests it claims to
 build); it does **not** validate that a real server accepts them — only
 the diagnostics script below can do that. See

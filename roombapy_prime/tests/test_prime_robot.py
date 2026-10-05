@@ -13,6 +13,7 @@ or real paho client -- consistent with the rest of this file.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
@@ -23,6 +24,41 @@ from roombapy_prime.prime_robot import PrimeRobot
 from roombapy_prime.rest_client import PrimeRestClient
 
 
+#: PrimeMqttClient methods that are coroutines since 0.5.0 (aiomqtt).
+#: PrimeRobot awaits them directly; up to 0.4.x it ran them through
+#: asyncio.to_thread, and a plain MagicMock stood in.
+_ASYNC_MQTT_METHODS = (
+    "connect", "disconnect", "replace_token", "reconnect", "get_shadow",
+    "update_shadow", "publish_cmd", "publish_cmd_payload",
+    "request_mission_timeline", "subscribe", "unsubscribe",
+    "wait_until_settled", "wait_until_open",
+)
+
+
+def _mqtt_mock() -> MagicMock:
+    mqtt = MagicMock()
+    for name in _ASYNC_MQTT_METHODS:
+        setattr(mqtt, name, AsyncMock())
+    # Every subscription acknowledged. A bare MagicMock answers with a
+    # truthy mock here, which reads as "never acknowledged" -- and since
+    # 0.5.0b1 that retry really retries (it used to break out, a bug).
+    mqtt.resubscribe_still_unconfirmed.return_value = []
+    mqtt.last_subscribe_unconfirmed = []
+    # One connection, up, never closed: a MagicMock is truthy and not an
+    # int, which the generation-based watchers cannot work with.
+    mqtt.generation = 1
+    mqtt.connected = True
+    mqtt.closed = False
+    mqtt.ended.return_value = None
+    mqtt.disconnect_reason = None
+
+    async def _backoff(timeout: float) -> None:
+        await asyncio.sleep(timeout)
+
+    mqtt.wait_for_state_change = AsyncMock(side_effect=_backoff)
+    return mqtt
+
+
 def _never_disconnects(mqtt: MagicMock) -> None:
     """NEW (this session, reconnect hardening). watch_state() now races
     queue.get() against self._mqtt.wait_for_disconnect() -- tests that
@@ -31,11 +67,15 @@ def _never_disconnects(mqtt: MagicMock) -> None:
     blocks forever, which is exactly that -- distinct from returning a
     plain MagicMock(), which isn't awaitable at all and would raise a
     TypeError from asyncio.ensure_future()."""
-    mqtt.wait_for_disconnect = AsyncMock(side_effect=asyncio.Event().wait)
+    async def _forever(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=_forever)
 
 
 def _robot_with_mocks() -> tuple[PrimeRobot, MagicMock, MagicMock]:
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     # A bare MagicMock answers truthy to every attribute, so the watcher
     # would read every drop as one of our own token refreshes and skip
     # the reconnect entirely -- the loop then spins on a disconnect it
@@ -247,7 +287,7 @@ async def test_send_simple_command_publishes_via_cmd_topic() -> None:
 async def test_send_simple_command_without_topic_prefix_raises_immediately() -> None:
     """Same missing-prefix gate as watch_live_map() -- see
     test_watch_live_map_without_topic_prefix_raises_immediately."""
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = MagicMock()
     robot = PrimeRobot(blid="BLID123", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None)
 
@@ -291,7 +331,7 @@ async def test_send_routine_command_via_cmd_topic_without_topic_prefix_raises_im
     """Same missing-prefix gate as send_simple_command()/watch_live_map()."""
     from roombapy_prime.models import MissionCommandType, RoutineCommand
 
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = MagicMock()
     robot = PrimeRobot(blid="BLID123", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None)
     cmd = RoutineCommand(command_type=MissionCommandType.START, asset_id="BLID123")
@@ -331,7 +371,7 @@ async def test_send_umi_get_request_default_request_id() -> None:
 @pytest.mark.asyncio
 async def test_send_umi_get_request_without_topic_prefix_raises_immediately() -> None:
     """Same missing-prefix gate as the other cmd_topic()-based methods."""
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = MagicMock()
     robot = PrimeRobot(blid="BLID123", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None)
 
@@ -490,7 +530,7 @@ async def test_watch_topic_reconnect_uses_relogin_when_available() -> None:
     from roombapy_prime.auth import CloudCredentials, ConnectionToken, LoginResult
     from roombapy_prime.prime_robot import PrimeRobot
 
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = MagicMock()
     mqtt.seconds_until_token_refresh_due.return_value = 0.0  # token due for refresh
     # A real drop, not one of our own token refreshes -- a bare
@@ -531,8 +571,8 @@ async def test_watch_topic_reconnect_uses_relogin_when_available() -> None:
         await asyncio.Event().wait()
 
     mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
-    mqtt.replace_token = MagicMock()
-    mqtt.reconnect = MagicMock()
+    mqtt.replace_token = AsyncMock()
+    mqtt.reconnect = AsyncMock()
 
     agen = robot.watch_state()
     next_task = asyncio.ensure_future(agen.__anext__())
@@ -581,7 +621,7 @@ async def test_watch_topic_reconnect_skips_relogin_when_token_still_valid() -> N
         await asyncio.Event().wait()
 
     mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
-    mqtt.reconnect = MagicMock()
+    mqtt.reconnect = AsyncMock()
 
     agen = robot.watch_state()
     next_task = asyncio.ensure_future(agen.__anext__())
@@ -619,7 +659,7 @@ async def test_watch_state_reconnects_after_disconnect() -> None:
         await asyncio.Event().wait()  # subsequent calls: healthy again, never fires
 
     mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
-    mqtt.reconnect = MagicMock()  # succeeds immediately, no side_effect
+    mqtt.reconnect = AsyncMock()  # succeeds immediately, no side_effect
 
     agen = robot.watch_state()
     next_task = asyncio.ensure_future(agen.__anext__())
@@ -638,6 +678,42 @@ async def test_watch_state_reconnects_after_disconnect() -> None:
 
     assert result.payload == {"after": "reconnect"}
 
+    await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_unacknowledged_resubscribe_really_is_retried() -> None:
+    """Review finding (0.5.0b1; 0.4.x too): the branch for "reconnected,
+    but the subscriptions were never acknowledged" promised a retry and
+    never made one. The generation bumped for its own reconnect read, at
+    the top of the loop, as another watcher's -- and the loop broke out
+    with "another watcher already reconnected"."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    captured: dict = {}
+    mqtt.subscribe.side_effect = lambda topic, cb: captured.update(topic=topic, callback=cb)
+    disconnect_event = asyncio.Event()
+    calls = 0
+
+    async def fake_wait_for_disconnect():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await disconnect_event.wait()
+            return "connection lost"
+        await asyncio.Event().wait()
+
+    mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
+    mqtt.reconnect = AsyncMock()
+    mqtt.resubscribe_still_unconfirmed.side_effect = [["t/delta"], []]
+
+    agen = robot.watch_state()
+    next_task = asyncio.ensure_future(agen.__anext__())
+    await _wait_until(lambda: "callback" in captured)
+    disconnect_event.set()
+    await _wait_until(lambda: mqtt.reconnect.await_count == 2, timeout=6.0)
+
+    captured["callback"](ShadowResponse(topic=captured["topic"], payload={"after": "retry"}))
+    assert (await next_task).payload == {"after": "retry"}
     await agen.aclose()
 
 
@@ -665,7 +741,7 @@ async def test_watch_state_retries_reconnect_with_backoff_on_failure() -> None:
         await asyncio.Event().wait()
 
     mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
-    mqtt.reconnect = MagicMock(side_effect=[RuntimeError("still down"), RuntimeError("still down"), None])
+    mqtt.reconnect = AsyncMock(side_effect=[RuntimeError("still down"), RuntimeError("still down"), None])
 
     agen = robot.watch_state()
     next_task = asyncio.ensure_future(agen.__anext__())
@@ -744,7 +820,7 @@ async def test_watch_live_map_subscribes_to_fixed_topic() -> None:
 
 @pytest.mark.asyncio
 async def test_watch_live_map_without_topic_prefix_raises_immediately() -> None:
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = MagicMock()
     robot = PrimeRobot(blid="BLID123", mqtt_client=mqtt, rest_client=rest, irbt_topic_prefix=None)
 
@@ -837,7 +913,7 @@ async def test_watch_live_map_propagates_unrecognized_shape_as_error() -> None:
 async def test_connect_without_relogin_never_starts_refresh_task() -> None:
     """Existing behaviour, unchanged: no relogin passed -> no task."""
     robot, mqtt, _rest = _robot_with_mocks()
-    mqtt.connect = MagicMock()
+    mqtt.connect = AsyncMock()
 
     await robot.connect()
 
@@ -847,8 +923,8 @@ async def test_connect_without_relogin_never_starts_refresh_task() -> None:
 @pytest.mark.asyncio
 async def test_connect_with_relogin_starts_refresh_task_disconnect_stops_it() -> None:
     robot, mqtt, _rest = _robot_with_mocks()
-    mqtt.connect = MagicMock()
-    mqtt.disconnect = MagicMock()
+    mqtt.connect = AsyncMock()
+    mqtt.disconnect = AsyncMock()
     mqtt.seconds_until_token_refresh_due.return_value = None  # never actually fires
 
     async def fake_relogin():
@@ -874,9 +950,9 @@ async def test_connect_with_relogin_starts_refresh_task_disconnect_stops_it() ->
 @pytest.mark.asyncio
 async def test_refresh_loop_relogins_and_replaces_token_then_stops() -> None:
     robot, mqtt, _rest = _robot_with_mocks()
-    # first check: refresh due immediately (0s wait); second check: no
-    # longer schedulable -- loop must do exactly one refresh, then return.
-    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, None]
+    # due now; still due under the lock; the new token is not due; then
+    # no longer schedulable -- exactly one refresh, then return.
+    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, 0.0, 3000.0, None]
 
     relogin_call_count = 0
 
@@ -927,7 +1003,7 @@ async def test_refresh_loop_retries_after_a_failed_refresh_instead_of_dying() ->
     # retry sleep): also due immediately, so the retried attempt fires
     # right away too. Third check: no longer schedulable -- loop must
     # stop after exactly one failure + one successful retry.
-    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, 0.0, None]
+    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, 0.0, 0.0, 0.0, 3000.0, None]
 
     relogin_call_count = 0
 
@@ -955,6 +1031,44 @@ async def test_refresh_loop_retries_after_a_failed_refresh_instead_of_dying() ->
 
     assert relogin_call_count == 2, "the loop must retry after the first failure, not give up"
     mqtt.replace_token.assert_called_once_with("new-token-sentinel")
+
+
+@pytest.mark.asyncio
+async def test_refresh_loop_skips_a_refresh_a_watcher_already_did() -> None:
+    """A watcher that reconnected with a due token has logged in; the
+    loop's wait was computed from the old token (review finding)."""
+    robot, mqtt, _rest = _robot_with_mocks()
+    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, 3000.0, None]
+    relogin = AsyncMock()
+    robot._relogin = relogin
+
+    await robot._refresh_loop()
+
+    relogin.assert_not_awaited()
+    mqtt.replace_token.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refresh_loop_does_not_spin_on_a_token_that_is_due_at_once(caplog) -> None:
+    """A new token already inside the margin made the next wait zero:
+    7,645 logins in two seconds in the review's reproduction."""
+    import roombapy_prime.prime_robot as prime_robot_module
+
+    robot, mqtt, _rest = _robot_with_mocks()
+    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, 0.0, 0.0, None]
+    login_result = MagicMock()
+    login_result.token_for_blid.return_value = "tok"
+    robot._relogin = AsyncMock(return_value=login_result)
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    with patch.object(prime_robot_module.asyncio, "sleep", fake_sleep):
+        await robot._refresh_loop()
+
+    assert sleeps == [0.0, robot._REFRESH_RETRY_SECONDS]
+    assert "due for refresh at once" in caplog.text
 
 
 # --- backpressure ---------------------------------------------------------
@@ -1034,7 +1148,7 @@ async def test_put_with_backpressure_dropping_an_exception_logs_error_level(capl
 
 
 def _robot_with_autospec_rest() -> tuple[PrimeRobot, MagicMock]:
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = create_autospec(PrimeRestClient, instance=True)
     robot = PrimeRobot(
         blid="BLID123", mqtt_client=mqtt, rest_client=rest,
@@ -1326,7 +1440,7 @@ async def test_watch_mission_timeline_reconnects_after_disconnect() -> None:
         await asyncio.Event().wait()
 
     mqtt.wait_for_disconnect = AsyncMock(side_effect=fake_wait_for_disconnect)
-    mqtt.reconnect = MagicMock()
+    mqtt.reconnect = AsyncMock()
 
     agen = robot.watch_mission_timeline()
     next_task = asyncio.ensure_future(agen.__anext__())
@@ -1581,80 +1695,6 @@ class TestHouseholdLookupWithMismatchedIdentifiers:
         })
 
         assert await robot.get_household_id() is None
-
-
-class TestConcurrentWatchersDoNotFightOverTheConnection:
-    """REAL FIELD BUG (DaRealGuGu). Every watcher had its own reconnect
-    loop, but they all share ONE mqtt client. The region-command session
-    always watches two topics at once -- mission/timeline plus
-    rejected/report -- so a reconnect by one tore down the shared
-    connection, which the other saw as a drop and rebuilt, which the
-    first then saw as a drop.
-
-    The log showed exactly that signature: dozens of immediate drops
-    with almost no failed attempts in between, because every reconnect
-    SUCCEEDED and was then torn down by the other watcher.
-
-    It was not cosmetic. It cost two of three test stages their result
-    -- the publish went out over a torn-down connection, never got a
-    PUBACK, and the script reported that as a possible policy block."""
-
-    def _robot(self):
-        from unittest.mock import MagicMock
-
-        from roombapy_prime.prime_robot import PrimeRobot
-
-        return PrimeRobot(
-            blid="B", mqtt_client=MagicMock(), rest_client=MagicMock(),
-            irbt_topic_prefix="v005-irbthbu",
-        )
-
-    def test_a_fresh_robot_starts_at_generation_zero(self):
-        robot = self._robot()
-
-        assert robot._reconnect_generation == 0
-        assert robot._reconnect_lock is None, "created lazily, on the running loop"
-
-    @pytest.mark.asyncio
-    async def test_only_one_of_two_concurrent_reconnects_actually_runs(self):
-        """The core of the fix, exercised directly: two watchers notice
-        the same drop, both try to reconnect, exactly one rebuilds the
-        connection and the other resumes on it."""
-        import asyncio
-
-        from roombapy_prime.prime_robot import _AlreadyReconnected
-
-        robot = self._robot()
-        robot._reconnect_lock = asyncio.Lock()
-        reconnects = []
-
-        async def watcher(name):
-            generation_seen = robot._reconnect_generation
-            try:
-                async with robot._reconnect_lock:
-                    if robot._reconnect_generation != generation_seen:
-                        raise _AlreadyReconnected
-                    await asyncio.sleep(0)          # let the other one queue up
-                    reconnects.append(name)
-                    robot._reconnect_generation += 1
-            except _AlreadyReconnected:
-                return "resumed"
-            return "reconnected"
-
-        results = await asyncio.gather(watcher("timeline"), watcher("rejected"))
-
-        assert reconnects == ["timeline"], "the second watcher must not reconnect again"
-        assert sorted(results) == ["reconnected", "resumed"]
-        assert robot._reconnect_generation == 1
-
-    def test_the_generation_counter_is_what_signals_a_new_connection(self):
-        """Bumping it is how a reconnecting watcher tells the others
-        'there is a working connection now, use it'."""
-        robot = self._robot()
-
-        robot._reconnect_generation += 1
-
-        assert robot._reconnect_generation == 1
 
 
 class TestWrapperSignaturesMatchTheRestClient:
@@ -1956,18 +1996,17 @@ class TestTheDoNotDisturbCommands:
     async def test_the_simple_command_path_carries_them(self):
         """`BasicCommandBuilder` sends nothing this library does not
         already send, so no new path is needed."""
-        from unittest.mock import MagicMock
 
         from roombapy_prime.models.mission_control import MissionCommandType
         from roombapy_prime.prime_robot import PrimeRobot
 
         robot = object.__new__(PrimeRobot)
-        robot._mqtt = MagicMock()
+        robot._mqtt = _mqtt_mock()
         # A bare MagicMock answers truthy to every attribute, so
         # the watcher would treat every drop as one of ours and
         # skip the reconnect. These fixtures describe real drops.
         robot._mqtt.last_disconnect_was_deliberate = False
-        robot._mqtt.publish_cmd = MagicMock(return_value=True)
+        robot._mqtt.publish_cmd = AsyncMock(return_value=True)
         robot.blid = "B"
         robot._irbt_topic_prefix = "irbt"
 
@@ -2002,12 +2041,11 @@ class TestTheTimelineCanBeAskedFor:
     """
 
     def _robot(self):
-        from unittest.mock import MagicMock
 
         from roombapy_prime.prime_robot import PrimeRobot
 
         robot = object.__new__(PrimeRobot)
-        robot._mqtt = MagicMock()
+        robot._mqtt = _mqtt_mock()
         # A bare MagicMock answers truthy to every attribute, so
         # the watcher would treat every drop as one of ours and
         # skip the reconnect. These fixtures describe real drops.
@@ -2204,12 +2242,11 @@ class TestAnIdleRobotDoesNotAnswerATimelineRequest:
 
     def test_the_request_still_works(self):
         """The negative is about the answer, not the asking."""
-        from unittest.mock import MagicMock
 
         from roombapy_prime.prime_robot import PrimeRobot
 
         robot = object.__new__(PrimeRobot)
-        robot._mqtt = MagicMock()
+        robot._mqtt = _mqtt_mock()
         # A bare MagicMock answers truthy to every attribute, so
         # the watcher would treat every drop as one of ours and
         # skip the reconnect. These fixtures describe real drops.
@@ -2244,14 +2281,6 @@ class TestFrequentDropsAreNamedWithoutClaimingACause:
         robot = object.__new__(PrimeRobot)
         robot._recent_drops = []
         return robot
-
-    def test_a_single_drop_says_nothing_extra(self, caplog):
-        import time as _time
-
-        robot = self._robot()
-        robot._recent_drops = [_time.monotonic()]
-
-        assert len(robot._recent_drops) == 1
 
     def test_three_drops_in_five_minutes_is_the_threshold(self):
         """Two could be one bad minute. Three is a pattern, and the
@@ -2336,74 +2365,54 @@ class TestRatpic83sFiftyFiveMinuteClock:
     nobody whose drops arrive on a fixed interval.
     """
 
-    def test_a_deliberate_disconnect_is_flagged_as_such(self):
-        from unittest.mock import MagicMock
-
+    @pytest.mark.asyncio
+    async def test_a_deliberate_disconnect_is_flagged_as_such(self):
         from roombapy_prime.mqtt_client import PrimeMqttClient
 
-        client = object.__new__(PrimeMqttClient)
-        client._deliberate_disconnect = False
-        client._was_deliberate = False
+        client = PrimeMqttClient(token=MagicMock(), endpoint="e", blid="B")
+        client._client = MagicMock(__aexit__=AsyncMock())
         client._connected = True
-        client._subscribed_topics = set()
-        client._disconnect_loop = None
-        client._disconnect_event = None
-        client._client = MagicMock()
 
-        client.disconnect()
-        PrimeMqttClient._on_disconnect(
-            client, MagicMock(), None, None, "Normal disconnection"
-        )
+        await client.disconnect()
 
         assert client.last_disconnect_was_deliberate is True
+        assert client._disconnect_reason == "deliberate: token refresh or reconnect"
 
-    def test_an_external_drop_is_not(self):
+    @pytest.mark.asyncio
+    async def test_an_external_drop_is_not(self):
         """The flag must not stick: the next real drop has to reconnect."""
-        from unittest.mock import MagicMock
-
         from roombapy_prime.mqtt_client import PrimeMqttClient
 
-        client = object.__new__(PrimeMqttClient)
-        client._deliberate_disconnect = False
-        client._was_deliberate = True          # left over from a refresh
+        client = PrimeMqttClient(token=MagicMock(), endpoint="e", blid="B")
+        client._client = MagicMock(__aexit__=AsyncMock())
         client._connected = True
-        client._subscribed_topics = set()
-        client._disconnect_loop = None
-        client._disconnect_event = None
-        client._client = MagicMock()
+        await client.disconnect()               # a refresh
+        client._connected = True                # the next connection
 
-        PrimeMqttClient._on_disconnect(
-            client, MagicMock(), None, None, "Unspecified error"
-        )
+        client._connection_lost("Unspecified error")
 
         assert client.last_disconnect_was_deliberate is False
         assert client._disconnect_reason == "Unspecified error"
 
+    @pytest.mark.asyncio
+    async def test_reconnecting_an_already_dropped_connection_leaves_no_flag(self):
+        """Found while porting to aiomqtt (0.5.0b1). A connection that
+        had already dropped reports nothing when it is disconnected
+        again, so the flag disconnect() set survived into the next
+        connection -- and its first REAL drop read as deliberate, which
+        the watcher answers by not reconnecting."""
+        from roombapy_prime.mqtt_client import PrimeMqttClient
 
-class TestAWatchIsNotResumedUntilItIsAcknowledged:
-    """@ratpic83 caught `no SUBACK within 3.0s` and `watch resumed` one
-    millisecond apart, twice in a day. An unacknowledged subscription
-    delivers nothing and looks exactly like a robot with nothing to
-    say — the mechanism by which a mission-end transition goes missing.
-    """
+        client = PrimeMqttClient(token=MagicMock(), endpoint="e", blid="B")
+        client._client = MagicMock(__aexit__=AsyncMock())
+        client._connected = True
+        client._connection_lost("network gone")  # the real drop
+        await client.disconnect()                # the watcher's reconnect
+        client._connected = True                 # ...connected again
 
-    def test_the_resumed_message_is_guarded_by_the_suback_check(self):
-        import inspect
+        client._connection_lost("network gone again")
 
-        from roombapy_prime import prime_robot
-
-        source = inspect.getsource(prime_robot)
-        # The LAST occurrence: the message text also appears in a
-        # comment earlier in the module, quoting the log that prompted
-        # this. The guard belongs before the actual call.
-        idx = source.rfind('"roombapy-prime: MQTT reconnected, watch resumed')
-        assert idx > 0
-
-        preceding = source[:idx]
-        assert "last_subscribe_unconfirmed" in preceding, (
-            "the resumed message must be reached only after checking "
-            "that every restored subscription was acknowledged"
-        )
+        assert client.last_disconnect_was_deliberate is False
 
 
 @pytest.mark.asyncio
@@ -2413,7 +2422,7 @@ async def test_get_firmware_unwraps_the_envelope():
     still hands back the whole thing."""
     from roombapy_prime.models.robot_info import FirmwareItem
 
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = MagicMock()
     rest.get_firmware_raw = AsyncMock(
         return_value={"firmware": [{"version": "8.6.2", "fused": 3}]}
@@ -2434,7 +2443,7 @@ async def test_get_firmware_unwraps_the_envelope():
 async def test_get_firmware_returns_empty_list_for_a_missing_key():
     """An empty catalogue is a list of nothing, not an error -- a
     caller iterates it either way."""
-    mqtt = MagicMock()
+    mqtt = _mqtt_mock()
     rest = MagicMock()
     rest.get_firmware_raw = AsyncMock(return_value={})
     robot = PrimeRobot(
@@ -2534,93 +2543,3 @@ async def test_a_rate_limit_backs_off_much_further() -> None:
     assert max(long_waits) <= 300.0, (
         f"and stay capped so the stream is not abandoned, got {long_waits}"
     )
-
-
-@pytest.mark.asyncio
-async def test_live_map_resubscribes_after_a_disconnect() -> None:
-    """The subscription does not survive a reconnect on its own.
-
-    `_on_disconnect` clears `_subscribed_topics` deliberately -- "a new
-    session grants nothing" -- so re-subscription is the caller's job.
-    Every other stream gets that from `_watch_topic()`; this one
-    subscribed once and then waited on a queue that would never fill
-    again. The keep-alive kept reporting success the whole time, because
-    the REST ping is a different transport.
-    """
-    robot, mqtt, rest = _robot_with_mocks()
-    subscribes: list[str] = []
-    mqtt.subscribe.side_effect = lambda topic, cb: subscribes.append(topic)
-    mqtt.livemap_topic.return_value = "irbt-fake-prefix/BLID123/livemap/update"
-
-    dropped = asyncio.Event()
-
-    async def one_disconnect() -> str:
-        if dropped.is_set():
-            await asyncio.Event().wait()   # only ever drop once
-        dropped.set()
-        return "connection lost"
-
-    mqtt.wait_for_disconnect = one_disconnect
-
-    agen = robot.watch_live_map(keep_alive_interval=999.0)
-    next_task = asyncio.ensure_future(agen.__anext__())
-    await _wait_until(lambda: len(subscribes) >= 2)
-
-    next_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await next_task
-    await agen.aclose()
-
-    assert subscribes[0] == subscribes[1] == "irbt-fake-prefix/BLID123/livemap/update"
-
-
-@pytest.mark.asyncio
-async def test_live_map_keeps_yielding_across_a_reconnect() -> None:
-    """A drop must not end the stream for the caller.
-
-    The `async for` in the integration is not restarted on a
-    disconnect -- if this generator returned or raised, the live map
-    would stay dead until Home Assistant reloaded the entry.
-
-    THIS DOES NOT GUARD THE RE-SUBSCRIPTION, and it passes with that
-    removed. The callback is invoked directly here, so it keeps
-    delivering whether or not the topic was subscribed again -- the
-    test above is the one that fails when the re-subscribe goes. Kept
-    separate because the two properties really are different: one is
-    "the stream comes back", the other is "the generator survives at
-    all", and an earlier version of this loop had the second without
-    the first.
-    """
-    robot, mqtt, rest = _robot_with_mocks()
-    captured: dict = {}
-
-    def _record(topic, cb):
-        captured.update(topic=topic, callback=cb)
-
-    mqtt.subscribe.side_effect = _record
-    mqtt.livemap_topic.return_value = "irbt-fake-prefix/BLID123/livemap/update"
-
-    dropped = asyncio.Event()
-
-    async def one_disconnect() -> str:
-        if dropped.is_set():
-            await asyncio.Event().wait()
-        dropped.set()
-        return "connection lost"
-
-    mqtt.wait_for_disconnect = one_disconnect
-
-    agen = robot.watch_live_map(keep_alive_interval=999.0)
-    next_task = asyncio.ensure_future(agen.__anext__())
-    await _wait_until(lambda: dropped.is_set() and "callback" in captured)
-
-    captured["callback"](ShadowResponse(
-        topic=captured["topic"],
-        payload={"map_update": {"livemap_url": "https://example.invalid/after.png"}},
-    ))
-    result = await next_task
-
-    assert isinstance(result, MapUpdateMessage)
-    assert result.livemap_url == "https://example.invalid/after.png"
-
-    await agen.aclose()

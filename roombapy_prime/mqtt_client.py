@@ -19,10 +19,13 @@ Key corrections baked in here that were NOT obvious from the start:
     confirmed via APK/native analysis — both have caused immediate
     "Unspecified error" disconnects in testing. Only use the specific
     get/update/delta topics this module already constructs.
-  - Disable paho-mqtt's automatic reconnect (_reconnect_on_failure) for
-    short-lived diagnostic-style connections, or guard against re-running
-    setup logic on every reconnect — otherwise a disconnect can trigger
-    an effectively infinite reconnect loop.
+  - Never let the MQTT client reconnect on its own (aiomqtt does not;
+    paho's _reconnect_on_failure was switched off in 0.4.x) -- setup
+    logic re-running on every reconnect became an effectively infinite
+    reconnect loop.
+
+Transport: aiomqtt since 0.5.0, on the event loop; paho-mqtt's own
+network thread up to 0.4.x. See PrimeMqttClient's docstring.
 
 Confirmed on EPHEMERAL (900-series), SMART-tier (i7-series) AND
 Prime/V4 robots — the last of those by a dozen testers running region
@@ -36,20 +39,22 @@ own confirmation.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import json
 import logging
+import math
 import ssl
-import threading
 import time
 from dataclasses import dataclass
 from json.decoder import JSONDecodeError
-from typing import Any
+from typing import Any, NoReturn
 from collections.abc import Callable
 
+import aiomqtt
 import paho.mqtt.client as mqtt
-from paho.mqtt.enums import CallbackAPIVersion
-from paho.mqtt.properties import Properties
-from paho.mqtt.reasoncodes import ReasonCode
+from aiomqtt import MqttCodeError, MqttError
+from aiomqtt.exceptions import MqttConnectError
 
 from .errors import CloudError, CloudErrorReason
 
@@ -146,34 +151,30 @@ class ShadowSSLError(ShadowError):
 
 class ShadowConnectionError(ShadowError):
     """Could not establish the connection at all -- DNS failure,
-    connection refused, or a connect-level timeout (paho-mqtt's
-    synchronous connect() raises all of these as plain OSError
-    subclasses, indistinguishable from each other in a way that would
-    justify a more specific message -- unlike the aiohttp side, there's
-    no separate "timeout after connecting" case here, since a TLS
-    handshake or MQTT CONNACK timeout would also surface as one of
-    these OSError subclasses from the same blocking call, not
-    separately). Deliberately does NOT claim to know whether this is
+    connection refused, or a socket-level timeout (paho-mqtt's connect()
+    raises all of these as plain OSError subclasses, indistinguishable
+    from each other in a way that would justify a more specific message).
+    A CONNACK that never arrives is a separate case since 0.5.0: a
+    ShadowError with reason TIMEOUT. Deliberately does NOT claim to know whether this is
     iRobot's fault or the caller's own network, same as
     AuthConnectionError/RestConnectionError."""
 
     reason: CloudErrorReason = CloudErrorReason.CONNECTION_FAILED
 
 
-def _raise_clear_ssl_error(exc: ssl.SSLError) -> None:
+def _raise_clear_ssl_error(exc: ssl.SSLError) -> NoReturn:
     """Re-raise a TLS/certificate failure as a clear ShadowSSLError
     instead of letting the raw ssl module exception bubble up as an
     opaque error.
 
     NEW (V4/Prime prep, following the same fix in auth.py/rest_client.py
     -- but a genuinely different mechanism here, not just a copy-paste).
-    This module uses paho-mqtt directly (synchronous connect(), not
-    aiohttp), so a TLS handshake failure here would never surface as
-    aiohttp.ClientSSLError -- paho-mqtt's Client.connect() is a blocking
-    call that raises ssl.SSLError (or a subclass, e.g.
-    SSLCertVerificationError) directly, before on_connect's reason_code
-    path ever gets a chance to fire (that path is for MQTT-protocol-level
-    rejections, which only happen AFTER a successful TLS handshake).
+    The TLS handshake happens inside paho-mqtt's connect(), not in
+    aiohttp, so a failure here never surfaces as aiohttp.ClientSSLError:
+    connect() raises ssl.SSLError (or a subclass, e.g.
+    SSLCertVerificationError) before any CONNACK. Since 0.5.0 aiomqtt
+    runs that connect() and wraps the error; _raise_connect_error()
+    unwraps it and hands it here.
     UNLIKE the aiohttp fix, this one is NOT based on a real captured
     failure in this project -- it's based on paho-mqtt's documented,
     stable connect() behavior, not a reverse-engineered assumption.
@@ -189,7 +190,7 @@ def _raise_clear_ssl_error(exc: ssl.SSLError) -> None:
     raise ShadowSSLError(message, reason=reason) from exc
 
 
-def _raise_clear_connection_error(exc: OSError) -> None:
+def _raise_clear_connection_error(exc: OSError) -> NoReturn:
     """Re-raise a connection-establishment failure (DNS, connection
     refused, connect-level timeout) as a clear ShadowConnectionError.
     Same reasoning as auth.py's/rest_client.py's equivalents -- see
@@ -219,75 +220,182 @@ def _shadow_base(blid: str, named: str | None) -> str:
     return f"$aws/things/{blid}/shadow"
 
 
-def _publish_confirmed(
-    info: Any, topic: str, timeout: float = 5.0, disconnect_reason: str | None = None
-) -> None:
-    """Raises unless the broker actually took the message.
+def _abandon(client: aiomqtt.Client) -> None:
+    """Closes what a failed connect may have left open.
 
-    A publish that never leaves and a robot that never answers look the
-    same from the caller: silence, then a timeout. paho reports the
-    difference in the return code and in `is_published()`, and both were
-    being discarded.
-    """
-    # A client that returns nothing at all is a stand-in, not a broker.
-    # Refusing here would fail tests rather than find bugs.
-    if info is None:
+    A CONNACK that arrives after aiomqtt stopped waiting still completes
+    the connection -- and then nobody owns it, pinging the broker under
+    the robot's client id (review finding; 0.4.x had it too). aiomqtt
+    offers no close for a client whose __aenter__ failed, so this asks
+    the paho client underneath directly. Best effort: it must not turn
+    one failure into another."""
+    # A CONNACK wait cancelled with its caller leaves aiomqtt's
+    # `_connected` future cancelled, and paho's disconnect callback then
+    # asks it for its exception -- raising CancelledError inside paho,
+    # before the socket is closed (review finding). A fresh future makes
+    # that callback return early, as it does for any connect that never
+    # completed.
+    connected = getattr(client, "_connected", None)
+    if isinstance(connected, asyncio.Future) and connected.cancelled():
+        with contextlib.suppress(RuntimeError):
+            client._connected = asyncio.get_running_loop().create_future()  # noqa: SLF001
+    paho_client = getattr(client, "_client", None)
+    if paho_client is None:
         return
-    rc = getattr(info, "rc", None)
-    if rc is not None and rc != mqtt.MQTT_ERR_SUCCESS:
-        # WHY THE SOCKET DIED, when we know it.
-        #
-        # `rc=4` is paho's MQTT_ERR_NO_CONN -- it says the connection was
-        # gone at publish time, not why. The broker's own reason arrives
-        # earlier, on disconnect, and this library recorded it and never
-        # showed it.
-        #
-        # @utkjmitch's run is why that matters: CONNACK, then no SUBACK
-        # on the shadow topics, then rc=4 -- while cmd-topic publishes on
-        # the SAME session went through and the robot obeyed them.
-        # Subscribes dead, publishes alive. A broker that drops a client
-        # for an unauthorised subscribe looks exactly like that, and its
-        # disconnect reason would say so.
-        why = f" The broker's last disconnect reason was: {disconnect_reason}." if disconnect_reason else ""
-        raise ShadowError(
-            f"PUBLISH to {topic} was refused by the client (paho rc={rc}) -- "
-            f"the request never left, so a timeout below would mean nothing.{why}",
-            reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
-        )
     try:
-        info.wait_for_publish(timeout=timeout)
-    except (RuntimeError, ValueError) as exc:
+        paho_client.disconnect()
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("roombapy-prime: could not close an abandoned connection", exc_info=True)
+
+
+def _raise_connect_error(exc: MqttError, timeout: float) -> NoReturn:
+    """A failed connect, as the ShadowError it has always been.
+
+    aiomqtt wraps every connect failure in MqttError. For a socket-level
+    failure it does so `from None`, which hides the original exception
+    from the traceback but keeps it as `__context__` -- and the original
+    is what says whether this was a certificate problem, and which one.
+    """
+    original = exc.__cause__ or exc.__context__
+    # FIRST: no CONNACK in time. aiomqtt raises it `from None` inside its
+    # `except asyncio.TimeoutError`, so the context is a TimeoutError --
+    # an OSError subclass, which the connection branch below would take
+    # (review finding). A socket-level timeout carries its own text.
+    if str(exc) == "Operation timed out":
         raise ShadowError(
-            f"PUBLISH to {topic} could not be confirmed: {exc}",
-            reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
+            f"Connect timed out after {timeout}s", reason=CloudErrorReason.TIMEOUT
         ) from exc
-    if not info.is_published():
+    if isinstance(original, ssl.SSLError):
+        _raise_clear_ssl_error(original)
+    if isinstance(original, OSError):
+        _raise_clear_connection_error(original)
+    if isinstance(exc, MqttConnectError):
         raise ShadowError(
-            f"PUBLISH to {topic} was queued but never sent within {timeout}s -- "
-            "the connection accepts messages and is not delivering them.",
-            reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
-        )
+            f"Connect failed: {exc}", reason=CloudErrorReason.CONNECT_REFUSED
+        ) from exc
+    raise ShadowError(
+        f"Connect failed: {exc}", reason=CloudErrorReason.CONNECTION_FAILED
+    ) from exc
+
+
+def _describe_disconnect(exc: BaseException | None) -> str | None:
+    """The broker's or the socket's reason for a dropped connection, as
+    text -- what `_disconnect_reason` has always carried."""
+    if exc is None:
+        return None
+    return str(exc) or type(exc).__name__
+
+
+class _DebugOnlyLogger(logging.Logger):
+    """Hands everything paho and aiomqtt log to `target`, at DEBUG.
+
+    aiomqtt always switches paho's logging on, and gives it the logger
+    it is handed (review finding). paho then logs "failed to receive on
+    socket" at ERROR on every connection reset, and a line per packet at
+    DEBUG; aiomqtt adds "Unexpected message ID" with a traceback for a
+    SUBACK nobody waits for any more. 0.4.0 never enabled paho's logger,
+    and this library reports drops itself, with the broker's reason. So
+    all of it goes to DEBUG: silent by default, and there for anyone who
+    turns `roombapy_prime` up to debug."""
+
+    def __init__(self, target: logging.Logger) -> None:
+        super().__init__(target.name)
+        self._target = target
+
+    def isEnabledFor(self, level: int) -> bool:  # noqa: N802 - logging's name
+        return self._target.isEnabledFor(logging.DEBUG)
+
+    def _log(
+        self,
+        level: int,
+        msg: object,
+        args: Any,
+        exc_info: Any = None,
+        extra: Any = None,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+    ) -> None:
+        if self._target.isEnabledFor(logging.DEBUG):
+            self._target._log(  # noqa: SLF001
+                logging.DEBUG, msg, args, exc_info=exc_info, extra=extra,
+                stack_info=stack_info, stacklevel=stacklevel + 1,
+            )
+
+
+#: Clean-up tasks nobody awaits, kept referenced until they finish.
+_BACKGROUND: set[asyncio.Task[Any]] = set()
+
+
+async def _close_quietly(client: aiomqtt.Client) -> None:
+    try:
+        await client.__aexit__(None, None, None)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("roombapy-prime: could not close a discarded connection", exc_info=True)
+
+
+def _discard_late_connection(
+    client: aiomqtt.Client, enter: asyncio.Future[Any], closings: list[asyncio.Task[Any]]
+) -> None:
+    """A connect whose caller was cancelled, once it has finished anyway.
+
+    aiomqtt runs paho's blocking connect in a worker thread, and a
+    cancelled await does not stop that thread: the socket, TLS and
+    WebSocket handshake complete, and the connection comes up with
+    nobody holding it -- pinging the broker under the robot's client id
+    (review finding, new in 0.5: `asyncio.to_thread` used to let a
+    connect finish instead). So the connect is shielded, and whatever it
+    produced is closed here."""
+    if enter.cancelled():
+        _abandon(client)
+        return
+    if enter.exception() is not None:
+        _abandon(client)
+        return
+    task = asyncio.ensure_future(_close_quietly(client))
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+    closings.append(task)
 
 
 class PrimeMqttClient:
-    """One connection, one blid. Not designed for long-lived reuse across
-    many operations yet — construct, do what you need, disconnect.
+    """One connection, one blid.
 
-    UPDATE (this session): disconnect detection now exists
-    (on_disconnect wired up, see wait_for_disconnect()) -- previously
-    there was none at all, silently leaving a long-running consumer
-    hung with no signal anything had dropped. The actual reconnect-
-    with-backoff LOOP lives one level up, in prime_robot.py's
-    watch_state() -- this class only detects and reports the drop,
-    it does not retry on its own."""
+    ON AIOMQTT SINCE 0.5.0. Up to 0.4.x this class drove paho-mqtt's own
+    network thread, and every public method was synchronous -- PrimeRobot
+    called each one through `asyncio.to_thread`. The consequences are
+    the long comments further down: a `threading.Lock` around the
+    client, `call_soon_threadsafe` bridges for every event that had to
+    reach the event loop, and callbacks that must never raise because an
+    exception inside paho's thread took the whole connection down with
+    it (`_suback_is_failure`'s docstring has the field report).
+
+    aiomqtt runs the same paho client on the event loop instead: no
+    thread, awaited SUBACKs and PUBACKs, and one task here that reads
+    incoming messages and dispatches them. What goes over the wire is
+    unchanged -- the WebSocket path, the three authorizer headers, TLS,
+    MQTT 3.1.1, keepalive 60, the in-flight window of 1000 -- because
+    aiomqtt hands all of it to the same paho code as before.
+
+    Every method that talks to the broker is a coroutine now. The topic
+    builders and the token timing stay plain methods.
+
+    Disconnect detection: `wait_for_disconnect()` resolves when the
+    message task ends, with the broker's reason. The reconnect-with-
+    backoff loop lives one level up, in prime_robot.py's watch_state()
+    -- this class detects and reports a drop, it does not retry on its
+    own."""
 
     def __init__(self, token: ConnectionToken, endpoint: str, blid: str) -> None:
         self._token = token
         self._endpoint = endpoint
         self._blid = blid
-        self._client: mqtt.Client | None = None
+        self._client: aiomqtt.Client | None = None
         self._connected = False
-        self._connect_error: str | None = None
+        #: Reads incoming messages and dispatches them; its end is the
+        #: disconnect signal.
+        self._pump_task: asyncio.Task[None] | None = None
+        #: One-shot waiters (get_shadow/update_shadow), popped by the
+        #: first message on their topic.
         self._pending: dict[str, list[Callable[[ShadowResponse], None]]] = {}
         # Separate from _pending: _pending is one-shot (popped on first
         # matching message, used by get_shadow/update_shadow). _persistent
@@ -296,90 +404,101 @@ class PrimeMqttClient:
         # multiple callbacks per topic can coexist (reference-counted at
         # the broker-subscribe level, see unsubscribe()).
         self._persistent: dict[str, list[Callable[[ShadowResponse], None]]] = {}
-        # NEW (session 33): fixes a real, previously unnoticed bug --
-        # subscribe() in Paho is itself asynchronous (only queues the
-        # SUBSCRIBE packet, doesn't wait for the broker's SUBACK).
-        # Previously, publish() was called right after, without waiting
-        # for confirmation -- if the response came back BEFORE the
-        # SUBACK was processed, it was lost (the client was technically
-        # not yet subscribed at that point). Likely explains the
-        # "get_settings() sometimes responds, sometimes doesn't" on the
-        # same device observed by chairstacker -- a pure network-timing
-        # race, not a tier difference.
-        self._confirmed_mids: set[int] = set()
         #: Topics this client has subscribed to and not released, so a
         #: repeat read does not re-subscribe to what the broker already
         #: granted. Cleared on disconnect, because a new session starts
         #: with none of them.
         self._subscribed_topics: set[str] = set()
-        # REAL BUG FOUND AND FIXED (this session, prompted directly by a
-        # field result: chairstacker triggered a favorite AND a room
-        # clean from the real app -- the robot genuinely reacted to
-        # both within 20 seconds -- while our OWN --watch-wildcard
-        # subscription, covering the robot's entire topic tree, saw
-        # NOTHING at all during that exact window). _on_subscribe()
-        # received the broker's SUBACK reason code for every single
-        # subscribe() call this library has ever made, but NEVER
-        # CHECKED it -- any subscription, successful OR actively
-        # REJECTED by the broker's IoT policy (MQTT's own 0x80 failure
-        # code exists for exactly this), was recorded identically as
-        # "confirmed". A silently rejected subscription and a genuinely
-        # empty topic look completely identical from the caller's side
-        # without this check -- exactly the ambiguity chairstacker's
-        # result could not resolve on its own. _mid_to_topic and
-        # _subscribe_failures close this gap; see _on_subscribe()'s own
-        # docstring for the exact mechanism.
-        self._mid_to_topic: dict[int, str] = {}
-        self._subscribe_failures: dict[int, Any] = {}
-        # NEW: closes a previously documented gap (see README) --
-        # replace_token() disconnects/reconnects self._client; without
-        # protection, a CONCURRENTLY (via asyncio.to_thread, i.e. a real
-        # OS thread) running get_shadow()/update_shadow() call could
-        # access an already-disconnected or not-yet-fully-connected
-        # self._client in the middle of this switch. threading.Lock, not
-        # asyncio.Lock -- these methods run in real threads (to_thread),
-        # not as coroutines on the same event loop.
-        self._client_lock = threading.Lock()
-
-        # NEW (this session, roombapy-prime reconnect hardening): no
-        # on_disconnect callback existed at all before this -- the client
-        # had zero visibility into a dropped connection. _disconnect_loop
-        # and _disconnect_reason let an async caller (see watch_state())
-        # await a disconnect event instead of polling self._connected.
-        # A plain threading.Event wouldn't work here: the callback fires
-        # on paho's own background thread, but the waiter is a coroutine
-        # on the asyncio event loop -- same call_soon_threadsafe pattern
-        # already used for _on_delta/queue in watch_state().
-        self._disconnect_loop: asyncio.AbstractEventLoop | None = None
-        self._disconnect_event: asyncio.Event | None = None
+        #: SUBSCRIBEs still waiting for their SUBACK, by topic. A SUBACK
+        #: arriving after `_subscribe_and_wait()` stopped waiting still
+        #: counts -- see resubscribe_still_unconfirmed(). Cancelled on
+        #: disconnect: a new session answers none of them.
+        self._subscribe_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._last_subscribe_topics: list[str] = []
+        #: Topics of the last subscribe that had no SUBACK when the wait
+        #: ended, and a running count across the session.
+        self.last_subscribe_unconfirmed: list[str] = []
+        self.subscribe_unconfirmed_count = 0
+        # A shadow read or write registers waiters, subscribes, publishes
+        # and waits, and a token swap tears the connection down and
+        # builds a new one. Neither may run in the middle of the other.
+        # An asyncio.Lock since 0.5.0: everything here runs on the event
+        # loop now, where 0.4.x needed a threading.Lock for callers in
+        # to_thread workers.
+        self._lock = asyncio.Lock()
+        #: One event per wait_for_disconnect() call, all set when the
+        #: connection ends. 0.4.x kept ONE event, replaced by every call,
+        #: so with several watchers only the last one armed ever heard
+        #: of a drop (review finding).
+        self._disconnect_waiters: list[asyncio.Event] = []
+        #: Serialises reconnects: a lazy reconnect inside subscribe()
+        #: and a token swap must not build two connections with the same
+        #: client id -- AWS IoT then evicts one of them (review finding).
+        self._reconnect_lock = asyncio.Lock()
+        #: Counts successful connects. A watcher remembers the generation
+        #: it watches, so a drop it did not see happen is still a drop
+        #: (see wait_for_disconnect()), and a reconnect that waited for
+        #: another can tell it already happened.
+        self._generation = 0
+        #: How each recent connection ended: (reason, deliberate), by
+        #: generation.
+        self._ends: dict[int, tuple[str, bool]] = {}
+        #: Set by disconnect(), cleared by connect(). A closed client does
+        #: not reconnect on its own: robot.disconnect() used to be undone
+        #: at once by watch_live_map()'s re-subscribe, leaving a
+        #: connection nobody owned under the robot's client id (review
+        #: finding; 0.4.x too).
+        self._closed = False
+        #: Counts disconnect() calls: a connect() reopens the client only
+        #: if none came after it.
+        self._close_requests = 0
+        self._reopened = asyncio.Event()
+        #: Replaced and set whenever the connection comes up or the
+        #: client is closed -- see wait_for_state_change().
+        self._state_changed = asyncio.Event()
+        #: A connect whose caller was cancelled and whose handshake may
+        #: still be running, with the close scheduled for it. The next
+        #: connect or close waits for it: two handshakes with one client
+        #: id in flight at once end with AWS evicting one of them
+        #: (review finding).
+        self._late: tuple[asyncio.Future[Any], list[asyncio.Task[Any]], float] | None = None
+        #: Every SUBSCRIBE of this connection still waiting for its
+        #: SUBACK. Cancelled when the connection ends and never before:
+        #: aiomqtt forgets a cancelled one, and its SUBACK arriving later
+        #: is then logged as an error with a traceback (review finding).
+        self._inflight: set[asyncio.Task[Any]] = set()
 
         #: Set while WE are taking the connection down on purpose.
         #:
         #: @ratpic83 (2026-08-16) logged 26 disconnects in one day, each
         #: exactly 55 minutes after the last, and the ordering shows the
         #: cause: authenticate, reconnect, THEN the drop is reported.
-        #: The "Normal disconnection" is paho's reason string for a
-        #: clean client-initiated close -- ours, from reconnect()'s own
-        #: disconnect() call.
+        #: That drop was ours, from reconnect()'s own disconnect().
         #:
         #: Without this flag the watcher in prime_robot.py sees a
         #: planned disconnect as an unexplained drop, warns about it,
         #: and starts a SECOND reconnect racing the one already running.
         self._deliberate_disconnect = False
+        self._was_deliberate = False
         self._disconnect_reason: str | None = None
-        #: Counts reconnects so each gets its own client id.
+        #: Counts reconnects (logging only; the client id stays the
+        #: server-issued one -- see reconnect()).
         self._reconnects = 1
 
-    def _build_client(self) -> mqtt.Client:
-        client = mqtt.Client(
-            callback_api_version=CallbackAPIVersion.VERSION2,
-            client_id=self._token.client_id,
-            protocol=mqtt.MQTTv311,
+    def _build_client(self, timeout: float) -> aiomqtt.Client:
+        try:
+            import certifi
+            ca_certs: str | None = certifi.where()
+        except ImportError:  # pragma: no cover - certifi is a dependency
+            ca_certs = None
+        return aiomqtt.Client(
+            self._endpoint,
+            443,
+            identifier=self._token.client_id,
+            protocol=aiomqtt.ProtocolVersion.V311,
             transport="websockets",
-        )
-        client.ws_set_options(
-            path="/mqtt",
-            headers={
+            websocket_path="/mqtt",
+            websocket_headers={
                 "x-amz-customauthorizer-name": self._token.iot_authorizer_name,
                 "x-amz-customauthorizer-signature": self._token.iot_signature,
                 "x-irobot-auth": self._token.iot_token,
@@ -388,304 +507,279 @@ class PrimeMqttClient:
                 # IoT's authorizer inspects it. The parallel APK research
                 # then DISPROVED that: the real app sends exactly the three
                 # headers above and no fourth.
-                #
-                # It shipped to every consumer, including Home Assistant,
-                # in the same release that broke Prime setup there. Whether
-                # it contributed is unknown and now moot -- an unvalidated,
-                # since-disproven experiment has no business in the
-                # connection path of an integration people actually run.
             },
+            # Applied by aiomqtt inside its connect executor, so loading
+            # the certificate bundle never blocks the event loop.
+            tls_params=aiomqtt.TLSParameters(
+                ca_certs=ca_certs, tls_version=ssl.PROTOCOL_TLS_CLIENT
+            ),
+            # keepalive=60, LOWERED FROM 300 in 0.3. MQTT declares a
+            # connection dead after 1.5x the keepalive interval, so 300
+            # meant a broken connection went unnoticed for up to 450
+            # seconds -- and during that window a publish looked queued
+            # while nothing reached the broker. AWS IoT accepts 30 upward.
+            keepalive=60,
+            # The iRobot app's in-flight window; paho's default is 20. A
+            # restore carrying more than twenty topics would otherwise
+            # queue behind the window. Found in samm-git/irobot-explore's
+            # reconstruction of the app's connection parameters.
+            max_inflight_messages=1000,
+            # How long the CONNACK may take. Every other call passes its
+            # own limit.
+            timeout=timeout,
+            logger=_DebugOnlyLogger(_LOGGER.getChild("paho")),
         )
-        try:
-            import certifi
-            ca_certs = certifi.where()
-        except ImportError:
-            ca_certs = None
-        client.tls_set(ca_certs=ca_certs, tls_version=ssl.PROTOCOL_TLS_CLIENT)
-        # Short-lived connections in practice so far — avoid an infinite
-        # reconnect loop if the broker drops us for any reason.
-        client._reconnect_on_failure = False
-        client.on_connect = self._on_connect
-        client.on_disconnect = self._on_disconnect
-        client.on_message = self._on_message
-        client.on_subscribe = self._on_subscribe
-        return client
 
-    def _on_subscribe(
-        self,
-        client: mqtt.Client,
-        userdata: Any,
-        mid: int,
-        reason_codes: list[ReasonCode],
-        properties: Properties | None = None,
-    ) -> None:
-        """NEW (session 33) -- records that the broker has actually
-        confirmed the SUBSCRIBE with this mid (SUBACK). See __init__'s
-        comment on _confirmed_mids for the bug this fixes.
+    async def connect(self, timeout: float = 10.0) -> None:
+        """Opens the connection. On a client that disconnect() closed,
+        this opens it again and restores the running watchers'
+        subscriptions. On a client that is already connected it does
+        nothing: a second connection with the same client id would
+        evict the first."""
+        # THE LATER CALL DECIDES. A disconnect() that comes while this
+        # connect is running or queued must not be undone by it.
+        close_requests = self._close_requests
+        async with self._reconnect_lock:
+            if self._connected:
+                # NEVER A SECOND CONNECTION OVER A LIVE ONE. A connect()
+                # queued behind a rebuild, with a disconnect() queued
+                # behind it, used to open a new connection over the live
+                # one and leave the old one running (review finding).
+                _LOGGER.debug("roombapy-prime: connect() on a connected client -- nothing to do")
+                if self._close_requests == close_requests:
+                    self._set_closed(False)
+                return
+            await self._open(timeout)
+            # Open only once it IS open: a connect that fails leaves a
+            # closed client closed, and its watchers waiting.
+            if self._close_requests == close_requests:
+                self._set_closed(False)
+            if self._persistent:
+                await self._subscribe_and_wait(list(self._persistent), revive=False)
 
-        NOW ALSO RECORDS FAILURE REASON CODES (this session) -- a
-        SUBACK isn't inherently a success signal. MQTT's own protocol
-        has a dedicated failure code (0x80/128) for exactly this case:
-        the broker accepted the SUBSCRIBE packet but the requested
-        topic was denied (by IoT policy/ACL, in AWS IoT's case) --
-        distinct from "granted at QoS 0/1/2" (success). Every reason
-        code >= 0x80 is stored in _subscribe_failures, keyed by mid, so
-        _subscribe_and_wait() (below) can raise a clear, specific error
-        instead of silently treating a REJECTED subscription exactly
-        the same as a successful, simply-quiet one."""
-        # NOTHING in this callback may raise: it runs on paho's own
-        # network thread, and an exception here takes the whole MQTT
-        # client down with it (found the hard way -- see
-        # _suback_is_failure's docstring).
-        try:
-            self._confirmed_mids.add(mid)
-            failed_codes = [rc for rc in reason_codes or () if _suback_is_failure(rc)]
-            if failed_codes:
-                self._subscribe_failures[mid] = failed_codes
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("roombapy-prime: error handling SUBACK -- ignoring, connection kept alive")
-
-    def _subscribe_and_wait(self, topics: list[str], timeout: float = 3.0) -> None:
-        """NEW (session 33) -- subscribes to all given topics and waits
-        for the SUBACK of EACH ONE before returning. The actual fix for
-        the race described in get_shadow()/update_shadow() -- publish()
-        must only happen after this. `timeout` deliberately short
-        (SUBACKs are usually very fast, unlike the actual shadow
-        response) -- if this timeout runs out, the subscription is
-        RECORDED AS UNCONFIRMED and warned about, but not treated as a
-        failure: some deployed Prime sessions deliver shadow traffic
-        without a visible SUBACK.
-
-        THIS PARAGRAPH WAS STALE (corrected via @jouwdan, PR #62). It
-        still read "proceeds anyway (better a small residual risk than a
-        broken library)", describing behaviour that had already been
-        replaced by the recording and warning below. A docstring that
-        describes the previous version of its own function is worse than
-        no docstring: it was read as current by at least one person
-        writing a fix against it.
-
-        NOW RAISES SubscriptionRejectedError on a REJECTED subscription
-        (this session) -- see _on_subscribe()'s own docstring for the
-        full finding. Previously proceeded identically whether the
-        broker granted or actively denied the subscription.
-
-        NOW ALSO REVIVES A DEAD CONNECTION FIRST (this session), the
-        same way get_shadow() and publish_cmd_payload() do. This was
-        the last operation in the module still using the client without
-        checking it was alive -- and the most damaging one to get
-        wrong, because subscribing to a dead connection fails silently:
-        the watcher then observes nothing at all, and a real robot
-        reaction gets reported as "nothing happened".
-
-        Field logs showed exactly this ordering: subscribe, then a
-        shadow GET timing out, then a publish with no PUBACK -- three
-        symptoms of one dead connection, of which only the middle one
-        was visible as an error."""
-        if self._client is None or not self._connected:
-            # Was a bare assert -- see reconnect()'s own note on why
-            # that is the wrong tool here.
-            self.reconnect(timeout=timeout)
-        client = self._client
-        if client is None:
-            # reconnect() -> connect() always assigns a client, so this
-            # is unreachable in practice. Checked rather than asserted
-            # because the alternative is an AttributeError on None from
-            # inside the loop below, where the topic being subscribed
-            # is no longer in the message.
-            # A ShadowError since 0.4.0, like the two identical checks in
-            # get_shadow()/update_shadow(): a builtin ConnectionError got
-            # past every `except CloudError`.
-            raise ShadowError(
-                "MQTT client is not available after reconnect",
-                reason=CloudErrorReason.CONNECTION_FAILED,
-            )
-        mids = []
-        not_sent: dict[str, int] = {}
-        for topic in topics:
-            result, mid = client.subscribe(topic, qos=1)
-            # THE RETURN CODE WAS DISCARDED. paho answers MQTT_ERR_NO_CONN
-            # when the client is not connected, and then no SUBSCRIBE
-            # packet leaves at all -- no SUBACK follows, the wait below
-            # times out, and this function returned as if everything had
-            # worked. The caller then watches a topic it never
-            # subscribed to, forever, with nothing anywhere saying so.
-            if result != mqtt.MQTT_ERR_SUCCESS:
-                not_sent[topic] = result
-                continue
-            if mid is None:
-                # paho types mid as optional and documents it as set on
-                # success. A success without one would mean we cannot
-                # match the SUBACK, so the wait below would time out and
-                # report a subscription failure for a topic that may
-                # actually be live -- worth treating as not-sent
-                # explicitly rather than crashing on the dict key.
-                not_sent[topic] = mqtt.MQTT_ERR_UNKNOWN
-                continue
-            mids.append(mid)
-            self._mid_to_topic[mid] = topic
-        waited = 0.0
-        while waited < timeout and not all(m in self._confirmed_mids for m in mids):
-            time.sleep(0.05)
-            waited += 0.05
-        # UNCONFIRMED IS NOT THE SAME AS GRANTED, and this loop used to
-        # treat it that way: "proceeds anyway, better a small residual
-        # risk than a broken library". The residual risk is a watcher
-        # that reports nothing for the rest of its life, and it is
-        # indistinguishable from a quiet robot.
-        #: Kept so the caller can re-check after the wait expires --
-        #: see resubscribe_still_unconfirmed().
-        self._last_subscribe_mids = list(mids)
-        unconfirmed = [
-            self._mid_to_topic.get(m, "?") for m in mids
-            if m not in self._confirmed_mids
-        ]
-        self.last_subscribe_unconfirmed = unconfirmed
-        self.subscribe_unconfirmed_count = (
-            getattr(self, "subscribe_unconfirmed_count", 0) + len(unconfirmed)
-        )
-        if unconfirmed:
-            # THE BROKER'S REASON, IF IT GAVE ONE.
-            #
-            # Three testers hit this on three accounts with three
-            # different symptoms -- no SUBACK, publish queued but never
-            # sent, publish refused with rc=4 -- and @utkjmitch's
-            # half-alive session ties them together: shadow subscribes
-            # dead, cmd-topic publishes working, same connection.
-            #
-            # A broker that drops a client for an unauthorised subscribe
-            # produces exactly that, and it says why on disconnect. This
-            # warning is the first place anyone notices, so it is the
-            # right place to carry the reason.
-            _LOGGER.warning(
-                "roombapy-prime: no SUBACK within %.1fs for %s -- proceeding, but a "
-                "subscription that was never acknowledged delivers nothing and looks "
-                "exactly like a robot with nothing to say.%s",
-                timeout, unconfirmed,
-                f" Last disconnect reason from the broker: {self._disconnect_reason}."
-                if self._disconnect_reason else
-                " The broker has not reported a disconnect, so the socket is"
-                " probably still open and the subscription simply unanswered.",
-            )
-        rejected = {self._mid_to_topic.get(m, "?"): self._subscribe_failures.pop(m)
-                    for m in mids if m in self._subscribe_failures}
-        for m in mids:
-            self._confirmed_mids.discard(m)
-            self._mid_to_topic.pop(m, None)
-        if not_sent:
-            raise SubscriptionRejectedError(
-                f"SUBSCRIBE was never sent for {not_sent} (paho error codes) -- the "
-                "client reported a failure before anything reached the broker. "
-                "Distinct from a rejection: the broker never saw this.",
-                reason=CloudErrorReason.SUBSCRIPTION_NOT_SENT,
-            )
-        if rejected:
-            raise SubscriptionRejectedError(
-                f"Broker REJECTED subscription (SUBACK failure code) for: {rejected}. "
-                "This is a different, more specific finding than 'nothing arrived' -- "
-                "the broker's own IoT policy denied this topic outright, not a silent "
-                "absence of traffic on it."
-            )
-
-    def connect(self, timeout: float = 10.0) -> None:
+    async def _open(self, timeout: float) -> None:
         # Logged because a same-client_id collision is invisible
         # otherwise, and its symptoms look like anything but what they
-        # are.
-        #
-        # AWS IoT disconnects the OLDER connection when a second one
-        # arrives using the same client_id. If two consumers of this
-        # library talk to one robot at once -- a Home Assistant
-        # integration and a diagnostic script, say -- and the server
-        # hands out the same client_id to both, they take turns
-        # evicting each other indefinitely. From each side that looks
-        # like an unexplained drop, not like a conflict.
-        #
-        # THE THREE-ACCOUNT PATTERN FITS THIS, and nothing else fits it
-        # as well. @utkjmitch's session was HALF ALIVE: shadow
-        # subscribes dead, cmd-topic publishes working, robot physically
-        # obeying -- one connection, one moment. An eviction produces
-        # exactly that, because the socket dies between CONNACK and the
-        # first SUBACK and paho only notices at the next publish. A
-        # subscribe always loses that race; a bare publish fired quickly
-        # enough wins it.
-        #
-        # It also explains why a FIRST read sometimes succeeds and every
-        # later one fails (@jouwdan: 21 keys, then nothing), which an
-        # IoT-policy denial would not -- a policy denies every time.
-        #
-        # WHAT WOULD SETTLE IT COSTS NOTHING: run the check with the
-        # iRobot phone app fully closed, and with Home Assistant's own
-        # integration stopped if it points at the same robot. If the
-        # read then works, the wall is an eviction and not a protocol
-        # question at all.
-        #
-        # SUSPECTED, NOT CONFIRMED (this session): a tester's Home
-        # Assistant sensors froze across two separate coordinators at
-        # once, during a period when he was running command-line tests
-        # against the same robot. Two independent data paths stopping
-        # together points at the connection rather than at either
-        # sensor. Whether this server issues a stable client_id per
-        # account is not established -- hence logging it rather than
-        # asserting anything.
+        # are: AWS IoT disconnects the OLDER connection when a second
+        # one arrives using the same client_id. Two consumers of one
+        # robot -- Home Assistant and a diagnostic script, say -- then
+        # take turns evicting each other, and each side sees an
+        # unexplained drop. Run a check with the phone app closed and
+        # Home Assistant stopped to rule it out.
         _LOGGER.debug(
             "roombapy-prime: connecting blid=%s with client_id=%s", self._blid, self._token.client_id
         )
-        self._client = self._build_client()
+        await self._settle_late_connection()
+        client = self._build_client(timeout)
+        # A NEW SESSION GRANTS NOTHING -- whatever a request recorded
+        # while the last connection was dying (review finding: a read
+        # that lost its connection mid-SUBACK recorded its topics as
+        # subscribed, and every later read of that shadow timed out).
+        self._subscribed_topics.clear()
+        # SHIELDED, so a cancelled caller cannot abandon a handshake
+        # halfway -- see _discard_late_connection().
+        enter = asyncio.ensure_future(client.__aenter__())
         try:
-            # keepalive=60 (paho's own default), LOWERED FROM 300 this
-            # session. MQTT declares a connection dead after 1.5x the
-            # keepalive interval, so 300 meant a broken connection went
-            # unnoticed for up to 450 SECONDS -- and during that window
-            # publish() succeeds locally while nothing reaches the
-            # broker, which is exactly the "no PUBACK, no error" state
-            # three field sessions kept producing.
-            #
-            # 60 costs one small PINGREQ per minute and cuts that blind
-            # window to about 90 seconds. AWS IoT accepts anything from
-            # 30 upward, so this stays well inside spec.
-            # RAISE THE IN-FLIGHT LIMIT. paho defaults to 20
-            # unacknowledged QoS-1 messages; the iRobot app sets 1000.
-            #
-            # This matters for `_subscribe_and_wait`, which subscribes
-            # to every persistent topic in one loop and then waits for
-            # each SUBACK. A restore carrying more than twenty topics
-            # would have paho queue the rest behind the window --
-            # arriving late, or looking like the "no SUBACK within
-            # 3.0s" that @utkjmitch sees on every reconnect.
-            #
-            # Not claimed as the cause of that: his robot has four
-            # persistent subscriptions, well under twenty. But the
-            # app's own value is the safer default, and it costs
-            # nothing.
-            #
-            # Found in samm-git/irobot-explore's reconstruction, which
-            # documents the app's connection parameters.
-            self._client.max_inflight_messages_set(1000)
-            self._client.connect(self._endpoint, port=443, keepalive=60)
-        except ssl.SSLError as exc:
-            _raise_clear_ssl_error(exc)
-        except OSError as exc:
-            _raise_clear_connection_error(exc)
-        self._client.loop_start()
-        waited = 0.0
-        while waited < timeout and not self._connected and self._connect_error is None:
-            time.sleep(0.2)
-            waited += 0.2
-        if self._connect_error:
-            raise ShadowError(
-                f"Connect failed: {self._connect_error}", reason=CloudErrorReason.CONNECT_REFUSED
-            )
-        if not self._connected:
-            raise ShadowError(f"Connect timed out after {timeout}s", reason=CloudErrorReason.TIMEOUT)
+            await asyncio.shield(enter)
+        except asyncio.CancelledError:
+            closings: list[asyncio.Task[Any]] = []
+            if enter.done():
+                _discard_late_connection(client, enter, closings)
+            else:
+                enter.add_done_callback(
+                    functools.partial(_discard_late_connection, client, closings=closings)
+                )
+            self._late = (enter, closings, timeout)
+            raise
+        except MqttError as exc:
+            _abandon(client)
+            _raise_connect_error(exc, timeout)
+        except BaseException:
+            _abandon(client)
+            raise
+        self._client = client
+        self._connected = True
+        self._generation += 1
+        self._pump_task = asyncio.get_running_loop().create_task(self._pump(client))
+        self._signal_state_change()
 
-    def disconnect(self, deliberate: bool = True) -> None:
+    async def _settle_late_connection(self) -> None:
+        """Waits for a cancelled connect's handshake, and for the close
+        of whatever it produced -- bounded by that connect's own
+        timeout."""
+        late, self._late = self._late, None
+        if late is None:
+            return
+        enter, closings, timeout = late
+        if not enter.done():
+            await asyncio.wait({enter}, timeout=timeout + 5.0)
+        await asyncio.sleep(0)  # the done-callback schedules the close
+        if closings:
+            await asyncio.wait(closings, timeout=5.0)
+
+    def _set_closed(self, closed: bool) -> None:
+        self._closed = closed
+        if closed:
+            self._reopened.clear()
+        else:
+            self._reopened.set()
+        self._signal_state_change()
+
+    def _signal_state_change(self) -> None:
+        event, self._state_changed = self._state_changed, asyncio.Event()
+        event.set()
+
+    async def _pump(self, client: aiomqtt.Client) -> None:
+        """Dispatches every incoming message until the connection ends,
+        then reports the end. The only reader of `client.messages`."""
+        reason: str | None = None
+        try:
+            async for message in client.messages:
+                self._dispatch(str(message.topic), message.payload)
+        except MqttError as exc:
+            # aiomqtt raises "Disconnected during message iteration" FROM
+            # the cause: the broker's reason code, or the socket error.
+            # A clean close of our own has no cause.
+            reason = _describe_disconnect(exc.__cause__)
+        finally:
+            # Only the current connection reports, and only once: a
+            # disconnect() that gave up waiting has reported already.
+            if client is self._client and self._connected:
+                self._connection_lost(reason)
+
+    def _connection_lost(self, reason: str | None) -> None:
+        self._connected = False
+        # A NEW SESSION GRANTS NOTHING. Keeping the set across a
+        # disconnect would make the next read skip a subscription it no
+        # longer has -- the exact silence this set exists to avoid.
+        self._subscribed_topics.clear()
+        # Nothing on a dead connection answers these any more.
+        inflight, self._inflight = self._inflight, set()
+        for task in inflight:
+            task.cancel()
+        self._subscribe_tasks.clear()
+        self._disconnect_reason = (
+            "deliberate: token refresh or reconnect"
+            if self._deliberate_disconnect
+            else (reason or "Normal disconnection")
+        )
+        self._was_deliberate = self._deliberate_disconnect
+        self._deliberate_disconnect = False
+        self._ends[self._generation] = (self._disconnect_reason, self._was_deliberate)
+        for old in [g for g in self._ends if g < self._generation - 8]:
+            del self._ends[old]
+        self._wake_waiters()
+
+    def _wake_waiters(self) -> None:
+        waiters, self._disconnect_waiters = self._disconnect_waiters, []
+        for event in waiters:
+            event.set()
+
+    async def disconnect(self, deliberate: bool = True) -> None:
+        """Closes the connection for good: nothing reconnects it until
+        connect() is called again. A reconnect in progress finishes
+        first and is then closed, so no connection outlives this call.
+
+        Watchers see the close, and wait -- they neither report it as a
+        drop nor reconnect. Anything that needs the connection raises
+        NOT_CONNECTED.
+
+        `deliberate=False` is kept for callers that want the close
+        reported as a drop; it is not used by this library."""
+        self._close_requests += 1
+        self._set_closed(True)
+        async with self._reconnect_lock:
+            # AGAIN, under the lock: a connect() that was queued ahead of
+            # this one has cleared it meanwhile (review finding).
+            self._set_closed(True)
+            await self._close(deliberate)
+            await self._settle_late_connection()
+
+    async def _close(self, deliberate: bool) -> None:
         """`deliberate` marks this as our own close, so the watcher does
         not report it as a drop and does not start a competing
-        reconnect. Defaults True: every caller of this method is
-        choosing to disconnect."""
+        reconnect."""
+        client, pump = self._client, self._pump_task
+        if client is None or not self._connected:
+            # Nothing is open, so nothing will report a drop: the flag
+            # must not be set (review finding -- it survived into the
+            # first real connection).
+            return
         self._deliberate_disconnect = deliberate
-        if self._client is not None:
-            self._client.loop_stop()
-            self._client.disconnect()
+        try:
+            try:
+                await client.__aexit__(None, None, None)
+            except MqttError as exc:
+                _LOGGER.debug("roombapy-prime: disconnect of a dead connection -- %s", exc)
+            if pump is not None and not pump.done():
+                # The message task ends on its own once aiomqtt reports
+                # the disconnect; waiting for it means the drop is
+                # recorded -- as deliberate -- before anything
+                # reconnects. asyncio.wait, not wait_for: the task can
+                # end cancelled when aiomqtt gave up on its own DISCONNECT,
+                # and wait_for would raise that here as if WE were
+                # cancelled (review finding).
+                await asyncio.wait({pump}, timeout=5.0)
+                if not pump.done():
+                    pump.cancel()
+            if self._connected and self._client is client:
+                # The task could not report in time.
+                self._connection_lost(None)
+        finally:
+            # CLEARED HERE, not only where the drop is reported. A
+            # connection that had already dropped reports nothing more,
+            # so the flag would survive into the NEXT connection and
+            # label its first real drop "deliberate" -- which the watcher
+            # answers by not reconnecting (0.4.x too).
+            self._deliberate_disconnect = False
+
+    @property
+    def generation(self) -> int:
+        """Counts successful connects: a watcher remembers the one it
+        watches."""
+        return self._generation
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def closed(self) -> bool:
+        """True from disconnect() until the next connect()."""
+        return self._closed
+
+    @property
+    def disconnect_reason(self) -> str | None:
+        """Why the last connection ended, or why the last reconnect
+        failed."""
+        return self._disconnect_reason
+
+    def ended(self, generation: int) -> tuple[str, bool] | None:
+        """How connection `generation` ended: (reason, deliberate), or
+        None while it is up or once it is too old to be remembered."""
+        return self._ends.get(generation)
+
+    async def wait_until_settled(self) -> None:
+        """Returns once no connect, reconnect or close is in progress."""
+        async with self._reconnect_lock:
+            pass
+
+    async def wait_for_state_change(self, timeout: float) -> None:
+        """Returns once the connection comes up or the client is closed,
+        or after `timeout` -- a backoff that ends early when there is
+        nothing left to wait for (review finding: other watchers sat
+        behind one watcher's backoff on a connection a shadow read had
+        already rebuilt)."""
+        if self._connected or self._closed:
+            return
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._state_changed.wait(), timeout)
+
+    async def wait_until_open(self) -> None:
+        """Returns once the client is not closed -- at once, unless
+        disconnect() closed it."""
+        while self._closed:
+            await self._reopened.wait()
 
     # --- Proactive token refresh ---------------------------------------
     #
@@ -707,73 +801,53 @@ class PrimeMqttClient:
             return None
         return max(remaining - self.REFRESH_MARGIN_SECONDS, 0.0)
 
-    def replace_token(self, new_token: ConnectionToken, timeout: float = 10.0) -> None:
+    async def replace_token(self, new_token: ConnectionToken, timeout: float = 10.0) -> None:
         """Swaps the token, disconnects, reconnects, restores all
         running persistent subscriptions (see subscribe()) -- so
         running watch_*() generators keep going transparently, without
         the caller needing to re-subscribe.
 
         NOT restored: open _pending entries (in-flight get_shadow()/
-        update_shadow() calls). If a refresh happens to fall in the
-        middle of such a call, it simply runs into its timeout and
-        raises ShadowError -- an accepted edge case, since refreshes
-        are scheduled with lead time (see REFRESH_MARGIN_SECONDS), no
-        guarantee against overlap.
-
-        NEW: now runs under self._client_lock -- closes the gap
-        documented here before ("not thread-/call-safe against
-        get_shadow()/update_shadow()"). A concurrent get_shadow()/
-        update_shadow() call now waits until replace_token() is done,
-        instead of accessing a half-disconnected client. The
-        _pending edge case described above still remains, though --
-        the lock only prevents concurrent ACCESS to self._client, not
-        the underlying issue of "a refresh falls into an in-flight
-        get/update"."""
-        with self._client_lock:
+        update_shadow() calls) -- but none can be open: both hold the
+        same lock this does, so a swap waits for a running read or write
+        and a read or write waits for the swap."""
+        async with self._lock:
             self._token = new_token
-            # The caller just handed us a token; its client id is the one
-            # to use. Rotating it here would discard what they chose.
-            self.reconnect(timeout=timeout)
+            await self.reconnect(timeout=timeout, force=True)
 
-    def reconnect(self, timeout: float = 10.0) -> None:
-        """Reconnects with the same client id, which is the only one
-        that works -- see the note in the body.
+    async def reconnect(
+        self, timeout: float = 10.0, *, force: bool = False, if_generation: int | None = None
+    ) -> None:
+        """Disconnects, connects again with the same, server-issued
+        client id, and restores every persistent subscription.
 
-        THE EVICTION MAY BE OURS. @DaRealGuGu's 0.3.0b1 run, with the
-        phone app closed and Home Assistant stopped, still failed -- and
-        the log shows why it could not have been the phone:
+        THE CLIENT ID IS NOT OURS TO CHOOSE. Tried in 0.3.0b2, reverted
+        in b3: a derived id (`...-r1-r2-...`) did not connect AT ALL --
+        "Connect timed out" every time. The id comes from iRobot's login
+        response and the broker's policy expects that one.
 
-            08:19:14  reconnecting (0 persistent subscriptions)
-            08:19:14  connecting ... client_id=app-roombapy-prime-XQWR87YE0
-            08:19:18  no SUBACK ... disconnect reason: Unspecified error
+        Not under the shadow lock -- replace_token() takes that before
+        calling this, and watch_state()'s reconnect loop deliberately
+        does not hold it through a backoff wait. Reconnects themselves
+        are serialised: one that waited for another which succeeded
+        returns without building a second connection, unless `force`
+        (a token swap, which must connect with the new token).
 
-        **The same client id, twice.** AWS IoT drops the older
-        connection when a second arrives using it, and if the broker
-        still holds the first session, our own reconnect is the second
-        one. Nothing external needs to be running for that.
+        `if_generation` is the connection the caller saw: if a newer one
+        is already up, there is nothing to do. Without it, the
+        generation at the time of the call is used -- which is too late
+        for a caller that noticed a drop a while ago and has been
+        backing off since (review finding: a watcher tore down a
+        connection a shadow read had just rebuilt, and the read failed).
 
-        A fresh id per reconnect costs nothing -- the id is ours to
-        choose, and nothing depends on it staying the same across a
-        reconnect.
+        A reconnect that fails -- or is cancelled -- after its own
+        disconnect is reported like a drop, so the watchers take over
+        instead of waiting for a drop that can no longer come (review
+        findings).
 
-        NEW (this session, reconnect-after-drop hardening). Same-
-        token counterpart to replace_token() -- extracted from it,
-        since the "disconnect, connect, restore all persistent
-        subscriptions" sequence is identical either way, only whether
-        the token changes first differs. Used by prime_robot.py's
-        watch_state() to recover after wait_for_disconnect() fires.
-
-        Not itself under self._client_lock -- callers that need that
-        protection (replace_token()) take it themselves before calling
-        this; watch_state()'s reconnect loop deliberately does NOT hold
-        it for the length of a potentially-long backoff wait."""
+        Raises NOT_CONNECTED on a client that was never connected or
+        that disconnect() closed."""
         if self._client is None:
-            # Was an assert, which surfaced to a field tester as a bare
-            # AssertionError traceback ending in "call connect() first" --
-            # a message written for whoever wrote the calling code, not
-            # for the person running a diagnostic script. It also fired
-            # from get_shadow()'s lazy-reconnect path, so the visible
-            # failure was several frames away from the actual cause.
             raise ShadowError(
                 "Not connected. This client needs connect() to have been called at least "
                 "once before any shadow read -- named shadows travel over MQTT, not REST. "
@@ -782,109 +856,185 @@ class PrimeMqttClient:
                 "opening the connection first.",
                 reason=CloudErrorReason.NOT_CONNECTED,
             )
-        _LOGGER.info(
-            "roombapy-prime MQTT: reconnecting (%d persistent subscription(s) to restore)",
-            len(self._persistent),
-        )
-        topics_to_restore = list(self._persistent.keys())
+        generation = self._generation if if_generation is None else if_generation
+        async with self._reconnect_lock:
+            if self._closed:
+                raise ShadowError(
+                    "The connection was closed by disconnect(); call connect() to open it again.",
+                    reason=CloudErrorReason.NOT_CONNECTED,
+                )
+            if not force and self._connected and self._generation != generation:
+                return  # another caller reconnected while this one waited
+            _LOGGER.info(
+                "roombapy-prime MQTT: reconnecting (%d persistent subscription(s) to restore)",
+                len(self._persistent),
+            )
+            await self._close(deliberate=True)
+            self._connected = False
+            self._reconnects += 1
+            try:
+                await self._open(timeout)
+            except BaseException as exc:
+                self._disconnect_reason = (
+                    f"reconnect failed: {exc}"
+                    if isinstance(exc, ShadowError)
+                    else "reconnect cancelled"
+                )
+                self._was_deliberate = False
+                self._wake_waiters()
+                raise
+            # _persistent is state on self, so it survives the reconnect;
+            # the BROKER no longer knows the subscriptions. Re-subscribe
+            # directly, NOT via subscribe() (that would add callbacks).
+            #
+            # THE LIST IS TAKEN NOW, not before the close: a subscribe()
+            # whose SUBACK wait this reconnect cut short registers its
+            # topic in between, and a list from before would leave it
+            # out (review finding; 0.4.x too).
+            await self._subscribe_and_wait(list(self._persistent), revive=False)
 
-        self.disconnect()
-        self._connected = False
-        # THE CLIENT ID IS NOT OURS TO CHOOSE. Tried in b2, reverted in
-        # b3, and the failure was informative.
-        #
-        # b2 rotated it on every reconnect on the theory that we were
-        # evicting ourselves. @DaRealGuGu's run made things worse in a
-        # specific way: the connection stopped being dropped after a
-        # subscribe and started **failing outright** --
-        # "Connect timed out after 8.0s", every time, on ids like
-        # `...-r1-r2-r3-r4-r5-r6`.
-        #
-        # Two things were wrong. The id accumulated rather than being
-        # replaced, which is a plain bug. But the useful part is that a
-        # derived id does not connect AT ALL: the id comes from iRobot's
-        # login response, and the broker's policy evidently expects that
-        # one. It is issued, not chosen.
-        #
-        # So the eviction theory is not disproven -- but rotating the id
-        # is not the way to test it, and cannot be the fix.
-        self._reconnects += 1
-        self._connect_error = None
-        self.connect(timeout=timeout)
+    SUBACK_TIMEOUT_SECONDS = 3.0
+    """How long a subscribe waits for its SUBACK before carrying on
+    unconfirmed (see _subscribe_and_wait())."""
 
-        # _persistent itself is state on self, not on the paho client
-        # object -- so it survives disconnect()/connect() automatically.
-        # The BROKER no longer knows the subscriptions after a fresh
-        # connect(), though -- re-subscribe directly on the new paho
-        # client, NOT via subscribe() (that would append duplicate
-        # callback entries, since _persistent already has them).
-        self._subscribe_and_wait(topics_to_restore)
-
-    def _on_connect(
-        self,
-        client: mqtt.Client,
-        userdata: Any,
-        connect_flags: mqtt.ConnectFlags,
-        reason_code: ReasonCode,
-        properties: Properties | None = None,
+    async def _subscribe_and_wait(
+        self, topics: list[str], timeout: float | None = None, *, revive: bool = True
     ) -> None:
-        if reason_code == 0:
-            self._connected = True
+        """Subscribes to every topic and waits up to `timeout` for their
+        SUBACKs, so a publish that follows cannot outrun its own
+        subscription (session 33: responses arriving before the SUBACK
+        were lost -- chairstacker's "get_settings() sometimes answers").
+
+        THREE OUTCOMES PER TOPIC, kept apart on purpose:
+
+        - NOT SENT: the client refused the SUBSCRIBE before anything
+          left. Raises SubscriptionRejectedError, SUBSCRIPTION_NOT_SENT.
+        - REJECTED: the SUBACK carries a failure code (0x80, an AWS IoT
+          policy denial). Raises SubscriptionRejectedError. A rejected
+          subscription and a quiet topic look identical to the caller
+          otherwise (chairstacker's empty wildcard capture).
+        - UNCONFIRMED: no SUBACK within `timeout`. Warned about, NOT
+          raised: some Prime sessions deliver traffic without a visible
+          SUBACK (@utkjmitch logs one on every 55-minute reconnect). The
+          SUBSCRIBE keeps waiting in the background; a late SUBACK still
+          counts, see resubscribe_still_unconfirmed().
+
+        Revives a dead connection first: subscribing to a dead
+        connection fails silently, and the watcher then reports a real
+        robot reaction as "nothing happened". Not when called from inside
+        a connect or reconnect (`revive=False`): those hold the lock a
+        revival would wait for.
+
+        A caller that is cancelled leaves its SUBSCRIBEs running: they
+        belong to the connection, which cancels them when it ends."""
+        if timeout is None:
+            timeout = self.SUBACK_TIMEOUT_SECONDS
+        if revive and (self._client is None or not self._connected):
+            await self.reconnect(timeout=timeout)
+        client = self._client
+        if client is None or not self._connected:
+            raise ShadowError(
+                "SUBSCRIBE has no connection to go out on.",
+                reason=CloudErrorReason.CONNECTION_FAILED,
+            )
+        tasks: dict[str, asyncio.Task[Any]] = {}
+        for topic in topics:
+            task = asyncio.ensure_future(client.subscribe(topic, qos=1, timeout=math.inf))
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
+            # A SUBSCRIBE still waiting from an earlier call is left to
+            # finish: cancelled, its SUBACK would be logged as an error.
+            self._subscribe_tasks[topic] = task
+            tasks[topic] = task
+        try:
+            if tasks:
+                await asyncio.wait(tasks.values(), timeout=timeout)
+        except BaseException:
+            for topic, task in tasks.items():
+                if not task.done():
+                    task.add_done_callback(functools.partial(self._late_suback, topic))
+            raise
+        not_sent: dict[str, Any] = {}
+        rejected: dict[str, Any] = {}
+        unconfirmed: list[str] = []
+        for topic, task in tasks.items():
+            if not task.done() or task.cancelled():
+                unconfirmed.append(topic)
+                if not task.done():
+                    task.add_done_callback(functools.partial(self._late_suback, topic))
+                continue
+            exc = task.exception()
+            if isinstance(exc, MqttCodeError):
+                not_sent[topic] = exc.rc
+                continue
+            if exc is not None:
+                not_sent[topic] = str(exc)
+                continue
+            failed = [rc for rc in task.result() or () if _suback_is_failure(rc)]
+            if failed:
+                rejected[topic] = failed
+
+        self._last_subscribe_topics = list(tasks)
+        self.last_subscribe_unconfirmed = unconfirmed
+        self.subscribe_unconfirmed_count += len(unconfirmed)
+        if unconfirmed:
+            # THE BROKER'S REASON, IF IT GAVE ONE. A broker that drops a
+            # client for an unauthorised subscribe says why on
+            # disconnect, and this warning is where anyone looks first.
+            _LOGGER.warning(
+                "roombapy-prime: no SUBACK within %.1fs for %s -- proceeding, but a "
+                "subscription that was never acknowledged delivers nothing and looks "
+                "exactly like a robot with nothing to say.%s",
+                timeout, unconfirmed,
+                f" Last disconnect reason from the broker: {self._disconnect_reason}."
+                if self._disconnect_reason else
+                " The broker has not reported a disconnect, so the socket is"
+                " probably still open and the subscription simply unanswered.",
+            )
+        if not_sent:
+            raise SubscriptionRejectedError(
+                f"SUBSCRIBE was never sent for {not_sent} (paho error codes) -- the "
+                "client reported a failure before anything reached the broker. "
+                "Distinct from a rejection: the broker never saw this.",
+                reason=CloudErrorReason.SUBSCRIPTION_NOT_SENT,
+            )
+        if rejected:
+            raise SubscriptionRejectedError(
+                f"Broker REJECTED subscription (SUBACK failure code) for: {rejected}. "
+                "This is a different, more specific finding than 'nothing arrived' -- "
+                "the broker's own IoT policy denied this topic outright, not a silent "
+                "absence of traffic on it."
+            )
+
+    def _late_suback(self, topic: str, task: asyncio.Task[Any]) -> None:
+        """A SUBACK that came after the wait. Logged; a late rejection
+        is worth knowing about even though nobody is waiting for it."""
+        if task.cancelled() or task.exception() is not None:
+            return
+        if any(_suback_is_failure(rc) for rc in task.result() or ()):
+            _LOGGER.warning(
+                "roombapy-prime: late SUBACK REJECTED the subscription to %s", topic
+            )
         else:
-            self._connect_error = str(reason_code)
-
-    def _on_disconnect(
-        self,
-        client: mqtt.Client,
-        userdata: Any,
-        disconnect_flags: mqtt.DisconnectFlags,
-        reason_code: ReasonCode,
-        properties: Properties | None = None,
-    ) -> None:
-        """NEW (this session). Previously not wired up at all -- the
-        client had zero visibility into a dropped connection, silently
-        leaving any long-running watch_state() consumer hung on an
-        empty queue forever with no signal anything was wrong (see
-        this class's own docstring: "reconnection with backoff;
-        neither exists here yet" -- this is the first half of closing
-        that gap; watch_state() in prime_robot.py is the second)."""
-        self._connected = False
-        # A NEW SESSION GRANTS NOTHING. Keeping the set across a
-        # disconnect would make the next read skip a subscription it no
-        # longer has -- the exact silence this change exists to avoid.
-        self._subscribed_topics.clear()
-        self._disconnect_reason = (
-            "deliberate: token refresh or reconnect"
-            if self._deliberate_disconnect
-            else str(reason_code)
-        )
-        self._was_deliberate = self._deliberate_disconnect
-        self._deliberate_disconnect = False
-        if self._disconnect_loop is not None and self._disconnect_event is not None:
-            self._disconnect_loop.call_soon_threadsafe(self._disconnect_event.set)
+            _LOGGER.debug("roombapy-prime: late SUBACK for %s", topic)
 
     def resubscribe_still_unconfirmed(self) -> list[str]:
-        """Topics with no SUBACK, re-checked now rather than at the
-        moment the wait expired.
+        """Topics of the last subscribe with no SUBACK, re-checked now
+        rather than at the moment the wait expired.
 
-        A SUBACK ARRIVING LATE IS STILL A SUBACK. `_confirmed_mids` is
-        filled by paho's callback thread and keeps filling after the
-        3-second wait gives up, so `last_subscribe_unconfirmed` is a
-        snapshot of a deadline, not a verdict.
+        A SUBACK ARRIVING LATE IS STILL A SUBACK. The SUBSCRIBE keeps
+        waiting after `_subscribe_and_wait()` gives up, so
+        `last_subscribe_unconfirmed` is a snapshot of a deadline, not a
+        verdict. @utkjmitch (b7): every reconnect logs `no SUBACK within
+        3.0s`; treating that snapshot as failure would put him into a
+        reconnect loop every 55 minutes.
 
-        @utkjmitch (b7, second household): every reconnect on his
-        instance logs `no SUBACK within 3.0s`, on a 55-minute cycle.
-        Treating that snapshot as failure would put him into a
-        reconnect loop every cycle -- for subscriptions that may well
-        have been acknowledged a moment later.
-
-        So the caller asks again before acting. Anything still missing
-        here really is missing.
-        """
-        mids = getattr(self, "_last_subscribe_mids", None) or []
+        THE WATCHERS' TOPICS, not those of whatever subscribed last: a
+        shadow read in the second after a reconnect used to replace the
+        list this checked (review finding)."""
         return [
-            self._mid_to_topic.get(m, "?") for m in mids
-            if m not in self._confirmed_mids
+            topic for topic in self._persistent
+            if (task := self._subscribe_tasks.get(topic)) is not None and not task.done()
         ]
 
     @property
@@ -893,101 +1043,128 @@ class PrimeMqttClient:
         refresh, rather than something the broker or network did."""
         return self._was_deliberate
 
-    async def wait_for_disconnect(self) -> str:
-        """Resolves with the disconnect reason once this connection
-        drops -- lets an async caller (see prime_robot.py's
-        watch_state()) detect a drop via await, instead of polling
-        self._connected in a loop. Must be called again after each
-        reconnect (the event is created fresh here, not reused) --
-        this is deliberately a one-shot wait, not a persistent
-        subscription, to keep the ownership of "what happens on
-        disconnect" entirely with the caller."""
-        self._disconnect_loop = asyncio.get_running_loop()
-        self._disconnect_event = asyncio.Event()
-        await self._disconnect_event.wait()
+    async def wait_for_disconnect(self, generation: int | None = None) -> str:
+        """Resolves with the disconnect reason once connection
+        `generation` has ended -- at once if it already has.
+
+        BY GENERATION, NOT BY EVENT. Up to 0.5.0b1 this only heard of a
+        drop that happened while it was waiting. A watcher is not always
+        waiting: it hands a message to its consumer, sleeps a second
+        after a reconnect, backs off. A drop in any of those gaps woke
+        nobody, and the watcher then waited on a dead connection for good
+        while the log said "watch resumed" (review finding; 0.4.x too).
+        So a watcher remembers the generation it watches, and asking
+        about one that has already ended answers at once.
+
+        Without `generation`, this waits for the next end of any
+        connection, as it always has -- a caller that loops on it after a
+        drop must not find it answering at once, or the loop would spin
+        without ever yielding."""
+        if generation is None:
+            event = asyncio.Event()
+            self._disconnect_waiters.append(event)
+            try:
+                await event.wait()
+            finally:
+                if event in self._disconnect_waiters:
+                    self._disconnect_waiters.remove(event)
+            return self._disconnect_reason or "unknown"
+        if self._connected and self._generation == generation:
+            event = asyncio.Event()
+            self._disconnect_waiters.append(event)
+            try:
+                await event.wait()
+            finally:
+                if event in self._disconnect_waiters:
+                    self._disconnect_waiters.remove(event)
+        end = self._ends.get(generation)
+        if end is not None:
+            return end[0]
         return self._disconnect_reason or "unknown"
 
-    def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
+    def _dispatch(self, topic: str, raw: Any) -> None:
+        """One incoming message to its waiters and watchers."""
+        payload: dict[str, Any] | str
         try:
-            payload = json.loads(msg.payload)
-        except JSONDecodeError:
-            payload = msg.payload.decode(errors="replace")
-        response = ShadowResponse(topic=msg.topic, payload=payload)
-        callbacks = self._pending.pop(msg.topic, [])
-        for cb in callbacks:
-            # A CALLBACK THAT RAISES KILLS PAHO'S NETWORK LOOP THREAD,
-            # and the connection then looks alive while delivering
-            # nothing: publishes queue and are never sent, subscribes
-            # get no SUBACK.
-            #
-            # That is exactly what two testers reported. @jouwdan's
-            # first read listed 21 keys, and every operation after it
-            # failed -- write, then read, both with "no SUBACK".
-            # @DaRealGuGu's b16 run reported "PUBLISH was queued but
-            # never sent", which is the same connection in the same
-            # state seen from the other side.
-            #
-            # This does not prove a callback raised on their accounts.
-            # It removes the only way one could take the whole client
-            # down without saying so.
+            payload = json.loads(raw)
+        except (JSONDecodeError, TypeError, ValueError):
+            if isinstance(raw, (bytes, bytearray)):
+                payload = bytes(raw).decode(errors="replace")
+            else:
+                payload = "" if raw is None else str(raw)
+        response = ShadowResponse(topic=topic, payload=payload)
+        for cb in self._pending.pop(topic, []):
+            # A CALLBACK THAT RAISES MUST NOT END THE DISPATCH. In 0.4.x
+            # it killed paho's network thread, and the connection then
+            # looked alive while delivering nothing (@jouwdan's 21 keys,
+            # then silence; @DaRealGuGu's "queued but never sent"). Here
+            # it would end the message task -- the same silence.
             try:
                 cb(response)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception(
                     "roombapy-prime: a shadow callback raised for %s -- "
                     "the message is lost, the connection is not",
-                    msg.topic,
+                    topic,
                 )
-        # BUG FOUND AND FIXED (this session, via a live wildcard capture
-        # that came back suspiciously empty despite matching traffic
-        # demonstrably existing -- chairstacker). Persistent subscribers
-        # are matched by PATTERN now, not an exact dict-key lookup on
-        # msg.topic. A persistent registration can be a wildcard filter
-        # (e.g. "{prefix}/things/{blid}/#", see watch_raw_topic()) --
-        # msg.topic is always the concrete topic a message actually
-        # arrived on, never the literal wildcard string itself, so a
-        # plain `self._persistent.get(msg.topic, [])` could NEVER find a
-        # wildcard registration: its own dedicated watcher would show
-        # "zero messages" forever, regardless of how much matching
-        # traffic actually existed. _pending (above) is unaffected --
-        # it's only ever used for one-shot exact-topic request/response
-        # waits (get_shadow()/update_shadow()), never wildcards.
-        # SNAPSHOT, NOT LIVE ITERATION. This runs on paho's network
-        # thread; subscribe()/unsubscribe() write `_persistent` from
-        # whatever thread the caller is on. Iterating .items() directly
-        # raises "dictionary keys changed during iteration" if a
-        # watcher starts or stops while a message is being dispatched.
-        #
-        # Reproduced deliberately: two threads, one writing keys and
-        # one iterating, raise within a second or two. Rare in practice
-        # -- it needs a subscribe/unsubscribe to land inside this loop
-        # -- but the consequence is bad out of proportion to the odds:
-        # the exception escapes into paho's dispatch loop, and every
-        # watcher on this client stops receiving, silently, exactly the
-        # failure mode the persistent-wildcard fix above was written to
-        # cure.
-        #
-        # list() copies the key/value pairs under the GIL, so the loop
-        # below runs against a stable view. A watcher registered during
-        # dispatch is picked up on the next message, which is what the
-        # caller would expect anyway.
+        # PERSISTENT SUBSCRIBERS ARE MATCHED BY PATTERN, not by an exact
+        # key: a registration can be a wildcard filter (watch_raw_topic's
+        # "{prefix}/things/{blid}/#"), and a message always arrives on a
+        # concrete topic (chairstacker's empty wildcard capture). A
+        # snapshot of the registrations, so a watcher that starts or
+        # stops inside a callback does not change what is being walked.
         for pattern, cbs in list(self._persistent.items()):
-            if mqtt.topic_matches_sub(pattern, msg.topic):
-                # The callback list itself can also grow while we walk
-                # it -- same reason, same fix.
+            if mqtt.topic_matches_sub(pattern, topic):
                 for cb in list(cbs):
-                    # Same guard, same reason. Persistent subscribers are
-                    # the watchers -- mission timeline, live map -- and a
-                    # watcher that raises would take down the client that
-                    # feeds every other call.
                     try:
                         cb(response)
                     except Exception:  # noqa: BLE001
                         _LOGGER.exception(
                             "roombapy-prime: a watcher raised for %s -- "
                             "the message is lost, the connection is not",
-                            msg.topic,
+                            topic,
                         )
+
+    async def _publish(
+        self, topic: str, payload: str | bytes, timeout: float = 5.0
+    ) -> None:
+        """Publishes at QoS 1 and raises unless the broker acknowledged
+        it (PUBACK) within `timeout`.
+
+        A publish that never leaves and a robot that never answers look
+        the same from the caller: silence, then a timeout. The two are
+        told apart here.
+        """
+        client = self._client
+        if client is None or not self._connected:
+            raise ShadowError(
+                f"PUBLISH to {topic} has no connection to go out on.",
+                reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
+            )
+        try:
+            await client.publish(topic, payload=payload, qos=1, timeout=timeout)
+        except MqttCodeError as exc:
+            # WHY THE SOCKET DIED, when we know it. rc=4 (no connection)
+            # says the connection was gone, not why; the broker's reason
+            # arrived earlier, on disconnect (@utkjmitch: subscribes
+            # dead, publishes alive -- a broker dropping a client for an
+            # unauthorised subscribe looks exactly like that).
+            why = (
+                f" The broker's last disconnect reason was: {self._disconnect_reason}."
+                if self._disconnect_reason else ""
+            )
+            raise ShadowError(
+                f"PUBLISH to {topic} was refused by the client (paho rc={exc.rc}) -- "
+                f"the request never left, so a timeout below would mean nothing.{why}",
+                reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
+            ) from exc
+        except MqttError as exc:
+            raise ShadowError(
+                f"PUBLISH to {topic} was not acknowledged within {timeout}s -- "
+                "the connection accepts messages and is not delivering them.",
+                reason=CloudErrorReason.PUBLISH_NOT_DELIVERED,
+            ) from exc
+
 
     def shadow_topic(self, suffix: str, named: str | None = None) -> str:
         """Public accessor for building a full shadow topic, e.g.
@@ -1081,7 +1258,7 @@ class PrimeMqttClient:
         segment = report_type if report_type else "+"
         return f"{irbt_topic_prefix}/things/{self._blid}/dock/{segment}/report"
 
-    def request_mission_timeline(
+    async def request_mission_timeline(
         self, irbt_topic_prefix: str, request_id: int
     ) -> bool:
         """Asks the robot to send its mission timeline now.
@@ -1129,8 +1306,7 @@ class PrimeMqttClient:
                 "mission timeline -- the request goes over MQTT.",
                 reason=CloudErrorReason.NOT_CONNECTED,
             )
-        info = self._client.publish(topic, payload=payload, qos=1)
-        _publish_confirmed(info, topic)
+        await self._publish(topic, payload)
         return True
 
     #: CHECKED AGAINST APP 3.0.0: the gap is one topic, not nine.
@@ -1373,57 +1549,34 @@ class PrimeMqttClient:
     # messages in that capture were logged indistinguishably. The
     # jayjay13011 re-run, with the fixed tooling, settled it directly.
 
-    def publish_cmd(self, irbt_topic_prefix: str, command: str, initiator: str = "localApp") -> bool:
+    async def publish_cmd(
+        self, irbt_topic_prefix: str, command: str, initiator: str = "localApp"
+    ) -> bool:
         """NEW (session 39). Publishes a simple mission command via
         cmd_topic() -- see that method's docstring for the full
         evidence trail. Payload shape {"command": str, "time": int,
-        "initiator": str} matches the third-party project's
-        documented, reportedly-working format exactly -- "time" is a
-        Unix timestamp in SECONDS (not millis).
+        "initiator": str}; "time" is a Unix timestamp in SECONDS.
 
-        CORRECTED (this session): this docstring used to say "initiator"
-        defaults to "localApp" here. It does not -- this method adds
-        only "time". Callers that want an initiator must put it in the
-        payload themselves, and send_simple_command() does. Region
-        commands built from a stored favorite do NOT, because a stored
-        favorite carries no initiator.
+        Returns whether the broker confirmed receipt (PUBACK) -- the
+        broker, not the robot. Callers who want to know the ROBOT reacted
+        should still read its state afterwards."""
+        return await self.publish_cmd_payload(
+            irbt_topic_prefix, {"command": command, "initiator": initiator}
+        )
 
-        That distinction may matter a great deal. A field run on a24
-        (DaRealGuGu) had stage 1 -- an unchanged favorite, no initiator
-        -- do nothing, while stage 1b -- the identical command with
-        initiator="rmtApp" added -- started a mission. The APK research
-        independently found that the real app's buildJsonCommon() always
-        writes initiator. Awaiting his full log to check whether stage 1
-        was actually delivered before treating this as settled.
-
-        NOW RETURNS whether the broker confirmed PUBACK receipt (this
-        session) -- see publish_cmd_payload()'s own entry in docs/internal/EVIDENCE_TRAIL.md for the
-        full reasoning on why this is a genuinely new, useful signal,
-        separate from any application-level acknowledgment. Callers
-        who want confirmation that the ROBOT itself reacted should
-        still poll get_state() afterward -- this only confirms the
-        BROKER received the publish, not that the robot acted on it."""
-        return self.publish_cmd_payload(irbt_topic_prefix, {"command": command, "initiator": initiator})
-
-    def publish_cmd_payload(
+    async def publish_cmd_payload(
         self, irbt_topic_prefix: str, payload: dict[str, Any], *, confirm_timeout: float = 5.0,
     ) -> bool:
         """NEW (session 46). Lower-level sibling of publish_cmd() --
         publishes an ARBITRARY payload dict to cmd_topic(), adding a
-        "time" field (Unix seconds) if not already present. Exists for
-        prime_robot.py's send_routine_command_via_cmd_topic() -- see
-        that method's docstring for why a richer payload than
-        publish_cmd()'s simple {command, time, initiator} might also
-        be accepted here, and for the significant, elevated risk
-        caveat that comes with sending anything richer than the basic
-        confirmed-working case to this topic.
+        "time" field (Unix seconds) if not already present. Returns
+        whether the broker acknowledged it within `confirm_timeout`.
 
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#mqtt_clientpublish_cmd_payload
     """
         if self._client is None:
-            # Same class of problem as reconnect()'s old assertion: a
-            # message for whoever wrote the calling code, surfacing to
+            # A message for whoever wrote the calling code, surfacing to
             # whoever ran a diagnostic script.
             raise ShadowError(
                 "Not connected. connect() must have been called before publishing a command "
@@ -1431,46 +1584,30 @@ class PrimeMqttClient:
                 "bug in the script rather than anything you did.",
                 reason=CloudErrorReason.NOT_CONNECTED,
             )
-        # Revive a dead connection before publishing, exactly as
-        # get_shadow() already does.
-        #
-        # FIELD EVIDENCE (DaRealGuGu, three consecutive sessions): the
-        # FIRST send of every session got no PUBACK, while later sends
-        # in the same session succeeded. The give-away is the ordering
-        # in his logs -- the ro-currentstate GET times out FIRST, then
-        # the publish gets no PUBACK, and only afterwards does paho
-        # report the drops. In other words the connection was already
-        # dead before the send, not killed by it.
-        #
-        # What kills it is the interactive pause: this tool prints a
-        # large payload and waits for a human to read it and type y.
-        # The connection sits idle through that, and with keepalive=300
-        # a dead one is not noticed for up to 450 seconds. get_shadow()
-        # survived this because it reconnects; publish did not, because
-        # it only ever checked whether a client object existed at all.
-        #
-        # Publishing into a dead connection is the worst possible
-        # failure here: it returns without error, produces no PUBACK,
-        # and the script then reports "no delivery confirmation" as
-        # though it were a finding about the payload.
-        with self._client_lock:
+        # REVIVE A DEAD CONNECTION BEFORE PUBLISHING. @DaRealGuGu, three
+        # sessions: the first send of every session got no PUBACK, and
+        # his logs show the connection was already dead before the send
+        # -- killed by the interactive pause while a human read a large
+        # payload. Publishing into a dead connection returns no error and
+        # no PUBACK, which then reads like a finding about the payload.
+        async with self._lock:
             if not self._connected:
                 _LOGGER.info(
                     "roombapy-prime: connection was not alive before publish -- reconnecting"
                 )
-                self.reconnect(timeout=confirm_timeout)
+                await self.reconnect(timeout=confirm_timeout)
 
         topic = self.cmd_topic(irbt_topic_prefix)
         full_payload = {**payload}
         full_payload.setdefault("time", int(time.time()))
-        msg_info = self._client.publish(topic, payload=json.dumps(full_payload), qos=1)
         try:
-            msg_info.wait_for_publish(timeout=confirm_timeout)
-            return msg_info.is_published()
-        except (RuntimeError, ValueError):
+            await self._publish(topic, json.dumps(full_payload), timeout=confirm_timeout)
+        except ShadowError as exc:
+            _LOGGER.debug("roombapy-prime: command publish not confirmed -- %s", exc)
             return False
+        return True
 
-    def subscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
+    async def subscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
         """Register a callback that fires on EVERY message on this topic,
         indefinitely (until unsubscribe() removes it) -- for continuous
         dispatch (shadow deltas, live-map/-position streams), as opposed
@@ -1481,65 +1618,137 @@ class PrimeMqttClient:
         every message) -- the broker-level subscribe only happens once,
         the first time this topic is used.
 
+        Callbacks run on the event loop, inside the message task, and
+        must not block. One that raises is logged and skipped.
+
         Revives a dead connection first, like every other operation in
         this module -- a silently-failed subscribe means the caller
         watches nothing and reports a real robot reaction as
         "nothing happened"."""
         if self._client is None or not self._connected:
-            self.reconnect()
+            await self.reconnect()
         is_new_topic = topic not in self._persistent
-        # SUBSCRIBE FIRST, REGISTER SECOND (@jouwdan, PR #62).
+        # SUBSCRIBE FIRST, REGISTER SECOND (@jouwdan, PR #62). Registered
+        # first, a failing subscribe left the topic in `_persistent` with
+        # no subscription, and every later subscribe() skipped the broker
+        # call -- permanently registered, permanently silent.
         #
-        # The callback used to be appended before the broker-level
-        # subscribe was attempted, so a failing subscribe left the topic
-        # in `_persistent` with a callback and no subscription. The next
-        # subscribe() for that topic then read `is_new_topic = False` and
-        # skipped the broker call entirely -- permanently unsubscribed,
-        # permanently registered, and indistinguishable from a robot
-        # that simply says nothing.
-        #
-        # A session could not recover from that, which is why his
-        # Max 705 stayed broken across retries rather than failing once.
-        #
-        # NOTE WHAT THIS IS NOT. Both his PR summary and the report
-        # behind it describe a missing SUBACK as fatal. It is not, and
-        # has not been since b3: an unconfirmed subscription is recorded
-        # and warned about, never raised. What his broker hit was a real
-        # rejection or a local paho failure -- and then this ordering
-        # turned one failure into a dead session.
+        # AGAIN IF THE CONNECTION WAS REPLACED MEANWHILE. A reconnect
+        # during the SUBACK wait restores the topics registered when it
+        # started -- not this one, which registers only afterwards. The
+        # new connection then never heard of it (review finding; 0.4.x
+        # too). A drop without a new connection needs nothing here: the
+        # topic registers below, and the next connection restores it.
         if is_new_topic:
-            # NEW (session 33): same confirmation as get_shadow()/
-            # update_shadow(), for consistency -- the risk here is
-            # milder (only a very early first message could be missed
-            # in the brief gap, not "the one expected response" like
-            # with get_shadow()), but it's worth not having the same
-            # bug type in two places just because the symptoms show up
-            # differently.
-            self._subscribe_and_wait([topic])
-        self._persistent.setdefault(topic, []).append(callback)
+            while True:
+                generation = self._generation
+                await self._subscribe_and_wait([topic])
+                if not self._connected or self._generation == generation:
+                    break
+        callbacks = self._persistent.setdefault(topic, [])
+        # ONCE PER CALLBACK. watch_live_map() subscribes again after every
+        # drop, with the same callback; each re-subscribe used to add a
+        # copy, so after N drops every message arrived N+1 times and
+        # unsubscribe() removed only one (review finding; 0.4.x too).
+        if callback not in callbacks:
+            callbacks.append(callback)
 
-    def unsubscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
+    async def unsubscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
         """Removes exactly this callback. Reference-counted: only
         unsubscribes at the broker level once no callbacks remain for
         this topic, so two concurrent watchers on the same topic don't
-        kill each other's subscription when one of them stops."""
+        kill each other's subscription when one of them stops.
+
+        Never raises: this runs from finally-blocks, where an exception
+        would mask the original error."""
         callbacks = self._persistent.get(topic)
         if callbacks is None:
             return
         if callback in callbacks:
             callbacks.remove(callback)
-        if not callbacks:
-            self._persistent.pop(topic, None)
-            if self._client is None:
-                # Teardown path: with no client there is nothing to
-                # unsubscribe from. Deliberately NOT a reconnect --
-                # rebuilding a connection purely to tear it down again
-                # would be absurd, and this runs from finally-blocks
-                # where raising would mask the original error.
-                return
-            self._client.unsubscribe(topic)
+        if callbacks:
+            return
+        self._persistent.pop(topic, None)
+        # A SUBSCRIBE still waiting is left to finish (see _inflight).
+        self._subscribe_tasks.pop(topic, None)
+        if self._client is None or not self._connected:
+            # Nothing to unsubscribe from. Deliberately NOT a reconnect --
+            # rebuilding a connection purely to tear it down again would
+            # be absurd.
+            return
+        try:
+            await self._client.unsubscribe(topic, timeout=3.0)
+        except MqttError as exc:
+            _LOGGER.debug("roombapy-prime: unsubscribe from %s not confirmed -- %s", topic, exc)
 
-    def get_shadow(self, named: str | None = None, timeout: float = 8.0) -> ShadowResponse:
+    async def _request(
+        self,
+        base: str,
+        request: str,
+        payload: str | bytes,
+        answers: tuple[str, ...],
+        timeout: float,
+        *,
+        subscribe_every_time: bool,
+    ) -> ShadowResponse:
+        """One shadow request: register for the answers, subscribe,
+        publish, wait for the first answer. Caller holds the lock."""
+        if not self._connected:
+            await self.reconnect(timeout=timeout)
+        loop = asyncio.get_running_loop()
+        answered: asyncio.Future[ShadowResponse] = loop.create_future()
+
+        def _capture(resp: ShadowResponse) -> None:
+            if not answered.done():
+                answered.set_result(resp)
+
+        topics = []
+        for suffix in answers:
+            topic = f"{base}/{suffix}"
+            self._pending.setdefault(topic, []).append(_capture)
+            topics.append(topic)
+        try:
+            if subscribe_every_time:
+                await self._subscribe_and_wait(topics)
+            else:
+                # ONLY SUBSCRIBE TO WHAT IS NOT ALREADY SUBSCRIBED.
+                # @DaRealGuGu's second `rw-settings` read in one session
+                # re-subscribed to topics the broker had already granted,
+                # got no SUBACK, and then no answer -- while the first read
+                # had worked. Deleting the redundant step, not retrying it.
+                fresh = [t for t in topics if t not in self._subscribed_topics]
+                if fresh:
+                    session = self._client
+                    await self._subscribe_and_wait(fresh)
+                    # Only for the connection that granted them.
+                    if self._client is session and self._connected:
+                        self._subscribed_topics.update(fresh)
+            # THE PUBLISH IS CONFIRMED, not fired and forgotten: a request
+            # that never left and a robot with no such shadow otherwise
+            # look the same. An answer that arrived anyway wins.
+            try:
+                await self._publish(f"{base}/{request}", payload)
+            except ShadowError:
+                if not answered.done():
+                    raise
+            try:
+                return await asyncio.wait_for(asyncio.shield(answered), timeout=timeout)
+            except TimeoutError:
+                raise ShadowError(
+                    f"No response to {request.upper()} on {base} within {timeout}s",
+                    reason=CloudErrorReason.TIMEOUT,
+                ) from None
+        finally:
+            # Whatever did not answer stops waiting. The other answer
+            # topics of this request keep no stale waiter behind.
+            for topic in topics:
+                waiters = self._pending.get(topic)
+                if waiters and _capture in waiters:
+                    waiters.remove(_capture)
+                    if not waiters:
+                        self._pending.pop(topic, None)
+
+    async def get_shadow(self, named: str | None = None, timeout: float = 8.0) -> ShadowResponse:
         """Fetch current shadow state. named=None for the classic/unnamed
         shadow (confirmed working on all tested tiers so far); pass a
         specific name (e.g. "rw-settings") to try a named shadow — only
@@ -1551,77 +1760,19 @@ class PrimeMqttClient:
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#mqtt_clientget_shadow
     """
-        with self._client_lock:
-            if not self._connected:
-                self.reconnect(timeout=timeout)
+        async with self._lock:
             base = _shadow_base(self._blid, named)
-            result: list[ShadowResponse] = []
-
-            def _capture(resp: ShadowResponse) -> None:
-                result.append(resp)
-
-            if self._client is None:  # pragma: no cover - reconnect() guarantees this
-                raise ShadowError(
-                    "Connection unavailable after reconnect", reason=CloudErrorReason.CONNECTION_FAILED
-                )
-            topics = []
-            for suffix in ("get/accepted", "get/rejected"):
-                topic = f"{base}/{suffix}"
-                self._pending.setdefault(topic, []).append(_capture)
-                topics.append(topic)
-
-            # ONLY SUBSCRIBE TO WHAT IS NOT ALREADY SUBSCRIBED.
-            #
-            # This subscribed on EVERY call and never unsubscribed, so a
-            # second read of the same shadow in one session re-subscribed
-            # to topics the broker had already granted -- work that
-            # contributes nothing and can still fail.
-            #
-            # It did fail: @DaRealGuGu's second `rw-settings` read got no
-            # SUBACK within three seconds and then no response within
-            # eight, while the first read in the same session had worked.
-            #
-            # Removing the redundant call is not a retry and not a
-            # heuristic -- it deletes a step rather than catching it. And
-            # it keeps the SUBACK guard meaningful for the first
-            # subscription, where an unacknowledged one really does mean
-            # a topic that will deliver nothing.
-            fresh = [t for t in topics if t not in self._subscribed_topics]
-            if fresh:
-                self._subscribe_and_wait(fresh)
-                self._subscribed_topics.update(fresh)
-            # THE PUBLISH IS CONFIRMED, not fired and forgotten.
-            #
-            # `publish()` returns a result code and a handle, and this
-            # ignored both. A queued-but-unsent request produces exactly
-            # the symptom @DaRealGuGu reported: no answer within eight
-            # seconds, no error, nothing to distinguish "the robot has no
-            # such shadow" from "we never asked".
-            #
-            # This is the same class of gap b12 closed for `subscribe`.
-            # It was closed there and left open here, three lines apart.
-            _publish_confirmed(
-                self._client.publish(f"{base}/get", payload=b"", qos=1),
-                f"{base}/get",
-                disconnect_reason=self._disconnect_reason,
+            response = await self._request(
+                base, "get", b"", ("get/accepted", "get/rejected"), timeout,
+                subscribe_every_time=False,
             )
-
-            waited = 0.0
-            while waited < timeout and not result:
-                time.sleep(0.2)
-                waited += 0.2
-            if not result:
-                raise ShadowError(
-                    f"No response to GET on {base} within {timeout}s", reason=CloudErrorReason.TIMEOUT
-                )
-            response = result[0]
             if response.topic.endswith("/get/rejected"):
                 raise ShadowError(
                     f"GET rejected: {response.payload}", reason=CloudErrorReason.SHADOW_REJECTED
                 )
             return response
 
-    def update_shadow(
+    async def update_shadow(
         self, desired: dict[str, Any], named: str | None = None, timeout: float = 8.0
     ) -> ShadowResponse:
         """Set desired state. Confirmed to actually propagate to the
@@ -1632,42 +1783,15 @@ class PrimeMqttClient:
         but gives you no way to confirm actual delivery — use a genuinely
         different, restorable value if you need to verify delivery.
 
-        NEW: now runs under self._client_lock, see get_shadow()'s
-        docstring for the tradeoff. NEW (this session): also reconnects
-        first if the connection is currently known to be down -- same
-        reasoning as get_shadow()'s own entry in docs/internal/EVIDENCE_TRAIL.md."""
-        with self._client_lock:
-            if not self._connected:
-                self.reconnect(timeout=timeout)
+        Reconnects first if the connection is known to be down, and
+        runs under the same lock as get_shadow() and replace_token()."""
+        async with self._lock:
             base = _shadow_base(self._blid, named)
-            result: list[ShadowResponse] = []
-
-            def _capture(resp: ShadowResponse) -> None:
-                result.append(resp)
-
-            if self._client is None:  # pragma: no cover - reconnect() guarantees this
-                raise ShadowError(
-                    "Connection unavailable after reconnect", reason=CloudErrorReason.CONNECTION_FAILED
-                )
-            topics = []
-            for suffix in ("update/accepted", "update/rejected", "update/delta"):
-                topic = f"{base}/{suffix}"
-                self._pending.setdefault(topic, []).append(_capture)
-                topics.append(topic)
-            self._subscribe_and_wait(topics)
-            self._client.publish(
-                f"{base}/update", payload=json.dumps({"state": {"desired": desired}}), qos=1
+            response = await self._request(
+                base, "update", json.dumps({"state": {"desired": desired}}),
+                ("update/accepted", "update/rejected", "update/delta"), timeout,
+                subscribe_every_time=True,
             )
-
-            waited = 0.0
-            while waited < timeout and not result:
-                time.sleep(0.2)
-                waited += 0.2
-            if not result:
-                raise ShadowError(
-                    f"No response to UPDATE on {base} within {timeout}s", reason=CloudErrorReason.TIMEOUT
-                )
-            response = result[0]
             if response.topic.endswith("/update/rejected"):
                 raise ShadowError(
                     f"UPDATE rejected: {response.payload}", reason=CloudErrorReason.SHADOW_REJECTED
