@@ -1,7 +1,7 @@
 [project]
 name = "roombapy-prime"
 authors = [{ name = "Jean-Christoph" }]
-version = "0.5.0b2"
+version = "0.5.0"
 description = "Async client for iRobot's cloud, both robot generations — Prime/V4 over cloud MQTT and REST, Classic cloud REST (maps, mission history, part counters); confirmed against real hardware"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -56,7 +56,7 @@ tools = [
     #
     # The pin keeps the pair in step: the tools import from this library
     # and the two are released together from one tag.
-    "roombapy-prime-tools>=0.5.0b2",
+    "roombapy-prime-tools>=0.5.0",
 ]
 
 [build-system]

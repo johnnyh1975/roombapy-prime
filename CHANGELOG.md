@@ -6,6 +6,16 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.5.0] - 2026-10-05
+
+The first stable release of the 0.5 line. The code is 0.5.0b2's,
+unchanged; this entry only marks the release. What changed since 0.4.0
+is in the two beta entries below: the MQTT connection on aiomqtt and the
+event loop instead of paho on its own thread, watchers that get through
+a dropped connection reliably, `disconnect()` that stays closed, and one
+login for every Prime robot of an account. Summary for upgraders:
+`release-notes/v0.5.0.md`.
+
 ## [0.5.0b2] - 2026-10-01
 
 ### Changed
