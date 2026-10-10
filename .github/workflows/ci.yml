@@ -42,6 +42,12 @@ jobs:
       - name: Check for stale files from a previous layout
         run: python scripts/check_stale_files.py
 
+      # In CI since 0.6.0. It existed from 0.3.0 and was run by hand,
+      # which is how 0.5.0 shipped with it failing on an enum nobody
+      # had declared.
+      - name: Check every value set against the vendor's
+        run: python scripts/check_vendor_value_sets.py
+
       - name: Run test suite with coverage
         run: |
           pytest roombapy_prime/tests/ -v --cov=roombapy_prime --cov-report=term-missing --cov-report=html --cov-report=xml
