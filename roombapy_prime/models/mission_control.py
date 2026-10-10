@@ -1129,10 +1129,9 @@ class CarpetBoostSettings(IntEnum):
 
 @dataclass(frozen=True)
 class CommandParams:
-    """39 fields, matching CommandParams's actual field count
-    (docstring previously said 37 -- stale by two fields,
-    no_auto_passes/routine_type were added in later sessions via real
-    observed data and this count was never updated), each optional
+    """43 fields since app 3.2.0 added sealForce and spray. The count
+    here said 39 until 0.6.0 while there were 41, and 37 before that,
+    so it is checked by a test now rather than kept by hand. Each optional
     (boxed Integer/Boolean in Kotlin = all nullable). This is the
     complete parameter surface for a mission command -- covers
     suction power (suctionLevel), pad wetness (padWetness), carpet
@@ -1159,11 +1158,23 @@ class CommandParams:
     #: `CommandParamsDTO`, both absent from 2.2.4 and therefore from
     #: this model until the 3.0 analysis listed them.
     #:
-    #: Their VALUES are unknown. Integer per the DTO, and nothing here
-    #: guesses at a range: a caller that has a value from a capture can
-    #: pass it, and one that does not sends nothing.
+    #: Their VALUES ARE 0 AND 1, known since the 3.2.0 analysis read
+    #: the mapper rather than the DTO: the app holds a Boolean and puts
+    #: it on the wire through `toOptionalInt` (false -> 0, true -> 1),
+    #: as it does `heatedWater`. Integer here, as on the wire.
+    #: `quiet` exists only for the whole mission; a region carries
+    #: `edgeOnly` but not `quiet`.
     edge_only: int | None = None
     quiet: int | None = None
+    #: `sealForce` and `spray` -- NEW IN APP 3.2.0, in both
+    #: `CommandParamsDTO` and `RegionParamsDTO`, 0/1 like the two above.
+    #:
+    #: SEALFORCE IS A MISSION PARAMETER, NOT A SETTING. There is no
+    #: rw-settings key for it; the app sets it per cleaning plan
+    #: (`cap.sealForce` says whether the robot has it). `spray` is the
+    #: water-spray counterpart (`cap.waterSpray`).
+    seal_force: int | None = None
+    spray: int | None = None
     manual_update: bool | None = None
     monitor_mode: int | None = None
     no_koz: int | None = None
@@ -1300,6 +1311,8 @@ class CommandParams:
             "heatedWater": self.heated_water,
             "edgeOnly": self.edge_only,
             "quiet": self.quiet,
+            "sealForce": self.seal_force,
+            "spray": self.spray,
             "manUpd": self.manual_update,
             "monitor_mode": self.monitor_mode,
             "noKOZ": self.no_koz,
@@ -1363,6 +1376,8 @@ class CommandParams:
             heated_water=data.get("heatedWater"),
             edge_only=data.get("edgeOnly"),
             quiet=data.get("quiet"),
+            seal_force=data.get("sealForce"),
+            spray=data.get("spray"),
             manual_update=data.get("manUpd"),
             monitor_mode=data.get("monitor_mode"),
             no_koz=data.get("noKOZ"),

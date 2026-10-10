@@ -803,12 +803,25 @@ class RobotSerialInfo:
 class RobotPart:
     """Confirmed (real live response): part_id, counter,
     minutes_remaining (-1 if not time-based), last_updated_ts
-    (optional, not present for every part), count_type (e.g.
-    "combo_missions", "pad_washes_used", "minutes", "evacs"),
-    count_remaining, count_used, counter_category ("replacement"/
-    "maintenance"), reset_by ("user"/"cloud")."""
+    (optional, not present for every part), count_type,
+    count_remaining, count_used, counter_category, reset_by.
 
-    part_id: str
+    THE VALUE SETS ARE THE PRIME APP'S (3.2.0 enums), kept as strings so
+    a value the app does not know yet still arrives:
+
+    - `count_type` (`AssetHealthCountType`): "minutes", "missions",
+      "combo_missions", "evacs", "pad_washes_used", "sqft", "battery".
+      The app turns minutes into hours and shows no remaining-count text
+      at all for "battery".
+    - `counter_category` (`AssetHealthCounterCategory`): "replacement"
+      or "maintenance" -- whether confirming the part means it was
+      replaced or cleaned. Both are the same reset.
+    - `reset_by` (`AssetHealthResetBy`): "user" or "auto". This said
+      "cloud"; the app has no such value.
+    - `counter` is percent used, and the app clamps it to 0-100 before
+      drawing it. It is passed on unclamped here."""
+
+    part_id: str = ""
     counter: int | None = None
     minutes_remaining: int | None = None
     last_updated_ts: int | None = None
@@ -853,6 +866,106 @@ class RobotPartsInfo:
             num_parts=data.get("num_parts"),
             parts=[RobotPart.from_json(p) for p in (data.get("parts") or [])],
         )
+
+
+@dataclass(frozen=True)
+class CatalogPart:
+    """One part of a model, from the parts catalogue (NEW in 0.6.0, see
+    rest_client.py::get_parts_catalog()).
+
+    WHAT THE CATALOGUE ADDS TO THE COUNTERS. get_robot_parts() says how
+    worn a part is and nothing else: no name, no care guide, no link to
+    a replacement. This is the other half, per model rather than per
+    robot, and joined on `part_id`.
+
+    THE FIELDS, AND HOW SURE EACH IS. The app's `AssetPartDto` declares
+    seven: part_id, part_name, robot_health_image,
+    robot_health_description_id, buy_url, guide_url and, since app
+    3.2.0, counter_enabled. The rest are what the live catalogue
+    returned for six models (R980020, i715020, j715020, s955020,
+    e515020, R690020): the app reads none of them, and they are kept
+    because they are what a caller wants -- `sku` carries the
+    replacement part numbers, `*_text_id` the interval keys.
+
+    `counter_enabled` was absent from all six answers. False, where it
+    arrives, says the cloud keeps no counter for the part, which is the
+    likeliest reading of a counter that never moves.
+
+    Text fields are keys or links, not prose: `part_name_id`,
+    `*_text_id` and `robot_health_description_id` name strings in the
+    app's own language packs, and `image` is an identifier, not a URL.
+    `clean_interval` and `replace_interval` arrived empty in every
+    answer."""
+
+    part_id: str
+    part_name: str | None = None
+    part_name_id: str | None = None
+    sku: str | None = None
+    clean_interval: str | None = None
+    clean_interval_text_id: str | None = None
+    replace_interval: str | None = None
+    replace_interval_text_id: str | None = None
+    image: str | None = None
+    guide_url: str | None = None
+    buy_url: str | None = None
+    robot_health_image: str | None = None
+    robot_health_description_id: str | None = None
+    scripted_id: str | None = None
+    part_category: str | None = None
+    counter_enabled: bool | None = None
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CatalogPart:
+        if not isinstance(data, dict):
+            return cls(part_id="")
+        return cls(
+            # A null id is no id, not the string "None".
+            part_id="" if data.get("part_id") is None else str(data["part_id"]),
+            part_name=data.get("part_name"),
+            part_name_id=data.get("part_name_id"),
+            sku=data.get("sku"),
+            clean_interval=data.get("clean_interval"),
+            clean_interval_text_id=data.get("clean_interval_text_id"),
+            replace_interval=data.get("replace_interval"),
+            replace_interval_text_id=data.get("replace_interval_text_id"),
+            image=data.get("image"),
+            guide_url=data.get("guide_url"),
+            buy_url=data.get("buy_url"),
+            robot_health_image=data.get("robot_health_image"),
+            robot_health_description_id=data.get("robot_health_description_id"),
+            scripted_id=data.get("scripted_ID"),
+            part_category=data.get("part_category"),
+            counter_enabled=data.get("counter_enabled"),
+        )
+
+
+@dataclass(frozen=True)
+class PartsCatalog:
+    """The parts catalogue for one model (NEW in 0.6.0): a shop link for
+    the model and its parts. `buyPartsUrl` and `parts`, as the app's
+    `AssetPartsDto` declares and the live catalogue returned."""
+
+    buy_parts_url: str | None = None
+    parts: list[CatalogPart] = field(default_factory=list)
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> PartsCatalog:
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            buy_parts_url=data.get("buyPartsUrl"),
+            parts=[
+                CatalogPart.from_json(p)
+                for p in (data.get("parts") or [])
+                if isinstance(p, dict)
+            ],
+        )
+
+    def part(self, part_id: str | int) -> CatalogPart | None:
+        """The entry for a counter's `part_id`, or None. Part ids are
+        numbered per model, so join a robot's counters only against its
+        own model's catalogue."""
+        return next((p for p in self.parts if p.part_id == str(part_id)), None)
 
 
 @dataclass(frozen=True)
@@ -1199,6 +1312,25 @@ class RobotSettings:
     #: value: readiness before a mission, and the only percentage-based
     #: consumable figure anywhere in this library.
     pad_wash_heat: int | None = None
+    #: THREE SETTINGS NEW IN APP 3.2.0, each a writable rw-settings key
+    #: with a ShadowField of its own (`SprayModeShadowField`,
+    #: `DryDModeShadowField`, `SanitizationModeShadowField`, shadow
+    #: SETTINGS, kind Writing, type Integer). Values: SprayMode,
+    #: DryDebrisMode and SanitizationMode below; write them with
+    #: set_setting(key, int).
+    #:
+    #:   sprayMode         AI stain detection: ignore, avoid, clean
+    #:   dryDMode          AI dirt detection: vacuum normally or boost
+    #:   sanitizationMode  sanitising tablet; the app says it applies
+    #:                     to ONE cleaning run and switches itself off
+    #:
+    #: Gating is not linked in the app's Kotlin; the Dart settings sit
+    #: next to `cap.waterSpray`, `cap.dryDMode` and `cap.sanitize` +
+    #: `digiCap.sanitizeTabs` (CapabilityFlags, DigiCap) -- an inference
+    #: from placement, not a confirmed gate.
+    spray_mode: int | None = None
+    dry_debris_mode: int | None = None
+    sanitization_mode: int | None = None
     precheck: PrecheckStatus | None = None
     filter_pack: FilterPackStatus | None = None
     cut_height: CutHeightStatus | None = None
@@ -1260,6 +1392,9 @@ class RobotSettings:
             vac_high=data.get("vacHigh"),
             languages_raw=data.get("langs2"),
             pad_wash_heat=data.get("pwHeat"),
+            spray_mode=data.get("sprayMode"),
+            dry_debris_mode=data.get("dryDMode"),
+            sanitization_mode=data.get("sanitizationMode"),
             precheck=(
                 PrecheckStatus.from_json(data["precheck"])
                 if isinstance(data.get("precheck"), dict)
@@ -1442,6 +1577,10 @@ class DigiCap:
     rendering_3d_maps: Any | None = None
     #: `digiCap.smartClean` -- Smart Clean.
     smart_clean: Any | None = None
+    #: `digiCap.sanitizeTabs` -- NEW IN APP 3.2.0, a Boolean
+    #: (`SanitizeTabsShadowField`): sanitising tablets are available.
+    #: Read with `cap.sanitize` before offering `sanitizationMode`.
+    sanitize_tabs: bool | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> DigiCap:
@@ -1460,6 +1599,7 @@ class DigiCap:
             keep_out_zone_recommendations=data.get("kozRecommendations"),
             rendering_3d_maps=data.get("perspective3DMap"),
             smart_clean=data.get("smartClean"),
+            sanitize_tabs=data.get("sanitizeTabs"),
         )
 
 
@@ -1558,6 +1698,25 @@ class CapabilityFlags:
     map_max: int | None = None
     p2maps: int | None = None
     sa_sku: int | None = None
+    #: FIVE CAPABILITIES NEW IN APP 3.2.0, all Integer, all in the
+    #: THING shadow's `cap` (`SealForceShadowField`, `WaterSprayShadowField`,
+    #: `DryDebrisModeShadowField`, `SanitizeShadowField`,
+    #: `DefaultCapabilitiesShadowField`). The app treats 1 as
+    #: supported and anything else as not.
+    #:
+    #:   sealForce  the SealForce carpet mode -- a MISSION parameter
+    #:              (CommandParams.seal_force), not a setting
+    #:   waterSpray water spraying, and with it `sprayMode` and the
+    #:              `spray` mission parameter
+    #:   dryDMode   AI dirt detection (`dryDMode` setting)
+    #:   sanitize   sanitising tablets (`sanitizationMode` setting)
+    #:   defCaps    1 = IN_USE; "default capabilities active" is the
+    #:              class name's reading, not a confirmed meaning
+    seal_force: int | None = None
+    water_spray: int | None = None
+    dry_debris_mode: int | None = None
+    sanitize: int | None = None
+    default_capabilities: int | None = None
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CapabilityFlags:
@@ -1607,6 +1766,11 @@ class CapabilityFlags:
             map_max=data.get("mapMax"),
             p2maps=data.get("p2maps"),
             sa_sku=data.get("saSku"),
+            seal_force=data.get("sealForce"),
+            water_spray=data.get("waterSpray"),
+            dry_debris_mode=data.get("dryDMode"),
+            sanitize=data.get("sanitize"),
+            default_capabilities=data.get("defCaps"),
         )
 
 
@@ -2362,12 +2526,20 @@ class DockPadWashing(IntEnum):
     THIS ONE GATES A SETTING. `pwHeat` accepts `HeatType` 0/1/2, but
     only a level-3 dock can produce high heat and only level 2 and above
     can heat at all. chairstacker's dock reads 1, which is why his robot
-    has no `pwHeat` key at all."""
+    has no `pwHeat` key at all.
+
+    LEVEL 4 SINCE APP 3.2.0, `deepHotWaterWashSupported`. For `pwHeat`
+    it is a level-3 dock: 3.2.0's heat screen offers noHeat, defaultHeat
+    and highHeat from level 3 up, and nothing more at 4. 3.2.0 also adds
+    `HeatType.deepHeat` = 3, but only as a label -- the same screen
+    names highHeat "deep heat" on R10 and X10 models -- and offers 3 on
+    no dock."""
 
     NOT_SUPPORTED = 0
     SUPPORTED = 1
     HEATED = 2
     HIGH_HEAT = 3
+    DEEP_HOT_WATER_WASH = 4
 
 
 class DockPadWetOut(IntEnum):
@@ -2398,6 +2570,39 @@ class DockDetergent(IntEnum):
 
     NOT_AVAILABLE = 0
     CONTROLLABLE = 1
+
+
+class SprayMode(IntEnum):
+    """`sprayMode` (app 3.2.0, `SprayModeOption`): AI stain detection.
+
+    Names are the Dart enum's; the Kotlin side calls the same values
+    IgnoreStain, AvoidStain and TackleStain and reads anything else as
+    Unknown. The app's labels: ignore, avoid, clean the stain."""
+
+    IGNORE = 0
+    AVOID = 1
+    CLEAN = 2
+
+
+class DryDebrisMode(IntEnum):
+    """`dryDMode` (app 3.2.0, `DryDModeOption`): AI dirt detection.
+
+    1 is "vacuum with boost" in the app's words -- `BoostMode` in
+    Kotlin, `enabled` in Dart."""
+
+    DISABLED = 0
+    BOOST = 1
+
+
+class SanitizationMode(IntEnum):
+    """`sanitizationMode` (app 3.2.0, `SanitizationModeSetting`).
+
+    The app applies it to one cleaning run, after which it switches
+    itself off; a caller showing it as a lasting switch shows it
+    wrongly once that run has ended."""
+
+    DISABLED = 0
+    ENABLED = 1
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,6 @@
 {
  "_index_based": [
+  "AccessibilityFocusBlockType",
   "ActionMode",
   "ActionPaneType",
   "AndroidOverscrollIndicator",
@@ -10,15 +11,12 @@
   "AppSettingsType",
   "AppType",
   "AppUpdatePromptType",
-  "AreaCleanTargetKind",
   "AssetHealthCountType",
   "AssetHealthCounterCategory",
   "AssetHealthResetBy",
-  "AssetType",
   "AutoEvacType",
   "Axis",
   "AxisDirection",
-  "BatteryPowerLevel",
   "BlendMode",
   "BluetoothAdapterState",
   "BmAdapterStateEnum",
@@ -30,25 +28,29 @@
   "BoxShape",
   "BoxWidthStyle",
   "Brightness",
+  "BuildMapSyncApplyResult",
+  "BuildMapSyncStage",
   "ButtonShape",
   "ButtonSize",
   "ButtonType",
-  "CacheExtentStyle",
+  "ByteOrder",
   "CancelType",
   "Category",
   "CleanMode",
   "CleanModePreset",
   "CleanPanelDropdownExpandDirection",
-  "CleanPlanSection",
   "CleanRecordMapState",
+  "CleanTaskFallbackTitleKind",
   "CleaningNavigationType",
   "CleaningProfileType",
   "Clip",
   "ClipboardStatus",
   "ColorSpace",
+  "CompressionType",
   "ConnectionState",
   "ConnectionStatusApplyAction",
   "ConnectivityResult",
+  "ConsumableKind",
   "ContextMenuButtonType",
   "CountPanelType",
   "CrossAxisAlignment",
@@ -58,6 +60,7 @@
   "DeploymentStateError",
   "DeviceConfigSupportLoadState",
   "DeviceControlTipStatus",
+  "DeviceOrientation",
   "DeviceRenameSaveResult",
   "DiagnosticLevel",
   "DismissDirection",
@@ -76,6 +79,7 @@
   "EasyLoadingStyle",
   "EasyLoadingToastPosition",
   "EmojiPickerItem",
+  "EstimateKind",
   "ExrChannelName",
   "ExrChannelType",
   "ExrCompressorType",
@@ -85,6 +89,7 @@
   "FeedbackGroup",
   "FilterQuality",
   "FlexFit",
+  "FloatBottomAction",
   "FloatBottomCleanPlan",
   "FloatBottomCleanState",
   "FloatBottomModeState",
@@ -110,8 +115,20 @@
   "HeroFlightDirection",
   "HitTestBehavior",
   "HomeCleanPlanTabBlockedReason",
+  "HomeCleanTargetMapContextTrust",
+  "HomeCleanTargetRoomLayoutEvent",
+  "HomeMapLiveRenderSource",
+  "HomeRoutineIntentKind",
   "HomeRoutineUnsupportedReason",
+  "HomeShellPhase",
+  "HomeTargetHotCatalogBootstrapAction",
   "HomeTaskActionSlot",
+  "HomeTempAreaEditBoundary",
+  "HomeTempAreaEditEffect",
+  "HomeTempAreaEditPhase",
+  "HomeTempAreaExitIntent",
+  "HomeTempAreaForcedAbortRequestKind",
+  "HomeTempAreaValidation",
   "HouseHoldSummarySettingPageType",
   "HttpClientResponseCompressionState",
   "IRobotCloudService",
@@ -119,15 +136,17 @@
   "IcoType",
   "IfdValueType",
   "ImageByteFormat",
+  "InputLengthCountMode",
   "Interpolation",
+  "IrobotAreaOverlayParseTargetSource",
+  "IrobotBuildMapExitDisposition",
   "IrobotBuildMapRuntimeState",
   "IrobotDockTaskType",
   "IrobotGeometryError",
-  "IrobotHomeStatusCapsuleTone",
   "IrobotOperatingModeSource",
   "IrobotP2MapRoomTypeSource",
   "IrobotP2MapRoomTypeValue",
-  "IrobotPointCleanSessionState",
+  "IrobotSkipCommandDecision",
   "Justification",
   "KeyDataTransitMode",
   "KeyEventResult",
@@ -152,6 +171,8 @@
   "MapAndControlSectionStatus",
   "MapAreaEditState",
   "MapAreaEditType",
+  "MapCenterRegionSource",
+  "MapCenterRegionType",
   "MapEditElementActionType",
   "MapEditSplitStatus",
   "MapEditTipType",
@@ -159,6 +180,7 @@
   "MapElementType",
   "MapFloorEditType",
   "MapGestureType",
+  "MapHitElementType",
   "MapLayerEnum",
   "MapLayerType",
   "MapListItemDownloadStatus",
@@ -166,12 +188,15 @@
   "MapMoveEditState",
   "MapRenderGraphFollowType",
   "MapRenderGraphImageSourceType",
+  "MapRenderGraphRawPixelFormat",
   "MapRenderGraphType",
   "MapRenderNodeGroupType",
   "MapTabEditType",
   "MapThreeWallEditDirectionType",
   "MapThreeWallEditWarnType",
   "MapVerifyResult",
+  "MappingFeaturesUpdateResult",
+  "MappingFeaturesUpdateStatus",
   "MaskMode",
   "MaterialTapTargetSize",
   "MaterialType",
@@ -182,29 +207,23 @@
   "MineMallLoadState",
   "MineSupportLoadState",
   "MiniMapEditType",
-  "MissionCommandType",
   "MissionCycle",
   "MissionPhase",
-  "MissionRegionType",
+  "MissionTransitionKind",
   "ModifierKey",
   "MultiPassType",
   "MultitouchDragStrategy",
   "NavigationMode",
   "NewMapPickerStatus",
-  "NewRoutineChooseRoomDetailTab",
-  "NewRoutineMapMode",
   "ObstacleType",
+  "OrderScheduleBuildFailure",
   "Orientation",
   "OtaPriority",
+  "OverlayChildLocation",
   "P2MapEditingErrorCode",
   "P2MapFloorPlanSegmentType",
-  "PMDarwinAssetCollectionSubtype",
-  "PMDarwinAssetCollectionType",
-  "PMOhosAlbumSubtype",
-  "PMOhosAlbumType",
   "PaintingStyle",
   "PathFillType",
-  "PermissionState",
   "PermissionStatus",
   "PlatformViewHitTestBehavior",
   "PluralCase",
@@ -216,9 +235,11 @@
   "PointerDeviceKind",
   "PointerSignalKind",
   "PreferredLaunchMode",
+  "ProvisioningBleReadiness",
   "ProvisioningFailureType",
   "PsdColorMode",
   "RecentTabBehavior",
+  "RegionKind",
   "RegionType",
   "RenderAnimatedSizeState",
   "RenderComparison",
@@ -230,12 +251,15 @@
   "RobotTimelineTimeDisplayType",
   "RobotTimelineType",
   "RoomEditControlType",
+  "RoomEditSchemaSaveError",
   "RoomRenameSheetContent",
   "RoundedButtonStyle",
   "RouteChangeType",
   "RoutePopDisposition",
   "RoutineType",
+  "SSIDListFetchStatus",
   "SchedulerPhase",
+  "SchemaSetResult",
   "ScriptCategory",
   "ScrollDecelerationRate",
   "ScrollDirection",
@@ -245,9 +269,11 @@
   "ScrubSupport",
   "SecureWebViewCachePolicy",
   "SecureWebViewEventType",
+  "SecureWebViewRequestMetadataPolicy",
   "SecureWebViewRequestPolicy",
   "SecureWebViewUserAgentPolicy",
   "SelectionChangedCause",
+  "SemanticsHitTestBehavior",
   "SemanticsInputType",
   "SemanticsRole",
   "SemanticsValidationResult",
@@ -268,9 +294,10 @@
   "StartedType",
   "StrokeCap",
   "StrokeJoin",
-  "SubEventName",
+  "SurveyIncidentType",
   "SwipeEdge",
   "SystemSoundType",
+  "SystemUiMode",
   "SystemUiOverlay",
   "TabAlignment",
   "TabBarIndicatorSize",
@@ -291,6 +318,7 @@
   "TiffFormat",
   "TiffImageType",
   "TiffPhotometricType",
+  "TimelineMissionIdentityComparison",
   "ToastPosition",
   "Token",
   "TonePolarity",
@@ -312,16 +340,14 @@
   "WrapAlignment",
   "WrapCrossAlignment",
   "XmlNodeType",
+  "ZipEncryptionMode",
   "_AndroidViewState",
   "_AnimationDirection",
   "_AuthenticationScheme",
-  "_BuildMapSyncApplyResult",
-  "_BuildMapSyncStage",
   "_CleanPathRenderGroup",
   "_ConditionOp",
   "_CupertinoTextSelectionToolbarItemsSlot",
   "_DecorationSlot",
-  "_DetailCustomizeTab",
   "_DockMapState",
   "_DragDirection",
   "_DragState",
@@ -330,32 +356,32 @@
   "_ForceState",
   "_GlowState",
   "_HighlightType",
-  "_HomeBottomUiMode",
+  "_HomeMapRenderOwnerKind",
   "_IntrinsicDimension",
-  "_IrobotCleanPanelTab",
-  "_IrobotEstimateOperatingModeFamily",
-  "_IrobotMissionEstimateTargetKind",
   "_IrobotStationTaskType",
   "_ListTileSlot",
   "_MediaQueryAspect",
+  "_OperatingModeFamily",
   "_PlatformViewState",
+  "_PredictiveBackPhase",
+  "_ProvisioningFlowState",
   "_RouteLifecycle",
   "_RouteRestorationType",
   "_ScaffoldSlot",
   "_SheetMode",
   "_SliderAdjustmentType",
-  "_StretchDirection",
-  "_StretchState",
   "_TextSelectionToolbarItemPosition",
   "_ToolbarSlot",
   "_TrainHoppingMode",
+  "_WindowControllerAspect",
   "_WordWrapParseMode"
  ],
  "_note_index_based": "Enums listed in _index_based declare no separate value in the Dart snapshot; their ordinal is the wire value. Field-confirmed for the dock capabilities (dock.cap.pw = 1 = supported, pd = 2 = unheatedAir).",
  "_note_kotlin": "The Kotlin @SerialName enums are merged in alongside the Dart ones. They were missing at first, and three value sets in this library (HazardType, RoomType, ScheduleFrequency) have no Dart counterpart at all -- their only vendor source is this half of the extract.",
+ "_note_regeneration": "Regenerated on app 3.2.0 for 0.6.0, over the same scope as the 3.0.0 extract: the Dart enums the 3.0.0 extract carried, minus 34 that 3.2.0 no longer has (IrobotRegionType among them; the region kinds now live in MissionRegionType with their wire values), plus the 57 enums new in 3.2.0; the 26 Kotlin @SerialName enums; the 223 serialisers minus four that 3.2.0 dropped (DiscoveryResponse and two nested classes, FetchedUrlHolder) plus FabricDto and PushyDto. Value sets that differed from the 3.0.0 file only because that file was wrong are now right: Initiator.Google is 'google' and PerimeterState.ERROR is 'error' rather than the constant names the decompiler left. capability_gates keeps the 3.0.0 table and adds the four capabilities the Dart side gained (sealForce, waterSpray, dryDebrisMode, sanitize), each with its Kotlin shadow field. cap.defCaps and digiCap.sanitizeTabs exist only as Kotlin shadow fields in 3.2.0 and are not in this table. writable_settings adds sprayMode, dryDMode and sanitizationMode. sdk_models applies 3.2.0's field changes to the 3.0.0 lists and adds three new model files.",
  "_note_serializers": "223 Kotlin @Serializable classes with their wire keys, and 89 SDK model field lists. Added after a coverage measurement showed 62% and 60% respectively -- numbers nobody had, because the gap report only ever looked at enums. Most of the remainder is message centre, surveys and entitlements, which are app account features rather than robot protocol; the point of carrying the data is that the distinction is now made in writing instead of assumed.",
  "_purpose": "Machine-checkable vendor reference. Value sets, gates and wire values are asserted against this, not recalled.",
- "_source": "iRobot app 3.0.0, decoded Dart snapshot (blutter) plus Kotlin @SerialName extraction",
+ "_source": "iRobot app 3.2.0 (versionCode 3020012), decoded Dart snapshot (blutter) plus Kotlin @SerialName extraction",
  "capability_gates": {
   "appType": {
    "keyPath": "digiCap.appVer",
@@ -439,6 +465,12 @@
    "keyPath": "dock.cap.pwo",
    "shadow": "CURRENT_STATE",
    "shadowField": "DockPadWetOut",
+   "type": "Integer"
+  },
+  "dryDebrisMode": {
+   "keyPath": "cap.dryDMode",
+   "shadow": "THING",
+   "shadowField": "DryDebrisMode",
    "type": "Integer"
   },
   "furniture": {
@@ -543,10 +575,22 @@
    "shadowField": "Rendering3DMaps",
    "type": "Boolean"
   },
+  "sanitize": {
+   "keyPath": "cap.sanitize",
+   "shadow": "THING",
+   "shadowField": "Sanitize",
+   "type": "Integer"
+  },
   "scrub": {
    "keyPath": "cap.scrub",
    "shadow": "THING",
    "shadowField": "Scrub",
+   "type": "Integer"
+  },
+  "sealForce": {
+   "keyPath": "cap.sealForce",
+   "shadow": "THING",
+   "shadowField": "SealForce",
    "type": "Integer"
   },
   "smartClean": {
@@ -566,6 +610,12 @@
    "shadow": "THING",
    "shadowField": "Timeline",
    "type": "Boolean"
+  },
+  "waterSpray": {
+   "keyPath": "cap.waterSpray",
+   "shadow": "THING",
+   "shadowField": "WaterSpray",
+   "type": "Integer"
   }
  },
  "command_wire_values": {
@@ -591,6 +641,11 @@
   "WIPE": "wipe"
  },
  "enums": {
+  "AccessibilityFocusBlockType": {
+   "blockNode": 2,
+   "blockSubtree": 1,
+   "none": 0
+  },
   "ActionMode": {
    "broadcast": 0,
    "internal": 2
@@ -647,11 +702,6 @@
    "none": 0,
    "regular": 1
   },
-  "AreaCleanTargetKind": {
-   "furniture": 1,
-   "memoryArea": 0,
-   "tempArea": 2
-  },
   "AssetHealthCountType": {
    "battery": 4,
    "comboMissions": 2,
@@ -672,12 +722,6 @@
    "unknown": 2,
    "user": 0
   },
-  "AssetType": {
-   "audio": 3,
-   "image": 1,
-   "other": 0,
-   "video": 2
-  },
   "AutoEvacType": {
    "afterEveryMission": 0,
    "selectableScheme1": 1,
@@ -693,13 +737,6 @@
    "left": 3,
    "right": 1,
    "up": 0
-  },
-  "BatteryPowerLevel": {
-   "critical": 4,
-   "full": 0,
-   "high": 1,
-   "low": 3,
-   "medium": 2
   },
   "BlendMode": {
    "alpha": 1,
@@ -792,6 +829,20 @@
    "dark": 0,
    "light": 1
   },
+  "BuildMapSyncApplyResult": {
+   "applied": 0,
+   "invalidResolvedMapId": 2,
+   "mapDataMissing": 3,
+   "mapDisplayRejected": 6,
+   "sessionInvalidAfterContextFetch": 5,
+   "sessionInvalidAfterMapFetch": 4,
+   "sessionInvalidBeforeApply": 1
+  },
+  "BuildMapSyncStage": {
+   "persistentMapReady": 2,
+   "showingLiveMapDuringExplore": 0,
+   "waitingForPersistentMap": 1
+  },
   "ButtonShape": {
    "block": 2,
    "round": 1
@@ -804,9 +855,8 @@
    "empty": 1,
    "full": 0
   },
-  "CacheExtentStyle": {
-   "pixel": 0,
-   "viewport": 1
+  "ByteOrder": {
+   "littleEndian": 0
   },
   "CancelType": {
    "dock": 0,
@@ -824,12 +874,6 @@
    "pointClean": 1,
    "pointCleanWithHeatedWater": 2,
    "unsupported": 0
-  },
-  "CarpetCleanStyleType": {
-   "adaptive": 3,
-   "avoid": 1,
-   "ignore": 0,
-   "through": 2
   },
   "CarpetErrorScene": {
    "carpetCreate": "carpet_create",
@@ -859,6 +903,12 @@
    "overlapError": 2,
    "success": 0
   },
+  "CheckedState": {
+   "isFalse": 2,
+   "isTrue": 1,
+   "mixed": 3,
+   "none": 0
+  },
   "CleanMode": {
    "mopOnly": 2,
    "vacAndMop": 0,
@@ -887,16 +937,9 @@
    "fast": 2,
    "normal": 0
   },
-  "CleanPlanSection": {
-   "allHouse": 0,
-   "chooseRoom": 1,
-   "partZone": 2,
-   "steamZone": 3
-  },
   "CleanRecordMapState": {
    "empty": 1,
    "failure": 2,
-   "mapUploadClose": 4,
    "none": 0,
    "success": 3
   },
@@ -904,11 +947,12 @@
    "once": 0,
    "twice": 1
   },
-  "CleanSection": {
-   "allHouse": 1,
-   "chooseRoom": 2,
-   "partZone": 3,
-   "steamZone": 4
+  "CleanTaskFallbackTitleKind": {
+   "areaCleaning": 1,
+   "cleaning": 2,
+   "roomCleaning": 0,
+   "spot": 3,
+   "spray": 4
   },
   "CleanWaterLevel": {
    "few": 1,
@@ -1006,6 +1050,11 @@
    "washPad": "washPad",
    "wipe": "wipe"
   },
+  "CompressionType": {
+   "bzip2": 2,
+   "deflate": 1,
+   "none": 0
+  },
   "ConnectionState": {
    "active": 2,
    "done": 3,
@@ -1027,6 +1076,18 @@
    "satellite": 6,
    "vpn": 5,
    "wifi": 1
+  },
+  "ConsumableKind": {
+   "bag": 4,
+   "detergent": 5,
+   "dockWashingSystem": 7,
+   "filter": 0,
+   "mainBrush": 1,
+   "mopWashingSystem": 6,
+   "pad": 3,
+   "roller": 8,
+   "sensor": 9,
+   "sideBrush": 2
   },
   "ContextMenuButtonType": {
    "copy": 1,
@@ -1059,16 +1120,6 @@
   "CupertinoUserInterfaceLevelData": {
    "base": 0,
    "elevated": 1
-  },
-  "CustomCleanType": {
-   "aiClean": 3,
-   "allHouseCustom": 11,
-   "areaClean": 4,
-   "material": 2,
-   "normalClean": 0,
-   "roomChoose": 1,
-   "shortcutClean": 5,
-   "steamClean": 6
   },
   "DecorationPosition": {
    "background": 0,
@@ -1151,16 +1202,13 @@
    "unavailable": 2
   },
   "DeviceControlTipStatus": {
-   "airDryMop": 9,
    "backCharge": 5,
    "backToDust": 15,
    "backWashMop": 14,
    "brokenBackCharge": 17,
    "brokenCharging": 18,
-   "changeWater": 11,
    "createMap": 0,
    "createMapBackCharge": 6,
-   "cutHair": 12,
    "dryMop": 8,
    "dust": 7,
    "pause": 16,
@@ -1285,6 +1333,8 @@
   },
   "DeviceLanguageType": {
    "arabic": 19,
+   "armenian": 35,
+   "azerbaijani": 34,
    "chinese": 1,
    "chineseTW": 9,
    "czech": 15,
@@ -1301,6 +1351,7 @@
    "italian": 7,
    "japanese": 18,
    "korean": 11,
+   "mongolian": 33,
    "norwegian": 29,
    "polski": 6,
    "portugueseBR": 31,
@@ -1310,7 +1361,8 @@
    "spanish419": 26,
    "swedish": 30,
    "thai": 10,
-   "turkish": 12
+   "turkish": 12,
+   "ukrainian": 36
   },
   "DeviceNetworkStep": {
    "fail": 3,
@@ -1318,31 +1370,11 @@
    "success": 2,
    "wait": 0
   },
-  "DevicePropertyPrivacyKey": {
-   "aiLed": "ai_led",
-   "aiObstacleAvoidance": "ai_avoidance",
-   "aiRecognize": "ai_recognize",
-   "alongFloor": "along_floor",
-   "autoUpgrade": "auto_upgrade",
-   "carpetAdapt": "carpet_adapt",
-   "carpetAvoid": "carpet_avoid",
-   "carpetMethod": "carpet_method",
-   "carpetShow": "carpet_show",
-   "carpetTurbo": "carpet_turbo",
-   "dirtRecognize": "dirt_recognize",
-   "floorRecognition": "floor_recognition",
-   "largeParticleBoost": "large_particle_boost",
-   "liquidAndStubbornStain": "liquid_stubborn_stain",
-   "livePhoto": "live_photo",
-   "mapUploads": "map_uploads",
-   "petAreaDeep": "pet_area_deep",
-   "petAvoidance": "pet_avoidance",
-   "petRecognize": "pet_recognize",
-   "petSnap": "pet_snap",
-   "recordUploads": "record_uploads",
-   "speechRecognition": "speech_recognition",
-   "stationUploads": "station_uploads",
-   "waterRecognize": "ai_agent"
+  "DeviceOrientation": {
+   "landscapeLeft": 1,
+   "landscapeRight": 3,
+   "portraitDown": 2,
+   "portraitUp": 0
   },
   "DevicePropertyWorkTimeKey": {
    "surplus": "surplus",
@@ -1351,8 +1383,8 @@
   },
   "DeviceRenameSaveResult": {
    "failure": 1,
-   "success": 0,
-   "timeout": 2
+   "processing": 2,
+   "success": 0
   },
   "DiagnosticLevel": {
    "hint": 5,
@@ -1415,6 +1447,7 @@
    "unheatedAir": 2
   },
   "DockPadWashingType": {
+   "deepHotWaterWashSupported": 4,
    "heatedSupported": 2,
    "highHeatSupported": 3,
    "notSupported": 0,
@@ -1427,6 +1460,10 @@
   "DragStartBehavior": {
    "down": 0,
    "start": 1
+  },
+  "DryDModeOption": {
+   "disabled": 0,
+   "enabled": 1
   },
   "DryDurType": {
    "five": 5,
@@ -1484,6 +1521,11 @@
    "categoryBar": 0,
    "emojiView": 1,
    "searchBar": 2
+  },
+  "EstimateKind": {
+   "furniture": 2,
+   "room": 0,
+   "zone": 1
   },
   "ExrChannelName": {
    "alpha": 3,
@@ -1617,12 +1659,20 @@
    "loose": 1,
    "tight": 0
   },
+  "FloatBottomAction": {
+   "pauseClean": 3,
+   "resumeClean": 4,
+   "skipClean": 5,
+   "startClean": 2,
+   "stopClean": 6,
+   "stopReturningDock": 7,
+   "tapFavorite": 1,
+   "tapSchedule": 0
+  },
   "FloatBottomCleanPlan": {
-   "aiAuto": 0,
-   "allHouse": 1,
-   "chooseRoom": 2,
-   "partZone": 3,
-   "steamZone": 4
+   "global": 0,
+   "spot": 1,
+   "spray": 2
   },
   "FloatBottomCleanState": {
    "pause": 1,
@@ -1630,7 +1680,6 @@
    "start": 0
   },
   "FloatBottomModeState": {
-   "ai": 4,
    "custom": 5,
    "mop": 2,
    "prefer": 6,
@@ -1645,14 +1694,7 @@
    "stopBreakCharging": 3
   },
   "FloatTopAction": {
-   "addArea": 5,
-   "cleanAdd": 9,
-   "cleanSkip": 8,
-   "edgeClean": 6,
-   "mapEdit": 3,
-   "settings": 1,
-   "station": 2,
-   "videoManager": 4
+   "settings": 0
   },
   "FloatingCursorDragState": {
    "End": 2,
@@ -1836,6 +1878,7 @@
    "weighingScale": 15
   },
   "HeatType": {
+   "deepHeat": 3,
    "defaultHeat": 1,
    "highHeat": 2,
    "noHeat": 0
@@ -1854,21 +1897,35 @@
    "mapIdentityNotReady": 2,
    "mapLoading": 1,
    "none": 0,
-   "pageOverlayBlocking": 6,
-   "pointCleanTaskLocked": 4,
-   "regularTaskLatched": 7,
-   "sheetTopTabsCovered": 5
+   "pageOverlayBlocking": 5,
+   "regularTaskLatched": 6,
+   "sheetTopTabsCovered": 4
+  },
+  "HomeCleanTargetMapContextTrust": {
+   "cache": 0
+  },
+  "HomeCleanTargetRoomLayoutEvent": {
+   "mapSaved": 0,
+   "splitMergeSucceeded": 1
   },
   "HomeErrorScene": {
    "mapLoad": "map_load",
    "missionControl": "mission_control",
    "missionStart": "mission_start"
   },
+  "HomeMapLiveRenderSource": {
+   "createMapRetry": 1
+  },
   "HomeMissionControlType": {
    "end": "end",
    "pause": "pause",
    "resume": "resume",
    "sendHome": "send_home"
+  },
+  "HomeRoutineIntentKind": {
+   "cleanAll": 0,
+   "rooms": 1,
+   "zones": 2
   },
   "HomeRoutineUnsupportedReason": {
    "emptyTargets": 2,
@@ -1877,12 +1934,73 @@
    "unstableTargets": 4,
    "unsupportedPlan": 1
   },
+  "HomeShellPhase": {
+   "brokenRecharge": 3,
+   "dockLocked": 1,
+   "idle": 0,
+   "returningDock": 2,
+   "taskPaused": 5,
+   "taskRunning": 4
+  },
+  "HomeTargetHotCatalogBootstrapAction": {
+   "fetchExactPersistent": 2,
+   "replayExistingBytes": 1
+  },
   "HomeTaskActionSlot": {
    "end": 4,
    "pause": 0,
    "resume": 1,
    "skip": 2,
    "stop": 3
+  },
+  "HomeTempAreaEditBoundary": {
+   "destroy": 4,
+   "directedFinishOrStop": 3,
+   "explicitReload": 1,
+   "mapIdentityChanged": 0,
+   "roomSplitMerge": 2,
+   "spotPlan": 5,
+   "sprayPlan": 6
+  },
+  "HomeTempAreaEditEffect": {
+   "markCreatedGraphComplete": 5,
+   "notifyDraftChanged": 11,
+   "projectHomeTargets": 15,
+   "removeAuthoritativeTempArea": 10,
+   "removeCompletedTarget": 8,
+   "removeCreatedGraph": 7,
+   "replayNormalProjection": 2,
+   "resetElementEditStatus": 12,
+   "restorePreviousStyle": 13,
+   "restoreTapElementsAndLayers": 14,
+   "snapshotNormalProjection": 0,
+   "syncCompletedTarget": 6,
+   "upsertAuthoritativeTempArea": 9
+  },
+  "HomeTempAreaEditPhase": {
+   "editing": 2,
+   "entering": 1,
+   "exiting": 3,
+   "selection": 0
+  },
+  "HomeTempAreaExitIntent": {
+   "cancel": 2,
+   "delete": 1,
+   "finish": 0
+  },
+  "HomeTempAreaForcedAbortRequestKind": {
+   "cancelResidualStyle": 3,
+   "joinActiveCleanup": 2,
+   "none": 0,
+   "startCleanup": 1
+  },
+  "HomeTempAreaValidation": {
+   "areaOverlap": 5,
+   "notEditable": 1,
+   "outMap": 2,
+   "tooSmall": 3,
+   "valid": 0,
+   "virtualWallOverlap": 4
   },
   "HouseHoldSummarySettingPageType": {
    "balanced": 0,
@@ -1915,6 +2033,7 @@
    "ascii": 2,
    "byte": 1,
    "double": 12,
+   "ifd": 13,
    "long": 4,
    "none": 0,
    "rational": 5,
@@ -1927,7 +2046,6 @@
    "undefined": 7
   },
   "ImageByteFormat": {
-   "png": 4,
    "rawRgba": 0
   },
   "Initiator": {
@@ -1936,7 +2054,7 @@
    "Bosch": "bosch",
    "Cloud": "cloud",
    "DockButton": "dockBtn",
-   "Google": "GigyaDefinitions.Providers.GOOGLE",
+   "Google": "google",
    "Homey": "homey",
    "Ifttt": "ifttt",
    "Iftttc": "iftttc",
@@ -1957,12 +2075,31 @@
    "Wifi": "wifi",
    "Yonomi": "yonomi"
   },
+  "InputLengthCountMode": {
+   "characters": 0,
+   "utf8Bytes": 1
+  },
   "Interpolation": {
    "average": 3,
+   "linear": 1,
    "nearest": 0
   },
+  "IrobotAreaOverlayParseTargetSource": {
+   "none": 3,
+   "pointClean": 0,
+   "startContext": 2,
+   "timeline": 1
+  },
+  "IrobotBuildMapExitDisposition": {
+   "awaitPersistentMap": 1,
+   "cancelled": 2,
+   "error": 3,
+   "none": 0
+  },
   "IrobotBuildMapRuntimeState": {
+   "cancelled": 5,
    "converged": 3,
+   "error": 6,
    "inactive": 0,
    "mapping": 1,
    "timedOut": 4,
@@ -1974,34 +2111,15 @@
    "normal": 1,
    "smart": 3
   },
-  "IrobotCommand": {
-   "dock": "dock",
-   "dryPad": "drypad",
-   "evac": "evac",
-   "pause": "pause",
-   "pointClean": "point_clean",
-   "resume": "resume",
-   "skip": "skip",
-   "start": "start",
-   "stop": "stop",
-   "stopEvac": "stopevac",
-   "stopPadDry": "stoppaddry",
-   "washPad": "washpad"
-  },
   "IrobotDockTaskType": {
    "dry": 2,
    "dust": 3,
    "none": 0,
-   "other": 4,
    "wash": 1
   },
   "IrobotGeometryError": {
    "unexpectedGeometryType": 1,
    "unknownGeometryType": 0
-  },
-  "IrobotHomeStatusCapsuleTone": {
-   "error": 1,
-   "normal": 0
   },
   "IrobotOperatingModeSource": {
    "command": 1,
@@ -2022,39 +2140,29 @@
    "other": 8,
    "unknown": 0
   },
-  "IrobotPointCleanSessionState": {
-   "active": 3,
-   "inactive": 0,
-   "recovering": 4,
-   "selecting": 1,
-   "startingPending": 2
-  },
-  "IrobotRegionType": {
-   "room": "rid",
-   "temporary": "tid",
-   "zone": "zid"
-  },
   "IrobotScene": {
-   "allHouse": "allHouse",
-   "areaClean": "areaClean",
-   "changeModeStop": "changeModeStop",
    "changeToIdle": "changeToIdle",
-   "chooseRoom": "chooseRoom",
+   "cleanAndCreateMap": "cleanAndCreateMap",
+   "global": "global",
    "longPressStop": "longPressStop",
-   "mode": "mode",
-   "modeAfterStop": "modeAfterStop",
+   "pointClean": "pointClean",
    "skip": "skip",
-   "smartScrub": "smartScrub",
    "startCancelGoHome": "start:cancelGoHome",
    "stationBack": "station:back",
+   "stationDryStart": "station:dryStart",
+   "stationDryStop": "station:dryStop",
+   "stationDustStart": "station:dustStart",
+   "stationDustStop": "station:dustStop",
    "stationExploreToDock": "station:exploreToDock",
    "stationStopBackCharge": "station:stopBackCharge",
    "stationStopBreakCharging": "station:stopBreakCharging",
    "stationStopCleanToDock": "station:stopCleanToDock",
-   "stop": "stop",
-   "suction": "suction",
-   "times": "times",
-   "water": "water"
+   "stationWashStart": "station:washStart",
+   "stop": "stop"
+  },
+  "IrobotSkipCommandDecision": {
+   "dock": 1,
+   "skip": 0
   },
   "Justification": {
    "center": 2,
@@ -2162,8 +2270,10 @@
    "whileInUse": 2
   },
   "LogLevel": {
+   "debug": null,
    "error": 4,
    "info": 2,
+   "none": null,
    "verbose": 0,
    "warning": 3,
    "wtf": 5
@@ -2173,12 +2283,13 @@
    "internalData": 0
   },
   "LoginState": {
+   "configurationRecoveryFailed": 4,
    "configurationRequired": 3,
-   "error": 5,
+   "error": 6,
    "loggedIn": 0,
    "loggedOut": 2,
    "logging": 1,
-   "sessionExpiring": 4
+   "sessionExpiring": 5
   },
   "MainAxisAlignment": {
    "center": 2,
@@ -2194,15 +2305,16 @@
   },
   "MapAndControlSectionStatus": {
    "buildMapGuide": 1,
+   "generatingMap": 4,
    "loading": 0,
-   "needUpdateFirmware": 7,
-   "newMapEditGuide": 5,
+   "needUpdateFirmware": 8,
+   "newMapEditGuide": 6,
    "offlineGuide": 2,
-   "oldDevice": 6,
+   "oldDevice": 7,
    "showLiveMap": 3,
-   "showMemoryMap": 4,
-   "upgradeError": 9,
-   "upgradingFirmware": 8
+   "showMemoryMap": 5,
+   "upgradeError": 10,
+   "upgradingFirmware": 9
   },
   "MapAreaCleanType": {
    "normal": 0,
@@ -2238,6 +2350,23 @@
    "recognized": 1,
    "recommend": 2
   },
+  "MapCarpetStatusType": {
+   "confirmed": 1,
+   "deleted": 2,
+   "known": 3,
+   "possible": 0
+  },
+  "MapCenterRegionSource": {
+   "grid": 0,
+   "threeRoom": 1,
+   "union": 2
+  },
+  "MapCenterRegionType": {
+   "mixedWithClip": 3,
+   "mixedWithoutClip": 2,
+   "only2D": 0,
+   "only3D": 1
+  },
   "MapChangeStyleType": {
    "auto": 1,
    "manual": 0
@@ -2267,6 +2396,7 @@
    "moveStart": 5,
    "save": 2,
    "select": 0,
+   "tapElements": 15,
    "tapFurniture": 12,
    "tapMemoryArea": 14,
    "tapMopLocation": 13,
@@ -2311,6 +2441,7 @@
    "singleChoiceRoom": 10,
    "split": 8,
    "tapElement": 14,
+   "tapElements": 16,
    "tapRoom": 9,
    "virtualArea": 2,
    "virtualLine": 4,
@@ -2329,7 +2460,6 @@
    "beautifyRoomFloor": 17,
    "carpet": 14,
    "furniture": 7,
-   "mopLocation": 21,
    "mopVirtualArea": 3,
    "navigation": 1,
    "object": 8,
@@ -2400,6 +2530,11 @@
    "pan": 1,
    "scale": 2,
    "tap": 0
+  },
+  "MapHitElementType": {
+   "memoryArea": 2,
+   "room": 0,
+   "tempArea": 1
   },
   "MapImageResourceType": {
    "areaEditDelete": "areaEditDelete",
@@ -2507,25 +2642,27 @@
    "wallEditCircleWarn": "wallEditCircleWarn"
   },
   "MapLayerEnum": {
-   "mapAiObject": 2,
-   "mapDirtyObject": 1,
-   "mapFurniture": 3,
+   "mapAiObject": 3,
+   "mapDirtyObject": 2,
+   "mapFurniture": 4,
    "mapPath": 0,
-   "mapPet": 4
+   "mapPet": 5,
+   "mapTravelPath": 1
   },
   "MapLayerType": {
-   "area": 10,
-   "areaScene": 11,
-   "carpet": 6,
+   "area": 11,
+   "areaScene": 12,
+   "carpet": 7,
    "cleanPath": 5,
    "dirty": 3,
    "furniture": 1,
    "material": 0,
    "object": 2,
-   "pet": 7,
+   "pet": 8,
    "roomName": 4,
-   "sill": 9,
-   "virtual": 8
+   "sill": 10,
+   "travelPath": 6,
+   "virtual": 9
   },
   "MapLegend": {
    "combo": "deviceHome_sweeperMode_VacuumAndMop2",
@@ -2635,6 +2772,11 @@
    "asset": 0,
    "rgbaBytes": 2
   },
+  "MapRenderGraphRawPixelFormat": {
+   "r4g4Packed": 2,
+   "r8": 1,
+   "rgba8": 0
+  },
   "MapRenderGraphType": {
    "marker": 4,
    "mix": 1,
@@ -2673,20 +2815,21 @@
    "unknown": 0
   },
   "MapTabEditType": {
-   "areaEdit": 10,
-   "carpet": 8,
-   "contentBlock": 13,
-   "contentCleanPath": 14,
-   "contentDirt": 17,
-   "contentFurniture": 12,
-   "contentPet": 16,
-   "furniture": 6,
-   "mapRename": 11,
-   "roomMerge": 3,
-   "roomRename": 5,
-   "roomSplit": 4,
-   "sill": 9,
-   "virtual": 7
+   "areaEdit": 8,
+   "carpet": 6,
+   "contentBlock": 11,
+   "contentCleanPath": 12,
+   "contentDirt": 16,
+   "contentFurniture": 10,
+   "contentPet": 15,
+   "contentTravelPath": 13,
+   "furniture": 4,
+   "mapRename": 9,
+   "roomMerge": 1,
+   "roomRename": 3,
+   "roomSplit": 2,
+   "sill": 7,
+   "virtual": 5
   },
   "MapThemeType": {
    "common": "common",
@@ -2717,6 +2860,7 @@
    "areaWithinMapSmall": 1,
    "empty": 4,
    "outMap": 2,
+   "overlap": 3,
    "overlapWithVirtual": 5,
    "success": 0
   },
@@ -2724,6 +2868,18 @@
    "geoJson": 99999,
    "none": 0,
    "roomIdOffset": 99998
+  },
+  "MappingFeaturesUpdateResult": {
+   "applied": 0,
+   "failed": 2,
+   "processing": 1
+  },
+  "MappingFeaturesUpdateStatus": {
+   "applied": 3,
+   "failed": 4,
+   "idle": 0,
+   "processing": 2,
+   "submitting": 1
   },
   "MaskMode": {
    "maskModeAdd": 0,
@@ -2797,26 +2953,26 @@
    "virtual": 4
   },
   "MissionCommandType": {
-   "dock": 0,
-   "dryPad": 1,
-   "evac": 2,
-   "find": 3,
-   "fluidRefill": 4,
-   "pause": 5,
-   "pointClean": 6,
-   "reset": 7,
-   "resume": 8,
-   "skip": 9,
-   "spot": 10,
-   "start": 11,
-   "startDoNotDisturb": 12,
-   "stop": 13,
-   "stopDoNotDisturb": 14,
-   "stopEvac": 15,
-   "stopPadDry": 16,
-   "train": 17,
-   "washPad": 18,
-   "wipe": 19
+   "dock": "dock",
+   "dryPad": "drypad",
+   "evac": "evac",
+   "find": "find",
+   "fluidRefill": "flrefill",
+   "pause": "pause",
+   "pointClean": "point_clean",
+   "reset": "reset",
+   "resume": "resume",
+   "skip": "skip",
+   "spot": "spot",
+   "start": "start",
+   "startDoNotDisturb": "start_dnd",
+   "stop": "stop",
+   "stopDoNotDisturb": "stop_dnd",
+   "stopEvac": "stopevac",
+   "stopPadDry": "stoppaddry",
+   "train": "train",
+   "washPad": "washpad",
+   "wipe": "wipe"
   },
   "MissionControlType": {
    "end": "end",
@@ -2865,9 +3021,9 @@
    "unknown": 15
   },
   "MissionRegionType": {
-   "adHoc": 2,
-   "room": 0,
-   "zone": 1
+   "adHoc": "tid",
+   "room": "rid",
+   "zone": "zid"
   },
   "MissionStatus": {
    "completed": "completed",
@@ -2875,6 +3031,10 @@
    "paused": "paused",
    "returningHome": "returning_home",
    "running": "running"
+  },
+  "MissionTransitionKind": {
+   "ending": 1,
+   "starting": 0
   },
   "MissionType": {
    "fullHome": "full_home",
@@ -2898,16 +3058,6 @@
    "none": 0,
    "onlyLeft": 1,
    "onlyRight": 2
-  },
-  "MoveHouseStepType": {
-   "complete": 6,
-   "emptyDeviceWaterTank": 7,
-   "none": 0,
-   "outBaseWaterAfterDistil": 3,
-   "outBaseWaterBeforeDistil": 1,
-   "outDetergent": 4,
-   "outRobotSewage": 5,
-   "sweageDistil": 2
   },
   "MultiPassType": {
    "onePassOrAutoPassOnly": 3,
@@ -2944,14 +3094,6 @@
    "ready": 5,
    "stationTask": 6
   },
-  "NewRoutineChooseRoomDetailTab": {
-   "defaultConfig": 0,
-   "roomOrder": 1
-  },
-  "NewRoutineMapMode": {
-   "chooseRoom": 1,
-   "wholeHome": 0
-  },
   "OTAPriorityType": {
    "high": 3,
    "highest": 4,
@@ -2973,12 +3115,10 @@
    "vacThenMop": 512,
    "vacuuming": 2
   },
-  "OrderAreaViewPlan": {
-   "allHouse": 1,
-   "allHouseAiClean": 0,
-   "chooseRoom": 2,
-   "partZone": 3,
-   "shortCut": 5
+  "OrderScheduleBuildFailure": {
+   "emptyRegions": 2,
+   "mapContextMissing": 0,
+   "unstableTargets": 1
   },
   "Orientation": {
    "landscape": 1,
@@ -2994,8 +3134,12 @@
    "mandatory": 0,
    "optional": 1
   },
+  "OverlayChildLocation": {
+   "nearestOverlay": 0
+  },
   "P2MapEditCommandType": {
    "delPermanentAreaReq": "delPermanentAreaReq",
+   "getCapabilityReq": "getCapabilityReq",
    "setCarpetReq": "setCarpetReq",
    "setFurnitureReq": "setFurnitureReq",
    "setPermanentAreaReq": "setPermanentAreaReq",
@@ -3047,60 +3191,6 @@
    "OTHER": "other",
    "UNKNOWN": "unknown"
   },
-  "PMDarwinAssetCollectionSubtype": {
-   "albumCloudShared": 6,
-   "albumImported": 4,
-   "albumMyPhotoStream": 5,
-   "albumRegular": 0,
-   "albumSyncedAlbum": 3,
-   "albumSyncedEvent": 1,
-   "albumSyncedFaces": 2,
-   "any": 33,
-   "smartAlbumAllHidden": 12,
-   "smartAlbumAnimated": 21,
-   "smartAlbumBursts": 14,
-   "smartAlbumCinematic": 25,
-   "smartAlbumDepthEffect": 19,
-   "smartAlbumFavorites": 10,
-   "smartAlbumGeneric": 7,
-   "smartAlbumHandwriting": 30,
-   "smartAlbumIllustrations": 31,
-   "smartAlbumLivePhotos": 20,
-   "smartAlbumLongExposures": 22,
-   "smartAlbumPanoramas": 8,
-   "smartAlbumProRes": 27,
-   "smartAlbumQRCodes": 32,
-   "smartAlbumRAW": 24,
-   "smartAlbumReceipts": 29,
-   "smartAlbumRecentlyAdded": 13,
-   "smartAlbumScreenRecordings": 28,
-   "smartAlbumScreenshots": 18,
-   "smartAlbumSelfPortraits": 17,
-   "smartAlbumSlomoVideos": 15,
-   "smartAlbumSpatial": 26,
-   "smartAlbumTimelapses": 11,
-   "smartAlbumUnableToUpload": 23,
-   "smartAlbumUserLibrary": 16,
-   "smartAlbumVideos": 9
-  },
-  "PMDarwinAssetCollectionType": {
-   "album": 0,
-   "smartAlbum": 1
-  },
-  "PMOhosAlbumSubtype": {
-   "any": 7,
-   "camera": 6,
-   "favorite": 1,
-   "hidden": 3,
-   "screenshot": 5,
-   "trash": 4,
-   "userGeneric": 0,
-   "video": 2
-  },
-  "PMOhosAlbumType": {
-   "system": 1,
-   "user": 0
-  },
   "PadWashEvent.PadWashReason": {
    "AFTER_REGION_COMPLETED": "1",
    "END_OF_MISSION": "3",
@@ -3135,7 +3225,7 @@
    "BOOTSTRAPPING": "bootstrapping",
    "CONFIGURING": "configuring",
    "CONNECTING_SERVICES": "connectingServices",
-   "ERROR": "Constant.PARAM_ERROR",
+   "ERROR": "error",
    "LOGGING_OUT": "loggingOut",
    "READY": "ready",
    "UNINITIALIZED": "uninitialized"
@@ -3146,13 +3236,6 @@
    "onLimited": 205,
    "onPermanentlyDenied": 202,
    "onRestricted": 204
-  },
-  "PermissionState": {
-   "authorized": 3,
-   "denied": 2,
-   "limited": 4,
-   "notDetermined": 0,
-   "restricted": 1
   },
   "PermissionStatus": {
    "denied": 0,
@@ -3235,6 +3318,8 @@
    "robot_105_combo": "Y3",
    "robot_105_vac": "Q3",
    "robot_115_combo": "Y4",
+   "robot_115_vac": "Q4",
+   "robot_125_vac": "Q5",
    "robot_205_combo": "L1",
    "robot_205_vac": "U1",
    "robot_405_combo": "G1",
@@ -3246,51 +3331,27 @@
    "robot_615_combo": "V1",
    "robot_705_combo": "X1",
    "robot_705_vac": "W1",
-   "robot_715_combo": "X2",
    "robot_715_vac": "W2",
+   "robot_725_combo": "W3",
+   "robot_775_combo": "X2",
    "robot_875": "Z1",
-   "robot_mini": "F1"
+   "robot_925": "Z2",
+   "robot_mini": "F1",
+   "robot_mini2": "F2"
   },
   "ProductType": {
-   "none": "",
-   "sweeper298pLite": "1912337245438181376",
-   "sweeper298pLitePlus": "1912337298114445312",
-   "sweeper298pProUltra": "1995771395254546432",
-   "sweeper298pUltra": "1912337217504116736",
-   "sweeper330G": "1536592582296563712",
-   "sweeper330LC": "1556957937882730496",
-   "sweeper450": "1765939952276570112",
-   "sweeperA10": "1899301491516682240",
-   "sweeperDM2F1": "1739162068871917568",
-   "sweeperDM2F1Lite": "1843919998219272192",
-   "sweeperDM2F1Pro": "1887704123976773632",
-   "sweeperDM2Lite": "1648518604332441600",
-   "sweeperDM2LitePlus": "1843940084917288960",
-   "sweeperDM2Master": "1692113630180663296",
-   "sweeperDM2Max": "1739165670600454144",
-   "sweeperDM2Pro": "1534051142064500736",
-   "sweeperDM2S10": "1813879003813523456",
-   "sweeperDM5": "1777581047758172160",
-   "sweeperDm4Pro": "1742128926397681664",
-   "sweeperDm4ProUltra": "1912335503728279552",
-   "sweeperG10Silence": "1797509433998655488",
-   "sweeperP10S1": "1829367890298044416",
-   "sweeperPetM1": "1612258993706319872",
-   "sweeperPetM10": "1811694665012424704",
-   "sweeperPetM1Master": "1727956177266634752",
-   "sweeperPico": "1970039731228340224",
-   "sweeperQ10Ultra": "1907332366827225088",
-   "sweeperQ10V1": "1892104712882024448",
-   "sweeperR1": "1727239393509076992",
-   "sweeperR10ProUltra": "2011321255378579456",
-   "sweeperR10Ultra": "2011321783055577088",
-   "sweeperX10Ultra": "2011322077428609024"
+   "none": ""
   },
   "ProfileType": {
    "deepClean": "deep",
    "lightClean": "light",
    "normalClean": "normal",
    "smartClean": "smart"
+  },
+  "ProvisioningBleReadiness": {
+   "bluetoothOff": 2,
+   "permissionDenied": 1,
+   "ready": 0
   },
   "ProvisioningFailureType": {
    "buttonConfirmationTimeout": 0,
@@ -3367,6 +3428,11 @@
    "POPULAR": 2,
    "RECENT": 1
   },
+  "RegionKind": {
+   "memory": 1,
+   "room": 0,
+   "temp": 2
+  },
   "RegionType": {
    "room": 0,
    "zone": 1
@@ -3393,6 +3459,7 @@
    "loginLoading": "login_loading.json",
    "mapLoading": "map_loading.json",
    "scanIRobotBleDevice": "scan_iRobot_ble_device.json",
+   "slideGuide": "slide_guide.json",
    "splashScreen": "splash_screen.json",
    "timelineWorking": "timeline_working.json"
   },
@@ -3452,6 +3519,8 @@
    "addDeviceFactoryTwoMiniWhite": "add_device_factory_two_mini_white.png",
    "addDeviceFailIcon": "add_device_fail_icon.png",
    "addDeviceFirstConfigCheckCharging": "add_device_first_config_check_charging.png",
+   "addDeviceFirstConfigMiniCombo": "add_device_first_config_mini_combo.png",
+   "addDeviceFirstConfigMiniSingle": "add_device_first_config_mini_single.png",
    "addDeviceFirstConfigSetUp": "add_device_first_config_set_up.png",
    "addDeviceGuide105c105v": "add_device_guide_105c_105v.png",
    "addDeviceGuide105c105vWhite": "add_device_guide_105c_105v_white.png",
@@ -3471,6 +3540,7 @@
    "addDeviceGuideMiniMint": "add_device_guide_mini_mint.png",
    "addDeviceGuideMiniPink": "add_device_guide_mini_pink.png",
    "addDeviceGuideMiniWhite": "add_device_guide_mini_white.png",
+   "addDeviceLock": "add_device_lock.png",
    "addDeviceLogo105": "add_device_logo_105.png",
    "addDeviceLogo105White": "add_device_logo_105_white.png",
    "addDeviceLogo115": "add_device_logo_115.png",
@@ -3501,6 +3571,18 @@
    "addDeviceLogoMiniMint": "add_device_logo_mini_mint.png",
    "addDeviceLogoMiniPink": "add_device_logo_mini_pink.png",
    "addDeviceLogoMiniWhite": "add_device_logo_mini_white.png",
+   "addDeviceManualGuide105v105c": "add_device_manual_guide_105v_105c.png",
+   "addDeviceManualGuide115c": "add_device_manual_guide_115c.png",
+   "addDeviceManualGuide115cCombo": "add_device_manual_guide_115c_combo.png",
+   "addDeviceManualGuide205v205c": "add_device_manual_guide_205v_205c.png",
+   "addDeviceManualGuide405c505c": "add_device_manual_guide_405c_505c.png",
+   "addDeviceManualGuide415c515c": "add_device_manual_guide_415c_515c.png",
+   "addDeviceManualGuide575": "add_device_manual_guide_575.png",
+   "addDeviceManualGuide615": "add_device_manual_guide_615.png",
+   "addDeviceManualGuide675": "add_device_manual_guide_675.png",
+   "addDeviceManualGuide705c715c": "add_device_manual_guide_705c_715c.png",
+   "addDeviceManualGuide705v": "add_device_manual_guide_705v.png",
+   "addDeviceManualGuide875": "add_device_manual_guide_875.png",
    "addDeviceRenameDeviceIcon": "addDevice_rename_deviceIcon.png",
    "addDeviceWelcomeIcon": "add_device_welcome_icon.png",
    "addDeviceWifiLevel": "add_device_wifi_level.png",
@@ -3522,16 +3604,7 @@
    "commonNavClose": "common_nav_close.png",
    "commonNoData": "common_no_data.png",
    "commonNoNetwork": "common_no_network.png",
-   "commonPower100": "common_power_100.png",
-   "commonPower20": "common_power_20.png",
-   "commonPower40": "common_power_40.png",
-   "commonPower60": "common_power_60.png",
-   "commonPower80": "common_power_80.png",
-   "commonPowerCharging100": "common_power_charging_100.png",
-   "commonPowerCharging20": "common_power_charging_20.png",
-   "commonPowerCharging40": "common_power_charging_40.png",
-   "commonPowerCharging60": "common_power_charging_60.png",
-   "commonPowerCharging80": "common_power_charging_80.png",
+   "commonNotice": "common_notice.png",
    "commonRadioOff": "common_radio_off.png",
    "commonRadioOn": "common_radio_on.png",
    "commonSuccessIcon": "common_success_icon.png",
@@ -3549,31 +3622,31 @@
    "createMapPrepStart": "create_map_prep_start.png",
    "createMapPrepStartMini": "create_map_prep_start_mini.png",
    "deviceAutomationEmpty": "device_automation_empty.jpg",
-   "deviceHomeAreaCleanBtn": "deviceHome_area_clean_btn.png",
    "deviceHomeBaseStation": "deviceHome_base_station.png",
    "deviceHomeBottomViewAiIcon": "deviceHome_bottomView_ai_icon.png",
    "deviceHomeBottomViewCustomIcon": "deviceHome_bottomView_custom_icon.png",
    "deviceHomeBottomViewLaunchIcon": "deviceHome_bottomView_launch_icon.png",
    "deviceHomeBottomViewPauseIcon": "deviceHome_bottomView_pause_icon.png",
-   "deviceHomeCustomAdd": "deviceHome_custom_add.png",
-   "deviceHomeCustomDrag": "deviceHome_custom_drag.png",
    "deviceHomeDockDry": "deviceHome_dock_dry.png",
    "deviceHomeDockEmpty": "deviceHome_dock_empty.png",
    "deviceHomeDockTaskCompleted": "deviceHome_dock_task_completed.png",
    "deviceHomeDockWash": "deviceHome_dock_wash.png",
-   "deviceHomeFurnitureEntry": "deviceHome_furniture_entry.png",
    "deviceHomeMapRename": "deviceHome_map_rename.png",
    "deviceHomeSheetModeMop": "deviceHome_sheet_mode_mop.png",
    "deviceHomeSheetModeVac": "deviceHome_sheet_mode_vac.png",
    "deviceHomeSheetModeVacAndMop": "deviceHome_sheet_mode_vac_and_mop.png",
    "deviceHomeSheetModeVacThenMop": "deviceHome_sheet_mode_vac_then_mop.png",
+   "deviceHomeSheetSealForceOffN": "deviceHome_sheet_sealForce_off_n.png",
+   "deviceHomeSheetSealForceOffS": "deviceHome_sheet_sealForce_off_s.png",
+   "deviceHomeSheetSealForceOnN": "deviceHome_sheet_sealForce_on_n.png",
+   "deviceHomeSheetSealForceOnS": "deviceHome_sheet_sealForce_on_s.png",
    "deviceHomeSheetSmartScrubOffN": "deviceHome_sheet_smartScrub_off_n.png",
    "deviceHomeSheetSmartScrubOffS": "deviceHome_sheet_smartScrub_off_s.png",
    "deviceHomeSheetSmartScrubOnN": "deviceHome_sheet_smartScrub_on_n.png",
    "deviceHomeSheetSmartScrubOnS": "deviceHome_sheet_smartScrub_on_s.png",
    "deviceHomeSpotCleanPlaceHolder": "deviceHome_spotClean_placeHolder.png",
+   "deviceHomeSprayCleanPlaceHolder": "deviceHome_sprayClean_placeHolder.png",
    "deviceHomeStartBtn": "deviceHome_start_btn.png",
-   "deviceHomeSweepPropertyCustom": "deviceHome_sweepProperty_custom.png",
    "deviceListAddIcon": "deviceList_add_icon.png",
    "deviceListCapsuleBat100": "device_list_capsule_bat_100.png",
    "deviceListCapsuleBat20": "device_list_capsule_bat_20.png",
@@ -3637,18 +3710,8 @@
    "furnitureEditTvCabinet": "furniture_edit_tv_cabinet.png",
    "furnitureEditVerticalAirConditioner": "furniture_edit_vertical_air_conditioner.png",
    "furnitureEditWashingMachine": "furniture_edit_washing_machine.png",
-   "guideAIQ10": "guide_AI_Q10.png",
-   "guideNewMapQ10": "guide_new_map_Q10.png",
-   "guideStationQ10": "guide_station_Q10.png",
-   "guideWaterInjectionQ10": "guide_water_injection_Q10.png",
    "guideWelcomDevices": "guide_welcom_devices.jpg",
-   "guideZoneQ10": "guide_zone_Q10.png",
-   "homeActAddArea": "home_act_add_area.png",
-   "homeActEdge": "home_act_edge.png",
    "homeActMapEdit": "home_act_map_edit.png",
-   "homeActVideoManager": "home_act_video_manager.png",
-   "homeBarSetting": "home_bar_setting.png",
-   "homeCleanAdd": "home_clean_add.png",
    "homeCleaningCompleted": "home_cleaning_completed.png",
    "homeCreateMapSuccessCloseDialog": "home_create_map_success_close_dialog.png",
    "homeFaultInfo": "home_fault_info.png",
@@ -3685,17 +3748,6 @@
    "homeSheetActionWaterSprayB": "home_sheet_action_water_spray_b.png",
    "homeSheetActionWaterSprayN": "home_sheet_action_water_spray_n.png",
    "homeSheetActionWaterSprayS": "home_sheet_action_water_spray_s.png",
-   "homeTipBackCharge": "home_tip_back_charge.png",
-   "homeTipBackWash": "home_tip_back_wash.png",
-   "homeTipCharging": "home_tip_charging.png",
-   "homeTipClean": "home_tip_clean.png",
-   "homeTipCreate": "home_tip_create.png",
-   "homeTipCutHair": "home_tip_cut_hair.png",
-   "homeTipDry": "home_tip_dry.png",
-   "homeTipDust": "home_tip_dust.png",
-   "homeTipLocation": "home_tip_location.png",
-   "homeTipPause": "home_tip_pause.png",
-   "homeTipWash": "home_tip_wash.png",
    "houseHoldAdultIcon": "house_hold_adult_icon.png",
    "houseHoldChildIcon": "house_hold_child_icon.png",
    "houseHoldEditIcon": "house_hold_edit_icon.png",
@@ -3710,7 +3762,6 @@
    "houseHolderShoes": "house_holder_shoes.png",
    "houseHolderSofa": "house_holder_sofa.png",
    "houseHolderToys": "house_holder_toys.jpg",
-   "icAppleHome": "ic_apple_home.png",
    "icOrderAddEditParams": "ic_order_add_edit_params.png",
    "icOrderAddParams": "ic_order_add_params.png",
    "icSmartVoiceBoxAlexa": "ic_smart_voice_box_alexa.png",
@@ -3816,7 +3867,6 @@
    "shortcutInstructionSmart": "shortcut_instruction_smart.png",
    "shortcutInstructionSweepBeforeMop": "shortcut_instruction_sweep_before_mop.png",
    "shortcutInstructionSweepClean": "shortcut_instruction_sweep_clean.png",
-   "shortcutTaskDelete": "shortcut_task_delete.png",
    "siriShortcutAdd": "siri_shortcut_add.png",
    "siriShortcutAddBottom": "siri_shortcut_add_bottom.png",
    "siriShortcutEdit": "siri_shortcut_edit.png",
@@ -3824,10 +3874,11 @@
    "smartHomeBluetoothPermission": "smart_home_bluetooth_permission.png",
    "smartHomeConnetPhone": "smart_home_connet_phone.png",
    "smartHomeFaq": "smart_home_faq.png",
+   "smartHomeMatter": "smart_home_matter.png",
    "smartHomeNoPermissions": "smart_home_no_permissions.png",
    "smartHomePreBannel": "smart_home_pre_bannel.png",
-   "smartHomeShare": "smart_home_share.png",
    "specialOfferNotice": "special_offer_notice.png",
+   "tabPageNoNetwork": "tab_page_no_network.png",
    "timelineDotCharging": "timeline_dot_charging.png",
    "timelineDotError": "timeline_dot_error.png",
    "timelineDotOk": "timeline_dot_ok.png",
@@ -3864,18 +3915,11 @@
    "primeErrorTrapped": "assets/images/device/fault/irobot_fault/prime_error_trapped.png",
    "primeErrorUpdatingSoftware": "assets/images/device/fault/irobot_fault/prime_error_updating_software.png"
   },
-  "ResourceImageGuide": {
-   "guideAI": "assets/images/guide/bg_guide_ai.png",
-   "guidePage4": "assets/images/guide/bg_guide_4.png",
-   "mapCreateGuide1": "assets/images/guide/bg_map_guide_1.png",
-   "mapCreateGuide2": "assets/images/guide/bg_map_guide_2.png",
-   "mapCreateGuide3": "assets/images/guide/bg_map_guide_3.png"
-  },
   "ResourceImageMaintenanceGuidelines": {
    "careCart": "assets/images/maintenance_guidelines/care_cart.png"
   },
   "ResourceImagePerson": {
-   "cancelWarning": "assets/images/person/cancel_warning.png"
+   "deleteIcon": "assets/images/person/delete_photo_icon.png"
   },
   "ResourceType": {
    "animation": "anim",
@@ -3883,6 +3927,7 @@
    "video": "video"
   },
   "ResourceVideo": {
+   "charactersGuide": "characters_guide.webp",
    "firmwareUpdating": "firmware_updating.webp",
    "primeLoginWelcome": "prime_login_welcome.webp"
   },
@@ -3899,7 +3944,8 @@
    "evRoom": 0,
    "mission": 100,
    "refill": 101,
-   "refillAndRoom": 102
+   "refillAndRoom": 102,
+   "smartMode": 103
   },
   "ReturnByTime": {
    "fifteen": 15,
@@ -3958,6 +4004,12 @@
    "none": 3,
    "rename": 2,
    "split": 1
+  },
+  "RoomEditSchemaSaveError": {
+   "initialUploadFailed": 0,
+   "recomputeFailed": 2,
+   "refreshFailed": 1,
+   "retryUploadFailed": 3
   },
   "RoomEvent.RoomStatus": {
    "FINISHED": "0",
@@ -4074,10 +4126,15 @@
    "spotClean": 4,
    "unknown": 5
   },
+  "SSIDListFetchStatus": {
+   "available": 2,
+   "empty": 3,
+   "fetching": 1,
+   "idle": 0
+  },
   "ScDataBaseFieldType": {
    "data": "BLOB",
    "interger": "INTEGER",
-   "real": "REAL",
    "text": "TEXT"
   },
   "SchedulerPhase": {
@@ -4086,6 +4143,16 @@
    "persistentCallbacks": 3,
    "postFrameCallbacks": 4,
    "transientCallbacks": 1
+  },
+  "SchemaSetResult": {
+   "deviceRejected": 1,
+   "failed": 2,
+   "success": 0
+  },
+  "SchemePbRoomComparison": {
+   "invalid": 18446744073709551615,
+   "match": 1,
+   "mismatch": 0
   },
   "ScriptCategory": {
    "dense": 1,
@@ -4133,6 +4200,11 @@
    "progress": 1,
    "sslError": 6
   },
+  "SecureWebViewRequestMetadataPolicy": {
+   "applicationIdentity": 2,
+   "mobileApplication": 1,
+   "standard": 0
+  },
   "SecureWebViewRequestPolicy": {
    "authenticated": 1,
    "standard": 0
@@ -4151,6 +4223,11 @@
    "tap": 0,
    "toolbar": 5
   },
+  "SemanticsHitTestBehavior": {
+   "defer": 0,
+   "opaque": 1,
+   "transparent": 2
+  },
   "SemanticsInputType": {
    "email": 5,
    "none": 0,
@@ -4161,9 +4238,11 @@
   "SemanticsRole": {
    "alertDialog": 5,
    "dialog": 4,
+   "loadingSpinner": 22,
    "menu": 14,
    "menuItem": 15,
    "none": 0,
+   "progressBar": 23,
    "tab": 1,
    "tabBar": 2
   },
@@ -4180,6 +4259,7 @@
    "mode": 0,
    "pathDensity": 5,
    "route": 3,
+   "sealForce": 8,
    "smartScrub": 7,
    "suction": 1,
    "temperature": 6,
@@ -4203,7 +4283,6 @@
    "wed": "common_repeat_wed"
   },
   "SheetStationAction": {
-   "cut": 4,
    "dry": 3,
    "dust": 1,
    "none": 0,
@@ -4271,6 +4350,11 @@
    "html": 1,
    "url": 0
   },
+  "SprayModeOption": {
+   "avoid": 1,
+   "clean": 2,
+   "ignore": 0
+  },
   "SpringType": {
    "criticallyDamped": 0,
    "overDamped": 2,
@@ -4290,11 +4374,6 @@
    "mop": 1,
    "vacuum": 0
   },
-  "StationActionControl": {
-   "cut": 4,
-   "dust": 3,
-   "wash": 1
-  },
   "StrokeCap": {
    "butt": 0,
    "round": 1
@@ -4303,10 +4382,6 @@
    "bevel": 2,
    "miter": 0,
    "round": 1
-  },
-  "SubEventName": {
-   "mapIsBlank": 26,
-   "mapParseFail": 27
   },
   "SupportedCountries": {
    "AFGHANISTAN": "AF",
@@ -4572,6 +4647,7 @@
   },
   "Survey.QuestionType": {
    "BUTTON": "button",
+   "FREEFORM_TEXT": "freeform_text",
    "IMAGE": "image",
    "LIST": "list",
    "RADIO": "radio",
@@ -4592,8 +4668,14 @@
    "text": "text",
    "unknown": ""
   },
+  "SurveyIncidentType": {
+   "offline": 1,
+   "p0": 0,
+   "splitMergeFail": 2
+  },
   "SurveyQuestionType": {
    "button": "button",
+   "freeformText": "freeform_text",
    "image": "image",
    "list": "list",
    "radio": "radio",
@@ -4609,6 +4691,10 @@
   "SystemSoundType": {
    "alert": 2,
    "click": 0
+  },
+  "SystemUiMode": {
+   "edgeToEdge": 3,
+   "manual": 4
   },
   "SystemUiOverlay": {
    "bottom": 1,
@@ -4769,6 +4855,11 @@
    "whiteIsZero": 0,
    "yCbCr": 6
   },
+  "TimelineMissionIdentityComparison": {
+   "match": 0,
+   "mismatch": 1,
+   "unknown": 2
+  },
   "ToastPosition": {
    "center": 1,
    "top": 0
@@ -4839,13 +4930,23 @@
    "parentScope": 2,
    "stop": 3
   },
+  "Tristate": {
+   "isFalse": 2,
+   "isTrue": 1,
+   "none": 0
+  },
   "UIExtraLayout": {
    "bottom": 1,
    "middle": 2,
    "top": 0
   },
   "UIListCellType": {
-   "none": 0
+   "check": 24,
+   "custom": 44,
+   "next": 22,
+   "none": 0,
+   "radio": 24,
+   "toggle": 44
   },
   "UITextIconButtonType": {
    "imageBottom": 3,
@@ -5008,7 +5109,7 @@
    "start": 0
   },
   "XmlAttributeType": {
-   "DOUBLE_QUOTE": "\\",
+   "DOUBLE_QUOTE": "\\\"",
    "SINGLE_QUOTE": "\\'"
   },
   "XmlNodeType": {
@@ -5022,6 +5123,11 @@
    "ELEMENT": 7,
    "PROCESSING": 10,
    "TEXT": 11
+  },
+  "ZipEncryptionMode": {
+   "aes": 2,
+   "none": 0,
+   "zipCrypto": 1
   },
   "ZoneEvent.ZoneStatus": {
    "FINISHED": "0",
@@ -5049,19 +5155,6 @@
    "Bearer": 2,
    "Digest": 3,
    "Unknown": 0
-  },
-  "_BuildMapSyncApplyResult": {
-   "applied": 0,
-   "invalidResolvedMapId": 2,
-   "mapDataMissing": 3,
-   "sessionInvalidAfterContextFetch": 5,
-   "sessionInvalidAfterMapFetch": 4,
-   "sessionInvalidBeforeApply": 1
-  },
-  "_BuildMapSyncStage": {
-   "persistentMapReady": 2,
-   "showingLiveMapDuringExplore": 0,
-   "waitingForPersistentMap": 1
   },
   "_CleanPathRenderGroup": {
    "mop": 2,
@@ -5091,10 +5184,6 @@
    "suffix": 5,
    "suffixIcon": 7
   },
-  "_DetailCustomizeTab": {
-   "customize": 1,
-   "defaultConfig": 0
-  },
   "_DockMapState": {
    "idle": 0,
    "loading": 2,
@@ -5112,7 +5201,8 @@
   },
   "_ElementLifecycle": {
    "active": 1,
-   "defunct": 3,
+   "defunct": 4,
+   "failed": 3,
    "inactive": 2,
    "initial": 0
   },
@@ -5139,34 +5229,15 @@
    "hover": 1,
    "pressed": 0
   },
-  "_HomeBottomUiMode": {
-   "brokenRecharge": 3,
-   "dockLocked": 1,
-   "idle": 0,
-   "returningDock": 2,
-   "taskPaused": 5,
-   "taskRunning": 4
+  "_HomeMapRenderOwnerKind": {
+   "live": 1,
+   "persistent": 0
   },
   "_IntrinsicDimension": {
    "maxHeight": 3,
    "maxWidth": 1,
    "minHeight": 2,
    "minWidth": 0
-  },
-  "_IrobotCleanPanelTab": {
-   "cleanAll": 0,
-   "customize": 1
-  },
-  "_IrobotEstimateOperatingModeFamily": {
-   "combo": 1,
-   "mop": 2,
-   "vacThenMop": 3,
-   "vacuum": 0
-  },
-  "_IrobotMissionEstimateTargetKind": {
-   "furniture": 2,
-   "room": 0,
-   "zone": 1
   },
   "_IrobotStationTaskType": {
    "dry": 3,
@@ -5185,10 +5256,14 @@
    "accessibleNavigation": 13,
    "boldText": 18,
    "devicePixelRatio": 4,
+   "disableAnimations": 17,
+   "displayCornerRadii": 28,
    "gestureSettings": 21,
    "height": 2,
    "highContrast": 15,
    "invertColors": 14,
+   "letterSpacingOverride": 25,
+   "lineHeightScaleFactorOverride": 24,
    "navigationMode": 20,
    "orientation": 3,
    "padding": 8,
@@ -5198,12 +5273,32 @@
    "textScaler": 6,
    "viewInsets": 9,
    "viewPadding": 11,
-   "width": 1
+   "width": 1,
+   "wordSpacingOverride": 26
+  },
+  "_OperatingModeFamily": {
+   "combo": 1,
+   "mop": 2,
+   "vacThenMop": 3,
+   "vacuum": 0
   },
   "_PlatformViewState": {
    "ready": 2,
    "resizing": 1,
    "uninitialized": 0
+  },
+  "_PredictiveBackPhase": {
+   "cancel": 4,
+   "commit": 3,
+   "idle": 0,
+   "start": 1,
+   "update": 2
+  },
+  "_ProvisioningFlowState": {
+   "active": 2,
+   "finished": 3,
+   "idle": 0,
+   "pending": 1
   },
   "_RouteLifecycle": {
    "add": 1,
@@ -5220,7 +5315,8 @@
    "pushing": 5,
    "remove": 10,
    "removing": 12,
-   "replace": 6
+   "replace": 6,
+   "staging": 0
   },
   "_RouteRestorationType": {
    "anonymous": 1,
@@ -5250,16 +5346,6 @@
    "right": 0,
    "up": 2
   },
-  "_StretchDirection": {
-   "leading": 1,
-   "trailing": 0
-  },
-  "_StretchState": {
-   "absorb": 1,
-   "idle": 0,
-   "pull": 2,
-   "recede": 3
-  },
   "_TextSelectionToolbarItemPosition": {
    "first": 0,
    "last": 2,
@@ -5274,6 +5360,9 @@
   "_TrainHoppingMode": {
    "maximize": 1,
    "minimize": 0
+  },
+  "_WindowControllerAspect": {
+   "contentSize": 0
   },
   "_WordWrapParseMode": {
    "atBreak": 2,
@@ -5708,6 +5797,7 @@
    "sfkdp"
   ],
   "models/account/login_state": [
+   "ConfigurationRecoveryFailed",
    "ConfigurationRequired",
    "Error",
    "LoggedIn",
@@ -5835,8 +5925,10 @@
    "type"
   ],
   "models/map_data/map_containers/p2_map_data": [
+   "activeMapVersionId",
    "active_p2mapv_id",
    "create_time",
+   "lastUpdateTime",
    "last_p2mapv_ts",
    "name",
    "p2map_id",
@@ -5855,6 +5947,7 @@
    "version"
   ],
   "models/map_data/map_containers/p2_persistent_map": [
+   "adHocCleanZoneInfo",
    "additionalTrajectoryInfo",
    "borderInfo",
    "cleanZoneInfo",
@@ -5874,6 +5967,10 @@
    "trajectoryInfo",
    "virtualWallInfo"
   ],
+  "models/map_data/map_contents/p2_map_ad_hoc_clean_zone_info": [
+   "geometry",
+   "id"
+  ],
   "models/map_data/map_contents/p2_map_border_info": [
    "geometry"
   ],
@@ -5889,6 +5986,11 @@
   "models/map_data/map_contents/p2_map_dock_info": [
    "geometry",
    "orientation"
+  ],
+  "models/map_data/map_contents/p2_map_edit_capability": [
+   "room_and_area_clean",
+   "split_with_room_chain",
+   "split_with_scheme_data"
   ],
   "models/map_data/map_contents/p2_map_floor_plan_info": [
    "geometry",
@@ -6062,6 +6164,7 @@
    "actions",
    "answerId",
    "answerType",
+   "answer_freeform",
    "answer_id",
    "answer_type",
    "answers",
@@ -6109,13 +6212,9 @@
    "carpetBoost",
    "clean_score_id",
    "command",
-   "dock",
-   "drypad",
    "edgeOnly",
-   "evac",
+   "favoriteId",
    "favorite_id",
-   "find",
-   "flrefill",
    "geom",
    "heatedWater",
    "id_multipolys",
@@ -6125,42 +6224,26 @@
    "p2map_id",
    "padWetness",
    "params",
-   "pause",
    "pmap_id",
-   "point_clean",
    "profile",
    "quiet",
    "region_id",
    "regions",
    "replay_of",
-   "reset",
-   "resume",
-   "rid",
    "rmtApp",
    "routine_modified",
    "routine_type",
+   "sealForce",
    "select_all",
-   "skip",
    "smartCleanId",
    "smart_clean_id",
-   "spot",
-   "start",
-   "start_dnd",
-   "stop",
-   "stop_dnd",
-   "stopevac",
-   "stoppaddry",
+   "spray",
    "suctionLevel",
    "swScrub",
-   "tid",
    "time",
-   "train",
    "twoPass",
    "type",
-   "user_p2mapv_id",
-   "washpad",
-   "wipe",
-   "zid"
+   "user_p2mapv_id"
   ],
   "models/mission/mission_time_estimates": [
    "api_version",
@@ -6189,10 +6272,18 @@
    "clean_score",
    "clean_score_ranges",
    "params",
+   "profile",
    "regionId",
    "regionScoresByP2MapId",
    "region_id",
-   "rmtApp"
+   "rmtApp",
+   "smart"
+  ],
+  "models/mission/smart_clean_time_estimate_binder": [
+   "operatingMode",
+   "suctionLevel",
+   "swScrub",
+   "twoPass"
   ],
   "models/provision/network_configuration_info": [
    "password",
@@ -6210,6 +6301,7 @@
    "before",
    "cloud_capable",
    "color",
+   "command",
    "commandDefinitions",
    "commanddefs",
    "confidence",
@@ -6288,6 +6380,7 @@
    "region_id",
    "regions",
    "robot_id",
+   "sealForce",
    "start",
    "suctionLevel",
    "swScrub",
@@ -6382,8 +6475,10 @@
    "routine_type",
    "runM",
    "saves",
+   "sealForce",
    "smart_clean_id",
    "softwareVer",
+   "spray",
    "sqft",
    "startEndWlBars",
    "startTime",
@@ -6487,7 +6582,8 @@
    "robot_health_image",
    "robot_health_description_id",
    "buy_url",
-   "guide_url"
+   "guide_url",
+   "counter_enabled"
   ],
   "AssetPartHealthDto": [
    "part_id",
@@ -6623,6 +6719,8 @@
    "operatingMode",
    "padWetness",
    "quiet",
+   "sealForce",
+   "spray",
    "suctionLevel",
    "swScrub",
    "twoPass",
@@ -6703,27 +6801,9 @@
    "p2mapvId",
    "rid"
   ],
-  "DiscoveryResponse": [
-   "gigya",
-   "current_deployment",
-   "deployments"
-  ],
-  "DiscoveryResponse$Deployment": [
-   "awsRegion",
-   "discoveryTTL",
-   "httpBase",
-   "httpBaseAuth",
-   "svcDeplId",
-   "mqttApp",
-   "iotTopics",
-   "irbtTopics"
-  ],
-  "DiscoveryResponse$Gigya": [
-   "api_key",
-   "datacenter_domain"
-  ],
   "DiscoveryResponseDto": [
    "gigya",
+   "pushy",
    "current_deployment",
    "deployments"
   ],
@@ -6868,6 +6948,11 @@
    "state",
    "error"
   ],
+  "FabricDto": [
+   "nodeId",
+   "fabricId",
+   "vendorId"
+  ],
   "FavoriteDTO": [
    "favorite_id",
    "name",
@@ -6897,9 +6982,6 @@
   "FeatureCollection": [
    "type",
    "features"
-  ],
-  "FetchedUrlHolder": [
-   "url"
   ],
   "Firmware$DockFirmware": [
    "version",
@@ -7014,7 +7096,8 @@
    "entity_id",
    "robot_id",
    "robot_pmap_sharing",
-   "creation_timestamp"
+   "creation_timestamp",
+   "fabrics"
   ],
   "HouseholdScheduleDto": [
    "schedules",
@@ -7433,7 +7516,8 @@
    "type"
   ],
   "PolicyZoneFeature$Properties": [
-   "type"
+   "type",
+   "threshold_type"
   ],
   "PolygonInfoDto": [
    "p2mapId",
@@ -7448,6 +7532,10 @@
    "point",
    "orientation",
    "operatingModes"
+  ],
+  "PushyDto": [
+   "enterprise_host",
+   "package_name_suffix"
   ],
   "RawLiveMapUpdatePositionUpdateResponseDto": [
    "timestamp",
@@ -7480,6 +7568,8 @@
    "heatedWater",
    "operatingMode",
    "padWetness",
+   "sealForce",
+   "spray",
    "suctionLevel",
    "swScrub",
    "twoPass"
@@ -7691,7 +7781,8 @@
    "subtitle_id",
    "image_id",
    "substitutions",
-   "answers"
+   "answers",
+   "answer_freeform"
   ],
   "SurveyResponseDto": [
    "type",
@@ -7709,7 +7800,8 @@
   ],
   "SurveyResponseDto$QuestionResponse": [
    "question_id",
-   "answers"
+   "answers",
+   "answer_freeform"
   ],
   "TentativeLocationInfoDto": [
    "p2mapId",
@@ -7815,6 +7907,7 @@
   "carpetBoost": "CarpetBoost",
   "childLock": "ChildLock",
   "detergent": "Detergent",
+  "dryDMode": "DryDMode",
   "langs2.aSlots": "ASlots",
   "langs2.dLangs": "DLangs",
   "langs2.sLang": "SelectedLanguage",
@@ -7830,6 +7923,8 @@
   "pwHeat": "PwHeat",
   "pwReturn": "PwReturn",
   "pwTimeInterval": "PwTimeInterval",
+  "sanitizationMode": "SanitizationMode",
+  "sprayMode": "SprayMode",
   "suctionLevel": "SuctionLevel",
   "swScrub": "Scrub",
   "timezone": "Timezone",

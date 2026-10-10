@@ -42,7 +42,13 @@ sys.path.insert(0, str(ROOT))
 #: neighbours) is checked the same way -- its numbers are the vendor's.
 CHECKED: dict[str, str] = {
     "CleaningProfileType": "ProfileType",
-    "RegionType": "IrobotRegionType",
+    # IrobotRegionType until app 3.0.0; 3.2.0 dropped it, and the same
+    # three kinds now carry their wire values in MissionRegionType.
+    "RegionType": "MissionRegionType",
+    "Initiator": "Initiator",
+    # App 3.2.0.
+    "SprayMode": "SprayModeOption",
+    "DryDebrisMode": "DryDModeOption",
     "RoomStatus": "RoomEvent.RoomStatus",
     "TravelReason": "TravelEvent.TravelReason",
     "TravelStatus": "TravelEvent.TravelStatus",
@@ -83,15 +89,8 @@ CHECKED: dict[str, str] = {
 #: vendor enum" would discard a genuine mapping to avoid admitting a
 #: gap in the extract.
 PARTIAL: dict[str, tuple[str, frozenset[str], str]] = {
-    "Initiator": (
-        "Initiator",
-        frozenset({"GigyaDefinitions.Providers.GOOGLE"}),
-        "The Google member's value is an unresolved constant reference "
-        "in the extract, not a literal. Shipping it as a wire value "
-        "would ship the decompiler's placeholder; omitting it loses "
-        "nothing, since `initiator` stays a str and an unrecognised "
-        "value passes through.",
-    ),
+    # Empty since 0.6.0. Initiator was here until the 3.2.0 regeneration
+    # resolved its Google member's constant to `google`.
 }
 
 #: Value sets with NO vendor enum, each with the reason it has none.
@@ -158,6 +157,21 @@ NO_VENDOR_ENUM: dict[str, str] = {
     "CleaningPasses": "Public API vocabulary; the wire field is twoPass, a bool.",
     "LiquidAmountLevel": "Public API vocabulary for pad wetness levels.",
     "SoftwareScrub": "Public API on/off wrapper over the swScrub integer.",
+    "CloudErrorReason": (
+        "This library's classification of its own failures -- transport, "
+        "account, HTTP -- for callers to translate. Never on the wire."
+    ),
+    "ThresholdStatus": (
+        "Groups threshold_type's nine wire values into five, as app "
+        "3.2.0's Kotlin P2MapThresholdInfo.Status does in code. That "
+        "Status is not serialised and has no value table; the Dart "
+        "ThresholdStatus is index-based and names different things."
+    ),
+    "SanitizationMode": (
+        "sanitizationMode, app 3.2.0. The Kotlin side models it as a "
+        "sealed class (Enabled 1, Disabled 0) rather than an enum, and "
+        "the Dart side has no enum for it at all."
+    ),
     "CarpetBoostSettings": (
         "Three-value API wrapper over carpetBoost. Value-set matching is "
         "meaningless for a 0/1/2 set -- it matches dozens of unrelated "

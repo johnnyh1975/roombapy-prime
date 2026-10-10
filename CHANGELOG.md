@@ -6,6 +6,108 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.6.0] - 2026-10-10
+
+Brought up to the Prime app 3.2.0 (build 3020012). Summary for
+upgraders: `release-notes/v0.6.0.md`.
+
+### Breaking
+
+- **`reset_robot_parts()` needs part ids.** `PrimeRestClient.reset_robot_parts(blid, part_ids, counters=None)`
+  and `PrimeRobot.reset_robot_parts(part_ids, counters=None)`: `part_ids`
+  is required, and an empty list or an empty id raises `ValueError`.
+  Ids go out as strings; a counter keyed by the number finds its id.
+  Called without ids, 0.5.0 sent a body that named no part.
+
+### Fixed
+
+- **The part reset sends the app's body.** `{"parts": [{"part_id": …,
+  "counter": 0}]}`, as both app 3.0.0 and 3.2.0 send it
+  (`AssetResetHealthPayloadDto`). 0.5.0 added `robot_id` and `num_parts`:
+  the fields of `AssetHealthResetDto`, which is the request's response.
+  The body is now the one `ClassicRestClient.set_robot_part_counter()`
+  is confirmed to send on Classic, with `json.dumps()` spacing.
+- **Five Prime SKU prefixes were missing.** `is_prime_sku()` and
+  `sku_generation()` did not know `Q4` (115 Vac), `Q5` (125 Vac), `F2`
+  (Mini 2), `W3` (725 Combo) and `Z2` (925); the last two are new in
+  3.2.0. Robots of those models were treated as unknown devices. The
+  app's full model table is now in the library, and an import-time check
+  fails if a model in it is missing from the generation check.
+- **`Initiator.GOOGLE` ("google").** The 3.0.0 extract left the member's
+  value as an unresolved constant; the 3.2.0 extract resolves it.
+- **`scripts/check_vendor_value_sets.py` passes again and runs in CI.**
+  It had failed since 0.5.0 on `CloudErrorReason`, unnoticed because
+  nothing ran it.
+- **`RobotPart.from_json()` raised `TypeError`** on a value that was not
+  an object: it answered with `cls()` and `part_id` had no default. Its
+  docstring now gives the app's value sets; `reset_by` is `user` or
+  `auto`, not `cloud`.
+
+### Added
+
+- **Parts catalogue:** `get_parts_catalog(sku, language="en-US",
+  country="US") -> PartsCatalog` and `get_parts_catalog_raw()`, on both
+  REST clients. Unsigned `GET` to the content host, as the app does.
+  `PartsCatalog.parts` are `CatalogPart`s with name, replacement part
+  numbers, interval keys, `guide_url`, `buy_url` and `counter_enabled`;
+  `PartsCatalog.part(part_id)` joins them to `get_robot_parts()`.
+- **App 3.2.0 settings** on `RobotSettings`: `spray_mode` (`sprayMode`,
+  `SprayMode` ignore/avoid/clean), `dry_debris_mode` (`dryDMode`,
+  `DryDebrisMode` disabled/boost), `sanitization_mode`
+  (`sanitizationMode`, `SanitizationMode`). Writable with
+  `set_setting()`.
+- **App 3.2.0 capabilities:** `CapabilityFlags.seal_force`,
+  `.water_spray`, `.dry_debris_mode`, `.sanitize`,
+  `.default_capabilities`; `DigiCap.sanitize_tabs`.
+- **Mission parameters `sealForce` and `spray`** on `CommandParams`
+  (`seal_force`, `spray`; 0/1), for missions and regions.
+- **`DockPadWashing.DEEP_HOT_WATER_WASH` (4).** For `pwHeat` the app
+  treats it as level 3: noHeat, defaultHeat and highHeat. 3.2.0's new
+  `HeatType.deepHeat` (3) is a label only and is offered on no dock.
+- **`MapVerifyResult.OVERLAP` (3)**, which 3.0.0 skipped.
+- **Doorway thresholds:** `ThresholdStatus` and
+  `PolicyZoneFeatureProperties.threshold_status`, the app's mapping of
+  `threshold_type`'s nine wire values onto five statuses.
+- **The app's model table:** `auth.prime_product_mode(sku)`,
+  `PrimeProductMode`, `PRIME_PRODUCT_MODES` (23 modes, with the app's
+  model and product names).
+- `scripts/generate_vendor_errors.py`, which builds the error-text table
+  from the app's locale files. Run on 3.0.0's files it reproduces 0.5.0's
+  table exactly.
+
+### Changed
+
+- **Error texts from app 3.2.0.** Same 112 codes; 173 of the 1,792
+  strings changed, in 79 codes. Among them: 234 now says you can still
+  vacuum without the mop; 4003 and 4004 say the dock's software is
+  updating, not the robot's.
+- **Our text where 3.2.0's got worse.** `vendor_error()` replaces single
+  fields from `_CORRECTIONS`: 234 (3.2.0 dropped "attach a mop" and
+  speaks of a "sweeping task"), 4003/4004 (only the English said the
+  dock's software is updating; now all eight do), English 18/1010
+  (the title lost "put it on the dock to charge") and Dutch 4001. A code
+  in brackets is written as the code: French "(1 008)" becomes
+  "(1008)". `as_shipped=True` returns iRobot's text; the answer is a
+  copy now, not the table's own dict.
+- **Broken placeholders are repaired on the way out**, as ha_roomba_plus
+  did on its own copy of this table: `%robotName` becomes `@val`, and
+  `@val` run into the next word gets its space back. App 3.2.0 ships
+  none; a regeneration that brings one back will not reach a user. A
+  code whose entry has neither the language nor English answers None
+  instead of raising `KeyError`.
+- **`vendor_reference.json` regenerated on app 3.2.0**, over the same
+  scope as before: 529 enums (34 dropped by the app, 57 new), 221
+  serialisers, 39 capability gates (`sealForce`, `waterSpray`,
+  `dryDebrisMode`, `sanitize`), 27 writable settings (`sprayMode`,
+  `dryDMode`, `sanitizationMode`). Two values that were wrong in the
+  3.0.0 file are right now (`Initiator.Google`, `PerimeterState.ERROR`).
+  `IrobotRegionType` is gone from the app; `RegionType` is checked
+  against `MissionRegionType`. The file's `_note_regeneration` lists
+  what changed.
+- `roombapy-prime-verify-classic-cloud`: the Prime reset body it sends is
+  the corrected one, and its text says the two bodies now differ only in
+  spacing.
+
 ## [0.5.0] - 2026-10-05
 
 The first stable release of the 0.5 line. The code is 0.5.0b2's,

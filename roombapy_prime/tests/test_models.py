@@ -2502,6 +2502,15 @@ def test_robot_part_from_json() -> None:
     assert part.count_remaining == 21
 
 
+def test_a_part_that_is_not_an_object_is_an_empty_part() -> None:
+    """from_json() answered a non-object with `cls()`, and `part_id` had
+    no default: a TypeError instead of the empty part it meant."""
+    from roombapy_prime.models import RobotPart
+
+    assert RobotPart.from_json(None) == RobotPart()  # type: ignore[arg-type]
+    assert RobotPart().part_id == ""
+
+
 def test_robot_parts_info_from_json_with_multiple_parts() -> None:
     from roombapy_prime.models import RobotPartsInfo
 
@@ -4866,7 +4875,86 @@ class TestTheLibraryCanNameAnError:
     def test_localisation_works(self):
         from roombapy_prime.vendor_errors import vendor_error
 
-        assert vendor_error(234, "fr")["title"].startswith("Impossible")
+        assert vendor_error(234, "fr")["title"] == "Serpillière non installée"
+
+    def test_the_texts_are_app_3_2_0s(self):
+        """0.6.0 regenerated the table from app 3.2.0. 3.0.0 said the
+        ROBOT was updating for 4003; 3.2.0 says it is the dock, which is
+        the difference a reader acts on."""
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert (
+            vendor_error(4003, as_shipped=True)["title"]
+            == "Robot dock software is updating"
+        )
+        assert vendor_error(234)["title"] == "Mop not in place"
+
+    def test_where_3_2_0_made_a_text_worse_ours_replaces_it(self):
+        """234 says what to do again, 4003 says the dock in every
+        language, not only in English."""
+        from roombapy_prime.vendor_errors import vendor_error
+
+        assert "Kehraufgabe" in vendor_error(234, "de", as_shipped=True)["content"]
+        assert vendor_error(234, "de")["content"].startswith("Setzen Sie den Wischmopp ein")
+        assert vendor_error(4003, "de")["title"] == "Software der Dockingstation wird aktualisiert"
+        assert vendor_error(4003, "de", as_shipped=True)["title"] == "Roboter wird aktualisiert"
+        assert vendor_error(18)["content"].startswith("Place @val on its dock to charge.")
+
+    def test_every_correction_still_corrects_something(self):
+        """A correction that names a field iRobot no longer ships, or
+        that iRobot has since written the same way, is noise: the next
+        regeneration should drop it."""
+        from roombapy_prime.vendor_errors import _CORRECTIONS, VENDOR_ERROR_TEXTS
+
+        for code, langs in _CORRECTIONS.items():
+            for lang, fields in langs.items():
+                for field, text in fields.items():
+                    shipped = VENDOR_ERROR_TEXTS[code][lang][field]
+                    assert text != shipped, (code, lang, field)
+                    assert text.endswith(f"({code})") == shipped.endswith(f"({code})")
+
+    def test_a_code_is_never_grouped_like_a_number(self):
+        """3.2.0's French writes "(1 008)" and "(4\u00a0003)"."""
+        import re
+
+        from roombapy_prime.vendor_errors import VENDOR_ERROR_TEXTS, vendor_error
+
+        assert vendor_error(1008, "fr")["content"].endswith("(1008)")
+        assert "(1025)" in vendor_error(1025, "fr")["content"]
+        grouped = re.compile(r"\(\d{1,3}[ \u00a0\u202f]\d{3}\)")
+        for code in VENDOR_ERROR_TEXTS:
+            for lang in ("de", "en", "es", "fr", "it", "nl", "pl", "pt"):
+                for text in vendor_error(code, lang).values():
+                    assert not grouped.search(text), (code, lang)
+
+    def test_a_broken_placeholder_is_repaired_on_the_way_out(self, monkeypatch):
+        """3.0.0 shipped `%robotName` and `@valUpewnij`; 3.2.0 does not,
+        and a regeneration that brings one back must not reach a user."""
+        from roombapy_prime import vendor_errors
+
+        monkeypatch.setitem(
+            vendor_errors.VENDOR_ERROR_TEXTS,
+            999999,
+            {"pl": {"title": "%robotName stoi", "content": "@valUpewnij się. (999999)"}},
+        )
+        found = vendor_errors.vendor_error(999999, "pl")
+
+        assert found == {"title": "@val stoi", "content": "@val Upewnij się. (999999)"}
+        assert vendor_errors.vendor_error(999999, "pl", as_shipped=True)["title"] == "%robotName stoi"
+
+    def test_a_code_without_the_language_or_english_is_no_text(self, monkeypatch):
+        from roombapy_prime import vendor_errors
+
+        monkeypatch.setitem(vendor_errors.VENDOR_ERROR_TEXTS, 999999, {})
+
+        assert vendor_errors.vendor_error(999999, "de") is None
+
+    def test_the_answer_is_a_copy(self):
+        from roombapy_prime.vendor_errors import vendor_error
+
+        vendor_error(46)["title"] = "changed"
+        vendor_error(46, as_shipped=True)["title"] = "changed"
+        assert vendor_error(46)["title"] == "Battery too low to clean"
 
     def test_an_unknown_language_falls_back_to_english(self):
         """An English sentence that says what to do beats a localised
@@ -7350,3 +7438,94 @@ class TestTheCurrentMapVersionHasThreeSpellings:
 
     def test_none_when_the_robot_names_no_version(self):
         assert self._map().current_map_version is None
+
+
+class TestApp320Fields:
+    """0.6.0: what app 3.2.0 added to the shadow and the mission
+    parameters, read under the keys the app uses."""
+
+    def test_the_three_new_settings_are_read(self):
+        from roombapy_prime.models import DryDebrisMode, RobotSettings, SanitizationMode, SprayMode
+
+        s = RobotSettings.from_json({"sprayMode": 2, "dryDMode": 1, "sanitizationMode": 0})
+
+        assert (s.spray_mode, s.dry_debris_mode, s.sanitization_mode) == (2, 1, 0)
+        assert SprayMode(s.spray_mode) is SprayMode.CLEAN
+        assert DryDebrisMode(s.dry_debris_mode) is DryDebrisMode.BOOST
+        assert SanitizationMode(s.sanitization_mode) is SanitizationMode.DISABLED
+
+    def test_absent_settings_stay_none(self):
+        from roombapy_prime.models import RobotSettings
+
+        s = RobotSettings.from_json({})
+
+        assert (s.spray_mode, s.dry_debris_mode, s.sanitization_mode) == (None, None, None)
+
+    def test_the_new_capabilities_are_read(self):
+        from roombapy_prime.models import CapabilityFlags, DigiCap
+
+        cap = CapabilityFlags.from_json(
+            {"sealForce": 1, "waterSpray": 1, "dryDMode": 1, "sanitize": 1, "defCaps": 3}
+        )
+        digi = DigiCap.from_json({"sanitizeTabs": True})
+
+        assert (cap.seal_force, cap.water_spray, cap.dry_debris_mode, cap.sanitize) == (1, 1, 1, 1)
+        assert cap.default_capabilities == 3
+        assert digi.sanitize_tabs is True
+
+    def test_seal_force_and_spray_round_trip(self):
+        from roombapy_prime.models import CommandParams
+
+        params = CommandParams(seal_force=1, spray=0)
+
+        wire = params.to_json()
+
+        assert (wire["sealForce"], wire["spray"]) == (1, 0)
+        assert CommandParams.from_json(wire) == params
+
+    def test_unset_they_are_not_sent(self):
+        from roombapy_prime.models import CommandParams
+
+        wire = CommandParams(suction_level=2).to_json()
+
+        assert "sealForce" not in wire and "spray" not in wire
+
+    def test_the_docstring_counts_the_fields(self):
+        """The count was wrong twice. Now a test keeps it."""
+        import dataclasses
+
+        from roombapy_prime.models import CommandParams
+
+        count = len(dataclasses.fields(CommandParams))
+        assert (CommandParams.__doc__ or "").startswith(f"{count} fields")
+
+    def test_dock_wash_level_four(self):
+        from roombapy_prime.models import DockPadWashing
+
+        assert DockPadWashing(4) is DockPadWashing.DEEP_HOT_WATER_WASH
+
+    def test_google_starts_missions(self):
+        from roombapy_prime.models import Initiator
+
+        assert Initiator("google") is Initiator.GOOGLE
+
+
+class TestThePartsCatalogueModel:
+    def test_a_non_object_is_empty(self):
+        from roombapy_prime.models import CatalogPart, PartsCatalog
+
+        assert PartsCatalog.from_json([]) == PartsCatalog()  # type: ignore[arg-type]
+        assert CatalogPart.from_json(None).part_id == ""  # type: ignore[arg-type]
+
+    def test_missing_parts_are_an_empty_list(self):
+        from roombapy_prime.models import PartsCatalog
+
+        catalog = PartsCatalog.from_json({"buyPartsUrl": "u", "parts": None})
+
+        assert catalog.parts == [] and catalog.part("1") is None
+
+    def test_a_null_part_id_is_empty_not_none(self):
+        from roombapy_prime.models import CatalogPart
+
+        assert CatalogPart.from_json({"part_id": None}).part_id == ""
+        assert CatalogPart.from_json({"part_id": 0}).part_id == "0"

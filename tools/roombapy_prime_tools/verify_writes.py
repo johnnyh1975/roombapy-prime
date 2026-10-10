@@ -44,9 +44,9 @@ is not an oversight.
 
 A tester who accidentally deletes a map loses weeks of mapping, every
 zone and every room name on it -- to confirm a command nobody wants to
-use. `reset_robot_parts` takes no part argument and appears to reset all
-consumable counters at once, irreversibly. `reset_robot` is a factory
-reset.
+use. `reset_robot_parts` marks a part as new, and a counter written to
+zero cannot be written back: nothing has shown that restoring the
+percentage restores the rest. `reset_robot` is a factory reset.
 
 The confirmation prompt is not enough protection for those. Somebody
 reading a list of things to try, in a language they only half follow,

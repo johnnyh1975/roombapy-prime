@@ -680,7 +680,7 @@ async def test_reset_robot_parts_url() -> None:
     session.queue_response(payload={})
     client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
 
-    await client.reset_robot_parts("BLID123")
+    await client.reset_robot_parts("BLID123", ["35"])
 
     call = session.calls[0]
     assert call.method == "POST"
@@ -1564,22 +1564,16 @@ class TestTheTimeEstimateBodyHasFourFields:
         assert "zone_id" not in body
 
 
-class TestThePartResetCarriesABody:
-    """`AssetHealthResetDto` declares `robot_id`, `num_parts` and
-    `parts`. This client sent a POST with **no body at all** — which is
-    why its own docstring said the shape had never been investigated.
+class TestThePartResetCarriesTheAppsBody:
+    """0.6.0. The body is `AssetResetHealthPayloadDto`: `parts`, a list
+    of `AssetPartResetDto` (`part_id`, `counter`), and nothing else.
 
-    A reset with no parts named is not obviously "reset everything"; it
-    is as likely to be rejected or to do nothing.
-
-    THE FIRST FIX SUPPLIED ONLY THE OUTER SHAPE. `parts` went out as a
-    list of bare id strings, and `AssetPartResetDto` declares what
-    belongs in that list: `part_id` AND `counter`. A list of strings is
-    neither a rejection nor a reset — it is a request that cannot mean
-    what it says, which is harder to notice than an error.
+    0.5.0 sent `robot_id` and `num_parts` as well -- the fields of
+    `AssetHealthResetDto`, which is what the request ANSWERS with, not
+    what it sends. A body modelled on the response.
     """
 
-    async def _body(self, part_ids=None, counters=None):
+    async def _body(self, part_ids, counters=None):
         from unittest.mock import AsyncMock, patch
 
         from roombapy_prime.rest_client import PrimeRestClient
@@ -1595,23 +1589,21 @@ class TestThePartResetCarriesABody:
         return req.await_args.kwargs["body"]
 
     @pytest.mark.asyncio
-    async def test_the_robot_is_always_named(self):
-        assert (await self._body())["robot_id"] == "BLID"
+    async def test_the_body_is_parts_and_nothing_else(self):
+        """The app's own request: one part, counter 0."""
+        assert await self._body(["35"]) == {"parts": [{"part_id": "35", "counter": 0}]}
 
     @pytest.mark.asyncio
-    async def test_named_parts_are_sent_as_objects_not_strings(self):
+    async def test_several_parts_are_sent_as_objects_not_strings(self):
         body = await self._body(["67", "72"])
 
         assert body["parts"] == [
             {"part_id": "67", "counter": 0},
             {"part_id": "72", "counter": 0},
         ]
-        assert body["num_parts"] == 2
 
     @pytest.mark.asyncio
     async def test_an_explicit_counter_wins_over_the_default(self):
-        """Zero is an inference — the DTO names `counter` and does not
-        say what a reset writes. A caller who knows better says so."""
         body = await self._body(["67", "72"], {"72": 5})
 
         assert body["parts"] == [
@@ -1620,14 +1612,103 @@ class TestThePartResetCarriesABody:
         ]
 
     @pytest.mark.asyncio
-    async def test_no_parts_means_no_parts_key(self):
-        """Rather than an empty list, which a server may read as "reset
-        nothing" or as "reset everything" -- and the difference matters
-        on a counter somebody cannot restore."""
-        body = await self._body()
+    async def test_numeric_ids_and_counter_keys_match(self):
+        """A caller holding part ids as numbers: the id goes out as a
+        string, and its counter is still found."""
+        body = await self._body([72], {72: 5})
 
-        assert "parts" not in body
-        assert "num_parts" not in body
+        assert body["parts"] == [{"part_id": "72", "counter": 5}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("part_ids", [[], [""]])
+    async def test_no_part_is_an_error_not_a_request(self, part_ids):
+        """There is no "reset everything" body; 0.5.0's `robot_id`-only
+        request named nothing to reset."""
+        with pytest.raises(ValueError, match="at least one part id"):
+            await self._body(part_ids)
+
+
+class TestThePartsCatalogue:
+    """0.6.0: the content host's catalogue, unauthenticated as the app's
+    `ContentStackHost` is, so no SigV4 headers."""
+
+    _ANSWER = {
+        "buyPartsUrl": "https://store.example/parts",
+        "parts": [
+            {
+                "part_id": "30", "part_name": "Filter", "part_name_id": "care_filter_dmc",
+                "sku": "4419682,4639161", "clean_interval": "",
+                "clean_interval_text_id": "clean_interval_1_2_weeks_dmc",
+                "replace_interval": "", "replace_interval_text_id": None,
+                "image": "filter", "guide_url": "https://help.example/web/parts/30.html",
+                "buy_url": "https://directory.example/30", "robot_health_image": None,
+                "robot_health_description_id": None, "scripted_ID": None,
+                "part_category": None,
+            },
+            {"part_id": 31, "counter_enabled": False},
+            "not a part",
+        ],
+    }
+
+    @pytest.mark.asyncio
+    async def test_the_request_is_unsigned_on_the_content_host(self) -> None:
+        session = _FakeSession()
+        session.queue_response(payload=self._ANSWER)
+        client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+        catalog = await client.get_parts_catalog("R980020", "de-DE", "DE")
+
+        call = session.calls[0]
+        assert (call.method, call.url) == (
+            "GET", "https://content-prod.iot.irobotapi.com/v2/de-DE/DE/R980020/parts"
+        )
+        assert call.headers == {"Content-Type": "application/json"}
+        assert catalog.buy_parts_url == "https://store.example/parts"
+
+    @pytest.mark.asyncio
+    async def test_every_known_field_is_read(self) -> None:
+        session = _FakeSession()
+        session.queue_response(payload=self._ANSWER)
+        client = ClassicRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+        catalog = await client.get_parts_catalog("R980020")
+
+        assert session.calls[0].url.endswith("/v2/en-US/US/R980020/parts")
+        assert [p.part_id for p in catalog.parts] == ["30", "31"]
+        part = catalog.part("30")
+        assert part is not None
+        assert (part.part_name, part.sku, part.clean_interval_text_id) == (
+            "Filter", "4419682,4639161", "clean_interval_1_2_weeks_dmc"
+        )
+        assert (part.guide_url, part.buy_url, part.image) == (
+            "https://help.example/web/parts/30.html", "https://directory.example/30", "filter"
+        )
+        assert part.counter_enabled is None
+        assert catalog.part(31) is not None
+        assert catalog.part("31").counter_enabled is False
+        assert catalog.part("99") is None
+
+    @pytest.mark.asyncio
+    async def test_path_segments_are_escaped(self) -> None:
+        session = _FakeSession()
+        session.queue_response(payload={})
+        client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+        catalog = await client.get_parts_catalog("../x", "en/US", "US")
+
+        assert session.calls[0].url == (
+            "https://content-prod.iot.irobotapi.com/v2/en%2FUS/US/..%2Fx/parts"
+        )
+        assert catalog.parts == []
+
+    @pytest.mark.asyncio
+    async def test_an_http_error_is_a_rest_error(self) -> None:
+        session = _FakeSession()
+        session.queue_response(status=404, raw_body="not found")
+        client = PrimeRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+        with pytest.raises(RestHTTPError):
+            await client.get_parts_catalog_raw("X")
 
 
 class TestFavouritesArriveInTwoShapes:
@@ -2012,7 +2093,7 @@ async def test_prime_bodies_keep_their_spacing() -> None:
 
     await client.reset_robot_parts("BLID1", ["35"])
 
-    assert b'"robot_id": "BLID1"' in session.calls[0].data
+    assert session.calls[0].data == b'{"parts": [{"part_id": "35", "counter": 0}]}'
 
 
 @pytest.mark.asyncio

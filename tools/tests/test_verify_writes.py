@@ -77,8 +77,8 @@ class TestDangerousOperationsAreNotOffered:
 
     A tester who accidentally deletes a map loses weeks of mapping, every
     zone and every room name on it -- to confirm a command nobody wants
-    to use. reset_robot_parts takes no part argument and resets every
-    consumable counter at once. reset_robot is a factory reset.
+    to use. reset_robot_parts marks a part as new, which cannot be
+    undone. reset_robot is a factory reset.
 
     A confirmation prompt is not enough for those. Somebody working
     through a list of things to try, in a language they only half follow,

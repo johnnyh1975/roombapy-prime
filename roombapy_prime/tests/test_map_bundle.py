@@ -1,3 +1,4 @@
+import pytest
 
 
 class TestCleanScoreAgainstARealResponse:
@@ -87,3 +88,44 @@ class TestCleanScoreAgainstARealResponse:
         })
 
         assert parsed.clean_score_ranges == [0.7]
+
+
+class TestThresholdStatus:
+    """0.6.0, from app 3.2.0's `thresholdStatus`: nine wire values onto
+    five statuses, DETECTED for anything else."""
+
+    def _status(self, zone_type, threshold_type):
+        from roombapy_prime.models.map_bundle import PolicyZoneFeatureProperties
+
+        props = {"type": zone_type}
+        if threshold_type is not None:
+            props["threshold_type"] = threshold_type
+        return PolicyZoneFeatureProperties.from_json(props).threshold_status
+
+    @pytest.mark.parametrize(
+        ("wire", "status"),
+        [
+            ("detected", "detected"),
+            ("system_unprocessed", "detected"),
+            ("detected_viewed", "detected_viewed"),
+            ("system_viewed", "detected_viewed"),
+            ("detected_accepted", "detected_accepted"),
+            ("system_confirmed", "detected_accepted"),
+            ("detected_deleted", "detected_deleted"),
+            ("system_cancelled", "detected_deleted"),
+            ("user_created", "user_created"),
+        ],
+    )
+    def test_each_wire_value(self, wire, status):
+        from roombapy_prime.models.map_bundle import ThresholdStatus
+
+        assert self._status("Threshold", wire) is ThresholdStatus(status)
+
+    @pytest.mark.parametrize("wire", [None, "", "something_new"])
+    def test_anything_else_is_detected(self, wire):
+        from roombapy_prime.models.map_bundle import ThresholdStatus
+
+        assert self._status("Threshold", wire) is ThresholdStatus.DETECTED
+
+    def test_not_a_threshold_has_no_status(self):
+        assert self._status("KeepOutZone", "detected") is None

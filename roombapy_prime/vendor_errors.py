@@ -17,10 +17,18 @@ they were not merely differently worded:
 The second column tells somebody what to do. The first tells them
 something is wrong, which they already knew from the robot stopping.
 
-SOURCE: `com.irobot.home.prime` 3.0.0 (build 3000008), the Flutter
+SOURCE: `com.irobot.home.prime` 3.2.0 (build 3020012), the Flutter
 rewrite, where the catalogue ships as plain locale JSON rather than
 compiled constants. 112 codes, each with a title and an explanation, in
-25 languages -- the eight this integration speaks are extracted here.
+29 languages -- the eight this integration speaks are extracted here.
+Until 0.6.0 the source was 3.0.0 (build 3000008); 3.2.0 has the same
+112 codes and reworded 173 of the 1,792 strings taken here, in 79
+codes -- among them 234 (no mop is now "you can still vacuum"),
+4003/4004 (the DOCK's software is updating, not the robot's) and
+18/1010 (titles shortened).
+
+WHERE 3.2.0 MADE A TEXT WORSE, OURS: see `_CORRECTIONS`. The table
+itself stays iRobot's, byte for byte.
 
 `@val` IS THE ROBOT'S NAME in iRobot's own strings, and it is left in
 place: a caller that knows the name substitutes it, and one that does
@@ -35,18 +43,122 @@ answers where the vendor is silent.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final
+
+#: WHERE 3.2.0 MADE A TEXT WORSE, OURS (0.6.0). The table below stays a
+#: faithful copy of what iRobot ships; these replace single fields on
+#: the way out of vendor_error(). Each has its reason, and
+#: `vendor_error(..., as_shipped=True)` still returns iRobot's text.
+#:
+#:   234        3.0.0 said "attach a mop and try again"; 3.2.0 says only
+#:              that a "sweeping task" can be done -- what to do is
+#:              gone, and no robot here sweeps. Both halves now: attach
+#:              the mop to mop, vacuuming works without it. Titles kept.
+#:   4003/4004  3.2.0 renamed the English title to the dock's software
+#:              and left the other seven languages saying the robot is
+#:              updating. The source language decides; the seven follow
+#:              it, and the English loses its "Robot dock".
+#:              Dutch also said "basisstation" where 3.2.0's Dutch says
+#:              "laadstation" everywhere else.
+#:   18/1010    The English title lost "place it on the dock to charge",
+#:              and the explanation never had it. The other languages
+#:              kept it in the title; English gets it back in the text.
+#:   4001 nl    The only language whose blank line between the two
+#:              paragraphs was dropped.
+_CORRECTIONS: Final[dict[int, dict[str, dict[str, str]]]] = {
+    234: {
+        "de": {"content": "Setzen Sie den Wischmopp ein, um zu wischen. "
+                          "Saugen ist auch ohne Mopp möglich. (234)"},
+        "en": {"content": "Attach the mop to mop the floor. You can still "
+                          "vacuum without it. (234)"},
+        "es": {"content": "Coloca la fregona para fregar el suelo. Puedes "
+                          "aspirar sin ella. (234)"},
+        "fr": {"content": "Installez la serpillière pour laver le sol. Vous "
+                          "pouvez aspirer sans elle. (234)"},
+        "it": {"content": "Installare il panno per lavare il pavimento. È "
+                          "possibile aspirare anche senza. (234)"},
+        "nl": {"content": "Plaats de dweil om te dweilen. Stofzuigen kan ook "
+                          "zonder dweil. (234)"},
+        "pl": {"content": "Zamontuj mop, aby myć podłogę. Odkurzanie jest "
+                          "możliwe także bez niego. (234)"},
+        "pt": {"content": "Coloque a mopa para lavar o chão. Pode aspirar "
+                          "sem ela. (234)"},
+    },
+    **{
+        code: {
+            "de": {"title": "Software der Dockingstation wird aktualisiert"},
+            "en": {"title": "Dock software is updating"},
+            "es": {"title": "Se está actualizando el software de la base"},
+            "fr": {"title": "Mise à jour du logiciel de la station d’accueil "
+                            "en cours"},
+            "it": {"title": "Aggiornamento del software della base in corso"},
+            "nl": {
+                "title": "Software van het laadstation wordt bijgewerkt",
+                "content": "Dit kan tot 1 uur duren. Laat @val op het "
+                           f"laadstation staan tot de update is voltooid. ({code})",
+            },
+            "pl": {"title": "Trwa aktualizacja oprogramowania stacji dokującej"},
+            "pt": {"title": "A atualizar o software da base"},
+        }
+        for code in (4003, 4004)
+    },
+    **{
+        code: {
+            "en": {"content": "Place @val on its dock to charge. So that it "
+                              "finds its way next time, make sure the path to "
+                              "the dock is clear, and that the dock is plugged "
+                              f"in and in its original location. ({code})"},
+        }
+        for code in (18, 1010)
+    },
+    4001: {
+        "nl": {"content": "Laat @val op het laadstation staan en zorg voor een "
+                          "goede Wi-Fi-verbinding.\n\nBepaalde functies zijn "
+                          "niet beschikbaar totdat de update is voltooid. We "
+                          "blijven de update op de achtergrond opnieuw "
+                          "proberen. (4001)"},
+    },
+}
+
+#: A code in brackets written as a number, "(1 008)" or "(4\u00a0003)":
+#: 3.2.0's French groups thousands, with a space in some texts and a
+#: no-break space in others. The code is an identifier, not a quantity,
+#: and it is read back exactly as the robot reports it.
+_GROUPED_CODE = re.compile(r"\((\d{1,3}(?:[ \u00a0\u202f]\d{3})+)\)")
+
+
+def _ungroup_code(text: str) -> str:
+    return _GROUPED_CODE.sub(lambda m: "(" + re.sub(r"\D", "", m.group(1)) + ")", text)
+
+
+#: BROKEN PLACEHOLDERS, repaired on the way out (from ha_roomba_plus,
+#: whose own copy of this table they were written for). App 3.0.0
+#: shipped `%robotName` once, in English 251, and `@val` run into the
+#: next word three times in Spanish and Polish (`@valUpewnij`). 3.2.0
+#: has none of them; the repair stays, because a regeneration that
+#: brings one back should not put it in front of a user. A capital
+#: straight after `@val` is always the lost space: no language here
+#: continues a word that way.
+_GLUED = re.compile(r"@val(?=[A-ZÁÉÍÓÚÑÜÖÄŻŁŚĆ])")
+
+
+def _tidy(text: str) -> str:
+    """One placeholder, `@val`, never run into the next word."""
+    return _ungroup_code(_GLUED.sub("@val ", text).replace("%robotName", "@val"))
 
 #: PROVENANCE, CHECKED AGAINST THE PRIMARY SOURCE.
 #:
-#: The research package ships iRobot's own language packs -- 25 files
-#: under `locale/common/`, JSON despite the `.odt` extension, 1966
+#: The app ships iRobot's own language packs -- 29 files under
+#: `flutter_assets/packages/module_locale/assets/common/` in 3.2.0
+#: (25 in 3.0.0), JSON despite the `.odt` extension, 2037 to 2039
 #: strings each. `deviceFault_code<N>_title` and `_content` are where
 #: these texts come from.
 #:
 #: VERIFIED EXACTLY: 112 codes in the packs, 112 here, no code on either
 #: side that the other lacks. This table is a complete transcription of
-#: that source, not a sample of it.
+#: that source, not a sample of it. 286 has no `_content` in any
+#: locale; its explanation is "" here, as it always was.
 #:
 #: EIGHT LOCALES OF TWENTY-FIVE, deliberately. The packs carry Arabic,
 #: Hebrew, Japanese, Korean, Chinese, Russian, Turkish, Nordic and more.
@@ -60,14 +172,16 @@ from typing import Any, Final
 #: how a count of "45 files" was reported for a package holding 73.
 #:
 #: code -> locale -> {"title", "content"}. Generated from the app's
-#: locale files; not hand-edited. Regenerate rather than patch.
+#: locale files by `scripts/generate_vendor_errors.py`; not hand-edited.
+#: Regenerate rather than patch. Run against 3.0.0's files the script
+#: reproduces the 0.5.0 table byte for byte.
 VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'content': 'Bewegen Sie @val auf einen neuen, ebenen Untergrund. Wenn er sich bereits '
                        'auf einem ebenen Untergrund befindet, müssen Sie ihn möglicherweise neu '
                        'starten. (1)',
             'title': '@val wurde bewegt oder befindet sich auf einem unebenen Untergrund'},
      'en': {'content': 'Move\xa0@val\xa0to a new, flat surface. If it is already on a flat '
                        'surface, you may need to reboot it. (1)',
-            'title': '@val\xa0moved or on an uneven surface'},
+            'title': '@val was moved or is on an uneven surface'},
      'es': {'content': 'Mueve @val a otra superficie que sea plana. Si ya está en una superficie '
                        'plana, es posible que debas reiniciarlo. (1)',
             'title': '@val se ha movido o está en una superficie irregular'},
@@ -120,8 +234,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
      'es': {'content': 'Empuja la rueda hacia arriba y hacia abajo unas cuantas veces, y luego '
                        'gírala para soltar los residuos atrapados. Debería girar libremente. (4)',
             'title': 'Rueda izquierda atascada'},
-     'fr': {'content': 'Actionnez la roue de haut en bas à plusieurs reprises, puis faites-la '
-                       'tourner pour déloger les débris coincés. Elle doit tourner librement. (4)',
+     'fr': {'content': 'Actionnez la roue gauche ou droite de haut en bas à plusieurs reprises, '
+                       'puis faites-la tourner pour déloger les débris coincés. Elle doit tourner '
+                       'librement. (4)',
             'title': 'La roue gauche est bloquée'},
      'it': {'content': 'Spingere la ruota su e giù un paio di volte, quindi farla girare per '
                        'estrarre i detriti incastrati. Dovrebbe girare liberamente. (4)',
@@ -129,11 +244,12 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
      'nl': {'content': 'Duw het wiel een paar keer op en neer en draai het vervolgens rond om '
                        'vastzittend vuil los te maken. Het moet vrij kunnen draaien. (4)',
             'title': 'Linkerwiel zit vast'},
-     'pl': {'content': 'Popchnij kółko w górę i w dół kilka razy, a następnie obróć nim, aby '
-                       'poluzować uwięzione zanieczyszczenia. Powinno swobodnie się obracać. (4)',
+     'pl': {'content': 'Porusz kilka razy lewym lub prawym kółkiem w górę\xa0i w dół, a następnie '
+                       'obróć\xa0je, aby usunąć\xa0zakleszczone zanieczyszczenia. Kółko powinno '
+                       'obracać\xa0się\xa0swobodnie. (4)',
             'title': 'Lewe kółko jest zablokowane'},
-     'pt': {'content': 'Empurre a roda para cima e para baixo algumas vezes e depois rode-a para '
-                       'soltar os resíduos presos. Deve rodar livremente. (4)',
+     'pt': {'content': 'Mova a roda esquerda/direita para cima e para baixo algumas vezes e rode-a '
+                       'para soltar os resíduos presos. A roda deve rodar livremente. (4)',
             'title': 'Roda esquerda bloqueada'}},
  5: {'de': {'content': 'Drücken Sie das Rad einige Male nach oben und unten und drehen Sie es '
                        'dann, um eingeklemmten Schmutz zu lösen. Es sollte sich frei drehen '
@@ -157,9 +273,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
      'pl': {'content': 'Popchnij kółko w górę i w dół kilka razy, a następnie obróć nim, aby '
                        'poluzować uwięzione zanieczyszczenia. Powinno swobodnie się obracać. (5)',
             'title': 'Prawe koło jest zablokowane'},
-     'pt': {'content': 'Empurre a roda para cima e para baixo algumas vezes e depois rode-a para '
-                       'soltar os resíduos presos. Deve rodar livremente. Deve rodar livremente. '
-                       '(5)',
+     'pt': {'content': 'Mova a roda esquerda/direita para cima e para baixo algumas vezes e rode-a '
+                       'para soltar os resíduos presos. A roda deve rodar livremente. (5)',
             'title': 'Roda direita bloqueada'}},
  6: {'de': {'content': 'Reinigen Sie die unteren Absturzsensoren mit einem weichen, trockenen '
                        'Tuch, damit Treppen korrekt erkannt werden können. Stellen Sie @val auf '
@@ -178,7 +293,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                        'sec afin que les escaliers puissent être détectés avec précision. Placez '
                        '@val sur le sol et appuyez sur le bouton Démarrer pour reprendre le '
                        'nettoyage. (6)',
-            'title': 'Les capteurs de vide ont besoin d’être nettoyés'},
+            'title': 'Nettoyer les capteurs de vide'},
      'it': {'content': 'Pulisci i sensori di dislivello inferiori con un panno morbido e asciutto '
                        'affinché le scale vengano rilevate con precisione. Posiziona @val sul '
                        'pavimento e premi il pulsante di avvio per riprendere la pulizia. (6)',
@@ -190,11 +305,11 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
      'pl': {'content': 'Wyczyść dolne czujniki uskoku miękką, suchą ściereczką, aby schody były '
                        'dokładnie wykrywane. Umieść robota @val na podłodze i naciśnij przycisk '
                        'start, aby wznowić sprzątanie. (6)',
-            'title': 'Czujniki spadku wymagają wyczyszczenia'},
+            'title': 'Wyczyść\xa0czujniki spadku'},
      'pt': {'content': 'Limpe os sensores de desnível inferiores com um pano macio e seco para que '
                        'as escadas possam ser detetadas com precisão. Coloque @val no chão e prima '
                        'o botão Iniciar para retomar a limpeza. (6)',
-            'title': 'Sensores de desnível precisam de limpeza'}},
+            'title': 'Limpar sensores de desnível'}},
  7: {'de': {'content': 'Starten Sie @val neu, um den Fehler zu beheben. Nehmen Sie ihn von der '
                        'Dockingstation und halten Sie dann die Ein-/Aus-Taste 10 Sekunden lang '
                        'gedrückt. Halten Sie sie anschließend 3s lang gedrückt. (7)',
@@ -208,7 +323,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
             'title': 'Problema con el sensor de la rueda izquierda'},
      'fr': {'content': 'Redémarrez @val pour effacer. Retirez-le de la station d’accueil, puis '
                        'maintenez le bouton d’alimentation enfoncé pendant 10 secondes. Puis '
-                       'maintenez-le enfoncé pendant 3s. (7)',
+                       'maintenez-le enfoncé pendant 3 s. (7)',
             'title': 'Problème de capteur de la roue gauche'},
      'it': {'content': 'Riavviare @val per risolverlo. Rimuoverlo dalla base, quindi tenere '
                        'premuto il pulsante di accensione per 10 secondi. Quindi tienilo premuto '
@@ -220,11 +335,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
             'title': 'Probleem met linker wielsensor'},
      'pl': {'content': 'Uruchom ponownie robota @val w celu usunięcia problemu. Wyjmij go ze '
                        'stacji dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania '
-                       'przez 10\xa0sekund. Następnie przytrzymaj przez 3s. (7)',
+                       'przez 10\xa0sekund. Następnie przytrzymaj przez 3 s. (7)',
             'title': 'Wystąpił problem z czujnikiem lewego kółka'},
-     'pt': {'content': 'Reinicie @val para corrigir. Retire-o da base e depois prima sem soltar o '
-                       'botão de alimentação durante 10 segundos. Em seguida, mantenha premido por '
-                       '3s. (7)',
+     'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                       'premido o botão de alimentação durante 10 s e depois durante 3 s. (7)',
             'title': 'Problema no sensor da roda esquerda'}},
  9: {'de': {'content': 'Entfernen Sie alle Objekte, die möglicherweise hinter dem vorderen '
                        'Stoßfänger von @val verkantet sind. (9)',
@@ -260,9 +374,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'mantén pulsado el botón de encendido durante 10\xa0segundos. Luego '
                         'mantenlo presionado 3s. (10)',
              'title': 'Problema con el sensor de la rueda derecha'},
-      'fr': {'content': 'Redémarrez @val pour effacer. Retirez-le de la station d’accueil, puis '
-                        'maintenez le bouton d’alimentation enfoncé pendant 10 secondes. Puis '
-                        'maintenez-le enfoncé pendant 3s. (10)',
+      'fr': {'content': 'Redémarrez @val pour résoudre le problème. Retirez-le de la station '
+                        'd’accueil, maintenez le bouton d’alimentation enfoncé pendant 10 '
+                        'secondes, puis de nouveau pendant 3 secondes. (10)',
              'title': 'Problème de capteur de la roue droite'},
       'it': {'content': 'Riavviare @val per risolverlo. Rimuoverlo dalla base, quindi tenere '
                         'premuto il pulsante di accensione per 10 secondi. Quindi tienilo premuto '
@@ -274,11 +388,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
              'title': 'Probleem met rechterwielsensor'},
       'pl': {'content': 'Uruchom ponownie robota @val w celu usunięcia problemu. Wyjmij go ze '
                         'stacji dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania '
-                        'przez 10\xa0sekund. Następnie przytrzymaj przez 3s. (10)',
+                        'przez 10\xa0sekund. Następnie przytrzymaj przez 3 s. (10)',
              'title': 'Problem z czujnikiem prawego kółka'},
-      'pt': {'content': 'Reinicie @val para corrigir. Retire-o da base e depois prima sem soltar o '
-                        'botão de alimentação durante 10 segundos. Em seguida, mantenha premido '
-                        'por 3s. (10)',
+      'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                        'premido o botão de alimentação durante 10 s e depois durante 3 s. (10)',
              'title': 'Problema no sensor da roda direita'}},
  12: {'de': {'content': 'Starten Sie @val neu, um den Fehler zu beheben. Entfernen Sie ihn von der '
                         'Dockingstation und halten Sie dann die Ein-/Aus-Taste 10 Sekunden lang '
@@ -291,9 +404,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'botón de encendido durante 10\xa0segundos. Luego mantenlo presionado 3s. '
                         '(12)',
              'title': 'Bloqueo del sensor anticaída'},
-      'fr': {'content': 'Redémarrez @val pour effacer. Retirez-le de la station d’accueil, puis '
-                        'maintenez le bouton d’alimentation enfoncé pendant 10 secondes. Puis '
-                        'maintenez-le enfoncé pendant 3s. (12)',
+      'fr': {'content': 'Redémarrez @val pour résoudre le problème. Retirez-le de la station '
+                        'd’accueil, maintenez le bouton d’alimentation enfoncé pendant 10 '
+                        'secondes, puis de nouveau pendant 3 secondes. (12)',
              'title': 'Capteur de vide bloqué'},
       'it': {'content': 'Riavviare @val per risolverlo. Rimuovere dalla base, quindi tenere '
                         'premuto il pulsante di accensione per 10 secondi. Quindi tienilo premuto '
@@ -305,12 +418,11 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
              'title': 'Storing afgrondsensor'},
       'pl': {'content': 'Uruchom ponownie robota @val w celu usunięcia problemu. Wyjmij ze stacji '
                         'dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania przez '
-                        '10\xa0sekund. Następnie przytrzymaj przez 3s. (12)',
+                        '10\xa0sekund. Następnie przytrzymaj przez 3 s. (12)',
              'title': 'Zatrzymanie spowodowane zadziałaniem czujnika spadku'},
-      'pt': {'content': 'Reinicie @val para corrigir. Retire da base e depois prima sem soltar o '
-                        'botão de alimentação durante 10 segundos. Em seguida, mantenha premido '
-                        'por 3s. (12)',
-             'title': 'Bloqueio dos sensores de precipício'}},
+      'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                        'premido o botão de alimentação durante 10 s e depois durante 3 s. (12)',
+             'title': 'Sensor de desnível bloqueado'}},
  14: {'de': {'content': 'Bitte stellen Sie sicher, dass der Behälter von @val eingesetzt ist und '
                         'die Sensoren sauber sind. Verwenden Sie zur Reinigung ein weiches, '
                         'trockenes Tuch.(14)',
@@ -369,8 +481,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                       'stellen Sie ihn zum Laden auf die Dockingstation.'},
       'en': {'content': 'Make sure the path is clear for\xa0@val\xa0to return to its dock. Check '
                         'that the dock is plugged in and in its original location. (18)',
-             'title': "@val\xa0couldn't return to Dock. Move and place it on the Dock for "
-                      'charging.'},
+             'title': '@val could not reach its dock'},
       'es': {'content': 'Asegúrate de que no haya obstáculos en el camino de vuelta a la base de '
                         '@val. Comprueba que la base esté enchufada y en su ubicación original. '
                         '(18)',
@@ -386,9 +497,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'posizione originale. (18)',
              'title': '@val non è riuscito a tornare alla base. Spostalo e posizionalo sulla base '
                       'per la ricarica.'},
-      'nl': {'content': 'Zorg ervoor dat het pad vrij is zodat @val kan terugkeren naar zijn dock. '
-                        'Controleer of het dock is aangesloten en op de oorspronkelijke locatie '
-                        'staat. (18)',
+      'nl': {'content': 'Zorg dat het pad vrij is zodat @val naar het laadstation kan terugkeren. '
+                        'Controleer of het laadstation is aangesloten en op de oorspronkelijke '
+                        'plaats staat. (18)',
              'title': '@val kon niet terugkeren naar het basisstation. Verplaats hem en plaats hem '
                       'op het basisstation om op te laden.'},
       'pl': {'content': 'Upewnij się, że droga jest wolna, aby robot @val mógł wrócić do stacji '
@@ -418,10 +529,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'alla base in modo che il robot abbia spazio a sufficienza per eseguire le '
                         'manovre di ingresso/uscita. (19)',
              'title': 'Impossibile lasciare la base: un ostacolo blocca il passaggio'},
-      'nl': {'content': '@val kon zijn dock niet verlaten. Verwijder obstakels rondom het '
-                        'basisstation zodat het voldoende ruimte heeft om in en uit te rijden. '
+      'nl': {'content': '@val kon het laadstation niet verlaten. Verwijder obstakels rond het '
+                        'laadstation zodat de robot voldoende ruimte heeft om in en uit te rijden. '
                         '(19)',
-             'title': 'Kan het dock niet verlaten: er bevindt zich een obstakel in de weg'},
+             'title': 'Kan het laadstation niet verlaten: obstakel in de weg'},
       'pl': {'content': 'Robot @val nie mógł opuścić stacji dokującej. Usuń przeszkody wokół '
                         'stacji dokującej, aby zapewnić robotowi wystarczającą ilość miejsca do '
                         'wyjazdu i powrotu. (19)',
@@ -544,9 +655,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'mantén pulsado el botón de encendido durante 10\xa0segundos. Luego '
                         'mantenlo presionado 3s. (30)',
              'title': 'Problema del motor de aspiración'},
-      'fr': {'content': 'Redémarrez @val pour effacer. Retirez-le de la station d’accueil, puis '
-                        'maintenez le bouton d’alimentation enfoncé pendant 10 secondes. Puis '
-                        'maintenez-le enfoncé pendant 3s. (30)',
+      'fr': {'content': 'Redémarrez @val pour résoudre le problème. Retirez-le de la station '
+                        'd’accueil, maintenez le bouton d’alimentation enfoncé pendant 10 '
+                        'secondes, puis de nouveau pendant 3 secondes. (30)',
              'title': 'Problème du moteur d’aspiration'},
       'it': {'content': 'Riavviare @val per risolverlo. Rimuoverlo dalla base, quindi tenere '
                         'premuto il pulsante di accensione per 10 secondi. Quindi tienilo premuto '
@@ -558,11 +669,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
              'title': 'Probleem met vacuümmotor'},
       'pl': {'content': 'Uruchom ponownie robota @val w celu usunięcia problemu. Wyjmij go ze '
                         'stacji dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania '
-                        'przez 10\xa0sekund. Następnie przytrzymaj przez 3s. (30)',
+                        'przez 10\xa0sekund. Następnie przytrzymaj przez 3 s. (30)',
              'title': 'Problem z silnikiem odkurzacza'},
-      'pt': {'content': 'Reinicie @val para corrigir. Retire-o da base e depois prima sem soltar o '
-                        'botão de alimentação durante 10 segundos. Em seguida, mantenha premido '
-                        'por 3s. (30)',
+      'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                        'premido o botão de alimentação durante 10 s e depois durante 3 s. (30)',
              'title': 'Problema no motor de aspiração'}},
  32: {'de': {'content': 'Stellen Sie sicher, dass @val die für diese Routine verwendeten Bereiche '
                         'auf der Karte erreichen kann. Dieses Problem kann bei mehreren Karten '
@@ -619,7 +729,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
              'title': '@val zat klem door meubels of een deur'},
       'pl': {'content': 'Sprawdź, czy drzwi są całkowicie otwarte, a wokół mebli jest '
                         'wystarczająco dużo miejsca, aby robot @val mógł się przemieszczać. (33)',
-             'title': 'Robot @val utknął pod meblem lub drzwiami'},
+             'title': 'Robot @val zaklinował\xa0się\xa0przy meblu lub drzwiach'},
       'pt': {'content': 'Certifique-se de que as portas estão totalmente abertas e que existe '
                         'espaço suficiente à volta dos móveis para @val se movimentar. (33)',
              'title': '@val ficou preso em mobiliário ou numa porta'}},
@@ -661,9 +771,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
       'pl': {'content': 'Opróżnij pojemnik robota @val i usuń wszelkie możliwe blokady w '
                         'zgniatarce kurzu oraz kanale powietrznym. (36)',
              'title': 'Pojemnik może być pełny, a zanieczyszczenia mogą blokować kanał powietrzny'},
-      'pt': {'content': 'Esvazie o depósito de @val e remova quaisquer obstruções do compactador '
-                        'de pó e do conduto. (36)',
-             'title': 'O depósito pode estar cheio ou ter resíduos a bloquear o conduto'}},
+      'pt': {'content': 'Esvazie o depósito de pó de @val e remova eventuais obstruções do '
+                        'compactador de pó e da conduta de ar. (36)',
+             'title': 'O depósito de pó pode estar cheio ou a conduta de ar obstruída. Limpe-os.'}},
  42: {'de': {'content': 'Öffnen Sie Türen und entfernen Sie Hindernisse, die den Weg blockieren '
                         'könnten, und versuchen Sie es erneut. (42)',
              'title': '@val konnte einen Ihrer Räume nicht erreichen'},
@@ -729,12 +839,11 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'sufficiente. È possibile controllare lo stato della batteria qui, nella '
                         'scheda Robot. (46)',
              'title': 'Batteria troppo scarica per la pulizia'},
-      'nl': {'content': 'Plaats @val op het dock en laat het voldoende opladen. Je kunt de '
-                        'batterijstatus hier controleren op het tabblad Robots. (46)',
+      'nl': {'content': 'Plaats @val op het laadstation en laat de robot voldoende opladen. Je '
+                        'kunt de accustatus bekijken op het tabblad Robots. (46)',
              'title': 'Batterij is te zwak om te reinigen'},
-      'pl': {'content': 'Umieść robota @val na stacji dokującej i pozwól mu się wystarczająco '
-                        'naładować. Stan naładowania akumulatora możesz sprawdzić tutaj, na '
-                        'zakładce Roboty. (46)',
+      'pl': {'content': 'Umieść\xa0robota @val w stacji dokującej i pozwól mu się\xa0wystarczająco '
+                        'naładować. Stan akumulatora możesz sprawdzić\xa0w zakładce Roboty. (46)',
              'title': 'Zbyt niski poziom akumulatora, aby sprzątać'},
       'pt': {'content': 'Coloque @val na base e permita que carregue suficientemente. Pode '
                         'verificar o estado da bateria aqui no separador Robôs. (46)',
@@ -830,9 +939,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'di accensione per 10 secondi per spegnere, quindi tenere premuto di nuovo '
                         'per 3 secondi per riaccendere. (66)',
              'title': 'La memoria richiede un riavvio rapido'},
-      'nl': {'content': 'Om opnieuw op te starten, haal het apparaat van het dock, houd de '
-                        'aan-/uitknop 10 seconden ingedrukt om uit te schakelen en houd deze '
-                        'opnieuw 3 seconden ingedrukt om weer in te schakelen. (66)',
+      'nl': {'content': 'Haal de robot van het laadstation, houd de aan/uit-knop 10 seconden '
+                        'ingedrukt om hem uit te schakelen en houd de knop daarna 3 seconden '
+                        'ingedrukt om hem weer in te schakelen. (66)',
              'title': 'Geheugenopslag heeft een snelle herstart nodig'},
       'pl': {'content': 'Aby ponownie uruchomić robota, zdejmij go ze stacji dokującej, naciśnij i '
                         'przytrzymaj przycisk zasilania przez 10\xa0sekund, aby go wyłączyć, a '
@@ -856,7 +965,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
              'title': 'La cámara no puede detectar objetos ni obstáculos'},
       'fr': {'content': 'Redémarrez @val pour effacer l’erreur. Retirez-le de la station '
                         'd’accueil, puis maintenez le bouton d’alimentation enfoncé pendant 10 '
-                        'secondes. Puis maintenez-le enfoncé pendant 3s. (68)',
+                        'secondes. Puis maintenez-le enfoncé pendant 3 s. (68)',
              'title': 'La caméra ne parvient pas à détecter les objets et les obstacles'},
       'it': {'content': "Riavviare @val per risolvere l'errore. Rimuovere dalla base, quindi "
                         'tenere premuto il pulsante di accensione per 10 secondi. Quindi tienilo '
@@ -868,11 +977,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
              'title': 'Camera kan geen objecten en obstakels detecteren'},
       'pl': {'content': 'Uruchom ponownie robota @val w celu usunięcia błędu. Wyjmij ze stacji '
                         'dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania przez '
-                        '10\xa0sekund. Następnie przytrzymaj przez 3s. (68)',
+                        '10\xa0sekund. Następnie przytrzymaj przez 3 s. (68)',
              'title': 'Kamera nie może wykryć obiektów i przeszkód'},
-      'pt': {'content': 'Reinicie @val para corrigir o erro. Retire da base e depois prima sem '
-                        'soltar o botão de alimentação durante 10 segundos. Em seguida, mantenha '
-                        'premido por 3s. (68)',
+      'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                        'premido o botão de alimentação durante 10 s e depois durante 3 s. (68)',
              'title': 'A câmara não consegue detetar objetos e obstáculos'}},
  69: {'de': {'content': 'Achten Sie darauf, dass Türen geöffnet sind und der Pfad zur '
                         'Dockingstation nicht blockiert ist. Stellen Sie @val auf die '
@@ -893,8 +1001,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'il percorso verso la base. Posizionare @val sulla base se la batteria è '
                         'esaurita. (69)',
              'title': '@val non è riuscito a tornare alla base'},
-      'nl': {'content': 'Zorg ervoor dat de deuren open zijn en dat niets het pad naar het dock '
-                        'blokkeert. Plaats @val op het dock als de accu leeg is. (69)',
+      'nl': {'content': 'Zorg dat de deuren open zijn en niets het pad naar het laadstation '
+                        'blokkeert. Plaats @val op het laadstation als de accu leeg is. (69)',
              'title': '@val kon de weg naar huis niet vinden'},
       'pl': {'content': 'Upewnij się, że drzwi są otwarte i nic nie blokuje drogi do stacji '
                         'dokującej. Umieść robota @val w stacji dokującej, jeśli jego akumulator '
@@ -924,8 +1032,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Robot @val ma problem z wykryciem akumulatora. Wyjmij i włóż ponownie '
                          'akumulator, aby usunąć błąd. (101)',
               'title': 'Problem z ładowaniem: nie wykryto akumulatora'},
-       'pt': {'content': '@val está com dificuldade em detetar a bateria. Remova e volte a '
-                         'instalar a bateria para corrigir. (101)',
+       'pt': {'content': '@val tem dificuldade em detetar a bateria. Retire a bateria e volte a '
+                         'instalá-la para corrigir o erro. (101)',
               'title': 'Problema de carregamento: bateria não detetada'}},
  102: {'de': {'content': '@val hat Probleme, seinen Akku zu erkennen. Entfernen Sie den Akku und '
                          'setzen Sie ihn wieder ein, um den Fehler zu beheben. (102)',
@@ -948,8 +1056,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Robot @val ma problem z wykryciem akumulatora. Wyjmij i włóż ponownie '
                          'akumulator, aby usunąć błąd. (102)',
               'title': 'Problem z ładowaniem: nie można naładować'},
-       'pt': {'content': '@val está com dificuldade em detetar a bateria. Remova e volte a '
-                         'instalar a bateria para corrigir. (102)',
+       'pt': {'content': '@val tem dificuldade em detetar a bateria. Retire a bateria e volte a '
+                         'instalá-la para corrigir o erro. (102)',
               'title': 'Problema de carregamento: não é possível carregar'}},
  103: {'de': {'content': '@val hat Probleme, seinen Akku zu erkennen. Entfernen Sie den Akku und '
                          'setzen Sie ihn wieder ein, um den Fehler zu beheben. (103)',
@@ -972,8 +1080,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Robot @val ma problem z wykryciem akumulatora. Wyjmij i włóż ponownie '
                          'akumulator, aby usunąć błąd. (103)',
               'title': 'Problem z ładowaniem: nie można naładować'},
-       'pt': {'content': '@val está com dificuldade em detetar a bateria. Remova e volte a '
-                         'instalar a bateria para corrigir. (103)',
+       'pt': {'content': '@val tem dificuldade em detetar a bateria. Retire a bateria e volte a '
+                         'instalá-la para corrigir o erro. (103)',
               'title': 'Problema de carregamento: não é possível carregar'}},
  104: {'de': {'content': 'Trennen Sie die Dockingstation vom Strom und wischen Sie die '
                          'Ladekontakte am Roboter und an der Dockingstation mit einem leicht '
@@ -999,8 +1107,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Odłącz zasilanie stacji dokującej, a następnie przetrzyj styki ładowania '
                          'robota i stacji dokującej lekko wilgotną ściereczką. (104)',
               'title': 'Problem z ładowaniem: styki wymagają wyczyszczenia'},
-       'pt': {'content': 'Desligue a base da alimentação e limpe os contactos de carregamento do '
-                         'robô e da base com um pano ligeiramente húmido. (104)',
+       'pt': {'content': 'Desligue a base da tomada e limpe os contactos de carregamento do robô e '
+                         'da base com um lenço de papel ligeiramente húmido. (104)',
               'title': 'Problema de carregamento: contactos precisam de limpeza'}},
  105: {'de': {'content': 'Trennen Sie die Dockingstation vom Strom und wischen Sie die '
                          'Ladekontakte am Roboter und an der Dockingstation mit einem leicht '
@@ -1026,8 +1134,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Odłącz zasilanie stacji dokującej, a następnie przetrzyj styki ładowania '
                          'robota i stacji dokującej lekko wilgotną ściereczką. (105)',
               'title': 'Problem z ładowaniem: styki wymagają wyczyszczenia'},
-       'pt': {'content': 'Desligue a base da alimentação e limpe os contactos de carregamento do '
-                         'robô e da base com um pano ligeiramente húmido. (105)',
+       'pt': {'content': 'Desligue a base da tomada e limpe os contactos de carregamento do robô e '
+                         'da base com um lenço de papel ligeiramente húmido. (105)',
               'title': 'Problema de carregamento: contactos precisam de limpeza'}},
  106: {'de': {'content': 'Stellen Sie sicher, dass @val und Dockingstation bei Raumtemperatur '
                          'aufbewahrt werden. Entfernen Sie sie von jeglichen Wärmequellen. (106)',
@@ -1040,17 +1148,17 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'Aléjalos de fuentes de calor. (106)',
               'title': 'Problema de carga: espera a que la batería se enfríe e inténtalo de nuevo'},
        'fr': {'content': 'Assurez-vous que @val et la station d’accueil se trouvent dans un '
-                         'endroit à température ambiante. Éloigner de toute source de chaleur. '
-                         '(106)',
-              'title': 'Problème de charge : attendez que la batterie refroidisse'},
+                         'endroit à température ambiante.\xa0Éloignez-les de toute source de '
+                         'chaleur. (106)',
+              'title': 'Problème de charge : attendez que la batterie refroidisse, puis réessayez'},
        'it': {'content': 'Assicurarsi che @val e la base si trovino a temperatura ambiente. '
                          'Allontanare da fonti di calore. (106)',
               'title': 'Problema di ricarica: attendi che la batteria si raffreddi e riprova'},
-       'nl': {'content': 'Zorg ervoor dat de @val en het dock zich in een ruimte op '
-                         'kamertemperatuur bevinden. Plaats uit de buurt van een warmtebron. (106)',
+       'nl': {'content': 'Bewaar @val en het laadstation op kamertemperatuur en uit de buurt van '
+                         'warmtebronnen. (106)',
               'title': 'Oplaadprobleem: wacht tot de accu is afgekoeld en probeer het opnieuw'},
-       'pl': {'content': 'Upewnij się, że robot @val i stacja dokująca są przechowywane w '
-                         'temperaturze pokojowej. Odsuń od źródła ciepła. (106)',
+       'pl': {'content': 'Upewnij się,\xa0że robot @val i stacja dokująca znajdują\xa0się\xa0w '
+                         'miejscu o temperaturze pokojowej. Odsuń je od\xa0źródeł\xa0ciepła. (106)',
               'title': 'Problem z ładowaniem: Poczekaj, aż akumulator ostygnie, i spróbuj '
                        'ponownie'},
        'pt': {'content': 'Certifique-se de que @val e a base estão num local à temperatura '
@@ -1070,7 +1178,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'fr': {'content': 'Assurez-vous que @val et la station d’accueil se trouvent dans un '
                          'endroit à température ambiante. Éloignez de toute source de chaleur. '
                          '(107)',
-              'title': 'Problème de charge : attendez que la batterie refroidisse'},
+              'title': 'Problème de charge : attendez que la batterie refroidisse, puis réessayez'},
        'it': {'content': 'Assicurarsi che @val e la base si trovino a temperatura ambiente. '
                          'Allontanare da fonti di calore. (107)',
               'title': 'Problema di ricarica: attendi che la batteria si raffreddi e riprova'},
@@ -1107,8 +1215,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Robot @val ma problem z wykryciem akumulatora. Wyjmij akumulator, '
                          'odczekaj 15\xa0minut i włóż go ponownie, aby usunąć błąd. (109)',
               'title': 'Problem z ładowaniem: nie można naładować'},
-       'pt': {'content': '@val está com dificuldade em detetar a bateria. Remova a bateria, '
-                         'aguarde 15 minutos e volte a instalar para corrigir. (109)',
+       'pt': {'content': '@val tem dificuldade em detetar a bateria. Retire a bateria, aguarde 15 '
+                         'minutos e volte a instalá-la para corrigir o erro. (109)',
               'title': 'Problema de carregamento: não é possível carregar'}},
  110: {'de': {'content': 'Bitte ersetzen Sie den Akku von @val. Stellen Sie sicher, dass Sie einen '
                          'originalen Akku von iRobot für Ihr Robotermodell verwenden. (110)',
@@ -1162,8 +1270,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Robot @val ma problem z wykryciem akumulatora. Wyjmij akumulator, '
                          'odczekaj 15\xa0minut i włóż go ponownie, aby usunąć błąd. (111)',
               'title': 'Problem z ładowaniem: nie można naładować'},
-       'pt': {'content': '@val está com dificuldade em detetar a bateria. Remova a bateria, '
-                         'aguarde 15 minutos e volte a instalar para corrigir. (111)',
+       'pt': {'content': '@val tem dificuldade em detetar a bateria. Retire a bateria, aguarde 15 '
+                         'minutos e volte a instalá-la para corrigir o erro. (111)',
               'title': 'Problema de carregamento: não é possível carregar'}},
  114: {'de': {'content': 'Starten Sie @val neu, um den Fehler zu beheben. Entfernen Sie ihn von '
                          'der Dockingstation und halten Sie dann die Ein-/Aus-Taste 10 Sekunden '
@@ -1178,7 +1286,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Problema de carga'},
        'fr': {'content': 'Redémarrez @val pour effacer l’erreur. Retirez-le de la station '
                          'd’accueil, puis maintenez le bouton d’alimentation enfoncé pendant 10 '
-                         'secondes. Puis maintenez-le enfoncé pendant 3s. (114)',
+                         'secondes. Puis maintenez-le enfoncé pendant 3 s. (114)',
               'title': 'Problème de charge'},
        'it': {'content': "Riavviare @val per risolvere l'errore. Rimuovere dalla base, quindi "
                          'tenere premuto il pulsante di accensione per 10 secondi. Quindi tienilo '
@@ -1190,11 +1298,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Oplaadprobleem'},
        'pl': {'content': 'Uruchom ponownie robota @val w celu usunięcia błędu. Wyjmij ze stacji '
                          'dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania przez '
-                         '10\xa0sekund. Następnie przytrzymaj przez 3s. (114)',
+                         '10\xa0sekund. Następnie przytrzymaj przez 3 s. (114)',
               'title': 'Błąd ładowania'},
-       'pt': {'content': 'Reinicie @val para corrigir o erro. Retire da base e depois prima sem '
-                         'soltar o botão de alimentação durante 10 segundos. Em seguida, mantenha '
-                         'premido por 3s. (114)',
+       'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                         'premido o botão de alimentação durante 10 s e depois durante 3 s. (114)',
               'title': 'Problema de carregamento'}},
  115: {'de': {'content': 'Bitte ersetzen Sie den Akku von @val. Stellen Sie sicher, dass Sie einen '
                          'originalen Akku von iRobot für Ihr Robotermodell verwenden. (115)',
@@ -1248,8 +1355,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Robot @val ma problem z wykryciem akumulatora. Wyjmij akumulator, '
                          'odczekaj 15\xa0minut i włóż go ponownie, aby usunąć błąd. (117)',
               'title': 'Problem z ładowaniem: nie można naładować'},
-       'pt': {'content': '@val está com dificuldade em detetar a bateria. Remova a bateria, '
-                         'aguarde 15 minutos e volte a instalar para corrigir. (117)',
+       'pt': {'content': '@val tem dificuldade em detetar a bateria. Retire a bateria, aguarde 15 '
+                         'minutos e volte a instalá-la para corrigir o erro. (117)',
               'title': 'Problema de carregamento: não é possível carregar'}},
  119: {'de': {'content': 'Stecken Sie die Dockingstation vom Stromnetz aus und reinigen Sie die '
                          'Ladekontakte an Roboter und Dockingstation mit einem feuchten '
@@ -1275,8 +1382,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Odłącz stację dokującą, a następnie przetrzyj styki ładowania robota i '
                          'stacji dokującej lekko wilgotną ściereczką. (119)',
               'title': 'Problem z ładowaniem: styki wymagają wyczyszczenia'},
-       'pt': {'content': 'Desligue a base e limpe os contactos de carregamento no robô e na base '
-                         'com um lenço ligeiramente húmido. (119)',
+       'pt': {'content': 'Desligue a base da tomada e limpe os contactos de carregamento do robô e '
+                         'da base com um lenço de papel ligeiramente húmido. (119)',
               'title': 'Problema de carregamento: contactos precisam de limpeza'}},
  120: {'de': {'content': '@val hat Probleme, seinen Akku zu erkennen. Entfernen Sie den Akku, '
                          'warten Sie 15 Minuten und setzen Sie ihn zur Fehlerbehebung wieder ein. '
@@ -1300,8 +1407,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Robot @val ma problem z wykryciem akumulatora. Wyjmij akumulator, '
                          'odczekaj 15\xa0minut i włóż go ponownie, aby usunąć błąd. (120)',
               'title': 'Problem z ładowaniem: nie można naładować'},
-       'pt': {'content': '@val está com dificuldade em detetar a bateria. Remova a bateria, '
-                         'aguarde 15 minutos e volte a instalar para corrigir. (120)',
+       'pt': {'content': '@val tem dificuldade em detetar a bateria. Retire a bateria, aguarde 15 '
+                         'minutos e volte a instalá-la para corrigir o erro. (120)',
               'title': 'Problema de carregamento: não é possível carregar'}},
  121: {'de': {'content': 'Stecken Sie die Dockingstation vom Stromnetz aus und reinigen Sie die '
                          'Ladekontakte an Roboter und Dockingstation mit einem feuchten '
@@ -1327,8 +1434,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Odłącz stację dokującą, a następnie przetrzyj styki ładowania robota i '
                          'stacji dokującej lekko wilgotną ściereczką. (121)',
               'title': 'Problem z ładowaniem: styki wymagają wyczyszczenia'},
-       'pt': {'content': 'Desligue a base e limpe os contactos de carregamento no robô e na base '
-                         'com um lenço ligeiramente húmido. (121)',
+       'pt': {'content': 'Desligue a base da tomada e limpe os contactos de carregamento do robô e '
+                         'da base com um lenço de papel ligeiramente húmido. (121)',
               'title': 'Problema de carregamento: contactos precisam de limpeza'}},
  201: {'de': {'content': 'Bewegen Sie @val an einen anderen Ort und versuchen Sie es erneut. (201)',
               'title': 'Start nicht möglich: Treppe oder Absturzstelle erkannt'},
@@ -1345,7 +1452,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Przenieś robota @val w nowe miejsce i spróbuj ponownie. (201)',
               'title': 'Nie można rozpocząć: wykryto schody lub spadek'},
        'pt': {'content': 'Mova @val para outro local e tente novamente. (201)',
-              'title': 'Não é possível iniciar: escadas ou queda detetada'}},
+              'title': 'Não é possível iniciar: escadas ou desnível detetados'}},
  202: {'de': {'content': 'Der Roboter hat erkannt, dass er in der Luft schwebt. Bitte bringen Sie '
                          'ihn an einen neuen Ort und starten Sie ihn erneut.',
               'title': 'Roboter schwebt in der Luft'},
@@ -1408,9 +1515,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Przenieś robota @val poza strefę bez dostępu, aby mógł rozpocząć nową '
                          'rutynę. (210)',
               'title': 'Nie można rozpocząć: utknął w strefie bez dostępu'},
-       'pt': {'content': 'Retire @val da Zona de Exclusão para que possa iniciar a nova rotina. '
+       'pt': {'content': 'Retire @val da Zona interdita para que possa iniciar a nova rotina. '
                          '(210)',
-              'title': 'Não é possível iniciar: preso numa Zona de Exclusão'}},
+              'title': 'Não é possível iniciar: preso numa Zona interdita'}},
  215: {'de': {'content': 'Bitte lassen Sie @val den Akku ausreichend aufladen und versuchen Sie es '
                          'erneut. (215)',
               'title': 'Start nicht möglich: Akkustand niedrig'},
@@ -1433,12 +1540,12 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Nie można rozpocząć: niski poziom akumulatora, naładuj go'},
        'pt': {'content': 'Permita que @val carregue suficientemente a bateria e tente novamente. '
                          '(215)',
-              'title': 'Não é possível iniciar: bateria fraca'}},
+              'title': 'Não é possível iniciar: bateria fraca, carregue o robô'}},
  216: {'de': {'content': 'Leeren Sie den Behälter von @val und entfernen Sie mögliche Hindernisse, '
                          'damit Staubverdichter und Kanal frei sind. (216)',
               'title': 'Start nicht möglich: Behälter voll oder verstopft'},
-       'en': {'content': 'Empty\xa0@val’s bin and clear any possible obstructions to the dust '
-                         'compactor and plenum is clear. (216)',
+       'en': {'content': 'Empty @val’s bin and clear any obstructions in the dust compactor and '
+                         'air duct. (216)',
               'title': 'Unable to start: bin full or clogged'},
        'es': {'content': 'Vacía el depósito de @val y retira cualquier posible obstrucción '
                          'asegurándote de que el compactador de polvo y la cámara estén '
@@ -1457,8 +1564,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Opróżnij pojemnik robota @val i wyczyść wszelkie możliwe blokady w '
                          'zgniatarce kurzu oraz kanale powietrznym. (216)',
               'title': 'Nie można rozpocząć: pojemnik jest pełny lub zatkany'},
-       'pt': {'content': 'Esvazie o depósito de @val e remova quaisquer obstruções do compactador '
-                         'de pó e do conduto. (216)',
+       'pt': {'content': 'Esvazie o depósito de pó de @val. Remova eventuais obstruções do '
+                         'compactador de pó e verifique se a câmara de ar está desimpedida. (216)',
               'title': 'Não é possível iniciar: depósito cheio ou obstruído'}},
  218: {'de': {'content': 'Lassen Sie @val auf seiner Dockingstation, bis das Update abgeschlossen '
                          'ist. Reinigung wird in Kürze verfügbar sein. (218)',
@@ -1475,8 +1582,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'it': {'content': "Lasciare @val sulla base fino al completamento dell'aggiornamento. La "
                          'pulizia sarà di nuovo disponibile a breve. (218)',
               'title': 'Impossibile avviare: aggiornamento del robot in corso'},
-       'nl': {'content': 'Laat @val op het dock staan tot de update is voltooid. Schoonmaken is '
-                         'binnenkort beschikbaar. (218)',
+       'nl': {'content': 'Laat @val op het laadstation staan totdat de update is voltooid. '
+                         'Schoonmaken is daarna weer beschikbaar. (218)',
               'title': 'Kan niet starten: robotupdate wordt uitgevoerd'},
        'pl': {'content': 'Pozostaw robota @val w stacji dokującej do zakończenia aktualizacji. '
                          'Sprzątanie będzie wkrótce dostępne. (218)',
@@ -1491,7 +1598,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'es': {'content': 'Mueve @val a una nueva ubicación e inténtalo de nuevo. (222)',
               'title': 'No se puede iniciar: problema del módulo de navegación'},
        'fr': {'content': 'Déplacez @val vers un nouvel emplacement et réessayez. (222)',
-              'title': 'Impossible de démarrer : problème du module de navigation'},
+              'title': 'Impossible de démarrer : problème du module de navigation. Redémarrez le '
+                       'robot.'},
        'it': {'content': 'Spostare @val in una nuova posizione e riprovare. (222)',
               'title': 'Impossibile avviare: problema del modulo di navigazione'},
        'nl': {'content': 'Verplaats @val naar een nieuwe locatie en probeer het opnieuw. (222)',
@@ -1499,7 +1607,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Przenieś robota @val w nowe miejsce i spróbuj ponownie. (222)',
               'title': 'Nie można rozpocząć: problem z modułem nawigacji, uruchom ponownie robota'},
        'pt': {'content': 'Mova @val para outro local e tente novamente. (222)',
-              'title': 'Não é possível iniciar: problema no módulo de navegação'}},
+              'title': 'Não é possível iniciar: problema no módulo de navegação, reinicie o robô'}},
  224: {'de': {'content': 'Überprüfen Sie, ob die Karte von @val präzise ist, und versuchen Sie es '
                          'erneut. (224)',
               'title': 'Start nicht möglich: Kartenproblem'},
@@ -1508,7 +1616,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'es': {'content': 'Comprueba que el mapa de @val sea correcto e inténtalo de nuevo. (224)',
               'title': 'No se puede iniciar: problema con el mapa'},
        'fr': {'content': 'Vérifiez que la carte de @val est correcte et réessayez. (224)',
-              'title': 'Impossible de démarrer : problème de carte'},
+              'title': 'Impossible de démarrer : problème de carte. Créez une nouvelle carte.'},
        'it': {'content': 'Verificare che la mappa di @val sia accurata e riprovare. (224)',
               'title': 'Impossibile avviare: problema della mappa'},
        'nl': {'content': 'Controleer of de kaart van @val nauwkeurig is en probeer het opnieuw. '
@@ -1517,7 +1625,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Sprawdź, czy mapa robota @val jest dokładna i spróbuj ponownie. (224)',
               'title': 'Nie można rozpocząć: problem z mapą, wykonaj mapowanie ponownie'},
        'pt': {'content': 'Verifique se o mapa de @val está correto e tente novamente. (224)',
-              'title': 'Não é possível iniciar: problema no mapa'}},
+              'title': 'Não é possível iniciar: problema no mapa, volte a mapear'}},
  228: {'de': {'content': 'Gehen Sie im unteren App-Menü zur Registerkarte "Support" und wenden Sie '
                          'sich an unser Team, damit wir Ihren Roboter per Fernzugriff '
                          'aktualisieren können.\n'
@@ -1527,7 +1635,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'en': {'content': 'Go to the Support tab from the bottom app menu and contact our team so '
                          'we can remotely update your robot.\n'
                          'This will update a sensor that helps\xa0@val\xa0work properly. (228)',
-              'title': 'Unable to start: Update to the latest version'},
+              'title': 'Unable to start: Important update available'},
        'es': {'content': 'Ve a la pestaña Atención al cliente en el menú inferior de la app y '
                          'contacta con nuestro equipo para que podamos actualizar tu robot de '
                          'forma remota.\n'
@@ -1539,7 +1647,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'à distance.\n'
                          'Cela mettra à jour un capteur qui aide @val à fonctionner correctement. '
                          '(228)',
-              'title': 'Impossible de démarrer : Mise à jour importante disponible'},
+              'title': 'Impossible de démarrer : mettez à jour vers la dernière version'},
        'it': {'content': "Accedere alla scheda Assistenza dal menu in basso dell'app e contattare "
                          'il nostro team, in modo da poter aggiornare da remoto il robot.\n'
                          'Questo aggiornerà un sensore che aiuta @val a funzionare correttamente. '
@@ -1554,12 +1662,12 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'naszym zespołem, abyśmy mogli zdalnie zaktualizować robota.\n'
                          'Zaktualizuje to czujnik, który umożliwia robotowi @val prawidłowe '
                          'działanie. (228)',
-              'title': 'Nie można rozpocząć: Dostępna jest ważna aktualizacja'},
+              'title': 'Nie można rozpocząć: zaktualizuj oprogramowanie do najnowszej wersji'},
        'pt': {'content': 'Vá ao separador Suporte no menu inferior da aplicação e contacte a nossa '
                          'equipa para que possamos atualizar remotamente o seu robô.\n'
                          'Isto irá atualizar um sensor que ajuda @val a funcionar corretamente. '
                          '(228)',
-              'title': 'Não é possível iniciar: Atualização importante disponível'}},
+              'title': 'Não é possível iniciar: atualize para a versão mais recente'}},
  231: {'de': {'content': 'Bitte füllen Sie den Dockingstation-Tank vollständig auf und versuchen '
                          'Sie es erneut. (231)',
               'title': 'Start nicht möglich: Frischwassertankstand niedrig'},
@@ -1567,8 +1675,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Unable to start: Clean Water Tank level low'},
        'es': {'content': 'Llena el tanque de la base por completo e inténtalo de nuevo. (231)',
               'title': 'No se puede iniciar: nivel bajo del depósito de agua limpia'},
-       'fr': {'content': 'Veuillez remplir complètement le réservoir de la station d’accueil et '
-                         'réessayer. (231)',
+       'fr': {'content': 'Remplissez le réservoir d’eau propre et réessayez. (231)',
               'title': 'Impossible de démarrer : niveau bas du réservoir d’eau propre'},
        'it': {'content': 'Riempire completamente il serbatoio della base e riprovare. (231)',
               'title': 'Impossibile avviare: livello basso del serbatoio dell’acqua pulita'},
@@ -1577,24 +1684,24 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Kan niet starten: schoonwatertank bijna leeg'},
        'pl': {'content': 'Całkowicie napełnij zbiornik na czystą wodę i spróbuj ponownie. (231)',
               'title': 'Nie można rozpocząć: niski poziom w zbiorniku na czystą wodę'},
-       'pt': {'content': 'Encha completamente o depósito da base e tente novamente. (231)',
+       'pt': {'content': 'Encha o depósito de água limpa e tente novamente. (231)',
               'title': 'Não é possível iniciar: nível baixo do depósito de água limpa'}},
- 234: {'de': {'content': 'Bitte befestigen Sie einen Mopp und versuchen Sie es erneut. (234)',
-              'title': 'Start nicht möglich: kein Mopp angebracht'},
-       'en': {'content': 'Please attach a mop and try again. (234)',
-              'title': 'Unable to start: no mop attached'},
-       'es': {'content': 'Instala una mopa e inténtalo de nuevo. (234)',
-              'title': 'No se puede iniciar: mopa no instalada'},
-       'fr': {'content': 'Veuillez fixer une serpillière et réessayer. (234)',
-              'title': 'Impossible de démarrer : aucune serpillière fixée'},
-       'it': {'content': 'Installare un panno di lavaggio e riprovare. (234)',
-              'title': 'Impossibile avviare: panno di lavaggio non installato'},
-       'nl': {'content': 'Bevestig een dweil en probeer het opnieuw. (234)',
-              'title': 'Kan niet starten: geen dweil bevestigd'},
-       'pl': {'content': 'Załóż nakładkę mopującą i spróbuj ponownie. (234)',
-              'title': 'Nie można rozpocząć: nie zamontowano mopa'},
-       'pt': {'content': 'Instale uma mopa e tente novamente. (234)',
-              'title': 'Não é possível iniciar: mopa não instalada'}},
+ 234: {'de': {'content': 'Derzeit kann eine Kehraufgabe ausgeführt werden (234)',
+              'title': 'Wischmopp nicht eingesetzt'},
+       'en': {'content': 'You can currently perform a sweeping task (234)',
+              'title': 'Mop not in place'},
+       'es': {'content': 'Actualmente puede realizar una tarea de barrido (234)',
+              'title': 'Fregona no colocada'},
+       'fr': {'content': 'Vous pouvez actuellement effectuer une tâche de balayage (234)',
+              'title': 'Serpillière non installée'},
+       'it': {'content': "Al momento è possibile eseguire un'attività di spazzamento (234)",
+              'title': 'Panno non in posizione'},
+       'nl': {'content': 'U kunt momenteel een veegtaak uitvoeren (234)',
+              'title': 'Dweil niet geplaatst'},
+       'pl': {'content': 'Obecnie można wykonać zadanie zamiatania (234)',
+              'title': 'Mop nie jest zamontowany'},
+       'pt': {'content': 'Atualmente, pode executar uma tarefa de varrição (234)',
+              'title': 'Mopa não está no lugar'}},
  237: {'de': {'content': 'Bitte setzen Sie den Akku von @val ein und versuchen Sie es erneut. '
                          '(237)',
               'title': 'Start nicht möglich: kein Akku erkannt'},
@@ -1644,13 +1751,13 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Sprzątanie będzie wkrótce dostępne. (239)',
               'title': 'Nie można rozpocząć: zapisywanie mapy'},
        'pt': {'content': 'A limpeza estará disponível em breve. (239)',
-              'title': 'Não é possível iniciar: guardar mapa'}},
+              'title': 'Não é possível iniciar: a guardar o mapa'}},
  251: {'de': {'content': '@val kann aufgrund eines Kameraproblems nicht navigieren. Halten Sie die '
                          'Reinigungstaste 10 Sekunden lang gedrückt, um den Fehler zu beheben. '
                          '(Fehler 251)',
               'title': 'Start nicht möglich: Kameraproblem'},
-       'en': {'content': '%robotName can’t navigate because of a camera issue. To clear error, '
-                         'press and hold clean button for 10 seconds. (Error 251)',
+       'en': {'content': '@val can’t navigate because of a camera issue. To clear error, press and '
+                         'hold clean button for 10 seconds. (Error 251)',
               'title': 'Unable to start: camera issue'},
        'es': {'content': '@val no puede navegar debido a un problema con la cámara. Para '
                          'solucionar el error, mantén pulsado el botón CLEAN durante 10\xa0'
@@ -1667,9 +1774,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'nl': {'content': '@val kan niet navigeren vanwege een cameraprobleem. Houd de CLEAN-knop '
                          '10 seconden ingedrukt om de fout te wissen. (Fout 251)',
               'title': 'Kan niet starten: cameraprobleem'},
-       'pl': {'content': 'Robot @val nie może nawigować z powodu problemu z kamerą. Aby usunąć '
-                         'błąd, naciśnij i przytrzymaj przycisk czyszczenia przez 10\xa0sekund. '
-                         '(Błąd 251)',
+       'pl': {'content': 'Robot @val nie może nawigować\xa0z powodu problemu z kamerą. Aby '
+                         'usunąć\xa0błąd, naciśnij i przytrzymaj przycisk czyszczenia przez 10 '
+                         'sekund. (Błąd 251)',
               'title': 'Nie można rozpocząć: problem z kamerą'},
        'pt': {'content': '@val não consegue navegar devido a um problema na câmara. Para corrigir '
                          'o erro, prima sem soltar o botão Clean durante 10 segundos. (Erro 251)',
@@ -1697,9 +1804,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'abonnementsstatus te controleren. Tik hieronder om in te loggen op het '
                          'portaal. (266)',
               'title': 'Kan niet starten: probleem met iRobot Select-abonnement'},
-       'pl': {'content': 'Odwiedź portal dla członków, aby zaktualizować metodę płatności i '
-                         'sprawdzić stan subskrypcji. Kliknij poniżej, aby zalogować się do '
-                         'portalu. (266)',
+       'pl': {'content': 'Odwiedź\xa0portal subskrypcji, aby zaktualizować\xa0metodę\xa0płatności '
+                         'i sprawdzić\xa0stan subskrypcji. Dotknij poniżej, aby zalogować\xa0'
+                         'się\xa0do portalu. (266)',
               'title': 'Nie można uruchomić: problem z subskrypcją iRobot Select'},
        'pt': {'content': 'Visite o seu Portal de Membros para atualizar o método de pagamento e '
                          'verificar o estado da subscrição. Toque abaixo para iniciar sessão no '
@@ -1720,7 +1827,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Sprzątanie będzie wkrótce dostępne. (268)',
               'title': 'Nie można rozpocząć: zapisywanie mapy'},
        'pt': {'content': 'A limpeza estará disponível em breve. (268)',
-              'title': 'Não é possível iniciar: guardar mapa'}},
+              'title': 'Não é possível iniciar: a guardar o mapa'}},
  283: {'de': {'content': 'Starten Sie @val neu, um den Fehler zu beheben. Entfernen Sie ihn von '
                          'der Dockingstation und halten Sie dann die Ein-/Aus-Taste 10 Sekunden '
                          'lang gedrückt. Halten Sie sie anschließend 3s lang gedrückt. (283)',
@@ -1734,7 +1841,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Problema del sensor láser'},
        'fr': {'content': 'Redémarrez @val pour effacer l’erreur. Retirez-le de la station '
                          'd’accueil, puis maintenez le bouton d’alimentation enfoncé pendant 10 '
-                         'secondes. Puis maintenez-le enfoncé pendant 3s. (283)',
+                         'secondes. Puis maintenez-le enfoncé pendant 3 s. (283)',
               'title': 'Problème de capteur laser'},
        'it': {'content': "Riavviare @val per risolvere l'errore. Rimuovere dalla base, quindi "
                          'tenere premuto il pulsante di accensione per 10 secondi. Quindi tienilo '
@@ -1746,11 +1853,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Probleem met lasersensor'},
        'pl': {'content': 'Uruchom ponownie robota @val w celu usunięcia błędu. Wyjmij ze stacji '
                          'dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania przez '
-                         '10\xa0sekund. Następnie przytrzymaj przez 3s. (283)',
+                         '10\xa0sekund. Następnie przytrzymaj przez 3 s. (283)',
               'title': 'Problem z czujnikiem laserowym'},
-       'pt': {'content': 'Reinicie @val para corrigir o erro. Retire da base e depois prima sem '
-                         'soltar o botão de alimentação durante 10 segundos. Em seguida, mantenha '
-                         'premido por 3s. (283)',
+       'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                         'premido o botão de alimentação durante 10 s e depois durante 3 s. (283)',
               'title': 'Problema no sensor laser'}},
  284: {'de': {'content': 'Bitte löschen Sie die aktuelle Karte von @val und senden Sie den Roboter '
                          'los, um über die Registerkarte "Mein Zuhause" eine neue Karte zu '
@@ -1758,24 +1864,24 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Inkompatible Karte'},
        'en': {'content': "Please delete\xa0@val's current map and send it to create a new map from "
                          'the My Home tab. (284)',
-              'title': 'Map Incompatible'},
+              'title': 'Incompatible map'},
        'es': {'content': 'Elimina el mapa actual de @val y envíalo a crear uno nuevo desde la '
                          'pestaña Mi casa. (284)',
               'title': 'Mapa incompatible'},
-       'fr': {'content': 'Veuillez supprimer la carte actuelle de @val et ordonnez-lui de créer '
-                         'une nouvelle carte à partir de l’onglet Mon domicile. (284)',
+       'fr': {'content': 'Supprimez la carte actuelle de @val, puis lancez la création d’une '
+                         'nouvelle carte depuis l’onglet Mon domicile. (284)',
               'title': 'Carte incompatible'},
        'it': {'content': 'Eliminare la mappa attuale di @val e avviarlo per creare una nuova mappa '
                          'dalla scheda La mia casa. (284)',
               'title': 'Mappa incompatibile'},
-       'nl': {'content': 'Verwijder de huidige kaart van @val en stuur hem opnieuw in om een '
-                         'nieuwe kaart te maken vanaf het tabblad My Home. (284)',
+       'nl': {'content': 'Verwijder de huidige kaart van @val en laat de robot via het tabblad '
+                         'Mijn huis een nieuwe kaart maken. (284)',
               'title': 'Incompatibele kaart'},
-       'pl': {'content': 'Usuń obecną mapę robota @val i wyślij go, aby utworzył nową mapę w '
-                         'zakładce Mój dom. (284)',
+       'pl': {'content': 'Usuń obecną\xa0mapę\xa0robota @val, a następnie uruchom tworzenie nowej '
+                         'mapy z karty Mój dom. (284)',
               'title': 'Niekompatybilna mapa'},
-       'pt': {'content': 'Elimine o mapa atual de @val e envie-o para criar um novo mapa a partir '
-                         'do separador A minha casa. (284)',
+       'pt': {'content': 'Elimine o mapa atual de @val e inicie um novo mapeamento no separador A '
+                         'minha casa. (284)',
               'title': 'Mapa incompatível'}},
  285: {'de': {'content': 'Bitte warten Sie, bis @val die Entleerung des Wassertanks abgeschlossen '
                          'hat, bevor Sie eine neue Routine starten. (285)',
@@ -1870,15 +1976,15 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Przymocuj nakładkę mopującą do płytki nakładki i zamontuj płytkę '
                          'nakładki w robocie @val, aby był gotowy do mycia mopem. (290)',
               'title': 'Nie można rozpocząć mycia mopem: zamocuj płytkę nakładki'},
-       'pt': {'content': 'Coloque uma mopa na placa da mopa e instale a placa em @val para que '
-                         'esteja pronto para lavar. (290)',
+       'pt': {'content': 'Fixe um pano na placa da mopa e instale a placa em @val para que fique '
+                         'pronto a lavar o chão. (290)',
               'title': 'Não é possível iniciar a lavagem: coloque a placa da mopa'}},
  350: {'de': {'content': 'Öffnen Sie den Deckel der Dockingstation und setzen Sie einen neuen '
                          'Beutel ein, indem Sie die Karte in die Führungsschienen schieben. Setzen '
                          'Sie den Deckel wieder auf die Dockingstation auf. (350)',
               'title': 'Entleerung des Behälters nicht verfügbar: Beutel fehlt'},
-       'en': {'content': 'Lift Dock Lid and install a new Dust Bag by sliding along the Guide '
-                         'Rails. Place Lid back on Dock. (350)',
+       'en': {'content': 'Lift dock lid and install a new bag by sliding the card into the guide '
+                         'rails. Place lid back on dock. (350)',
               'title': 'Bin empty unavailable: bag missing'},
        'es': {'content': 'Levanta la tapa de la base e instala una bolsa nueva deslizando el '
                          'cartón por las guías. Vuelve a colocar la tapa en la base. (350)',
@@ -1898,8 +2004,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Podnieś pokrywę stacji dokującej i zainstaluj nowy worek, wsuwając kartę '
                          'w prowadnice. Umieść pokrywę z powrotem na stacji dokującej. (350)',
               'title': 'Opróżnianie pojemnika niedostępne: brak worka'},
-       'pt': {'content': 'Levante a tampa da base e instale um novo saco deslizando o cartão nas '
-                         'calhas. Volte a colocar a tampa na base. (350)',
+       'pt': {'content': 'Levante a tampa da base e instale um novo saco de pó, deslizando-o pelas '
+                         'calhas. Volte a colocar a tampa. (350)',
               'title': 'Esvaziamento do depósito indisponível: saco em falta'}},
  353: {'de': {'content': 'Öffnen Sie den Deckel der Dockingstation und entnehmen Sie den vollen '
                          'Beutel. Setzen Sie einen neuen Beutel ein, indem Sie die Karte in die '
@@ -1921,9 +2027,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'Installare un nuovo sacchetto facendo scorrere la scheda nelle guide. '
                          'Riposizionare il coperchio sulla base. (353)',
               'title': 'Svuotamento cestino non disponibile: sacchetto pieno'},
-       'nl': {'content': 'Til het deksel van het dock op en verwijder de volle zak. Installeer een '
-                         'nieuwe zak door de kaart in de geleiderails te schuiven. Plaats het '
-                         'deksel terug op het dock. (353)',
+       'nl': {'content': 'Open het deksel van het laadstation en verwijder de volle zak. Plaats '
+                         'een nieuwe zak door het kartonnen lipje in de geleiderails te schuiven. '
+                         'Plaats het deksel terug. (353)',
               'title': 'Opvangbak legen niet beschikbaar: zak vol'},
        'pl': {'content': 'Podnieś pokrywę stacji dokującej i wyjmij pełny worek. Zainstaluj nowy '
                          'worek, wsuwając kartę w prowadnice. Umieść pokrywę z powrotem na stacji '
@@ -1990,19 +2096,20 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'es': {'content': 'Instala el tanque en la base para permitir el fregado y el lavado de la '
                          'mopa. (450)',
               'title': 'Falta el tanque de la base'},
-       'fr': {'content': 'Installez le réservoir dans la station d’accueil pour activer le '
-                         'nettoyage à la serpillière et le lavage de serpillière. (450)',
+       'fr': {'content': 'Installez le réservoir d’eau propre dans la station d’accueil pour '
+                         'activer le nettoyage à la serpillière et le lavage de la serpillière. '
+                         '(450)',
               'title': 'Réservoir de la station d’accueil manquant'},
        'it': {'content': 'Installare il serbatoio nella base per abilitare il lavaggio dei '
                          'pavimenti e del panno. (450)',
               'title': 'Serbatoio della base mancante'},
-       'nl': {'content': 'Installeer de tank in het dock om te kunnen dweilen en de dweil te '
-                         'wassen. (450)',
+       'nl': {'content': 'Plaats de tank in het laadstation om dweilen en het wassen van de dweil '
+                         'mogelijk te maken. (450)',
               'title': 'Docktank ontbreekt'},
        'pl': {'content': 'Zainstaluj zbiornik w stacji dokującej, aby umożliwić mycie mopem i '
                          'mycie mopa. (450)',
               'title': 'Brak zbiornika w stacji dokującej'},
-       'pt': {'content': 'Instale o depósito na base para ativar a lavagem e a limpeza da mopa. '
+       'pt': {'content': 'Instale o depósito na base para ativar a lavagem do chão e da mopa. '
                          '(450)',
               'title': 'Depósito da base em falta'}},
  451: {'de': {'content': 'Füllen Sie den Dockingstation-Tank auf, damit @val mit dem Wischen '
@@ -2015,9 +2122,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'es': {'content': 'Llena el tanque de la base para que @val pueda seguir fregando. Si el '
                          'error persiste, reinicia @val. (451)',
               'title': 'Nivel bajo del depósito de agua limpia'},
-       'fr': {'content': 'Remplissez le réservoir de la station d’accueil pour que @val puisse '
-                         'continuer à nettoyer à la serpillière. Si l’erreur persiste, redémarrez '
-                         '@val. (451)',
+       'fr': {'content': 'Remplissez le réservoir d’eau propre pour que @val puisse continuer à '
+                         'nettoyer à la serpillière. Si l’erreur persiste, redémarrez @val. (451)',
               'title': 'Niveau bas du réservoir d’eau propre'},
        'it': {'content': 'Riempire il serbatoio della base in modo che @val possa continuare il '
                          "lavaggio. Se l'errore persiste, riavviare @val. (451)",
@@ -2029,8 +2135,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'mopem. Jeśli błąd będzie się powtarzał, uruchom ponownie robota @val. '
                          '(451)',
               'title': 'Niski poziom w zbiorniku na czystą wodę'},
-       'pt': {'content': 'Encha o depósito da base para que @val possa continuar a lavagem. Se o '
-                         'erro persistir, reinicie @val. (451)',
+       'pt': {'content': 'Encha o depósito de água limpa para que @val possa continuar a lavar o '
+                         'chão. Se o erro persistir, reinicie @val. (451)',
               'title': 'Nível baixo do depósito de água limpa'}},
  455: {'de': {'content': 'Nachfüllen von @val nicht möglich. Saugen ist weiterhin verfügbar, aber '
                          'die Pumpenhardware muss möglicherweise ausgetauscht werden (Fehler 455)',
@@ -2076,10 +2182,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'melaminica inumidita per strofinare i contatti di ricarica sul robot e '
                          'sulla base. (457)',
               'title': 'Problema di comunicazione della base'},
-       'nl': {'content': 'Kan @val niet bijvullen. Haal de stekker van het dock uit het '
-                         'stopcontact en gebruik een vochtige melaminespons om de oplaadcontacten '
-                         'op de robot en het dock schoon te schrobben. (457)',
-              'title': 'Communicatieprobleem met dock'},
+       'nl': {'content': 'Kan @val niet bijvullen. Haal de stekker van het laadstation uit het '
+                         'stopcontact en reinig de laadcontacten van de robot en het laadstation '
+                         'met een vochtige melaminespons. (457)',
+              'title': 'Communicatieprobleem met het laadstation'},
        'pl': {'content': 'Nie można napełnić robota @val. Odłącz stację dokującą i użyj wilgotnej '
                          'gąbki z melaminy, aby wyczyścić styki ładowania na robocie i stacji '
                          'dokującej. (457)',
@@ -2112,14 +2218,14 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'nl': {'content': 'Vul de reinigingsmiddeltank met StayClean™ Mopping Concentrate zodat '
                          'deze automatisch kan worden toegediend tijdens het dweilen. Of schakel '
                          'de functie uit in de robotinstellingen. (464)',
-              'title': 'Reinigingsmiddeltank dock leeg'},
+              'title': 'Reinigingsmiddeltank van laadstation leeg'},
        'pl': {'content': 'Napełnij zbiornik na detergent koncentratem do mycia mopem StayClean™, '
                          'aby mógł być automatycznie dozowany podczas mycia mopem. Można też '
                          'wyłączyć tę funkcję w Ustawieniach robota. (464)',
               'title': 'Zbiornik na detergent w stacji dokującej jest pusty'},
        'pt': {'content': 'Encha o depósito de detergente com StayClean™ Mopping Concentrate para '
                          'distribuição automática durante a lavagem. Ou desative a funcionalidade '
-                         'nas Definições do Robô. (464)',
+                         'nas Definições do robô. (464)',
               'title': 'Depósito de detergente da base vazio'}},
  510: {'de': {'content': 'Bitte warten Sie vor der Reinigung, bis das Update abgeschlossen ist. '
                          'Dies sollte weniger als 20 Minuten dauern. (510)',
@@ -2138,7 +2244,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Aggiornamento della base in corso'},
        'nl': {'content': 'Wacht tot de update is voltooid voordat u gaat schoonmaken. Dit zou '
                          'minder dan 20 minuten moeten duren. (510)',
-              'title': 'Dock-update in uitvoering'},
+              'title': 'Update van laadstation wordt uitgevoerd'},
        'pl': {'content': 'Przed rozpoczęciem sprzątania poczekaj na zakończenie aktualizacji. '
                          'Powinno to potrwać mniej niż 20\xa0minut. (510)',
               'title': 'Trwa aktualizacja stacji dokującej'},
@@ -2147,7 +2253,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Atualização da base em curso'}},
  513: {'de': {'content': 'Schließen Sie die Dockingstation erneut an',
               'title': 'Wischen und Moppwäsche nicht verfügbar: Pumpenproblem'},
-       'en': {'content': 'Replug Dock to restart and enable Mopping and Mop Wash. (513)',
+       'en': {'content': 'Unplug dock from power outlet and plug back in to reboot and enable '
+                         'mopping and mop washing. (513)',
               'title': 'Mopping and mop wash unavailable: pump issue'},
        'es': {'content': 'Vuelve a enchufar la base para reiniciarla y activar el fregado y el '
                          'lavado de la mopa. (513)',
@@ -2157,17 +2264,17 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Nettoyage à la serpillière et lavage de serpillière indisponibles : '
                        'problème de pompe'},
        'it': {'content': 'Ricollega la base per riavviarla e abilitare il lavaggio e il lavaggio '
-                         'del mop. (513)',
+                         'del panno. (513)',
               'title': 'Lavaggio pavimento e lavaggio panno non disponibili: problema alla pompa'},
-       'nl': {'content': 'Sluit het basisstation opnieuw aan om opnieuw te starten en dweilen en '
-                         'mop wassen in te schakelen. (513)',
+       'nl': {'content': 'Sluit het laadstation opnieuw aan om het opnieuw op te starten en '
+                         'dweilen en dweilwassen in te schakelen. (513)',
               'title': 'Dweilen en dweilwassen niet beschikbaar: pompprobleem'},
        'pl': {'content': 'Podłącz ponownie stację dokującą, aby ją zrestartować i włączyć '
                          'mopowanie oraz mycie mopa. (513)',
               'title': 'Mycie mopem i mycie mopa niedostępne: problem z pompą'},
-       'pt': {'content': 'Volte a ligar a base para reiniciar e ativar a lavagem do chão e a '
-                         'lavagem da esfregona. (513)',
-              'title': 'Lavagem e limpeza da mopa indisponíveis: problema na bomba'}},
+       'pt': {'content': 'Desligue a base da tomada e volte a ligá-la para reiniciar e ativar a '
+                         'lavagem do chão e da mopa. (513)',
+              'title': 'Lavagem do chão e da mopa indisponíveis: problema na bomba'}},
  517: {'de': {'content': 'Reinigen Sie den Schmutzwasserbehälter von @val mit milder Seife und '
                          'prüfen Sie ihn auf Verstopfungen. Wischen Sie das Mopp-Reinigungsbecken '
                          'und die Kanalbelüftung der Dockingstation mit einem sauberen, trockenen '
@@ -2202,9 +2309,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'czy brak zatorów. Przetrzyj czystą, suchą szmatką nieckę mycia mopa w '
                          'stacji dokującej oraz otwór wentylacyjny (517)',
               'title': 'Problem z myciem mopa: Wyczyść zbiornik na brudną wodę i stację dokującą'},
-       'pt': {'content': 'Lave o depósito de água suja de @val com sabão neutro e verifique se '
-                         'existem obstruções. Limpe o recipiente de lavagem da mopa da base e a '
-                         'ventilação com um pano limpo e seco (517)',
+       'pt': {'content': 'Lave o depósito de água suja de @val com sabão neutro e verifique se há '
+                         'obstruções. Limpe o tabuleiro de lavagem da mopa e a abertura da conduta '
+                         'de ar da base com um pano limpo e seco. (517)',
               'title': 'Problema de lavagem da mopa: Limpe o depósito de água suja e a base'}},
  520: {'de': {'content': 'Reinigen Sie die IR-Fenster an @val und der Dockingstation mit einem '
                          'sauberen, trockenen Tuch. (520)',
@@ -2221,7 +2328,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'it': {'content': 'Pulire le finestre a infrarossi su @val e sulla base con un panno pulito '
                          'e asciutto. (520)',
               'title': '@val non riesce a comunicare con la sua base'},
-       'nl': {'content': 'Maak de IR-vensters op @val en het dock schoon met een schone, droge '
+       'nl': {'content': 'Reinig de IR-vensters van @val en het laadstation met een schone, droge '
                          'doek. (520)',
               'title': '@val kan niet communiceren met het basisstation'},
        'pl': {'content': 'Wyczyść okienka podczerwieni na robocie @val i stacji dokującej czystą, '
@@ -2249,8 +2356,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Zamontuj ponownie zbiornik na brudną wodę, aby umożliwić mycie mopem i '
                          'mycie mopa. (653)',
               'title': 'Brak zbiornika na brudną wodę'},
-       'pt': {'content': 'Volte a instalar o depósito de água suja para ativar a lavagem e a '
-                         'limpeza da mopa. (653)',
+       'pt': {'content': 'Volte a instalar o depósito de água suja para ativar a lavagem do chão e '
+                         'da mopa. (653)',
               'title': 'Depósito de água suja em falta'}},
  654: {'de': {'content': 'Leeren Sie den Schmutzwassertank und setzen Sie ihn wieder ein, um das '
                          'Wischen und die Moppwäsche zu ermöglichen. (654)',
@@ -2273,8 +2380,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Opróżnij zbiornik na brudną wodę i zamontuj go ponownie, aby umożliwić '
                          'mycie mopem i mycie mopa. (654)',
               'title': 'Zapełniony zbiornik na brudną wodę'},
-       'pt': {'content': 'Esvazie o depósito de água suja e volte a instalar para ativar a lavagem '
-                         'e a limpeza da mopa. (654)',
+       'pt': {'content': 'Esvazie o depósito de água suja e volte a instalá-lo para ativar a '
+                         'lavagem do chão e da mopa. (654)',
               'title': 'Depósito de água suja cheio'}},
  660: {'de': {'content': 'Stecken Sie die Dockingstation vom Stromnetz aus und reinigen Sie die '
                          'Ladekontakte an Roboter und Dockingstation mit einem feuchten '
@@ -2297,12 +2404,12 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'nl': {'content': 'Haal de stekker van het basisstation uit het stopcontact en veeg de '
                          'oplaadcontacten op de robot en het basisstation schoon met een licht '
                          'vochtig doekje. (660)',
-              'title': 'Communicatieprobleem met het dock tijdens het wassen van de dweil'},
+              'title': 'Communicatieprobleem met het laadstation tijdens het wassen van de dweil'},
        'pl': {'content': 'Odłącz stację dokującą, a następnie przetrzyj styki ładowania robota i '
                          'stacji dokującej lekko wilgotną ściereczką. (660)',
               'title': 'Problem z komunikacją ze stacją dokującą podczas mycia mopa'},
-       'pt': {'content': 'Desligue a base e limpe os contactos de carregamento no robô e na base '
-                         'com um lenço ligeiramente húmido. (660)',
+       'pt': {'content': 'Desligue a base da tomada e limpe os contactos de carregamento do robô e '
+                         'da base com um lenço de papel ligeiramente húmido. (660)',
               'title': 'Problema de comunicação com a base durante a lavagem da mopa'}},
  668: {'de': {'content': 'Bitte installieren Sie den Mopp oder setzen Sie ihn neu ein, um Wischen '
                          'und Moppwäsche zu ermöglichen. (668)',
@@ -2323,7 +2430,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
               'title': 'Geen dweil bevestigd'},
        'pl': {'content': 'Zamontuj lub popraw mopa, aby włączyć mycie mopem i mycie mopa. (668)',
               'title': 'Nie podłączono mopa'},
-       'pt': {'content': 'Instale ou reposicione a mopa para ativar a lavagem e a limpeza da mopa. '
+       'pt': {'content': 'Instale ou reposicione a mopa para ativar a lavagem do chão e da mopa. '
                          '(668)',
               'title': 'Sem mopa instalada'}},
  669: {'de': {'content': 'Prüfen Sie den Mopp auf Blockierungen und starten Sie den Roboter neu. '
@@ -2350,18 +2457,19 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'per spegnerlo, quindi premilo di nuovo per 3 secondi per accenderlo. '
                          '(669)',
               'title': 'Il panno si è bloccato durante la pulizia del panno'},
-       'nl': {'content': 'Controleer de Mop op verstoppingen en start de Robot opnieuw. Haal de '
-                         'Robot uit de Dock en druk 10 seconden op de aan/uit-knop om hem uit te '
-                         'schakelen. Druk daarna opnieuw 3 seconden om hem in te schakelen. (669)',
+       'nl': {'content': 'Controleer de dweil op obstakels en start de robot opnieuw. Haal de '
+                         'robot van het laadstation en houd de aan/uit-knop 10 seconden ingedrukt '
+                         'om hem uit te schakelen. Houd de knop daarna 3 seconden ingedrukt om hem '
+                         'weer in te schakelen. (669)',
               'title': 'Dweil is vastgelopen tijdens het wassen van de dweil'},
        'pl': {'content': 'Sprawdź, czy mop nie jest zablokowany, i uruchom robota ponownie. Wyjmij '
-                         'robota ze stacji dokującej i naciśnij przycisk zasilania na 10 sekund, '
-                         'aby go wyłączyć, a następnie ponownie naciśnij przez 3 sekund, aby go '
-                         'włączyć. (669)',
+                         'robota ze stacji dokującej i przytrzymaj przycisk zasilania przez 10 '
+                         'sekund, aby go wyłączyć, a następnie przez 3 sekundy, aby go włączyć. '
+                         '(669)',
               'title': 'Mop zablokował się podczas mycia mopa'},
-       'pt': {'content': 'Verifique se a mopa está obstruída e reinicie o Robot. Retire o Robot da '
-                         'Dock e prima o botão de alimentação durante 10 segundos para o desligar. '
-                         'Depois, prima novamente durante 3 segundos para o ligar. (669)',
+       'pt': {'content': 'Verifique se há obstruções na mopa e reinicie o robô. Retire-o da base e '
+                         'mantenha premido o botão de alimentação durante 10 segundos para o '
+                         'desligar. Volte a premir durante 3 segundos para o ligar. (669)',
               'title': 'A mopa ficou presa durante a lavagem'}},
  670: {'de': {'content': 'Stellen Sie sicher, dass das Mopp-Reinigungsbecken der Dockingstation '
                          'und der Filter ordnungsgemäß installiert sind, um Wischen und '
@@ -2389,9 +2497,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Upewnij się, że niecka mycia mopa oraz filtr są prawidłowo zamontowane, '
                          'aby umożliwić mycie mopem i mycie nakładki. (670)',
               'title': 'Niecka mycia mopa wymaga uwagi'},
-       'pt': {'content': 'Certifique-se de que o recipiente de lavagem da mopa da base e o filtro '
-                         'estão corretamente instalados para ativar a lavagem e limpeza da mopa. '
-                         '(670)',
+       'pt': {'content': 'Verifique se o tabuleiro de lavagem da mopa e o filtro da base estão '
+                         'corretamente instalados para ativar a lavagem do chão e da mopa. (670)',
               'title': 'O recipiente de lavagem da mopa precisa de atenção'}},
  671: {'de': {'content': 'Bitte füllen Sie den Dockingstation-Tank auf und installieren Sie ihn, '
                          'um Wischen und Moppwäsche zu ermöglichen. (671)',
@@ -2402,9 +2509,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'es': {'content': 'Rellena e instala el tanque de la base para permitir el fregado y el '
                          'lavado de la mopa. (671)',
               'title': 'El tanque de la base está vacío o no está instalado'},
-       'fr': {'content': 'Veuillez remplir et installer le réservoir de la station d’accueil pour '
-                         'activer le nettoyage à la serpillière et le lavage de serpillière. (671)',
-              'title': 'Le réservoir de la station d’accueil est vide ou n’est pas installé'},
+       'fr': {'content': 'Remplissez et installez le réservoir d’eau propre pour activer le '
+                         'nettoyage à la serpillière et le lavage de la serpillière. (671)',
+              'title': 'Réservoir d’eau propre vide ou non installé'},
        'it': {'content': 'Riempire e installare il serbatoio della base per abilitare il lavaggio '
                          'del pavimento e la pulizia del panno. (671)',
               'title': 'Serbatoio della base vuoto o non installato'},
@@ -2414,9 +2521,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Napełnij zbiornik i zamontuj go w stacji dokującej, aby umożliwić mycie '
                          'mopem i mycie mopa. (671)',
               'title': 'Zbiornik na czystą wodę jest pusty lub nie został zamontowany'},
-       'pt': {'content': 'Encha e instale o depósito da base para ativar a lavagem e a limpeza da '
-                         'mopa. (671)',
-              'title': 'O depósito da base está vazio ou não instalado'}},
+       'pt': {'content': 'Encha e instale o depósito de água limpa para ativar a lavagem do chão e '
+                         'da mopa. (671)',
+              'title': 'Depósito de água limpa vazio ou não instalado'}},
  672: {'de': {'content': 'Bitte leeren und installieren Sie den Schmutzwassertank der '
                          'Dockingstation, um das Wischen und die Moppwäsche zu ermöglichen. (672)',
               'title': 'Schmutzwassertank ist voll oder nicht installiert'},
@@ -2440,12 +2547,12 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                          'umożliwić mycie mopem i mycie mopa. (672)',
               'title': 'Zbiornik na brudną wodę jest pełny lub niezamontowany'},
        'pt': {'content': 'Esvazie e instale o depósito de água suja da base para ativar a lavagem '
-                         'e a limpeza da mopa. (672)',
+                         'do chão e da mopa. (672)',
               'title': 'O depósito de água suja está cheio ou não instalado'}},
  751: {'de': {'content': 'Stecken Sie die Dockingstation aus, warten Sie 30 Sekunden und stecken '
                          'Sie sie wieder ein. (751)',
               'title': 'Mopptrocknung nicht verfügbar: Gebläseproblem'},
-       'en': {'content': 'Unplug the Dock, wait 30s and plug back in. (751)',
+       'en': {'content': 'Unplug the dock, wait 30 seconds and plug back in. (751)',
               'title': 'Mop dry unavailable: blower issue'},
        'es': {'content': 'Desenchufa la base, espera 30\xa0segundos y vuelve a enchufarla. (751)',
               'title': 'Secado de la mopa no disponible: problema del ventilador'},
@@ -2461,7 +2568,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'pl': {'content': 'Odłącz stację dokującą od zasilania, odczekaj 30\xa0sekund i podłącz '
                          'ponownie. (751)',
               'title': 'Suszenie mopa niedostępne: problem z dmuchawą'},
-       'pt': {'content': 'Desligue a base, aguarde 30 segundos e volte a ligar. (751)',
+       'pt': {'content': 'Desligue a base da tomada, aguarde 30 s e volte a ligá-la. (751)',
               'title': 'Secagem da mopa indisponível: problema no ventilador'}},
  752: {'de': {'content': 'Prüfen Sie den Wischmopp auf Hindernisse und starten Sie den Roboter '
                          'neu: Nehmen Sie den Roboter von der Dockingstation, halten Sie die '
@@ -2478,26 +2585,27 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                        'secarse'},
        'fr': {'content': 'Vérifiez que la serpillière n’est pas obstruée et redémarrez le robot : '
                          'sortez le robot de la station d’accueil, maintenez le bouton '
-                         'd’alimentation enfoncé 10 s puis 3s. (752)',
+                         'd’alimentation enfoncé 10 s puis 3 s. (752)',
               'title': 'Séchage de la serpillière indisponible : la serpillière n’a pas pu se '
                        'soulever pour le séchage'},
-       'it': {'content': 'Controlla che il mop non sia ostruito e riavvia il robot: sposta il '
-                         'robot fuori dalla base, tieni premuto il pulsante di accensione per 10 s '
-                         'e poi per 3s. (752)',
+       'it': {'content': 'Controlla che il panno non sia ostruito e riavvia il robot. Sposta il '
+                         'robot dalla base, tieni premuto il pulsante di accensione per 10 secondi '
+                         'e poi per 3 secondi. (752)',
               'title': 'Asciugatura panno non disponibile: impossibile sollevare il panno per '
                        "l'asciugatura"},
-       'nl': {'content': 'Controleer de mop op obstakels en start de robot opnieuw: haal de robot '
-                         'van het basisstation, houd de aan/uit-knop 10 s en daarna 3s ingedrukt. '
-                         '(752)',
+       'nl': {'content': 'Controleer de dweil op obstakels en start de robot opnieuw. Haal de '
+                         'robot van het laadstation en houd de aan/uit-knop 10 seconden en daarna '
+                         '3 seconden ingedrukt. (752)',
               'title': 'Dweildrogen niet beschikbaar: dweil kon niet omhoog komen om te drogen'},
        'pl': {'content': 'Sprawdź, czy mop nie jest zablokowany, i uruchom ponownie robota: '
                          'Zdejmij robota ze stacji dokującej, przytrzymaj przycisk zasilania przez '
-                         '10 s, a następnie przez 3s. (752)',
+                         '10 s, a następnie przez 3 s. (752)',
               'title': 'Suszenie mopa niedostępne: nie udało się unieść mopa do osuszenia'},
-       'pt': {'content': 'Verifique se existem obstruções na esfregona e reinicie o robô: retire o '
-                         'robô da base, mantenha o botão de alimentação premido por 10 s e depois '
-                         'por 3s. (752)',
-              'title': 'Secagem da mopa indisponível: a mopa não conseguiu levantar para secar'}},
+       'pt': {'content': 'Verifique se há obstruções na mopa e reinicie o robô: retire-o da base, '
+                         'mantenha premido o botão de alimentação durante 10 s e depois durante 3 '
+                         's. (752)',
+              'title': 'Secagem da mopa indisponível: não foi possível elevar a mopa para a '
+                       'secar'}},
  756: {'de': {'content': 'Bitte installieren Sie den Mopp oder setzen Sie ihn neu ein. (756)',
               'title': 'Mopptrocknung nicht verfügbar: Kein Mopp angebracht'},
        'en': {'content': 'Please install or reseat mop. (756)',
@@ -2536,12 +2644,12 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
        'nl': {'content': 'Haal de stekker van het basisstation uit het stopcontact en veeg de '
                          'oplaadcontacten op de robot en het basisstation schoon met een licht '
                          'vochtig doekje. (757)',
-              'title': 'Dweildrogen niet beschikbaar: communicatieprobleem met dock'},
+              'title': 'Dweil drogen niet beschikbaar: communicatieprobleem met het laadstation'},
        'pl': {'content': 'Odłącz stację dokującą, a następnie przetrzyj styki ładowania robota i '
                          'stacji dokującej lekko wilgotną ściereczką. (757)',
               'title': 'Suszenie mopa niedostępne: problem z komunikacją ze stacją dokującą'},
-       'pt': {'content': 'Desligue a base e limpe os contactos de carregamento no robô e na base '
-                         'com um lenço ligeiramente húmido. (757)',
+       'pt': {'content': 'Desligue a base da tomada e limpe os contactos de carregamento do robô e '
+                         'da base com um lenço de papel ligeiramente húmido. (757)',
               'title': 'Secagem da mopa indisponível: problema de comunicação da base'}},
  1000: {'de': {'content': 'Ziehen Sie verhedderte Fasern und Schmutz heraus, damit sich die '
                           'Seitenbürste frei drehen kann. (1000)',
@@ -2595,32 +2703,33 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                           'Umgebung des Wischmopps auf Hindernisse und drücken Sie die '
                           'Ein-/Aus-Taste',
                'title': 'Motor für Moppanhebung blockiert'},
-        'en': {'content': 'This motor is for\xa0@val\xa0to lift or lower its mop plate. Check for '
-                          'obstructions around mop and press the Power button to resume Routine. '
-                          '(1008)',
+        'en': {'content': 'This motor lets @val raise or lower its mop plate. Check for '
+                          'obstructions around the mop and press the Power button to resume the '
+                          'routine. (1008)',
                'title': 'Mop lifting motor stalled'},
         'es': {'content': 'Este motor permite a @val subir o bajar la placa de la mopa. Comprueba '
                           'si hay obstrucciones alrededor de la mopa y pulsa el botón de encendido '
                           'para reanudar la rutina. (1008)',
                'title': 'Motor de elevación de la mopa atascado'},
         'fr': {'content': 'Ce moteur permet à @val de soulever ou d’abaisser son support de '
-                          'serpillière. Vérifiez l’absence d’obstructions autour de la serpillière',
+                          'serpillière. Vérifiez qu’aucun obstacle ne bloque la serpillière, puis '
+                          'appuyez sur le bouton d’alimentation pour reprendre la routine. (1 008)',
                'title': 'Moteur de levage de la serpillière bloqué'},
-        'it': {'content': 'Questo motore consente a @val di sollevare o abbassare la piastra del '
-                          'mop. Verifica che non vi siano ostruzioni intorno al mop e premi il '
-                          'pulsante di accensione per riprendere la routine. (1008)',
+        'it': {'content': 'Questo motore solleva o abbassa la piastra del panno di @val. Verifica '
+                          'che non vi siano ostacoli intorno al panno e premi il pulsante di '
+                          'accensione per riprendere la routine. (1008)',
                'title': 'Motore di sollevamento del panno in stallo'},
-        'nl': {'content': 'Deze motor laat @val de mopplaat omhoog of omlaag bewegen. Controleer '
-                          'op obstakels rond de mop en druk op de aan/uit-knop om de routine te '
+        'nl': {'content': 'Deze motor brengt de dweilplaat van @val omhoog of omlaag. Controleer '
+                          'de dweil op obstakels en druk op de aan/uit-knop om de routine te '
                           'hervatten. (1008)',
                'title': 'Dweilhefmotor vastgelopen'},
         'pl': {'content': 'Ten silnik umożliwia robotowi @val podnoszenie lub opuszczanie płytki '
                           'mopującej. Sprawdź, czy wokół mopa nie ma przeszkód, i naciśnij '
                           'przycisk zasilania, aby wznowić rutynę. (1008)',
                'title': 'Silnik podnoszenia mopa zablokowany'},
-        'pt': {'content': 'Este motor permite que @val levante ou baixe a placa da esfregona. '
-                          'Verifique se existem obstruções à volta da esfregona e prima o botão de '
-                          'alimentação para retomar a rotina. (1008)',
+        'pt': {'content': 'Este motor permite que @val levante ou baixe a placa da mopa. Verifique '
+                          'se existem obstruções à volta da mopa e prima o botão de alimentação '
+                          'para retomar a rotina. (1008)',
                'title': 'Motor de elevação da mopa bloqueado'}},
  1010: {'de': {'content': 'Stellen Sie sicher, dass der Pfad frei ist, damit @val zu seiner '
                           'Dockingstation zurückkehren kann. Überprüfen Sie, ob die Dockingstation '
@@ -2630,8 +2739,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                         'stellen Sie ihn zum Laden auf die Dockingstation.'},
         'en': {'content': 'Make sure the path is clear for\xa0@val\xa0to return to its Dock. Check '
                           'that the dock is plugged in and in its original location. (1010)',
-               'title': "@val\xa0couldn't return to Dock. Move and place it on the Dock for "
-                        'charging.'},
+               'title': '@val could not reach its dock'},
         'es': {'content': 'Asegúrate de que no haya obstáculos en el camino de vuelta a la base de '
                           '@val. Comprueba que la base esté enchufada y en su ubicación original. '
                           '(1010)',
@@ -2647,9 +2755,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                           'posizione originale. (1010)',
                'title': '@val non è riuscito a tornare alla base. Spostalo e posizionalo sulla '
                         'base per la ricarica.'},
-        'nl': {'content': 'Zorg ervoor dat het pad vrij is zodat @val kan terugkeren naar het '
-                          'basisstation. Controleer of het dock is aangesloten en op de '
-                          'oorspronkelijke locatie staat. (1010)',
+        'nl': {'content': 'Zorg dat het pad vrij is zodat @val naar het laadstation kan '
+                          'terugkeren. Controleer of het laadstation is aangesloten en op de '
+                          'oorspronkelijke plaats staat. (1010)',
                'title': '@val kon niet terugkeren naar het basisstation. Verplaats hem en plaats '
                         'hem op het basisstation om op te laden.'},
         'pl': {'content': 'Upewnij się, że droga jest wolna, aby robot @val mógł wrócić do stacji '
@@ -2674,7 +2782,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                'title': 'Problema del sensor láser'},
         'fr': {'content': 'Redémarrez @val pour effacer l’erreur. Retirez-le de la station '
                           'd’accueil, puis maintenez le bouton d’alimentation enfoncé pendant 10 '
-                          'secondes. (1\xa0025) Puis maintenez-le enfoncé pendant 3s.',
+                          'secondes. (1\xa0025) Puis maintenez-le enfoncé pendant 3 s.',
                'title': 'Problème de capteur laser'},
         'it': {'content': "Riavviare @val per risolvere l'errore. Rimuovere dalla base, quindi "
                           'tenere premuto il pulsante di accensione per 10 secondi. Quindi tienilo '
@@ -2688,9 +2796,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                           'dokującej, a następnie naciśnij i przytrzymaj przycisk zasilania przez '
                           '10\xa0sekund. Następnie przytrzymaj przez 3 s. (1025)',
                'title': 'Problem z czujnikiem laserowym'},
-        'pt': {'content': 'Reinicie @val para corrigir o erro. Retire da base e depois prima sem '
-                          'soltar o botão de alimentação durante 10 segundos. Em seguida, mantenha '
-                          'premido por 3 s. (1025)',
+        'pt': {'content': 'Reinicie @val para corrigir o erro. Retire o robô da base. Mantenha '
+                          'premido o botão de alimentação durante 10 s e depois durante 3 s. '
+                          '(1025)',
                'title': 'Problema no sensor laser'}},
  1026: {'de': {'content': 'Überprüfen Sie den Mopp auf Verhedderungen oder Hindernisse und drücken '
                           'Sie die Ein-/Aus-Taste, um die Routine fortzusetzen. (1026)',
@@ -2713,8 +2821,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
         'pl': {'content': 'Sprawdź, czy mop nie jest splątany ani zablokowany, po czym naciśnij '
                           'przycisk zasilania, aby wznowić rutynę. (1026)',
                'title': 'Mop jest splątany lub zablokowany'},
-        'pt': {'content': 'Verifique se existem enredos ou obstruções na mopa e prima o botão de '
-                          'alimentação para retomar a rotina. (1026)',
+        'pt': {'content': 'Verifique se há fios ou outros obstáculos a prender a mopa e prima o '
+                          'botão de alimentação para retomar a rotina. (1026)',
                'title': 'A mopa está enredada ou bloqueada'}},
  1027: {'de': {'content': 'Überprüfen Sie, ob der saubere Wassertank richtig installiert ist und '
                           'ob er nachgefüllt werden muss.',
@@ -2790,24 +2898,24 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                'title': 'Inkompatible Karte'},
         'en': {'content': "Please delete\xa0@val's current map and send it to create a new map "
                           'from the My Home tab. (1029)',
-               'title': 'Map Incompatible'},
+               'title': 'Incompatible map'},
         'es': {'content': 'Elimina el mapa actual de @val y envíalo a crear uno nuevo desde la '
                           'pestaña Mi casa. (1029)',
                'title': 'Mapa incompatible'},
-        'fr': {'content': 'Veuillez supprimer la carte actuelle de @val et ordonnez-lui de créer '
-                          'une nouvelle carte à partir de l’onglet Mon domicile. (1\xa0029)',
+        'fr': {'content': 'Supprimez la carte actuelle de @val, puis lancez la création d’une '
+                          'nouvelle carte depuis l’onglet Mon domicile. (1 029)',
                'title': 'Carte incompatible'},
         'it': {'content': 'Eliminare la mappa attuale di @val e creare una nuova mappa dalla '
                           'scheda La mia casa. (1029)',
                'title': 'Mappa incompatibile'},
-        'nl': {'content': 'Verwijder de huidige kaart van @val en stuur hem/haar opnieuw in om een '
-                          'nieuwe kaart te maken vanaf het tabblad my home. (1029)',
+        'nl': {'content': 'Verwijder de huidige kaart van @val en laat de robot via het tabblad '
+                          'Mijn huis een nieuwe kaart maken. (1029)',
                'title': 'Incompatibele kaart'},
-        'pl': {'content': 'Usuń obecną mapę robota @val i wyślij go, aby utworzył nową mapę w '
-                          'zakładce Mój dom. (1029)',
+        'pl': {'content': 'Usuń obecną\xa0mapę\xa0robota @val, a następnie uruchom tworzenie nowej '
+                          'mapy z karty Mój dom. (1029)',
                'title': 'Niekompatybilna mapa'},
-        'pt': {'content': 'Elimine o mapa atual de @val e envie-o para criar um novo mapa a partir '
-                          'do separador A minha casa. (1029)',
+        'pt': {'content': 'Elimine o mapa atual de @val e inicie um novo mapeamento no separador A '
+                          'minha casa. (1029)',
                'title': 'Mapa incompatível'}},
  1030: {'de': {'content': 'Bewegen Sie @val an einen neuen Ort und setzen Sie die Reinigung fort. '
                           '(1030)',
@@ -2826,7 +2934,7 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
         'pl': {'content': 'Przenieś robota @val w nowe miejsce i wznów sprzątanie. (1030)',
                'title': 'Robot @val utknął w strefie bez mopa'},
         'pt': {'content': 'Mova @val para uma nova localização e retome a limpeza. (1030)',
-               'title': '@val ficou preso numa Zona Sem Mopa'}},
+               'title': '@val ficou preso numa Zona sem lavagem'}},
  1034: {'de': {'content': 'Bringen Sie die Wischtuchplatte von @val wieder an und drücken Sie die '
                           'Ein-/Aus-Taste, um das Wischen fortzusetzen. (1034)',
                'title': 'Wischtuchplatte hat sich gelöst'},
@@ -2851,10 +2959,10 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
         'pt': {'content': 'Volte a instalar a placa da mopa de @val e prima o botão de alimentação '
                           'para retomar a lavagem. (1034)',
                'title': 'A placa da mopa soltou-se'}},
- 3212: {'de': {'content': 'Vergewissern Sie sich, dass Ihr Telefon mit dem Wi-Fi verbunden ist. '
-                          'Wenn weiterhin Probleme auftreten, stellen Sie die Verbindung über das '
-                          'Mobilfunknetz erneut her. (C210)',
-               'title': 'Start nicht möglich: Verbinden Sie Ihr Telefon erneut mit dem Wi-Fi'},
+ 3212: {'de': {'content': 'Prüfen Sie, ob Ihr Smartphone mit dem WLAN verbunden ist. Falls das '
+                          'Problem weiterhin besteht, stellen Sie die Verbindung über mobile Daten '
+                          'erneut her. (C210)',
+               'title': 'Start nicht möglich: Verbinden Sie Ihr Smartphone erneut mit dem WLAN.'},
         'en': {'content': 'Check that your phone is connected to Wi-Fi. If you’re still having '
                           'issues, reconnect using Cellular Data. (C210)',
                'title': 'Unable to start: Reconnect your phone to Wi-Fi'},
@@ -2877,16 +2985,16 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                           'występują problemy, połącz ponownie przy użyciu danych komórkowych. '
                           '(C210)',
                'title': 'Nie można rozpocząć: Ponownie podłącz telefon do sieci Wi-Fi'},
-        'pt': {'content': 'Verifique se o seu telemóvel está ligado ao Wi-Fi. Se o problema '
-                          'persistir, reconecte utilizando os Dados Móveis. (C210)',
-               'title': 'Não é possível iniciar: Reconecte o seu telemóvel ao Wi-Fi'}},
+        'pt': {'content': 'Verifique se o telemóvel está ligado ao Wi-Fi. Se o problema persistir, '
+                          'volte a ligar-se utilizando dados móveis. (C210)',
+               'title': 'Não é possível iniciar: volte a ligar o telemóvel ao Wi-Fi'}},
  3310: {'de': {'content': 'Tippen Sie auf "So wird\'s gemacht", um in wenigen schnellen Schritten '
                           'die App-Verbindung wiederherzustellen, damit @val weiter reinigen kann. '
                           '(C310)',
                'title': 'Roboter-Verbindungsfehler'},
         'en': {'content': 'Tap “Show me how” to follow quick steps to reconnect the app and get\xa0'
                           '@val\xa0back to cleaning. (C310)',
-               'title': 'Robot connection abnormal'},
+               'title': 'Unable to start: the app is having a connection issue'},
         'es': {'content': 'Toca “Mostrar cómo” para seguir unos rápidos pasos para volver a '
                           'conectar la app y que @val vuelva a limpiar. (C310)',
                'title': 'Conexión anómala del robot'},
@@ -2900,12 +3008,12 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
         'nl': {'content': 'Tik op ‘Laat me zien hoe’ om de snelle stappen te volgen om de app '
                           'opnieuw te verbinden en @val weer te laten schoonmaken. (C310)',
                'title': 'Afwijkende robotverbinding'},
-        'pl': {'content': 'Stuknij przycisk „Pokaż mi jak”, aby wykonać szybkie kroki w celu '
-                          'ponownego podłączenia aplikacji i przywrócenia robota @val do '
-                          'sprzątania. (C310)',
+        'pl': {'content': 'Dotknij przycisku\xa0„Pokaż\xa0mi, jak”, aby wykonać\xa0krótkie '
+                          'instrukcje ponownego połączenia aplikacji i umożliwić\xa0robotowi @val '
+                          'wznowienie sprzątania. (C310)',
                'title': 'Nieprawidłowe połączenie z robotem'},
-        'pt': {'content': 'Toque em "Mostrar como" para seguir os passos rápidos e voltar a ligar '
-                          'a aplicação e retomar a limpeza de @val. (C310)',
+        'pt': {'content': 'Toque em «Mostrar como» para seguir os passos de ligação da aplicação e '
+                          'pôr @val a limpar novamente. (C310)',
                'title': 'Ligação anómala do robô'}},
  4001: {'de': {'content': 'Lassen Sie @val auf seiner Dockingstation und vergewissern Sie sich, '
                           'dass eine gute Wi-Fi-Verbindung besteht.\n'
@@ -2940,8 +3048,8 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                           "completato. Continueremo a ritentare l'aggiornamento in background. "
                           '(4001)',
                'title': "@val sta riscontrando problemi durante l'aggiornamento"},
-        'nl': {'content': 'Houd @val op het dock en zorg voor een goede Wi-Fi-verbinding.\n'
-                          '\n'
+        'nl': {'content': 'Laat @val op het laadstation staan en zorg voor een goede '
+                          'Wi-Fi-verbinding.\n'
                           'Bepaalde functies zijn niet beschikbaar totdat de update is voltooid. '
                           'We blijven de update op de achtergrond opnieuw proberen. (4001)',
                'title': '@val heeft wat problemen met het updaten'},
@@ -2994,9 +3102,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
  4003: {'de': {'content': 'Dies kann bis zu 1 Stunde dauern. Belassen Sie @val auf seiner '
                           'Dockingstation, bis das Update fertig ist. (4003)',
                'title': 'Roboter wird aktualisiert'},
-        'en': {'content': 'This can take up to 1h. Keep\xa0@val\xa0on its Dock until update is '
+        'en': {'content': 'This can take up to 1 hour. Keep @val on its dock until update is '
                           'complete. (4003)',
-               'title': 'Robot is updating'},
+               'title': 'Robot dock software is updating'},
         'es': {'content': 'Este proceso puede tardar hasta 1\xa0hora. Deja @val en su base hasta '
                           'que se complete la actualización. (4003)',
                'title': 'El robot se está actualizando'},
@@ -3018,9 +3126,9 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
  4004: {'de': {'content': 'Dies kann bis zu 1 Stunde dauern. Belassen Sie @val auf seiner '
                           'Dockingstation, bis das Update fertig ist. (4004)',
                'title': 'Roboter wird aktualisiert'},
-        'en': {'content': 'This can take up to 1h. Keep\xa0@val\xa0on its Dock until update is '
+        'en': {'content': 'This can take up to 1 hour. Keep @val on its dock until update is '
                           'complete. (4004)',
-               'title': 'Robot is updating'},
+               'title': 'Robot dock software is updating'},
         'es': {'content': 'Este proceso puede tardar hasta 1\xa0hora. Deja @val en su base hasta '
                           'que se complete la actualización. (4004)',
                'title': 'El robot se está actualizando'},
@@ -3041,17 +3149,35 @@ VENDOR_ERROR_TEXTS: Final[dict[int, dict[str, dict[str, str]]]] = {1: {'de': {'c
                'title': 'O robô está a ser atualizado'}}}
 
 
-def vendor_error(code: Any, language: str = "en") -> dict[str, str] | None:
+def vendor_error(
+    code: Any, language: str = "en", *, as_shipped: bool = False
+) -> dict[str, str] | None:
     """iRobot's own title and explanation for a code, or None.
 
     Falls back to English when the requested language is not one of the
     eight extracted -- an English sentence that says what to do beats a
     localised label that does not.
+
+    Where app 3.2.0 made a text worse, the field comes from
+    `_CORRECTIONS`, a code number grouped like a quantity is written as
+    the code, and a broken placeholder is repaired (0.6.0). `as_shipped=True` returns iRobot's text
+    unchanged. Either way the answer is a copy.
     """
     try:
-        entry = VENDOR_ERROR_TEXTS.get(int(code))
+        number = int(code)
     except (TypeError, ValueError):
         return None
+    entry = VENDOR_ERROR_TEXTS.get(number)
     if entry is None:
         return None
-    return entry.get(str(language).split("-")[0].lower()) or entry.get("en")
+    lang = str(language).split("-")[0].lower()
+    if lang not in entry:
+        lang = "en"
+    shipped = entry.get(lang)
+    if shipped is None:
+        return None
+    found = dict(shipped)
+    if as_shipped:
+        return found
+    found.update(_CORRECTIONS.get(number, {}).get(lang, {}))
+    return {key: _tidy(value) for key, value in found.items()}

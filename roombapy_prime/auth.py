@@ -644,10 +644,126 @@ class RobotDigitalCapabilities:
 # NONE FIELD-CONFIRMED. Like most of the entries above they come from a
 # vendor table, not from a robot. The 3.0.0 table is the newer of the
 # two sources, which is the whole reason to prefer it here.
+#
+# FIVE MORE FROM APP 3.2.0 (0.6.0), and this time from the whole table.
+#
+# 3.2.0's `ProductMode` has twenty-three modes, each with exactly one
+# two-character prefix. The four above came from reading eighteen of
+# them; five were missing all along and two of those are new models:
+#
+#     Q4  robot_115_vac        W3  robot_725_combo   (new in 3.2.0)
+#     Q5  robot_125_vac        Z2  robot_925         (new in 3.2.0)
+#     F2  robot_mini2
+#
+# They are written with two characters because two is all the app
+# checks and no SKU of these models has been seen to give a third.
+# Collision-checked like the four before them, and
+# PRIME_PRODUCT_MODES below now asserts that every mode's prefix is
+# in this set -- the gap that let five slip through is a test failure
+# now, not a reading exercise.
 PRIME_SKU_PREFIXES: frozenset[str] = frozenset(
     "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 W15 X18 X28 F15 "
-    "U10 V10 W20 Z10".split()
+    "U10 V10 W20 Z10 Q4 Q5 F2 W3 Z2".split()
 )
+
+
+@dataclass(frozen=True)
+class PrimeProductMode:
+    """One entry of the Prime app's model table (`ProductMode`, 3.2.0).
+
+    `mode` is the app's own name (`robot_725_combo`), `sku_prefix` the
+    two characters it matches, `model_name` the About-Device text the
+    app shows for it (en_US) and `product_name` the fixed English
+    product name it uses elsewhere (`CommonUtils.getProductName`).
+
+    THE TWO NAMES DISAGREE, and both are the vendor's. About-Device says
+    "Roomba® Max 810 Series Combo Robot" for `robot_875`, whose product
+    name is "Roomba® 875"; it gives the 504 Vac the 705 Vac's text and
+    calls both 115s the "110 Series". Neither is corrected here.
+
+    `robot_615_combo` (V1) has no About-Device text: the app asks
+    `getProductName` instead, which tells a 615 (V16, V184) from a 675
+    (V10, V185, V186, V187) by a longer prefix and calls anything else
+    "Robot (classic)". `prime_product_mode()` resolves that for you.
+    """
+
+    mode: str
+    sku_prefix: str
+    model_name: str | None
+    product_name: str | None
+
+
+#: App 3.2.0's `ProductMode` table, in the app's order (`getModeBySku`
+#: takes the first match). Transcribed from the decoded Dart snapshot:
+#: modes and prefixes from the enum's constants, model names from
+#: `about_device_utils.dart::getModelBySku` and the en_US locale,
+#: product names from `common_utils.dart::getProductName`.
+PRIME_PRODUCT_MODES: tuple[PrimeProductMode, ...] = (
+    PrimeProductMode("robot_105_vac", "Q3", "Roomba® 105 Series Vac Robot", "Roomba® 105"),
+    PrimeProductMode("robot_105_combo", "Y3", "Roomba® 105 Series Combo Robot", "Roomba® 105"),
+    PrimeProductMode("robot_115_combo", "Y4", "Roomba® 110 Series Combo Robot", "Roomba® 115"),
+    PrimeProductMode("robot_115_vac", "Q4", "Roomba® 110 Series Combo Robot", "Roomba® 115"),
+    PrimeProductMode("robot_125_vac", "Q5", "Roomba® 125 Series Robot", "Roomba® 125v"),
+    PrimeProductMode(
+        "robot_205_vac", "U1", "Roomba® 200 DustCompactor Series Vac Robot", "Roomba® 205"
+    ),
+    PrimeProductMode(
+        "robot_205_combo", "L1", "Roomba® 200 DustCompactor Series Combo Robot", "Roomba® 205"
+    ),
+    PrimeProductMode("robot_mini", "F1", "Roomba® Mini Series Cradle Robot", "Roomba® Mini"),
+    PrimeProductMode("robot_mini2", "F2", "Roomba® Mini Series Cradle Robot", "Roomba® Mini"),
+    PrimeProductMode("robot_405_combo", "G1", "Roomba® Plus 400 Series Combo Robot", "Roomba® 405"),
+    PrimeProductMode("robot_415_combo", "G2", "Roomba® Plus 410 Series Combo Robot", "Roomba® 415"),
+    PrimeProductMode("robot_504_vac", "K1", "Roomba® Max 700 Series Vac Robot", "Roomba® Max 705"),
+    PrimeProductMode("robot_505_combo", "N1", "Roomba® Plus 500 Series Combo Robot", "Roomba® 500"),
+    PrimeProductMode("robot_515_combo", "N2", "Roomba® Plus 510 Series Combo Robot", "Roomba® 515"),
+    PrimeProductMode("robot_575_combo", "R2", "Roomba® Plus 570 Series Combo Robot", "Roomba® 575"),
+    PrimeProductMode(
+        "robot_725_combo", "W3", "Roomba® 725 Series Robot", "Roomba® ProClean Max 725"
+    ),
+    PrimeProductMode("robot_615_combo", "V1", None, None),
+    PrimeProductMode("robot_705_vac", "W1", "Roomba® Max 700 Series Vac Robot", "Roomba® Max 705"),
+    PrimeProductMode("robot_715_vac", "W2", "Roomba® Max 715 Series Robot", "Roomba® Max 715"),
+    PrimeProductMode("robot_705_combo", "X1", "Roomba® Max 700 series Robot", "Roomba® Max 705"),
+    PrimeProductMode(
+        "robot_775_combo", "X2", "Roomba® Max 770 Series Combo Robot", "Roomba® Max 775"
+    ),
+    PrimeProductMode("robot_875", "Z1", "Roomba® Max 810 Series Combo Robot", "Roomba® 875"),
+    PrimeProductMode("robot_925", "Z2", "Roomba® 925 Series Robot", "Roomba® Elite 925"),
+)
+
+#: `ProductMode.isRobot615Sku` / `isRobot675Sku`: the only prefixes in
+#: the app longer than two characters, and the only way it tells the
+#: two models behind `robot_615_combo` apart.
+_PRIME_615_PREFIXES: tuple[str, ...] = ("V16", "V184")
+_PRIME_675_PREFIXES: tuple[str, ...] = ("V10", "V185", "V186", "V187")
+
+
+def prime_product_mode(sku: str | None) -> PrimeProductMode | None:
+    """The app's model entry for a SKU, or None.
+
+    Matches the first two characters, upper-cased as is_prime_sku()
+    does (the app compares case-sensitively; Prime SKUs come upper-case,
+    so the two only differ for input the app never sees).
+
+    For `robot_615_combo` the returned entry carries the 615 or 675
+    product name when the longer prefix says which, and None otherwise
+    -- where the app would say "Robot (classic)", which is wrong for a
+    robot this function has just recognised as Prime.
+    """
+    if not sku:
+        return None
+    upper = sku.upper()
+    for entry in PRIME_PRODUCT_MODES:
+        if upper.startswith(entry.sku_prefix):
+            if entry.mode != "robot_615_combo":
+                return entry
+            if upper.startswith(_PRIME_615_PREFIXES):
+                return PrimeProductMode(entry.mode, entry.sku_prefix, None, "Roomba® 615")
+            if upper.startswith(_PRIME_675_PREFIXES):
+                return PrimeProductMode(entry.mode, entry.sku_prefix, None, "Roomba® 675")
+            return entry
+    return None
 
 
 # The Classic side of the same table, for the question is_prime_sku()
@@ -726,10 +842,11 @@ CLASSIC_SKU_PREFIXES: frozenset[str] = frozenset(
 DOCK_SKU_PREFIXES: frozenset[str] = frozenset("481 482 483".split())
 
 
-# Matching happens on two characters; the tables above stay three so the
-# platform each entry came from remains identifiable. Derived here rather
-# than written out twice, because two hand-maintained copies of the same
-# list is how they drift apart.
+# Matching happens on two characters; the tables above stay three where
+# a source gave three, so the platform each entry came from remains
+# identifiable. The five from app 3.2.0 have two, because the app's table
+# does. Derived here rather than written out twice, because two
+# hand-maintained copies of the same list is how they drift apart.
 _PRIME_PREFIXES_2: frozenset[str] = frozenset(p[:2].upper() for p in PRIME_SKU_PREFIXES)
 _CLASSIC_PREFIXES_2: frozenset[str] = frozenset(c[:2].upper() for c in CLASSIC_SKU_PREFIXES)
 
@@ -738,6 +855,15 @@ if _PRIME_PREFIXES_2 & _CLASSIC_PREFIXES_2:  # pragma: no cover - guarded by a t
         "Prime and Classic two-character prefixes overlap: "
         f"{sorted(_PRIME_PREFIXES_2 & _CLASSIC_PREFIXES_2)}. Two characters is no longer "
         "enough to tell the generations apart."
+    )
+
+# The app's model table and the generation check must not drift apart
+# again: a model the app knows and is_prime_sku() does not is a Prime
+# robot routed down the path for unknown devices. (Five did, until 0.6.0.)
+if {m.sku_prefix for m in PRIME_PRODUCT_MODES} - _PRIME_PREFIXES_2:  # pragma: no cover
+    raise AssertionError(
+        "ProductMode prefixes missing from PRIME_SKU_PREFIXES: "
+        f"{sorted({m.sku_prefix for m in PRIME_PRODUCT_MODES} - _PRIME_PREFIXES_2)}"
     )
 
 

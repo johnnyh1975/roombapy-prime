@@ -1342,8 +1342,8 @@ async def test_robot_parts_and_serial_number_delegate() -> None:
     assert await robot.get_robot_parts() == {"parts": []}
     rest.get_robot_parts.assert_awaited_once_with("BLID123")
 
-    assert await robot.reset_robot_parts() == {"ok": True}
-    rest.reset_robot_parts.assert_awaited_once_with("BLID123")
+    assert await robot.reset_robot_parts(["35"]) == {"ok": True}
+    rest.reset_robot_parts.assert_awaited_once_with("BLID123", ["35"], None)
 
     assert await robot.get_serial_number_data() == {"serial": "abc123"}
     rest.get_serial_number_data.assert_awaited_once_with("BLID123")

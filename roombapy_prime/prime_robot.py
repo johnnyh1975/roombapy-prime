@@ -64,7 +64,7 @@ import time as _time
 from datetime import UTC, datetime
 import contextlib
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any, TypeVar
 
 from .auth import LoginResult
@@ -1305,18 +1305,18 @@ class PrimeRobot:
 
     async def reset_robot_parts(
         self,
-        part_ids: list[str] | None = None,
-        counters: dict[str, int] | None = None,
+        part_ids: Sequence[str],
+        counters: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
-        """NEW (session 15) -- see rest_client.py::reset_robot_parts().
+        """Mark parts as new -- see rest_client.py::reset_robot_parts().
 
         `counters` maps a part id to the value to write; anything not
         named resets to zero. Forwarded because the REST client gained
         it and a wrapper that drops a parameter is how a tester's whole
-        run once died on `response_type`."""
-        # Only forwarded when named, so the plain call stays plain.
-        if part_ids is None:
-            return await self._rest.reset_robot_parts(self.blid)
+        run once died on `response_type`.
+
+        `part_ids` is required since 0.6.0: the call without it sent a
+        body naming no part, which nothing could act on."""
         return await self._rest.reset_robot_parts(self.blid, part_ids, counters)
 
     async def get_serial_number_data(self) -> RobotSerialInfo:

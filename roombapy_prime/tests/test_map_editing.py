@@ -290,3 +290,11 @@ class TestSetVirtualWallsPayload:
 
         assert body["command"] == "set_virtual_wall"
         assert "virwall" in body["params"]
+
+
+def test_map_verify_result_has_app_3_2_0s_overlap() -> None:
+    """3.0.0 skipped 3; 3.2.0 names it."""
+    from roombapy_prime.models.map_editing import MapVerifyResult
+
+    assert MapVerifyResult(3) is MapVerifyResult.OVERLAP
+    assert [m.value for m in MapVerifyResult] == [0, 1, 2, 3, 4, 5]

@@ -61,6 +61,7 @@ from .models import (
     MapEditCommandV1,
     MissionCommandType,
     P2MapData,
+    PartsCatalog,
     RobotPartsInfo,
     RobotSerialInfo,
     RoutineCommand,
@@ -72,6 +73,11 @@ from .models import (
 _LOGGER = logging.getLogger(__name__)
 
 Relogin = Callable[[], Awaitable[LoginResult]]
+
+#: The content host, `ContentStackHost` in the app: unauthenticated, and
+#: the same `content-{env}` pattern get_firmware_raw() documents. No
+#: discovery field carries it, so production is written down here.
+_CONTENT_HOST = "https://content-prod.iot.irobotapi.com"
 
 
 def _path_segment(value: str) -> str:
@@ -421,6 +427,52 @@ class CloudRestClient:
         other, and converting back would lose them."""
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
         return await self._request("GET", url)
+
+    async def get_parts_catalog(
+        self, sku: str, language: str = "en-US", country: str = "US"
+    ) -> PartsCatalog:
+        """The parts catalogue for a model: names, care guides, shop
+        links, joined to get_robot_parts()'s counters on `part_id`.
+        NEW in 0.6.0; see get_parts_catalog_raw() for the request."""
+        return PartsCatalog.from_json(
+            await self.get_parts_catalog_raw(sku, language, country)
+        )
+
+    async def get_parts_catalog_raw(
+        self, sku: str, language: str = "en-US", country: str = "US"
+    ) -> Any:
+        """GET content-prod.iot.irobotapi.com/v2/{language}/{country}/{sku}/parts,
+        unparsed. NEW in 0.6.0.
+
+        UNAUTHENTICATED, AND THEREFORE NOT SIGNED. The app's
+        `AssetPartsRequest` goes to `ContentStackHost`, which implements
+        `UnauthenticatedAPIHost`, with a Content-Type header and nothing
+        else. The catalogue has answered that request live for six
+        models; a SigV4 signature for another host would at best be
+        ignored, so none is sent -- the same reasoning as
+        download_map_bundle().
+
+        ON BOTH CLIENTS. The Classic app's native code carries the same
+        `%s/%s/%s/parts` template, and the six models that answered
+        include Classic ones.
+
+        `language` and `country` are the app's form, `de-DE` and `DE`.
+        `sku` is the robot's own (`RobotSerialInfo.sku`): part ids are
+        numbered per model, so a catalogue fetched for another model
+        joins to the wrong parts. The catalogue does not change between
+        refreshes; fetch it once per robot."""
+        url = (
+            f"{_CONTENT_HOST}/v2/{_path_segment(language)}/{_path_segment(country)}"
+            f"/{_path_segment(sku)}/parts"
+        )
+        try:
+            async with asyncio.timeout(self._request_timeout):
+                async with self._session.get(
+                    url, headers={"Content-Type": "application/json"}
+                ) as resp:
+                    return await self._parse_response(resp)
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            _raise_transport_error(exc)
 
     async def get_favorites_raw(
         self, app_edition: str | None = "1"
@@ -1587,42 +1639,50 @@ class PrimeRestClient(CloudRestClient):
     async def reset_robot_parts(
         self,
         blid: str,
-        part_ids: list[str] | None = None,
-        counters: dict[str, int] | None = None,
+        part_ids: Sequence[str],
+        counters: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
-        """POST /v1/robots/{blid}/parts -- NEW (session 15). CONFIRMED
-        from the same configuration file (commandId "ResetRobotParts",
-        httpMethod=POST, identical urlPath to get_robot_parts()).
-        Resets consumable-part counters, e.g. after a part replacement.
+        """POST /v1/robots/{blid}/parts: set the named parts' counters,
+        to zero unless `counters` says otherwise -- "this part is new".
 
-        THE BODY IS TWO NESTED SHAPES, not one. `AssetHealthResetDto`
-        declares `robot_id`, `num_parts` and `parts`; `AssetPartResetDto`
-        declares what goes IN that list -- `part_id` AND `counter`.
+        THE BODY, AS THE APP SENDS IT (corrected in 0.6.0):
 
-        An earlier fix supplied the outer shape and sent `parts` as a
-        list of bare id strings. That is the inner DTO ignored: the
-        server is declared to expect objects, and a list of strings is
-        neither a rejection nor a reset, just a request that cannot mean
-        what it says.
+            {"parts": [{"part_id": "<id>", "counter": 0}]}
 
-        `counter` IS THE VALUE TO SET, and zero is an inference. The DTO
-        names the field and does not say what a reset writes; zero is
-        the only reading that makes "reset" mean reset, and a caller who
-        knows better can pass counters explicitly.
+        `AssetHealthPartResetRequest` serialises an
+        `AssetResetHealthPayloadDto` -- `parts` and nothing else -- whose
+        entries are `AssetPartResetDto`, `part_id` and `counter`. The app
+        builds it with one part and `counter` 0, and encodes defaults, so
+        the zero is sent. Apps 3.0.0 and 3.2.0 agree.
 
-        WHAT THIS METHOD STILL WILL NOT DO: reset everything when no
-        parts are named. An empty `parts` list is as likely to be
-        rejected as to mean "all", and guessing wrong here rewrites
-        somebody's maintenance history."""
+        WHAT 0.5.0 SENT, AND WHY IT WAS WRONG. `robot_id` and
+        `num_parts` beside `parts`. Those are `AssetHealthResetDto`'s
+        fields, and `AssetHealthResetDto` is the request's RESPONSE type
+        -- the same shape get_robot_parts() answers with. The body was
+        modelled on the answer.
+
+        THE SAME BODY CLASSIC ROBOTS ACCEPT. ClassicRestClient's
+        set_robot_part_counter() sends exactly this, confirmed on
+        Classic, compact. This one keeps json.dumps()'s spacing, like
+        every Prime body.
+
+        `part_ids` IS REQUIRED. 0.5.0 sent `robot_id` alone when none
+        were named, a body that cannot mean anything; there is no
+        "reset everything" form, and guessing one rewrites somebody's
+        maintenance history. Several ids go in one body -- `parts` is a
+        list -- although the app only ever sends one."""
+        ids = [str(part_id) for part_id in part_ids]
+        if not ids or not all(ids):
+            raise ValueError("reset_robot_parts() needs at least one part id")
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
-        body: dict[str, Any] = {"robot_id": blid}
-        if part_ids:
-            entries = [
-                {"part_id": part_id, "counter": (counters or {}).get(part_id, 0)}
-                for part_id in part_ids
+        # Keyed as the ids are sent, so {35: 5} and {"35": 5} mean the same.
+        values = {str(k): v for k, v in (counters or {}).items()}
+        body = {
+            "parts": [
+                {"part_id": part_id, "counter": int(values.get(part_id, 0))}
+                for part_id in ids
             ]
-            body["parts"] = entries
-            body["num_parts"] = len(entries)
+        }
         return await self._request_object("POST", url, body=body)
 
     async def get_serial_number_data(self, blid: str) -> RobotSerialInfo:
@@ -2290,11 +2350,10 @@ class ClassicRestClient(CloudRestClient):
         changes nothing, and PUT/PATCH come back 403 as if the
         credentials were wrong.
 
-        NOT reset_robot_parts(). That one sends the Prime app's DTO,
-        which adds `robot_id` and `num_parts`, and is inferred rather
-        than measured. Whether Classic accepts it is what
-        `verify-classic-cloud --compare-part-counter-body` answers; until
-        then the two stay apart."""
+        The Prime client's reset_robot_parts() sends the same body
+        since 0.6.0 -- in 0.5.0 it added `robot_id` and `num_parts`,
+        modelled on the response -- with json.dumps()'s spacing. The two
+        stay apart because each client keeps to its own generation."""
         url = f"{self._http_base_auth}/v1/robots/{_path_segment(blid)}/parts"
         body = {"parts": [{"part_id": str(part_id), "counter": int(counter)}]}
         data = await self._request("POST", url, body=body, compact_body=True)

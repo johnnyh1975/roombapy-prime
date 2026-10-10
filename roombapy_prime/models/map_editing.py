@@ -85,7 +85,8 @@ TWO COMMANDS HERE NO LONGER EXIST IN THE APP'S V2 PATH.
 `EditMapV2Request$CommandV2$SetFloorTypes` and `$SetThresholds` are in
 2.2.4 and gone from 3.0.0 -- only the READ side survives
 (`FloorTypeFeature$Properties`), and
-`PolicyZoneFeature$Properties.threshold_type` is gone too.
+`PolicyZoneFeature$Properties.threshold_type` was gone too (it is back
+in 3.2.0, as a read field: see map_bundle.ThresholdStatus).
 
 `SetFloorTypes` and `SetThresholds` below are kept. The app dropping a
 command does not prove the robot rejects it, and neither has ever been
@@ -343,11 +344,15 @@ class MapVerifyResult(IntEnum):
 
     `overlapWithVirtual` names something the string reasons do not: an
     area overlapping a VIRTUAL WALL specifically, as opposed to the
-    generic `overlap`."""
+    generic `overlap`.
+
+    `overlap` (3) is app 3.2.0's: 3.0.0 skipped the number, and 0.5.0
+    modelled the gap as it found it."""
 
     SUCCESS = 0
     AREA_WITHIN_MAP_SMALL = 1
     OUT_MAP = 2
+    OVERLAP = 3
     EMPTY = 4
     OVERLAP_WITH_VIRTUAL = 5
 

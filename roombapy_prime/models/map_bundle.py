@@ -482,24 +482,79 @@ class PolicyZoneFeatureProperties:
     threshold_type: a third real value, "Threshold", also exists on
     this same feature type (not just keep-out/no-mop) -- confirmed
     real app code parses this via a Status enum with a DETECTED
-    fallback for unknown/missing values, but the Status enum's own
-    member names weren't extracted."""
+    fallback for unknown/missing values. The member names are known
+    since app 3.2.0: see ThresholdStatus and `threshold_status`."""
 
     zone_type: str | None = None
-    #: REMOVED IN APP 3.0.0. `PolicyZoneFeature$Properties` no longer
-    #: declares it -- the only field iRobot dropped rather than renamed
-    #: between 2.2.4 and 3.0.0.
+    #: REMOVED IN APP 3.0.0, BACK IN 3.2.0. `PolicyZoneFeature$Properties`
+    #: dropped it between 2.2.4 and 3.0.0 and declares it again in 3.2.0,
+    #: together with the code that reads it (`threshold_status`).
     #:
-    #: Kept, because a robot on older firmware may still send it and
-    #: this is a read path: an unread field costs nothing, a dropped one
-    #: costs whatever it carried.
+    #: Kept throughout, because this is a read path: an unread field
+    #: costs nothing, a dropped one costs whatever it carried.
     threshold_type: str | None = None
+
+    @property
+    def threshold_status(self) -> ThresholdStatus | None:
+        """The app's status for a doorway threshold, or None.
+
+        None when this zone is not a threshold (`zone_type` other than
+        "Threshold"). For a threshold, the app's own mapping (3.2.0,
+        `P2MapBundleContentHolderPersistentMapKt.thresholdStatus`): nine
+        wire values onto five statuses, and anything else -- including
+        a missing value -- is DETECTED, which the app logs as
+        "Unexpected threshold type ..., defaulting to detected".
+
+        The app reads it only for polygon thresholds; the geometry is
+        not visible from here, so that check is the caller's.
+        """
+        if self.zone_type != "Threshold":
+            return None
+        return _THRESHOLD_STATUS.get(self.threshold_type or "", ThresholdStatus.DETECTED)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> PolicyZoneFeatureProperties:
         if not isinstance(data, dict):
             return cls()
         return cls(zone_type=data.get("type"), threshold_type=data.get("threshold_type"))
+
+
+class ThresholdStatus(StrEnum):
+    """The status of a doorway threshold on the map (app 3.2.0).
+
+    `P2MapThresholdInfo.Status` in the app: five statuses, named here
+    as the app names them. The wire carries nine `threshold_type`
+    strings, two per status except USER_CREATED -- an older "detected_"
+    family and a newer "system_" one:
+
+        detected,          system_unprocessed  -> DETECTED
+        detected_viewed,   system_viewed       -> DETECTED_VIEWED
+        detected_accepted, system_confirmed    -> DETECTED_ACCEPTED
+        detected_deleted,  system_cancelled    -> DETECTED_DELETED
+        user_created                           -> USER_CREATED
+
+    The values are this library's (the enum's names, lower-cased);
+    the wire strings are the nine above.
+    """
+
+    DETECTED = "detected"
+    DETECTED_VIEWED = "detected_viewed"
+    DETECTED_ACCEPTED = "detected_accepted"
+    DETECTED_DELETED = "detected_deleted"
+    USER_CREATED = "user_created"
+
+
+_THRESHOLD_STATUS: dict[str, ThresholdStatus] = {
+    "detected": ThresholdStatus.DETECTED,
+    "system_unprocessed": ThresholdStatus.DETECTED,
+    "detected_viewed": ThresholdStatus.DETECTED_VIEWED,
+    "system_viewed": ThresholdStatus.DETECTED_VIEWED,
+    "detected_accepted": ThresholdStatus.DETECTED_ACCEPTED,
+    "system_confirmed": ThresholdStatus.DETECTED_ACCEPTED,
+    "detected_deleted": ThresholdStatus.DETECTED_DELETED,
+    "system_cancelled": ThresholdStatus.DETECTED_DELETED,
+    "user_created": ThresholdStatus.USER_CREATED,
+}
 
 
 def _policy_zone_geometry_from_geojson(data: dict[str, Any]) -> Polygon | LineString:

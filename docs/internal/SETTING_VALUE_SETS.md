@@ -155,3 +155,26 @@ The wash frequency needs two controls rather than one, but neither is a compound
 `pwReturn` holds either a mode or a level; the interval fields are only meaningful when
 the matching mode is selected, which is a presentation question rather than a correctness
 one.
+
+## Three settings from app 3.2.0 (0.6.0)
+
+Each is a sealed `Setting` class in 3.2.0's Kotlin whose `mapShadowValue()` decodes the
+integer, and whose `*ShadowField.encode` writes `{"state":{"desired":{key: int}}}` — one
+key, one value, as every other setting here.
+
+```
+SprayModeSetting        sprayMode          0 IgnoreStain · 1 AvoidStain · 2 TackleStain
+DryDebrisModeSetting    dryDMode           0 Disabled · 1 BoostMode
+SanitizationModeSetting sanitizationMode   0 Disabled · 1 Enabled   (one run, then off)
+```
+
+Anything else decodes to `Unknown(raw)` in the app; the library keeps the int.
+
+**The gates are read off the names, not the code.** Dart keeps `capability.waterSpray`,
+`capability.dryDebrisMode` and `capability.sanitize` beside the three settings, and Kotlin
+links none of them: `cap.waterSpray` → `sprayMode`, `cap.dryDMode` → `dryDMode`,
+`cap.sanitize` with `digiCap.sanitizeTabs` → `sanitizationMode`. The app treats a
+capability as supported only at 1.
+
+No robot in this project reports any of the six keys (October 2026); they belong to
+the 2025/26 lines. A control built on them should appear only where the capability does.

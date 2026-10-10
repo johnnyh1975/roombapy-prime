@@ -1534,3 +1534,56 @@ async def test_a_malformed_irobot_answer_is_an_auth_error(answer) -> None:
 
     with pytest.raises(AuthError):
         await login(session, "user@example.com", "hunter2", "US")
+
+
+class TestPrimeProductModes:
+    """App 3.2.0's model table (0.6.0).
+
+    Five of its twenty-three prefixes were missing from
+    PRIME_SKU_PREFIXES, two of them for models new in 3.2.0. A Prime
+    robot whose SKU is not recognised is set up as a device of unknown
+    generation, which for a cloud-only robot means not at all."""
+
+    def test_the_five_missing_prefixes_are_prime_now(self):
+        from roombapy_prime.auth import is_prime_sku, sku_generation
+
+        for sku in ("Q4xxxxx", "Q5xxxxx", "F2xxxxx", "W3xxxxx", "Z2xxxxx"):
+            assert is_prime_sku(sku) is True, sku
+            assert sku_generation(sku) == "prime", sku
+
+    def test_every_mode_of_the_table_is_recognised_as_prime(self):
+        from roombapy_prime.auth import PRIME_PRODUCT_MODES, is_prime_sku
+
+        assert len(PRIME_PRODUCT_MODES) == 23
+        assert len({m.sku_prefix for m in PRIME_PRODUCT_MODES}) == 23
+        for mode in PRIME_PRODUCT_MODES:
+            assert is_prime_sku(mode.sku_prefix + "5020"), mode.mode
+
+    def test_a_sku_names_its_model(self):
+        from roombapy_prime.auth import prime_product_mode
+
+        mode = prime_product_mode("W355020")
+        assert mode is not None
+        assert mode.mode == "robot_725_combo"
+        assert mode.model_name == "Roomba® 725 Series Robot"
+        assert mode.product_name == "Roomba® ProClean Max 725"
+        assert prime_product_mode("g185020").mode == "robot_405_combo"
+
+    def test_the_615_and_675_are_told_apart_by_the_longer_prefix(self):
+        from roombapy_prime.auth import prime_product_mode
+
+        assert prime_product_mode("V165020").product_name == "Roomba® 615"
+        assert prime_product_mode("V184020").product_name == "Roomba® 615"
+        assert prime_product_mode("V185020").product_name == "Roomba® 675"
+        assert prime_product_mode("V105020").product_name == "Roomba® 675"
+        unresolved = prime_product_mode("V125020")
+        assert unresolved.mode == "robot_615_combo"
+        assert unresolved.product_name is None
+
+    def test_classic_and_unknown_skus_have_no_mode(self):
+        from roombapy_prime.auth import prime_product_mode
+
+        assert prime_product_mode("R980020") is None
+        assert prime_product_mode("i755840") is None
+        assert prime_product_mode(None) is None
+        assert prime_product_mode("") is None

@@ -51,6 +51,8 @@ per-write-path testing status, see
 - [Classic robots (REST)](#classic-robots-rest)
 - [Teaming (multi-robot) — documented, not implemented](#teaming-multi-robot--documented-not-implemented)
 - [Account & app-UX surface — documented, not implemented](#account--app-ux-surface--documented-not-implemented)
+- [Which model a SKU is (0.6.0)](#which-model-a-sku-is-060)
+- [Doorway thresholds (0.6.0)](#doorway-thresholds-060)
 - [Model index](#model-index)
 - [Settings vocabulary](#settings-vocabulary)
 
@@ -331,13 +333,20 @@ status.error_text   # {"title": "Battery too low to clean", "content": "..."}
 asking the maintainers.
 
 `vendor_error(code, language="en")` exposes the same catalogue directly: 112 codes with iRobot's own
-title and explanation, in eight languages, taken from app 3.0.0's locale files. It returns `None`
-for a code iRobot does not document, and that distinction is worth keeping — a caller can then say
-"error 236, undocumented" rather than "no error".
+title and explanation, in eight languages, taken from app 3.2.0's locale files (3.0.0's until 0.6.0).
+It returns `None` for a code iRobot does not document, and that distinction is worth keeping — a
+caller can then say "error 236, undocumented" rather than "no error".
 
 `@val` is the robot's name in iRobot's own strings and is left in place, so a caller that knows the
-name substitutes it. Four broken placeholders in the vendor's own text — one using a different form
-in English, three run into the following word in Spanish and Polish — are repaired on the way out.
+name substitutes it. 3.2.0 also fixed the four broken placeholders 3.0.0 had (`%robotName` in
+English 251, `@val` run into the next word in Spanish and Polish).
+
+**Where 3.2.0 made a text worse, the library's own replaces it** (0.6.0): 234 says what to do again
+(attach the mop to mop; vacuuming works without it), 4003/4004 name the dock's software in all eight
+languages rather than in English only, English 18/1010 say to put the robot on its dock, and a code
+in brackets is written as the code, not grouped like a number (French "(1 008)"). Each correction
+and its reason is in `vendor_errors._CORRECTIONS`. `vendor_error(code, language, as_shipped=True)`
+returns iRobot's text unchanged. The answer is always a copy.
 
 ## Settings
 
@@ -350,7 +359,7 @@ in English, three run into the following word in Spanish and Polish — are repa
 | `robot.get_cleaning_profiles(asset_id, p2map_id=None) -> dict` | 🟢 (query params, session 38), 🔴 (response envelope) | Query params corrected via direct bytecode read: `robotId`/`includeSmart`/`p2map_id` (not the previously-guessed `asset_id`/`p2map_id`) — `p2map_id` now optional, matching real branching logic. Response envelope itself still unconfirmed (only the per-entry `CleaningProfile.from_json()` shape is) — `DEEP`/`LIGHT`/`NORMAL`/`SMART`, each with its own `CommandParams`. |
 | `robot.get_default_routines(p2map_id) -> RoutinesDefaultsResponse` | 🟢 | Auto-generated per-map cleaning suggestions. Now returns a parsed `RoutinesDefaultsResponse` (also captures `routine_builder_defaults`, previously not exposed at all), confirmed via bytecode. |
 | `robot.get_robot_parts() -> RobotPartsInfo` | 🟢 | Consumable part status (filter/brush/battery wear, unconfirmed which). Confirmed from `res/raw/base_roomba_config.json` (a primary-source config file bundled in the APK), not decompiled logic — see `docs/internal/base_roomba_config_REFERENCE.json`. Now returns a parsed `RobotPartsInfo` directly. |
-| `robot.reset_robot_parts(part_ids=None, counters=None) -> dict` | 🟢 (method), 🟡 (body now known, never sent) | Resets a part's wear counter. **The body is two nested shapes, and the first fix supplied only the outer one** — `AssetHealthResetDto` declares `robot_id`, `num_parts` and `parts`, and `AssetPartResetDto` declares what belongs IN that list: `part_id` AND `counter`. A list of bare id strings is neither a rejection nor a reset. `counter` defaults to 0, which is an inference — the model names the field and does not say what a reset writes. Omitting `part_ids` still sends just `robot_id`, which may or may not mean "everything". |
+| `robot.reset_robot_parts(part_ids, counters=None) -> dict` | 🟢 (method, body from the app), 🟡 (never sent to a Prime robot) | Marks parts as new. **Body corrected in 0.6.0** to what the app sends: `{"parts": [{"part_id": …, "counter": 0}]}` (`AssetResetHealthPayloadDto`). 0.5.0 added `robot_id` and `num_parts`, the fields of `AssetHealthResetDto` — the request's *response*. `counters` overrides the 0 per part. **`part_ids` is required** (0.6.0); an empty list raises `ValueError`. The app sends one part per request; several in one body are allowed by the DTO. It is the body Classic robots are confirmed to accept, with `json.dumps()` spacing. |
 | `robot.get_serial_number_data() -> RobotSerialInfo` | 🟢 | Confirmed structure (26th session): serial number, user-assigned robot name, `family` (e.g. `"Roomba Combo"`), `series`. Now returns a parsed `RobotSerialInfo` directly. |
 | `robot.poll_echo_value() -> dict` | 🟢 (method), ❌ (does not work) | **Not the locate mechanism, despite the name.** Field-disproven on a real device: the call succeeds and the robot does not chime. `trigger_echo_via_shadow()` was tried second and also disproven. The working locate is `send_simple_command("find")`. Kept as historical record; the unknown body belongs to an endpoint that demonstrably does not do what it is named for. |
 | `robot.get_time_estimates(smart_map_id=None, region_id=None, zone_id=None) -> dict` | 🟢 (method/URL), 🟢 (body) | `POST` despite being read-only in the config (`"read": true`). `TimeEstimatesRequestBody` declares `robot_id`, `smart_map_id`, `region_id` and `zone_id`; sending only the first asks for every estimate on every map, which is the shape confirmed on two accounts and stays the default. The three narrowing fields are optional here for the same reason they are nullable there. |
@@ -378,7 +387,7 @@ The cloud REST side serves **both generations**, through three classes in
 
 | Class | What it is |
 |---|---|
-| `CloudRestClient` | The base: SigV4 signing, request handling, one relogin on HTTP 403, and the calls both generations make identically — `get_robot_parts(blid)` / `get_robot_parts_raw(blid)`, `get_favorites_raw(app_edition=…)`, `get_automations_raw()`. |
+| `CloudRestClient` | The base: SigV4 signing, request handling, one relogin on HTTP 403, and the calls both generations make identically — `get_robot_parts(blid)` / `get_robot_parts_raw(blid)`, `get_parts_catalog(sku, language, country)` / `get_parts_catalog_raw(…)` (0.6.0), `get_favorites_raw(app_edition=…)`, `get_automations_raw()`. |
 | `PrimeRestClient` | Prime/V4: everything above this section. Unchanged since 0.3.x — constructor, methods, import path. |
 | `ClassicRestClient` | Classic (900 series, i/s/j series): the calls below. New in 0.4.0. |
 
@@ -398,12 +407,13 @@ signature as 4.2.12 sent (`tests/test_rest_client.py`, "Classic parity").
 |---|---|---|
 | `get_pmaps(blid) -> list[dict]` | 🟢 (confirmed on Classic) | `GET /v1/{blid}/pmaps?visible=true&activeDetails=2`. Classic's map system; Prime uses `p2maps`. Non-list answers come back as `[]`. |
 | `get_pmap_umf(blid, pmap_id, version_id) -> dict` | 🟢 (confirmed on Classic) | `…/pmaps/{pmap_id}/versions/{version_id}/umf?activeDetails=2` — room polygons. **Raises `RestError` for anything but a non-empty object**, empty body included: an empty map would be drawn blank instead of reported unavailable. |
-| `set_robot_part_counter(blid, part_id, counter) -> dict` | 🟢 (confirmed on Classic, `counter=0`) | Body `{"parts":[{"part_id":…,"counter":…}]}`, sent compact. `counter` is **percent used**; `0` means new, and `0` is the only value ever written in the field. The Prime client's `reset_robot_parts()` sends a different, unmeasured body. |
+| `set_robot_part_counter(blid, part_id, counter) -> dict` | 🟢 (confirmed on Classic, `counter=0`) | Body `{"parts":[{"part_id":…,"counter":…}]}`, sent compact. `counter` is **percent used**; `0` means new, and `0` is the only value ever written in the field. Since 0.6.0 the Prime client's `reset_robot_parts()` sends the same body, spaced. |
 | `get_mission_history(blid, *, app_id=None, filter_type=…, supported_done_codes=…, count=100, before=None) -> Any` | 🟢 (confirmed on Classic) | Classic parameter names, in Classic's order. **The defaults are the Classic app's** — `omit_quickly_canceled_not_scheduled`, `dndEnd,returnHomeEnd`, 100 records, and the client's `app_id` — so `get_mission_history(blid)` is the request ha_roomba_plus sent. `None` leaves a key out. Returns a **list**. **`count` and `before` are ignored by the server** (measured on a 980 and an i7, below) — to page, use `get_mission_history_page()`. |
 | `get_mission_history_page(blid, *, before=None, page_size=100, filter_type=…, supported_done_codes=…) -> Any` | 🟢 (confirmed on Classic, page size 10) | **New in 0.4.0b3.** The parameters that page on Classic robots (`PrimeRestClient.get_mission_history()`'s names): `page_size` → `maxReports`, `before` → `exclusiveStartTimestamp` (only missions that started earlier). No `app_id`. Same keys, order and signature as `PrimeRestClient.get_mission_history()` with the same values. A page size other than 10 is not measured; treat an error as "no further pages". Returns a **list**. |
 | `get_favorites() -> list[dict]` | 🟢 (confirmed on Classic) | Only favourites: an answer without a list is `[]`, not one favourite made of the whole answer. `get_favorites_raw()` (default: no `app_edition`) shows what the server sent. |
 | `get_automations() -> dict` | 🟢 (confirmed on Classic) | An object, or `{}`. The raw answer is `get_automations_raw()`. |
 | `get_robot_parts_raw(blid)`, `get_robot_parts(blid)` | 🟢 (confirmed on Classic) | From the base. Raw keeps every key; the typed one parses the Classic capture completely. |
+| `get_parts_catalog(sku, language="en-US", country="US") -> PartsCatalog` | 🟢 (live for six models; request from the app) | **New in 0.6.0**, from the base, so on both clients. `GET https://content-prod.iot.irobotapi.com/v2/{language}/{country}/{sku}/parts`, **unsigned**: the app's `ContentStackHost` is unauthenticated and sends only `Content-Type`. Per model: `buy_parts_url`, and per part `CatalogPart` — name and name key, replacement part numbers (`sku`), interval keys, `guide_url`, `buy_url`, `counter_enabled` (app 3.2.0; absent in every answer so far). Join to `get_robot_parts()` on `part_id` with `PartsCatalog.part(part_id)`; part ids are numbered per model, so use the robot's own SKU. `language`/`country` in the app's form, `de-DE`/`DE`. `get_parts_catalog_raw()` returns the answer unparsed. |
 
 **Whether the Prime forms also work on Classic** — Prime parameter names
 for mission history, `app_edition=1`, the Prime part-counter body — is what
@@ -680,6 +690,30 @@ formatting. Three functions, all exported from `roombapy_prime`:
 `id_problem()` exists so a caller can tell a user *why* an id was
 rejected instead of only that it was.
 
+## Which model a SKU is (0.6.0)
+
+`roombapy_prime.auth.prime_product_mode(sku) -> PrimeProductMode | None`
+looks a SKU up in the Prime app 3.2.0's own model table
+(`PRIME_PRODUCT_MODES`, 23 entries, the app's order): `mode`
+(`robot_725_combo`), `sku_prefix` (`W3`), `model_name` (the About-Device
+text) and `product_name` (`Roomba® ProClean Max 725`). The two names are
+both the vendor's and do not always agree; neither is corrected. For
+`robot_615_combo` the longer prefix decides between the 615 and the 675,
+as in the app. `None` for anything that is not a Prime SKU.
+
+`is_prime_sku()` knows five more prefixes since 0.6.0 — `Q4`, `Q5`, `F2`,
+`W3`, `Z2` — which the app's table had and this library did not. An
+import-time check now keeps the two tables from drifting apart.
+
+## Doorway thresholds (0.6.0)
+
+`PolicyZoneFeatureProperties.threshold_status -> ThresholdStatus | None`
+reads a threshold zone's `threshold_type` (back in app 3.2.0's bundle
+model) the way the app does: nine wire values onto five statuses —
+`DETECTED`, `DETECTED_VIEWED`, `DETECTED_ACCEPTED`, `DETECTED_DELETED`,
+`USER_CREATED` — and `DETECTED` for anything unknown or missing. `None`
+when the zone is not a threshold.
+
 ## Model index
 
 Everything above covers the models you're likely to construct or read
@@ -728,6 +762,7 @@ most of the settings below — `models/robot_info.py::RobotSettings.from_json()`
 | `SetRobotLanguageV2` | `languages_raw` (wire: `langs2` — left as raw dict, nested language-list structure) |
 | `SetMapUploadAllowedCommand` | `map_upload_allowed` (wire: `mapUploadAllowed`) |
 | `SetPadWashReturn` / `SetPadWashWetoutFrequency` / `SetPadDryDuration` | `pad_wash_return`/`pad_wash_area_interval`/`pad_wash_time_interval`/`pad_dry_duration`/`pad_dry_allowed`/`pad_wash_allowed` (wire: `pwReturn`/`pwAreaInterval`/`pwTimeInterval`/`padDryDur`/`padDryAllowed`/`padWashAllowed`) |
+| — (app 3.2.0, ShadowField each) | `spray_mode` (wire: `sprayMode`, `SprayMode` ignore/avoid/clean), `dry_debris_mode` (wire: `dryDMode`, `DryDebrisMode` disabled/boost), `sanitization_mode` (wire: `sanitizationMode`, `SanitizationMode`). Capabilities beside them: `CapabilityFlags.water_spray`, `.dry_debris_mode`, `.sanitize`, `.seal_force`, `.default_capabilities`, `DigiCap.sanitize_tabs`. Not seen on a robot yet. |
 | — (no matching commandId found, present anyway) | `timezone`, `country`, `cloud_env`, `sched_hold`, `evac_allowed`, `name` (the robot's own name), `svc_deployment_id` |
 
 Read-side confirmed via `CommandParams` reuse (same wire keys as mission commands):

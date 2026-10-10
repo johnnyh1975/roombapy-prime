@@ -33,6 +33,12 @@ against the extract by shape, and immediately produced false matches:
 collide, the same way short lowercase words collided in an earlier
 literal search. A match is only evidence when the name was stated
 first.
+
+APP 3.2.0 SINCE 0.6.0. The file was regenerated on 3.2.0 over the same
+scope, and the regeneration was the check doing its job: it found a
+fourth dock wash level, a value 3 in MapVerifyResult that 3.0.0 skipped,
+Initiator's Google member resolved, and IrobotRegionType gone. What
+changed and why is in the file's own `_note_regeneration`.
 """
 
 from __future__ import annotations
@@ -70,7 +76,7 @@ def enum_values(name: str) -> dict[str, Any]:
     enums = _data()["enums"]
     if name not in enums:
         raise VendorReferenceError(
-            f"{name!r} is not in the app 3.0.0 extract. Check the spelling "
+            f"{name!r} is not in the app 3.2.0 extract. Check the spelling "
             f"against vendor_reference.json before assuming the enum is absent -- "
             f"'not found where I looked' has been wrong here before."
         )
@@ -91,7 +97,7 @@ def capability_gate(name: str) -> dict[str, Any]:
 
 
 def writable_settings() -> dict[str, Any]:
-    """The 24 individually writable setting keys, with their types."""
+    """The individually writable setting keys -- 27 since app 3.2.0."""
     return dict(_data()["writable_settings"])
 
 

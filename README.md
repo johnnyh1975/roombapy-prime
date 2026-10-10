@@ -19,7 +19,7 @@ robot generations:
 
 One login per account serves every robot on it (`CloudAccount`).
 
-> **Status: v0.5.0.** Reading and writing both work
+> **Status: v0.6.0.** Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific
@@ -201,7 +201,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-1347+ tests for the library, plus 526 for the command-line tools —
+1391+ tests for the library, plus 526 for the command-line tools —
 structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, concurrency
 tests for the connection lock and reconnects, and more. This validates

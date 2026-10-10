@@ -312,13 +312,19 @@ class Initiator(StrEnum):
 
     FOUND BY vendor_gap_report.py, not by anyone looking. Nobody would
     have searched for an enum called `Initiator` while reading a field
-    documented as having two values."""
+    documented as having two values.
+
+    GOOGLE SINCE 0.6.0. The 3.0.0 extract carried the member's value as
+    an unresolved constant reference, so it was left out rather than
+    shipped as a placeholder. The 3.2.0 regeneration resolves the
+    constant: `google`."""
 
     ALEXA = "alexa"
     ALISMART = "alismart"
     BOSCH = "bosch"
     CLOUD = "cloud"
     DOCK_BUTTON = "dockBtn"
+    GOOGLE = "google"
     HOMEY = "homey"
     IFTTT = "ifttt"
     IFTTTC = "iftttc"

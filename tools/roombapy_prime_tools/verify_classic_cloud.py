@@ -8,17 +8,19 @@ parameters or a different body:
 
   mission history   Classic: count / before       Prime: maxReports / exclusiveStartTimestamp
   favorites         Classic: no parameter         Prime: app_edition=1
-  part counter      Classic: {"parts": [...]}     Prime: + robot_id, num_parts
+  part counter      Classic: {"parts":[...]}      Prime: {"parts": [...]}
 
 Nobody has shown that the Prime forms work on a Classic robot, so both
 are kept. This script answers the question on a real Classic account.
 If the Prime form holds, one variant per call can go; either way the
 answer is recorded instead of assumed.
 
-THE PART-COUNTER BODY IS WORTH MORE THAN THE OTHER TWO. The Prime form
-of that write (reset_robot_parts()) is inferred from the app's DTO, not
-measured, and its docstring says so. A Classic robot that accepts it
-confirms the body shape against the same server.
+THE PART-COUNTER BODIES ARE ONE BODY SINCE 0.6.0. Until 0.5.0 the Prime
+form (reset_robot_parts()) added `robot_id` and `num_parts`, read off
+the response's DTO instead of the request's. Corrected from app 3.2.0,
+it is the Classic body with json.dumps()'s spacing -- so this test now
+measures only whether the spacing matters, and a pass is what both apps
+lead one to expect.
 
 TWO ACTIONS, and only the second one writes:
 
@@ -336,11 +338,7 @@ async def reset_part_with_prime_body(
             )
             return
 
-        prime_body = {
-            "robot_id": blid,
-            "parts": [{"part_id": part_id, "counter": 0}],
-            "num_parts": 1,
-        }
+        prime_body = {"parts": [{"part_id": part_id, "counter": 0}]}
         print(f"\nPart {part_id} is at {field(part, 'counter')} % used.")
         print("Request, Prime body (what this test sends):")
         print(f"  POST /v1/robots/{blid}/parts  {json.dumps(prime_body)}")

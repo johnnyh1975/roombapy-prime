@@ -18,7 +18,7 @@ def test_an_enum_maps_member_names_to_wire_values() -> None:
 
 
 def test_an_unknown_enum_is_an_error_not_an_empty_answer() -> None:
-    with pytest.raises(vr.VendorReferenceError, match="not in the app 3.0.0 extract"):
+    with pytest.raises(vr.VendorReferenceError, match="not in the app 3.2.0 extract"):
         vr.enum_values("DryDurTyp")
     assert issubclass(vr.VendorReferenceError, LookupError)
 
@@ -36,7 +36,7 @@ def test_a_capability_gate_names_its_key_path() -> None:
 
 
 def test_the_tables_are_the_documented_size() -> None:
-    assert len(vr.writable_settings()) == 24
+    assert len(vr.writable_settings()) == 27
     commands = vr.command_wire_values()
     assert commands["DOCK"] == "dock"
     assert all(isinstance(v, str) for v in commands.values())
@@ -48,4 +48,16 @@ def test_answers_are_copies_the_caller_cannot_corrupt() -> None:
     vr.enum_values("DryDurType")["four"] = 99
     vr.writable_settings().clear()
     assert vr.enum_values("DryDurType")["four"] == 4
-    assert len(vr.writable_settings()) == 24
+    assert len(vr.writable_settings()) == 27
+
+
+def test_the_extract_is_app_3_2_0s() -> None:
+    """What 3.2.0 added, from each section of the file: a capability
+    gate, three writable settings, an enum, a member of an old enum and
+    a serialiser key."""
+    assert vr.capability_gate("sealForce")["keyPath"] == "cap.sealForce"
+    assert {"sprayMode", "dryDMode", "sanitizationMode"} <= set(vr.writable_settings())
+    assert vr.enum_values("SprayModeOption") == {"ignore": 0, "avoid": 1, "clean": 2}
+    assert vr.enum_values("DockPadWashingType")["deepHotWaterWashSupported"] == 4
+    assert vr.enum_values("Initiator")["Google"] == "google"
+    assert vr.has_enum("IrobotRegionType") is False
