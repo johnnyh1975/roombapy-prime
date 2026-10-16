@@ -130,6 +130,11 @@ _STATUS_MARKERS: dict[str, str] = {
 }
 
 
+#: The short forms the markers accept, for counting them with their full
+#: ones in Report.summary().
+_STATUS_ALIASES: dict[str, str] = {"FAIL": "FAILED", "SKIP": "SKIPPED"}
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -163,10 +168,13 @@ class Report:
         print(line)
 
     def summary(self) -> tuple[int, int, int]:
-        ok = sum(1 for r in self.results if r.status == "OK")
-        failed = sum(1 for r in self.results if r.status == "FAILED")
-        skipped = sum(1 for r in self.results if r.status == "SKIPPED")
-        return ok, failed, skipped
+        """(ok, failed, skipped), the short forms counted with their full
+        ones. Up to 0.6.0 only "FAILED" and "SKIPPED" counted: a check
+        added as "FAIL" printed its cross and then "0 failed" under it,
+        and validate's exit code, which comes from this count, said
+        success."""
+        statuses = [_STATUS_ALIASES.get(r.status, r.status) for r in self.results]
+        return statuses.count("OK"), statuses.count("FAILED"), statuses.count("SKIPPED")
 
     def redact(self, *secrets: str) -> None:
         """NEW (session 12). Replaces every literal occurrence of the

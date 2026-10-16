@@ -117,7 +117,7 @@ import webbrowser
 from typing import Any
 
 
-from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_script
+from ._cli import add_account_arguments, confirm, connected_robot, field, require_blid, resolve_credentials, run_and_keep
 from roombapy_prime.diagnostics import Report, _redact_raw_capture, _report_topic_prefix_status, build_issue_url
 from roombapy_prime.models import (
     P2MapVersion,
@@ -573,12 +573,15 @@ def main() -> None:
         sys.exit(0)
 
     if args.test_category:
-        report, raw_capture = sys.exit(run_script(run_category_test(username, password, args.country_code, args.blid)))
+        code, result = run_and_keep(run_category_test(username, password, args.country_code, args.blid))
     else:
-        report, raw_capture = sys.exit(run_script(run(username, password, args.country_code, args.blid)))
+        code, result = run_and_keep(run(username, password, args.country_code, args.blid))
+    if result is None:
+        sys.exit(code)
+    report, raw_capture = result
+    # connected_robot() has redacted and printed the summary already;
+    # redacting again costs nothing and covers a report built without it.
     report.redact(username, password)
-
-    report.print_final_summary()
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:

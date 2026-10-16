@@ -112,14 +112,28 @@ def run_script(coro):
     request to paste everything.
 
     Returns the process exit code, so call sites can `sys.exit(...)`
-    it."""
+    it. A script that needs what the coroutine returned uses
+    run_and_keep()."""
+    return run_and_keep(coro)[0]
+
+
+def run_and_keep(coro):
+    """run_script(), and also what the coroutine returned: `(exit code,
+    result)`, the result None when the run failed or was interrupted.
+
+    WHY. Four scripts wrote `report, raw_capture = sys.exit(run_script(...))`
+    from 0.1.11a25 to 0.6.0. sys.exit() never returns, so nothing after it
+    ran: no --output report, no --dump-config capture, no issue link --
+    silently, on every successful run, for three months. A script that
+    still has work to do after the run needs the result back AND the
+    exit code, and this hands back both."""
     import traceback
 
     try:
-        asyncio.run(coro)
+        result = asyncio.run(coro)
     except KeyboardInterrupt:
         print("\nInterrupted. Anything already reported above still stands.")
-        return 130
+        return 130, None
     except Exception:  # noqa: BLE001
         print("\n" + "=" * 60)
         print("THE RUN ENDED WITH AN ERROR")
@@ -132,8 +146,8 @@ def run_script(coro):
             "the WHOLE output rather than just this part.\n"
         )
         traceback.print_exc()
-        return 1
-    return 0
+        return 1, None
+    return 0, result
 
 
 def pick_robot_interactively(login_result, target_blid: str | None) -> str | None:

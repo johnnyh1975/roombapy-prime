@@ -7,7 +7,7 @@ helper functions themselves are correct."""
 
 import pytest
 
-from roombapy_prime.diagnostics import Report, _extract_first_id
+from roombapy_prime.diagnostics import Report, _extract_first_id, _report_device_info
 
 
 def test_report_add_and_summary() -> None:
@@ -80,6 +80,35 @@ def test_report_redact_multiple_secrets() -> None:
 
     assert "alice" not in report.results[0].detail
     assert "hunter2" not in report.results[0].detail
+
+
+def test_summary_counts_the_short_status_forms() -> None:
+    """The markers accept "FAIL" and "SKIP"; the count must too, or a
+    failed check prints "0 failed" and validate exits with success."""
+    report = Report()
+    report.add("a", "FAIL")
+    report.add("b", "SKIP")
+    report.add("c", "FAILED")
+    report.add("d", "OK")
+
+    assert report.summary() == (1, 2, 1)
+
+
+def test_device_info_falls_back_to_the_top_level_and_shows_digicap() -> None:
+    """A shadow without `state.reported` still names its fields from the
+    top level; digiCap is printed with its contents."""
+    from types import SimpleNamespace
+
+    report = Report()
+    _report_device_info(report, SimpleNamespace(payload={"sku": "Y351020"}))
+    _report_device_info(report, SimpleNamespace(
+        payload={"state": {"reported": {"digiCap": {"sanitize": 1}}}}
+    ))
+    _report_device_info(report, None)
+
+    assert "'sku': 'Y351020'" in report.results[0].detail
+    assert "digiCap: {'sanitize': 1}" in report.results[1].detail
+    assert len(report.results) == 2
 
 
 def test_build_issue_url_contains_encoded_summary() -> None:

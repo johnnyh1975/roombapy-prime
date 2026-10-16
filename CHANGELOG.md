@@ -6,6 +6,41 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.7.0] - 2026-10-16
+
+A diagnostic for accounts with several Prime robots, and two reporting
+fixes. Summary for upgraders: `release-notes/v0.7.0.md`.
+
+### Added
+
+- **`roombapy-prime-verify-shared-connection`** (tools): can one MQTT
+  connection serve every Prime robot on an account (#91)? It logs in
+  once and shows which robots each connection token covers; then it
+  opens one connection for all of them and runs for 75 minutes, across
+  the token refresh. Per robot it counts updates and shadow answers, and
+  it counts every drop. It reads shadows only; `--find` makes each robot
+  beep after a yes. It prints no password, token or client id, and robot
+  ids only shortened, in the library's own warnings too.
+- **`run_and_keep()`** (tools, `_cli`): `run_script()` plus what the
+  coroutine returned, as `(exit code, result)`.
+
+### Fixed
+
+- **`--output` and `--dump-config` are written again** by
+  `verify_named_shadows`, `verify_mission_commands`, `verify_map_edit`
+  and `verify_mission_timeline`, and the issue link is printed. Since
+  0.1.11a25 their `main()` read `report, raw_capture =
+  sys.exit(run_script(...))`; `sys.exit()` never returns, so nothing
+  after the run happened, on every successful run, without an error. The
+  gate tests' stand-in passed its result to `sys.exit()` too, which
+  raised the `SystemExit` they waited for. A failed run still exits with
+  its code and writes nothing.
+- **`Report.summary()` counts `"FAIL"` and `"SKIP"`** with `"FAILED"`
+  and `"SKIPPED"`. The markers have accepted the short forms since they
+  crashed two testers' runs; the count did not, so a check added as
+  `"FAIL"` printed its cross above "0 failed", and `roombapy-prime-validate`,
+  whose exit code comes from that count, exited with success.
+
 ## [0.6.0] - 2026-10-10
 
 Brought up to the Prime app 3.2.0 (build 3020012). Summary for

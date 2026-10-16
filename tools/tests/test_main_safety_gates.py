@@ -132,14 +132,19 @@ def test_missing_blid_aborts(name, _no_action, _action, _gate):
 
 
 def _fake_run(collected: list):
-    """Stands in for asyncio.run: records the coroutine, closes it so
-    Python does not warn about it never being awaited, and returns the
-    (report, capture) pair main() expects. A MagicMock will not do --
-    main() unpacks the report's summary() into three values."""
+    """Stands in for run_and_keep(): records the coroutine, closes it so
+    Python does not warn about it never being awaited, and returns exit
+    code 0 with the (report, capture) pair main() unpacks. A MagicMock
+    will not do -- main() unpacks the report's summary() into three
+    values.
+
+    Until 0.7.0 this stood in for run_script() and its pair went straight
+    into sys.exit(), which raised SystemExit -- the very exit the test
+    expected. That is how four scripts lost their output files unseen."""
     def _runner(coro):
         collected.append(coro)
         coro.close()
-        return Report(), {}
+        return 0, (Report(), {})
     return _runner
 
 
@@ -166,7 +171,7 @@ class TestMapEditAndTimelineGates:
         with patch("sys.argv", ["verify_map_edit", "--blid", "B"]), \
              patch.object(module, "resolve_credentials",
                           side_effect=AssertionError("asked before validating")), \
-             patch.object(module, "run_script", side_effect=AssertionError("must not run")), \
+             patch.object(module, "run_and_keep", side_effect=AssertionError("must not run")), \
              pytest.raises(SystemExit) as exc:
             module.main()
 
@@ -181,7 +186,7 @@ class TestMapEditAndTimelineGates:
                                 "--i-understand-this-will-edit-my-map"]), \
              patch.object(module, "resolve_credentials", return_value=("u", "p")), \
              patch.object(module, "confirm", return_value=False), \
-             patch.object(module, "run_script", side_effect=AssertionError("must not run")), \
+             patch.object(module, "run_and_keep", side_effect=AssertionError("must not run")), \
              pytest.raises(SystemExit) as exc:
             module.main()
 
@@ -195,9 +200,8 @@ class TestMapEditAndTimelineGates:
 
         with patch("sys.argv", ["verify_mission_timeline", "--blid", "B", "--duration", "1"]), \
              patch.object(module, "resolve_credentials", return_value=("u", "p")), \
-             patch.object(module, "run_script", side_effect=_fake_run(ran)), \
-             pytest.raises(SystemExit):
-            module.main()
+             patch.object(module, "run_and_keep", side_effect=_fake_run(ran)):
+            module.main()  # a successful run ends normally, after its output
 
         assert len(ran) == 1
 
@@ -207,7 +211,7 @@ class TestMapEditAndTimelineGates:
         with patch("sys.argv", ["verify_mission_timeline", "--blid", "B", "--start-mission"]), \
              patch.object(module, "resolve_credentials",
                           side_effect=AssertionError("asked before validating")), \
-             patch.object(module, "run_script", side_effect=AssertionError("must not run")), \
+             patch.object(module, "run_and_keep", side_effect=AssertionError("must not run")), \
              pytest.raises(SystemExit) as exc:
             module.main()
 
@@ -272,3 +276,22 @@ class TestRunScriptFramesFailuresLegibly:
             raise KeyboardInterrupt
 
         assert run_script(interrupted()) == 130
+
+    def test_run_and_keep_hands_back_the_result(self):
+        """What the run returned is what main() writes to --output and
+        --dump-config; run_script() drops it."""
+        from roombapy_prime_tools._cli import run_and_keep
+
+        async def returns():
+            return "report", {"capture": 1}
+
+        assert run_and_keep(returns()) == (0, ("report", {"capture": 1}))
+
+    def test_run_and_keep_has_no_result_after_a_failure_or_interrupt(self):
+        from roombapy_prime_tools._cli import run_and_keep
+
+        async def interrupted():
+            raise KeyboardInterrupt
+
+        assert run_and_keep(self._fails()) == (1, None)
+        assert run_and_keep(interrupted()) == (130, None)
