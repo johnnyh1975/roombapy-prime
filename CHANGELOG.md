@@ -6,6 +6,46 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.7.1] - 2026-10-17
+
+Why a login can return no robots, said from the login itself, and the
+Combo j7+/j9+ recognised as Classic. Summary for upgraders: `release-notes/v0.7.1.md`.
+
+### Added
+
+- **`LoginResult.conflicted_robots`, `.conflicted_user_count` and
+  `.has_ownership_conflict()`.** The login answer's fields for robots
+  owned by another account, read as the Classic app 7.18.0 reads them
+  (a list of ids, a count). The library dropped them, so a robot that
+  belongs to someone else's account (#93) made the login return no
+  robots without a reason. They are optional: any other shape is no
+  conflict, never a failed login. The library still sends
+  `assume_robot_ownership: "0"` and takes nothing over.
+- **`get_associated_robots_raw()`** on every REST client and on
+  `CloudAccount`: `GET /v1/user/associations/robots`, the list the
+  Prime app 3.2.0 shows its devices from. Read only, unparsed;
+  **`count_associated_robots()`** counts an answer and returns `None`,
+  not 0, for a shape it does not recognise. Host and signing follow the
+  app's parts call; not yet called live.
+
+### Changed
+
+- **A login without robots says why, when the login says.** The
+  `no_robots` error from `primary_blid()` and the "authenticated" log
+  line add the conflict by count -- never the robot ids.
+- **A `.gitignore`** keeps caches, coverage and build output out of
+  commits; 0.7.0's release commit had picked up `.coverage` and the
+  egg-info directories.
+
+### Fixed
+
+- **The Combo j7+ and j9+ are Classic.** Their SKUs start with `c`
+  (`c755020`, `c975860`), not `j`, and `is_classic_sku()` did not know
+  `C7` or `C9`: `sku_generation()` said `"unknown"`, and ha_roomba_plus
+  set a Combo j9+ added from the account up as a cloud-only Prime robot
+  (it runs on the Classic local connection). Both prefixes are in the
+  Classic table now, from real devices; no Prime prefix starts with `C`.
+
 ## [0.7.0] - 2026-10-16
 
 A diagnostic for accounts with several Prime robots, and two reporting

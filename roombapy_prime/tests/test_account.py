@@ -321,3 +321,28 @@ class TestOneLoginForEveryPrimeRobot:
         account._failure = (account._failure[0] - 31, account._failure[1])
         with patch.object(account_module, "login", AsyncMock(return_value=fresh)):
             assert await robot._relogin() is fresh
+
+
+@pytest.mark.asyncio
+async def test_associated_robots_needs_no_robot_and_relogs_through_the_account() -> None:
+    """0.7.1: the account-level call works on a login that listed no
+    robot -- the very case it exists for -- and a 403 relogs once."""
+    empty = LoginResult(
+        mqtt_endpoint="mqtt.example.invalid",
+        http_base="https://base.example.invalid",
+        http_base_auth="https://auth.example.invalid",
+        credentials=CloudCredentials(
+            access_key_id="A", secret_key="S", session_token="t1", cognito_id="us-east-1:0",
+        ),
+        robots={}, connection_tokens=[], raw={},
+    )
+    session = _Session(expired={"t1"})
+    account = _account(empty, session=session)
+    fake_login = AsyncMock(return_value=_login_result("t2"))
+
+    with patch.object(account_module, "login", fake_login):
+        data = await account.get_associated_robots_raw()
+
+    assert data == {"robot_id": "X", "num_parts": 0, "parts": []}
+    assert session.tokens_seen == ["t1", "t2"]
+    fake_login.assert_awaited_once()

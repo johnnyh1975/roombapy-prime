@@ -78,9 +78,10 @@ from .rest_client import (
     RestServerError,
     RestSSLError,
     RestTimeoutError,
+    count_associated_robots,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 __all__ = [
     "AuthConnectionError",
@@ -110,6 +111,7 @@ __all__ = [
     "RestSSLError",
     "RestTimeoutError",
     "RobotLoginEntry",
+    "count_associated_robots",
     "ShadowConnectionError",
     "ShadowError",
     "ShadowResponse",

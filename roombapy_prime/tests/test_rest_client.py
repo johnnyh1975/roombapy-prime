@@ -2382,3 +2382,50 @@ def test_a_rest_error_subclass_keeps_its_own_reason_whatever_the_status() -> Non
 def test_an_explicit_reason_wins_over_the_status() -> None:
     error = RestError("x", status=502, reason=CloudErrorReason.CONNECTION_BROKEN)
     assert error.reason is CloudErrorReason.CONNECTION_BROKEN
+
+
+# ── The Prime app's device list (0.7.1) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_associated_robots_is_a_signed_get_on_http_base_auth() -> None:
+    """The Prime app's `AssetListRequest`: GET, no query, no body, on the
+    host and signing of the parts call. On the base, so both clients
+    and CloudAccount have it."""
+    session = _FakeSession()
+    session.queue_response(raw_body='[{"robot_id": "0123456789ABCDEF"}]')
+    client = CloudRestClient(session, HTTP_BASE_AUTH, _dummy_credentials())
+
+    data = await client.get_associated_robots_raw()
+
+    call = session.calls[0]
+    assert call.method == "GET"
+    assert call.url == f"{HTTP_BASE_AUTH}/v1/user/associations/robots"
+    assert not call.params
+    assert call.data is None
+    assert "Authorization" in (call.headers or {})
+    assert data == [{"robot_id": "0123456789ABCDEF"}]
+    assert "get_associated_robots_raw" in vars(CloudRestClient)
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ([], 0),
+        ([{"robot_id": "A"}, {"robot_id": "B"}], 2),
+        (["A"], 1),
+        ({"robots": [{"id": "A"}]}, 1),
+        ({"assets": [{"id": "A"}, {"id": "B"}]}, 2),
+        ({"associations": []}, 0),
+        ({"robots": {"A": {}, "B": {}}}, 2),
+        ({"A": {"sku": "x"}, "B": {"sku": "y"}}, 2),
+        ({}, None),
+        ({"message": "Forbidden"}, None),
+        ("A", None),
+        (None, None),
+    ],
+)
+def test_count_associated_robots_counts_without_guessing_zero(answer, expected) -> None:
+    from roombapy_prime.rest_client import count_associated_robots
+
+    assert count_associated_robots(answer) == expected

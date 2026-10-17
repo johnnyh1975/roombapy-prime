@@ -72,6 +72,7 @@ def test_all_matches_actual_exports() -> None:
         "RestSSLError",
         "RestTimeoutError",
         "RobotLoginEntry",
+        "count_associated_robots",
         "ShadowConnectionError",
         "ShadowError",
         "ShadowResponse",

@@ -84,7 +84,9 @@ and hands out what each robot on the account needs:
 | Member | Notes |
 |---|---|
 | `await CloudAccount.login(session, username, password, country_code, *, app_id="roombapy-prime", request_timeout=30.0)` | One login. Raises the `Auth*` errors. `request_timeout` applies to every login this account makes and every client it hands out. |
-| `account.robots -> dict[str, RobotLoginEntry]` | Every robot on the account, by BLID. |
+| `account.robots -> dict[str, RobotLoginEntry]` | Every robot the login lists, by BLID. A robot owned by another account is not among them; see `login_result.conflicted_robots` below. |
+| `account.login_result.conflicted_robots -> tuple[str, ...]`, `.conflicted_user_count -> int \| None`, `.has_ownership_conflict() -> bool` | 🟡 (0.7.1; read as the Classic app reads them, not yet seen on a real answer) | Robots the login names as owned by **another account**, and how many accounts are involved. The Classic app offers to take such robots over; this library never does (it sends `assume_robot_ownership: "0"`). Report the count, not the ids. `()` / `None` when the answer has no such field. |
+| `await account.get_associated_robots_raw() -> Any` | 🟡 (0.7.1; host and signing inferred, not yet called live) | `GET /v1/user/associations/robots`, unparsed — the list the **Prime app** shows its devices from. Works on a login with no robots, which is what it is for: telling "the account has none" from "the login did not return them". `count_associated_robots(answer) -> int \| None` counts it without assuming a shape (`None`, never 0, when the shape does not say). A robot listed only here has no deployment or password from the login and cannot be connected. Also on every REST client. |
 | `account.generation(blid) -> "prime" \| "classic" \| None` | From the SKU. `None` means **unknown** — the SKU tables are incomplete — and is not guessed. `KeyError` for a BLID not on the account. |
 | `account.rest(blid)` | `ClassicRestClient` or `PrimeRestClient` for that robot's generation; `ValueError` when it is unknown. `account.classic_rest()` / `account.prime_rest()` when you know better. |
 | `await account.prime_robot(blid, *, auto_refresh=False)` | A `PrimeRobot` from this login, no second one. Refuses a Classic robot. |
@@ -387,7 +389,7 @@ The cloud REST side serves **both generations**, through three classes in
 
 | Class | What it is |
 |---|---|
-| `CloudRestClient` | The base: SigV4 signing, request handling, one relogin on HTTP 403, and the calls both generations make identically — `get_robot_parts(blid)` / `get_robot_parts_raw(blid)`, `get_parts_catalog(sku, language, country)` / `get_parts_catalog_raw(…)` (0.6.0), `get_favorites_raw(app_edition=…)`, `get_automations_raw()`. |
+| `CloudRestClient` | The base: SigV4 signing, request handling, one relogin on HTTP 403, and the calls both generations make identically — `get_robot_parts(blid)` / `get_robot_parts_raw(blid)`, `get_parts_catalog(sku, language, country)` / `get_parts_catalog_raw(…)` (0.6.0), `get_favorites_raw(app_edition=…)`, `get_automations_raw()`, `get_associated_robots_raw()` (0.7.1). |
 | `PrimeRestClient` | Prime/V4: everything above this section. Unchanged since 0.3.x — constructor, methods, import path. |
 | `ClassicRestClient` | Classic (900 series, i/s/j series): the calls below. New in 0.4.0. |
 
@@ -565,7 +567,7 @@ translation needs rides along as an attribute, never inside the message:
 | `credentials_rejected` | Wrong username or password, or the login refused | `AuthCredentialsError` |
 | `account_locked` | Locked after too many attempts; clears by itself, re-entering the password extends it | `AuthCredentialsError` |
 | `too_many_sessions` | Too many active app sessions | `AuthRateLimitedError` |
-| `no_robots` | The account has no robots | `AuthError` from `primary_blid()` |
+| `no_robots` | The login listed no robots. Since 0.7.1 the message adds, by count, any ownership conflict the login reports | `AuthError` from `primary_blid()` |
 | `robot_ambiguous` | Several robots and none named | `AuthError` from `primary_blid()` |
 | `request_refused` | HTTP 4xx other than 429. `status` | `RestClientError`, `AuthError` |
 | `rate_limited` | HTTP 429. `retry_after` on REST | `RestRateLimitedError`, `AuthError` |
@@ -704,6 +706,11 @@ as in the app. `None` for anything that is not a Prime SKU.
 `is_prime_sku()` knows five more prefixes since 0.6.0 — `Q4`, `Q5`, `F2`,
 `W3`, `Z2` — which the app's table had and this library did not. An
 import-time check now keeps the two tables from drifting apart.
+
+`is_classic_sku()` knows the Combo j-series since 0.7.1: `C7` (Combo
+j7+, `c755020`) and `C9` (Combo j9+, `c975860`), both from real robots
+on the local connection. Their SKUs start with `c`, not `j`, and fell
+outside the table, so `sku_generation()` said `"unknown"`.
 
 ## Doorway thresholds (0.6.0)
 

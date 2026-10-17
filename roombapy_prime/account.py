@@ -50,7 +50,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import aiohttp
 
@@ -170,6 +170,19 @@ class CloudAccount:
             self._login_result.credentials,
             request_timeout=self.request_timeout,
         ))
+
+    async def get_associated_robots_raw(self) -> Any:
+        """The account's robot associations, as the Prime app lists
+        them -- see CloudRestClient.get_associated_robots_raw(). NEW in
+        0.7.1. Generation-neutral: the call belongs to the account, not
+        to a robot, so it works when the login listed none."""
+        client = self._attach(CloudRestClient(
+            self._session,
+            self._login_result.http_base_auth,
+            self._login_result.credentials,
+            request_timeout=self.request_timeout,
+        ))
+        return await client.get_associated_robots_raw()
 
     def rest(self, blid: str) -> ClassicRestClient | PrimeRestClient:
         """The REST client for this robot's generation. Raises

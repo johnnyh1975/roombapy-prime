@@ -818,7 +818,16 @@ CLASSIC_SKU_PREFIXES: frozenset[str] = frozenset(
         "j55 "   # j5/j5+ Combo
         "j65 "   # j6/j6+
         "e51 "   # e5
-        "e61"    # e6 (retail variant)
+        "e61 "   # e6 (retail variant)
+        #
+        # THE COMBO j-SERIES STARTS WITH "c", NOT "j" (0.7.1). Both from
+        # real devices on the Classic local connection; matching is on
+        # two characters, so each covers its whole family (C7*, C9*).
+        # Missing, an unknown SKU took the Prime path: a Combo j9+ added
+        # from the account was set up cloud-only, and neither model
+        # appeared in the integration's local robot list.
+        "c75 "   # Combo j7+ -- a real device (c755020)
+        "c97"    # Combo j9+ -- a real device (c975860, firmware stingray)
     ).split()
 )
 
@@ -1001,6 +1010,34 @@ class LoginResult:
     instead of guessing again without evidence."""
     irbt_topic_prefix: str | None = None
     iot_topic_prefix: str | None = None
+    conflicted_robots: tuple[str, ...] = ()
+    """NEW (0.7.1). Robot ids the login names as owned by ANOTHER
+    account, from the response's `conflicted_robots`.
+
+    WHERE IT COMES FROM. The Classic app 7.18.0 reads this field from
+    the `/v2/login` answer as a list of strings (`parseLoginResponse`,
+    `setConflictedRobots`) and offers the user to take the robots over;
+    only after a yes does it log in again with
+    `assume_robot_ownership: "1"`. The Prime app 3.2.0 ignores the
+    field. That a robot listed here is missing from `robots` is the
+    obvious purpose of the field, but it has not been seen on a real
+    answer yet -- this library sends `"0"`, as the Classic app does
+    before anyone confirms.
+
+    Ids are kept as they came, for a caller that wants to match them;
+    report the COUNT, not the ids, wherever the output may be shared.
+    Empty when the field is missing or not a list of strings."""
+    conflicted_user_count: int | None = None
+    """NEW (0.7.1). How many other accounts claim robots of this one,
+    from `conflicted_user_count` (the Classic app's
+    `setNumberOfConflictingAccounts`). None when the field is missing
+    or not a whole number."""
+
+    def has_ownership_conflict(self) -> bool:
+        """True when the login reports robots owned by another account:
+        `conflicted_robots` names one, or `conflicted_user_count` is
+        above zero. NEW (0.7.1)."""
+        return bool(self.conflicted_robots) or (self.conflicted_user_count or 0) > 0
 
     def primary_token(self) -> ConnectionToken:
         if not self.connection_tokens:
@@ -1042,7 +1079,9 @@ class LoginResult:
         misconfiguration."""
         if not self.robots:
             raise AuthError(
-                "Login succeeded but no robots were returned", self.raw,
+                "Login succeeded but no robots were returned"
+                + _ownership_hint(self.conflicted_robots, self.conflicted_user_count),
+                self.raw,
                 reason=CloudErrorReason.NO_ROBOTS,
             )
         if len(self.robots) > 1:
@@ -1059,6 +1098,41 @@ class LoginResult:
                 reason=CloudErrorReason.ROBOT_AMBIGUOUS,
             )
         return next(iter(self.robots.keys()))
+
+
+def _parse_conflicted_robots(value: Any) -> tuple[str, ...]:
+    """`conflicted_robots` as the Classic app reads it: a list of
+    strings. Anything else is no conflict reported, not an error -- the
+    field is optional, and a login must not fail over a hint."""
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
+
+
+def _parse_conflicted_user_count(value: Any) -> int | None:
+    """`conflicted_user_count` as a whole number of zero or more, or
+    None. A bool is not a count, although Python calls it an int."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _ownership_hint(conflicted_robots: tuple[str, ...], conflicted_user_count: int | None) -> str:
+    """The sentence an error or log line adds when the login reports an
+    ownership conflict, empty otherwise. COUNTS ONLY: these messages
+    end up in issues, and robot ids identify a household's devices."""
+    if not conflicted_robots and not (conflicted_user_count or 0) > 0:
+        return ""
+    parts = []
+    if conflicted_robots:
+        parts.append(f"{len(conflicted_robots)} robot(s) listed as owned by another account")
+    if conflicted_user_count:
+        parts.append(f"{conflicted_user_count} other account(s) involved")
+    return (
+        " -- the login reports an ownership conflict: " + ", ".join(parts)
+        + ". Remove the robot from the other account in the iRobot app, "
+        "then add it to this one."
+    )
 
 
 def _discovery_url(country_code: str) -> str:
@@ -1187,8 +1261,14 @@ async def login(
         # testing.
         irbt_topic_prefix=deployment.get("irbtTopics"),
         iot_topic_prefix=deployment.get("iotTopics"),
+        conflicted_robots=_parse_conflicted_robots(login_result.get("conflicted_robots")),
+        conflicted_user_count=_parse_conflicted_user_count(login_result.get("conflicted_user_count")),
     )
-    _LOGGER.info("roombapy-prime: authenticated, %d robot(s) found", len(result.robots))
+    _LOGGER.info(
+        "roombapy-prime: authenticated, %d robot(s) found%s",
+        len(result.robots),
+        _ownership_hint(result.conflicted_robots, result.conflicted_user_count),
+    )
     return result
 
 

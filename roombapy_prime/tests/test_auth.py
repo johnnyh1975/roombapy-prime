@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from roombapy_prime.auth import (
     AuthSSLError,
     AuthTimeoutError,
     ConnectionToken,
+    LoginResult,
     login,
 )
 
@@ -1158,6 +1160,9 @@ class TestSkuGeneration:
         ("R980040", "classic", "DaRealGuGu, Roomba 980"),
         ("S955840", "classic", "ronluna, s9+"),
         ("m613840", "classic", "boutXIII, Braava jet m6"),
+        # 0.7.1: the Combo j-series starts with "c"; both were Prime by default.
+        ("c755020", "classic", "connormxy, Combo j7+"),
+        ("c975860", "classic", "kyoheimukaida, Combo j9+"),
         # Prime
         ("G185020", "prime", "chairstacker"),
         ("N185240", "prime", "DaRealGuGu, 505 Combo"),
@@ -1587,3 +1592,108 @@ class TestPrimeProductModes:
         assert prime_product_mode("i755840") is None
         assert prime_product_mode(None) is None
         assert prime_product_mode("") is None
+
+
+class TestOwnershipConflictFields:
+    """`conflicted_robots` / `conflicted_user_count` (0.7.1).
+
+    The Classic app 7.18.0 reads both from the `/v2/login` answer and
+    offers to take the robots over. The library dropped them, so an
+    account whose robot belongs to someone else (#93, and
+    ha_roomba_plus #218) logged in with zero robots and nothing said why."""
+
+    @staticmethod
+    async def _login(answer: dict) -> Any:
+        session = _FakeSequentialSession([
+            _FakeResp(200, json_body=_DISCOVERY_RESPONSE),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(answer)),
+        ])
+        return await login(session, "user@example.com", "hunter2", "US")
+
+    @pytest.mark.asyncio
+    async def test_both_fields_are_read(self) -> None:
+        result = await self._login(_with(
+            _IROBOT_LOGIN_RESPONSE, robots={},
+            conflicted_robots=["0123456789ABCDEF"], conflicted_user_count=1,
+        ))
+        assert result.conflicted_robots == ("0123456789ABCDEF",)
+        assert result.conflicted_user_count == 1
+        assert result.has_ownership_conflict() is True
+
+    @pytest.mark.asyncio
+    async def test_an_answer_without_them_reports_no_conflict(self) -> None:
+        result = await self._login(_IROBOT_LOGIN_RESPONSE)
+        assert result.conflicted_robots == ()
+        assert result.conflicted_user_count is None
+        assert result.has_ownership_conflict() is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("robots, count", [
+        ("0123456789ABCDEF", "1"),
+        ({"a": 1}, True),
+        ([1, None, "", "0123456789ABCDEF"], -3),
+        (None, 2.5),
+    ])
+    async def test_odd_shapes_never_fail_the_login(self, robots, count) -> None:
+        result = await self._login(_with(
+            _IROBOT_LOGIN_RESPONSE, conflicted_robots=robots, conflicted_user_count=count,
+        ))
+        assert all(isinstance(r, str) and r for r in result.conflicted_robots)
+        assert result.conflicted_user_count is None
+
+    def test_a_count_alone_is_a_conflict(self) -> None:
+        result = LoginResult(
+            mqtt_endpoint="m", http_base="h", http_base_auth="a",
+            credentials=None,  # type: ignore[arg-type]
+            robots={}, connection_tokens=[], raw={}, conflicted_user_count=2,
+        )
+        assert result.has_ownership_conflict() is True
+
+    def test_no_robots_error_names_the_conflict_by_count_only(self) -> None:
+        result = LoginResult(
+            mqtt_endpoint="m", http_base="h", http_base_auth="a",
+            credentials=None,  # type: ignore[arg-type]
+            robots={}, connection_tokens=[], raw={},
+            conflicted_robots=("0123456789ABCDEF",), conflicted_user_count=1,
+        )
+        with pytest.raises(AuthError) as exc:
+            result.primary_blid()
+        message = str(exc.value)
+        assert exc.value.reason is CloudErrorReason.NO_ROBOTS
+        assert "ownership conflict" in message
+        assert "1 robot(s) listed as owned by another account" in message
+        assert "0123456789ABCDEF" not in message
+
+    def test_no_robots_error_without_conflict_is_unchanged(self) -> None:
+        result = LoginResult(
+            mqtt_endpoint="m", http_base="h", http_base_auth="a",
+            credentials=None,  # type: ignore[arg-type]
+            robots={}, connection_tokens=[], raw={},
+        )
+        with pytest.raises(AuthError) as exc:
+            result.primary_blid()
+        assert str(exc.value).startswith("Login succeeded but no robots were returned")
+        assert "ownership" not in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_the_login_log_line_carries_the_count_not_the_ids(self, caplog) -> None:
+        caplog.set_level(logging.INFO, logger="roombapy_prime.auth")
+        await self._login(_with(
+            _IROBOT_LOGIN_RESPONSE, robots={},
+            conflicted_robots=["0123456789ABCDEF"], conflicted_user_count=1,
+        ))
+        text = caplog.text
+        assert "0 robot(s) found -- the login reports an ownership conflict" in text
+        assert "0123456789ABCDEF" not in text
+
+
+def test_the_combo_j_series_is_classic_by_its_whole_family() -> None:
+    """0.7.1: matching is on two characters, so the entries for c755020
+    and c975860 cover every Combo j7+/j9+ variant -- and none of it may
+    touch Prime, whose prefixes have no "C"."""
+    from roombapy_prime.auth import is_classic_sku, is_prime_sku
+
+    for sku in ("c755020", "C755040", "c975860", "c975020", "C955840"):
+        assert is_classic_sku(sku) is True, sku
+        assert is_prime_sku(sku) is False, sku

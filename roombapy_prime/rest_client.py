@@ -356,6 +356,35 @@ def _either(data: dict[str, Any], *names: str) -> Any:
     return None
 
 
+#: Keys an object answer of get_associated_robots_raw() may hold its
+#: list under. Guesses from the app's naming (`AssetListRequest`,
+#: `fetchAssets`), checked in this order; no answer has been seen yet.
+_ASSOCIATION_LIST_KEYS = ("robots", "assets", "associations")
+
+
+def count_associated_robots(data: Any) -> int | None:
+    """How many robots an answer of get_associated_robots_raw() lists,
+    or None when its shape does not say. NEW in 0.7.1.
+
+    A list counts its entries. An object counts the first list under
+    one of _ASSOCIATION_LIST_KEYS, or -- the shape of the login's own
+    `robots` -- its entries when every value is an object. Anything else
+    is None, never a guess of zero: "the account has no robots" and "this
+    answer is not understood" lead to different advice."""
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        for key in _ASSOCIATION_LIST_KEYS:
+            listed = data.get(key)
+            if isinstance(listed, list):
+                return len(listed)
+            if isinstance(listed, dict) and all(isinstance(v, dict) for v in listed.values()):
+                return len(listed)
+        if data and all(isinstance(v, dict) for v in data.values()):
+            return len(data)
+    return None
+
+
 class CloudRestClient:
     """The signed REST surface of iRobot's cloud, shared by both robot
     generations -- the base of PrimeRestClient and ClassicRestClient.
@@ -565,6 +594,35 @@ class CloudRestClient:
         settles it either way, and costs nothing if the answer is no.
         """
         url = f"{self._http_base_auth}/v1/user/automations"
+        return await self._request("GET", url)
+
+    async def get_associated_robots_raw(self) -> Any:
+        """GET /v1/user/associations/robots -- the robots associated with
+        the account, unparsed. NEW in 0.7.1, READ ONLY.
+
+        WHY. This is where the Prime app 3.2.0 takes its device list
+        from (`AssetListRequest`, called from the device list's
+        `_fetchAssetsWithRetry`); the login answer's `robots` serves it
+        only for deployments and passwords. A login that returns no
+        robots is therefore not proof that the account has none, and
+        this call is how to tell the two apart (ha_roomba_plus #218).
+
+        HOST AND SIGNING [inferred]: `AssetListRequest` goes to the
+        app's `BaseAuthenticatedHost`, the host of
+        `AssetHealthRequest` -- which is `GET /v1/robots/{id}/parts`,
+        answered on `http_base_auth` with SigV4 since session 27. Not yet
+        called live.
+
+        THE ANSWER'S SHAPE IS UNKNOWN; count_associated_robots() counts
+        it without assuming one. A robot that appears only here has no
+        login entry, so no deployment and no password, and cannot be
+        connected from this login -- this call explains, it does not
+        replace the login's list.
+
+        The Classic app 7.18.0 has the path as a constant
+        (`kGetAssociatedRobots`) and no reader; Classic accounts are
+        reported by `robots` and `conflicted_robots` in the login."""
+        url = f"{self._http_base_auth}/v1/user/associations/robots"
         return await self._request("GET", url)
 
     def _signer(self) -> AwsSigV4Signer:
