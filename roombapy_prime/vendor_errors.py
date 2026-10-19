@@ -3181,3 +3181,31 @@ def vendor_error(
         return found
     found.update(_CORRECTIONS.get(number, {}).get(lang, {}))
     return {key: _tidy(value) for key, value in found.items()}
+
+
+def prime_help_id(code: Any) -> str | None:
+    """The key iRobot's help catalogue files a Prime error under (0.8.0).
+
+    The same catalogue as for Classic (`GET <content host>/v2/help/
+    {lang}/{country}/{sku}`, no login), answered for a Prime SKU. Read
+    from the answer for G185020 (Plus 405 Combo) on 19.10.2026:
+
+        "Error <N>"             robot and dock faults (2, 517, 1010 ...)
+        "Charging Error <N>"    101-121, the FULL code -- Classic uses
+                                N-100 here (`vendor_errors_classic.
+                                classic_help_id`)
+        "Start-Refuse <N-200>"  200-299 (222 -> "Start-Refuse 22")
+
+    A key the catalogue does not carry is simply not found.
+    """
+    try:
+        number = int(code)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if 101 <= number <= 121:
+        return f"Charging Error {number}"
+    if 200 <= number <= 299:
+        return f"Start-Refuse {number - 200}"
+    return f"Error {number}"

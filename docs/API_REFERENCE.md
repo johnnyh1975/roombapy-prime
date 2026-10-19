@@ -350,6 +350,41 @@ in brackets is written as the code, not grouped like a number (French "(1 008)")
 and its reason is in `vendor_errors._CORRECTIONS`. `vendor_error(code, language, as_shipped=True)`
 returns iRobot's text unchanged. The answer is always a copy.
 
+**A Classic robot's code belongs in a different table.** The Prime app and the Classic app
+(iRobot Home 7.18.0) disagree on what some codes mean, not only on the words: 2 is "Main Brush stuck"
+in Prime and "Brushes need cleaning" (two rubber brushes) in Classic, 6 is "clean the cliff sensors"
+against "stuck near a cliff", 47 and 228 "important update" against "reboot required". The Classic
+texts are in `roombapy_prime.vendor_errors_classic`, taken from the app's `resources.arsc` and its
+code-to-text mapping (`RobotStatusResolver`, `libcore_jni.so`):
+
+| Function | Answers for |
+|---|---|
+| `classic_vendor_error(code, language="en", *, sku=None, clean_base=False, imperial=False)` | `cleanMissionStatus.error`. 183 codes, plus SKU-only ones. |
+| `classic_not_ready_text(number, language="en", *, sku=None)` | `cleanMissionStatus.notReady`, its own namespace (notReady 15 is a low battery, error 15 a reboot). 45 values. |
+| `classic_dock_text(code, language="en")` | Dock states and dock errors: 301–365 Clean Base, 401–463 refill, 500–520 common, 601–669 pad wash, 701–757 pad dry. 92 codes. The Classic app never reads 450–463 or 501–509 from the robot's error field. |
+
+Each returns the app's `title` and `content` (the status card), `history` (the mission history) and a
+derived `label`: the title, unless the title is a line shared by a whole group ("Error", "Charging
+error", "Unable to start"), in which case the history line. `None` for a code the app has no text for.
+
+The robot matters as it does in the app. `sku` picks the variants: the status card matches `^[Rr]69`
+(69x: "main brushes" for 2 and 206) and `^[Qq]0`/`^[Yy]0` (Vac/Combo Essential: "Center Brush" for 2);
+the history takes the first three characters, upper-cased (R69, T72). `clean_base=True` gives 36's
+Clean Base text, `imperial=True` 74's square-feet line. The app's `%s` and `%1$s` come out as `@val`,
+as in the Prime table; in dock texts the bracketed second argument is the code, and it is filled in.
+`as_shipped=True` returns the app's fields unchanged. `classic_not_ready_text()` takes `notReady`
+as the robot reports it, not a decoded state index: the app's tables are keyed by the wire value.
+
+`classic_help_id(code)` / `classic_help_id(not_ready=n)` give the key under which iRobot's help
+catalogue (`GET https://content-prod.iot.irobotapi.com/v2/help/{lang}/{country}/{sku}`, no login)
+files the error: `Error <N>`, `Charging Error <N-100>` (101–121), `Start-Refuse <n>`. The entry
+with that `id` links iRobot's page for the robot's model in the language asked for.
+`vendor_errors.prime_help_id(code)` is the same for a Prime robot; the Prime catalogue files
+charging errors under the full code (`Charging Error 104`), not the code minus 100.
+
+The table is `vendor_errors_classic.json`,
+regenerated with `scripts/generate_vendor_errors_classic.py` from the extraction.
+
 ## Settings
 
 | Method | Confidence | Notes |

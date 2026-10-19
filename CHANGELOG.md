@@ -6,6 +6,36 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.8.0] - 2026-10-19
+
+The Classic app's error texts, so a Classic robot no longer gets the
+Prime app's. Summary for upgraders: `release-notes/v0.8.0.md`.
+
+### Added
+
+- **`vendor_errors_classic`**: iRobot's texts from the Classic app
+  (iRobot Home 7.18.0) in the same eight languages as `vendor_errors`.
+  `classic_vendor_error()` for `cleanMissionStatus.error` (183 codes),
+  `classic_not_ready_text()` for `notReady`, its own namespace (45
+  values), and `classic_dock_text()` for dock states and dock errors
+  (92 codes). The two apps disagree on what some codes mean -- 2 is
+  "Main Brush stuck" in Prime and the two rubber brushes in Classic,
+  47 and 228 an update in one and a reboot in the other -- so a
+  Classic robot's code is looked up here.
+- **The variants the app applies per robot**: by SKU (69x: main brushes
+  for 2 and 206; Vac/Combo Essential: centre brush for 2), with a Clean
+  Base (36) and in imperial units (74).
+- **`classic_help_id()`**: the key iRobot's help catalogue
+  (`/v2/help/{lang}/{country}/{sku}`) files a Classic error under --
+  `Error <N>`, `Charging Error <N-100>`, `Start-Refuse <n>` -- so a
+  caller can link the manufacturer's own page for the robot's model.
+- **`vendor_errors.prime_help_id()`**: the same for a Prime robot. The
+  Prime catalogue files charging errors under the full code
+  (`Charging Error 104`), the Classic one under the code minus 100.
+- `scripts/generate_vendor_errors_classic.py` regenerates the table
+  (`vendor_errors_classic.json`, shipped with the package) from the
+  extraction, with `--check`.
+
 ## [0.7.1] - 2026-10-17
 
 Why a login can return no robots, said from the login itself, and the
