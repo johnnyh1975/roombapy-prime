@@ -58,6 +58,15 @@ def _data() -> dict[str, Any]:
     return cast("dict[str, Any]", json.loads(_REFERENCE.read_text(encoding="utf-8")))
 
 
+# READ AT IMPORT (0.8.1), as `vendor_errors_classic` is: a lookup in an
+# event loop must not open a file. About 3 ms; an unreadable file leaves
+# the first lookup to raise, as before.
+try:
+    _data()
+except (OSError, ValueError):
+    pass
+
+
 class VendorReferenceError(LookupError):
     """A name that is not in the vendor extract.
 

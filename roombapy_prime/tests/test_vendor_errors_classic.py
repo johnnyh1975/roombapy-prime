@@ -248,3 +248,37 @@ class TestPrimeHelpId:
     @pytest.mark.parametrize("code", [None, 0, "x"])
     def test_no_key_for_no_error(self, code):
         assert prime_help_id(code) is None
+
+
+class TestTheTableIsReadAtImport:
+    """0.8.0 read the 500 KB table at the first lookup. Roomba+ 4.5.0b2's
+    first lookup was a sensor's first state write, and Home Assistant
+    reported a blocking read_text in its event loop. From 0.8.1 a lookup
+    reads no file."""
+
+    @staticmethod
+    def _reimport():
+        import importlib
+
+        return importlib.reload(classic)
+
+    def test_a_lookup_after_the_import_opens_no_file(self, monkeypatch):
+        module = self._reimport()
+
+        def no_reading(*_a, **_kw):
+            raise AssertionError("the table was read at a lookup")
+
+        monkeypatch.setattr(type(module._TABLE), "read_text", no_reading)
+        assert module.classic_vendor_error(2)["label"] == "Brushes need cleaning"
+        assert module.classic_dock_text(450)
+
+    def test_an_unreadable_table_does_not_break_the_import(self, monkeypatch):
+        def broken(*_a, **_kw):
+            raise OSError("gone")
+
+        monkeypatch.setattr(type(classic._TABLE), "read_text", broken)
+        module = self._reimport()  # must not raise
+        with pytest.raises(OSError):
+            module.classic_vendor_error(2)  # the lookup raises, as in 0.8.0
+        monkeypatch.undo()
+        self._reimport()

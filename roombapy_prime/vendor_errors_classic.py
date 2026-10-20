@@ -94,6 +94,23 @@ def _table() -> dict[str, Any]:
     return cast("dict[str, Any]", json.loads(_TABLE.read_text(encoding="utf-8")))
 
 
+# READ AT IMPORT (0.8.1), not at the first lookup. 0.8.0 read the 500 KB
+# here on the first call, and a caller's first call can be in an event
+# loop: Home Assistant reported "Detected blocking call to read_text ...
+# inside the event loop" for Roomba+ 4.5.0b2. Importing is where file
+# I/O is expected (Home Assistant imports in its executor); a lookup
+# should only look up. About 8 ms, paid by whoever imports this module
+# -- `roombapy_prime` itself does not.
+#
+# A file that cannot be read must not break the import of everything
+# that imports this module: the lookup then reads it itself and raises
+# there, as 0.8.0 did.
+try:
+    _table()
+except (OSError, ValueError):
+    pass
+
+
 def _language(language: str | None) -> str:
     lang = re.split(r"[-_]", str(language or "en"))[0].lower()
     return lang if lang in LANGUAGES else "en"

@@ -61,3 +61,32 @@ def test_the_extract_is_app_3_2_0s() -> None:
     assert vr.enum_values("DockPadWashingType")["deepHotWaterWashSupported"] == 4
     assert vr.enum_values("Initiator")["Google"] == "google"
     assert vr.has_enum("IrobotRegionType") is False
+
+
+class TestTheExtractIsReadAtImport:
+    """As vendor_errors_classic (0.8.1): a lookup in an event loop must
+    not open a file."""
+
+    def test_a_lookup_after_the_import_opens_no_file(self, monkeypatch):
+        import importlib
+
+        module = importlib.reload(vr)
+
+        def no_reading(*_a, **_kw):
+            raise AssertionError("the extract was read at a lookup")
+
+        monkeypatch.setattr(type(module._REFERENCE), "read_text", no_reading)
+        assert module.enum_values("DryDurType")["four"] == 4
+
+    def test_an_unreadable_extract_does_not_break_the_import(self, monkeypatch):
+        import importlib
+
+        def broken(*_a, **_kw):
+            raise OSError("gone")
+
+        monkeypatch.setattr(type(vr._REFERENCE), "read_text", broken)
+        module = importlib.reload(vr)  # must not raise
+        with pytest.raises(OSError):
+            module.enum_values("DryDurType")
+        monkeypatch.undo()
+        importlib.reload(vr)

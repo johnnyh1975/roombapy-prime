@@ -6,6 +6,22 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.8.1] - 2026-10-20
+
+No file read at a lookup. Summary: `release-notes/v0.8.1.md`.
+
+### Fixed
+
+- **`vendor_errors_classic` and `vendor_reference` read their table at
+  import**, not at the first lookup. 0.8.0 read the 500 KB Classic
+  table on the first call, which in Home Assistant was a sensor's first
+  state write in the event loop: "Detected blocking call to read_text
+  ... inside the event loop" (Roomba+ 4.5.0b2). `vendor_reference.json`
+  was read the same way. Importing costs about 8 and 3 ms, for whoever
+  imports these modules; `roombapy_prime` itself imports neither.
+- A table that cannot be read does not break the import: the first
+  lookup reads it itself and raises there, as in 0.8.0.
+
 ## [0.8.0] - 2026-10-19
 
 The Classic app's error texts, so a Classic robot no longer gets the
