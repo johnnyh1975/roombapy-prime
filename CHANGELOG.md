@@ -6,6 +6,41 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.8.2] - 2026-10-21
+
+Where a reconnect spends its time, and no robot id in the log. Summary:
+`release-notes/v0.8.2.md`.
+
+### Added
+
+- **Stage timings in "watch resumed"**: total, waiting for another
+  reconnect or token swap, login, connecting, failed attempts with
+  backoff, subscription check (@glowpartyy: one resume took 40.6 s
+  with no warning between drop and resume).
+- **`PrimeRobot.reconnect_log`**: the last 20 resumes after a drop, as
+  durations and counts, with the broker's reason. No topic, id or
+  payload.
+- `mqtt_client.mask_id()`, `redact_topic()`, `redact_topics()`.
+
+### Fixed
+
+- **Robot ids in warnings and errors.** The reconnect, SUBACK, queue
+  and callback lines logged the full topic (`$aws/things/<blid>/...`),
+  and the token-refresh warnings the robot id itself; so did
+  `SubscriptionRejectedError`'s message. They show the last four
+  characters now.
+
+### Documented
+
+- `RuntimeStatsSummary`: what the apps do with it -- the Classic app
+  reads `hr`/`min` as runtime hours plus remaining minutes and `sqft` in
+  units of 100 ft², the Prime app discards it -- and a Roomba Plus 410
+  Combo (p25-415) that sends `hr` 497874 beside 476 powered-on hours
+  (@jdmasuta). `BbSysStats`: no app reads it.
+
+Nothing in the connection itself changed: the drops are reconnected as
+in 0.8.1.
+
 ## [0.8.1] - 2026-10-20
 
 No file read at a lookup. Summary: `release-notes/v0.8.1.md`.

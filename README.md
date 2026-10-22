@@ -19,7 +19,7 @@ robot generations:
 
 One login per account serves every robot on it (`CloudAccount`).
 
-> **Status: v0.8.1.** Reading and writing both work
+> **Status: v0.8.2.** Reading and writing both work
 > against real hardware, confirmed across a dozen field testers' accounts:
 > login, MQTT, mission control, schedules, map edits, favorites, robot
 > settings, and **region-based cleaning** — sending a robot to specific

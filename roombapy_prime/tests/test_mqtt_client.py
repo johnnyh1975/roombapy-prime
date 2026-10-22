@@ -1922,3 +1922,35 @@ async def test_without_a_generation_the_wait_is_for_the_next_end(
 
     assert not waiting.done()
     waiting.cancel()
+
+
+
+class TestNoRobotIdInTheLog:
+    """0.8.2: topics and robot ids as log lines show them."""
+
+    def test_an_id_keeps_its_last_four_characters(self):
+        from roombapy_prime.mqtt_client import mask_id
+
+        assert mask_id("0123456789ABCDEF") == "…CDEF"
+        assert mask_id("BLID") == "…" and mask_id("") == "…"
+
+    def test_a_topic_loses_its_robot_id_and_keeps_the_rest(self):
+        from roombapy_prime.mqtt_client import redact_topic, redact_topics
+
+        assert redact_topic("$aws/things/0123456789ABCDEF/shadow/name/ro-stats/update/delta") == (
+            "$aws/things/…CDEF/shadow/name/ro-stats/update/delta"
+        )
+        assert redact_topic("irbt/things/0123456789ABCDEF/livemap/update") == (
+            "irbt/things/…CDEF/livemap/update"
+        )
+        assert redact_topics(["a/things/0123456789ABCDEF/x"]) == ["a/things/…CDEF/x"]
+        assert redact_topic("no/thing/here") == "no/thing/here"
+
+    def test_an_unanswered_subscribe_names_no_robot(self):
+        """The 'no SUBACK' warning lists its topics."""
+        import inspect
+
+        from roombapy_prime import mqtt_client
+
+        source = inspect.getsource(mqtt_client.PrimeMqttClient)
+        assert "timeout, redact_topics(unconfirmed)," in source

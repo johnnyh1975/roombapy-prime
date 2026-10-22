@@ -1071,6 +1071,28 @@ async def test_refresh_loop_does_not_spin_on_a_token_that_is_due_at_once(caplog)
     assert "due for refresh at once" in caplog.text
 
 
+
+@pytest.mark.asyncio
+async def test_the_refresh_warnings_name_no_robot(caplog) -> None:
+    """0.8.2: the three token-refresh warnings named the robot by its
+    full id; they show its last four characters."""
+    import roombapy_prime.prime_robot as prime_robot_module
+
+    robot, mqtt, _rest = _robot_with_mocks()
+    robot.blid = "0123456789ABCDEF"
+    mqtt.seconds_until_token_refresh_due.side_effect = [0.0, 0.0, 0.0, None]
+    robot._relogin = AsyncMock(side_effect=[TimeoutError("timed out"), RuntimeError("no"), MagicMock()])
+
+    async def fake_sleep(_seconds):
+        return None
+
+    with patch.object(prime_robot_module.asyncio, "sleep", fake_sleep):
+        await robot._refresh_loop()
+
+    assert "0123456789ABCDEF" not in caplog.text
+    assert "…CDEF" in caplog.text
+
+
 # --- backpressure ---------------------------------------------------------
 
 @pytest.mark.asyncio

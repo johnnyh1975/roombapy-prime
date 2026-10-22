@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -135,14 +136,14 @@ def _token(expires: int | None = None) -> ConnectionToken:
 
 
 async def _setup(
-    relogin: Any = None, expires: int | None = None
+    relogin: Any = None, expires: int | None = None, blid: str = BLID
 ) -> tuple[PrimeRobot, PrimeMqttClient, _Broker]:
     broker = _Broker()
-    client = PrimeMqttClient(token=_token(expires), endpoint="e", blid=BLID)
+    client = PrimeMqttClient(token=_token(expires), endpoint="e", blid=blid)
     client._build_client = broker.build  # type: ignore[method-assign,assignment]
     client.SUBACK_TIMEOUT_SECONDS = 0.05
     robot = PrimeRobot(
-        blid=BLID, mqtt_client=client, rest_client=AsyncMock(),
+        blid=blid, mqtt_client=client, rest_client=AsyncMock(),
         relogin=relogin, irbt_topic_prefix="irbt",
     )
     robot._SUBACK_RECHECK_SECONDS = 0.01
@@ -795,3 +796,119 @@ async def test_a_backoff_ends_when_a_read_rebuilds_the_connection() -> None:
     for watch in (state, timeline):
         await watch.stop()
     await robot.disconnect()
+
+
+
+# --- where the time went, and no robot id in the log (0.8.2) -------------
+
+_LONG_BLID = "0123456789ABCDEF"
+
+
+@pytest.mark.asyncio
+async def test_the_resume_line_says_where_the_time_went(caplog) -> None:
+    """@glowpartyy: one resume took 40.6 s with no warning in between, and
+    nothing said where the time went. The line names each stage, and
+    `reconnect_log` keeps it, durations and counts only."""
+    caplog.set_level(logging.WARNING, logger="roombapy_prime")
+    robot, client, broker = await _setup()
+    watch = _Watch(robot.watch_state())
+    await _subscribed(broker, _state_topic(client))
+
+    broker.connect_delay = 0.05
+    broker.live.drop("blip")
+    await _until(lambda: "watch resumed" in caplog.text)
+
+    line = next(r.getMessage() for r in caplog.records if "watch resumed" in r.getMessage())
+    assert re.search(
+        r"after \d+\.\ds \(waiting for another reconnect \d+\.\ds, login 0\.0s, "
+        r"connecting \d+\.\ds, 0 failed attempt\(s\) with 0\.0s backoff, "
+        r"subscriptions \d+\.\ds\)",
+        line,
+    ), line
+    [entry] = robot.reconnect_log
+    assert entry["rebuilt_by"] == "this_watcher"
+    assert entry["connecting_s"] >= 0.05
+    assert entry["failed_attempts"] == 0 and entry["login_s"] == 0.0
+    assert entry["total_s"] >= entry["connecting_s"] + entry["subscriptions_s"] - 0.001
+    assert set(entry) == {
+        "at", "reason", "rebuilt_by", "total_s", "waiting_s", "login_s",
+        "connecting_s", "failed_attempts", "backoff_s", "subscriptions_s",
+    }
+    await watch.stop()
+    await robot.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_failed_attempts_and_their_backoff_are_counted(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="roombapy_prime")
+    robot, client, broker = await _setup()
+    watch = _Watch(robot.watch_state())
+    await _subscribed(broker, _state_topic(client))
+
+    broker.connect_fail = 2
+    broker.live.drop("blip")
+    await _until(lambda: "watch resumed" in caplog.text)
+
+    [entry] = robot.reconnect_log
+    assert entry["failed_attempts"] == 2
+    assert entry["backoff_s"] > 0.0
+    await watch.stop()
+    await robot.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a_login_on_the_way_is_its_own_stage(caplog) -> None:
+    """A token that is due means a full login before the reconnect -- the
+    other silent stretch a 40-second resume could hide."""
+    caplog.set_level(logging.WARNING, logger="roombapy_prime")
+
+    async def relogin() -> Any:
+        await asyncio.sleep(0.05)
+        result = MagicMock()
+        result.token_for_blid.return_value = _token(expires=int(time.time()) + 3600)
+        return result
+
+    robot, client, broker = await _setup(relogin=relogin, expires=int(time.time()) + 60)
+    if robot._refresh_task is not None:
+        robot._refresh_task.cancel()
+        await asyncio.wait({robot._refresh_task})
+        robot._refresh_task = None
+    watch = _Watch(robot.watch_state())
+    await _subscribed(broker, _state_topic(client))
+
+    broker.live.drop("blip")
+    await _until(lambda: bool(robot.reconnect_log))
+    assert robot.reconnect_log[0]["login_s"] >= 0.05
+    await watch.stop()
+    await robot.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_no_robot_id_in_the_reconnect_lines(caplog) -> None:
+    """The topics are `$aws/things/<blid>/...`, and these lines are the
+    ones people paste into issues. Four characters still tell two robots
+    of one account apart."""
+    caplog.set_level(logging.DEBUG, logger="roombapy_prime")
+    robot, client, broker = await _setup(blid=_LONG_BLID)
+    watch = _Watch(robot.watch_state())
+    await _subscribed(broker, _state_topic(client))
+
+    broker.live.drop("blip")
+    await _until(lambda: "watch resumed" in caplog.text)
+    lines = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("MQTT connection dropped" in line for line in lines)
+    assert not any(_LONG_BLID in line for line in lines), lines
+    assert any("…CDEF" in line for line in lines)
+    await watch.stop()
+    await robot.disconnect()
+
+
+def test_the_log_keeps_the_last_twenty_and_hands_out_copies() -> None:
+    from roombapy_prime.prime_robot import _ResumeTiming
+
+    robot = PrimeRobot(blid=BLID, mqtt_client=MagicMock(), rest_client=AsyncMock())
+    for _ in range(25):
+        robot._resumed("t", _ResumeTiming(time.monotonic()), "r", rebuilt_by="this_watcher")
+    assert len(robot.reconnect_log) == PrimeRobot.RECONNECT_LOG_SIZE == 20
+    robot.reconnect_log[0]["reason"] = "changed"
+    assert robot.reconnect_log[0]["reason"] == "r"

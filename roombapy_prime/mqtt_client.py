@@ -44,6 +44,7 @@ import functools
 import json
 import logging
 import math
+import re
 import ssl
 import time
 from dataclasses import dataclass
@@ -61,6 +62,32 @@ from .errors import CloudError, CloudErrorReason
 from .auth import ConnectionToken, _ssl_diagnosis
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def mask_id(value: object) -> str:
+    """A robot id as a log may show it: its last four characters (0.8.2).
+
+    THE FULL ID WAS IN EVERY RECONNECT WARNING. The topics this library
+    logs are `$aws/things/<blid>/...`, and Home Assistant users paste
+    those lines into public issues (@glowpartyy noticed, and kept them
+    out). Four characters still tell two robots of one account apart.
+    """
+    text = str(value)
+    return "…" + text[-4:] if len(text) > 4 else "…"
+
+
+_THING = re.compile(r"(?<=/things/)[^/]+")
+
+
+def redact_topic(topic: object) -> str:
+    """A topic with its robot id masked (mask_id), for a log line."""
+    return _THING.sub(lambda m: mask_id(m.group(0)), str(topic))
+
+
+def redact_topics(topics: Any) -> list[str]:
+    """Several topics, each masked (redact_topic)."""
+    return [redact_topic(t) for t in topics]
+
 
 # HISTORICAL NOTE -- do not re-add a User-Agent header without new
 # evidence. One was added here in a22, on a third-party project's
@@ -985,7 +1012,7 @@ class PrimeMqttClient:
                 "roombapy-prime: no SUBACK within %.1fs for %s -- proceeding, but a "
                 "subscription that was never acknowledged delivers nothing and looks "
                 "exactly like a robot with nothing to say.%s",
-                timeout, unconfirmed,
+                timeout, redact_topics(unconfirmed),
                 f" Last disconnect reason from the broker: {self._disconnect_reason}."
                 if self._disconnect_reason else
                 " The broker has not reported a disconnect, so the socket is"
@@ -993,14 +1020,15 @@ class PrimeMqttClient:
             )
         if not_sent:
             raise SubscriptionRejectedError(
-                f"SUBSCRIBE was never sent for {not_sent} (paho error codes) -- the "
+                f"SUBSCRIBE was never sent for {redact_topics(not_sent)} (paho error codes) -- the "
                 "client reported a failure before anything reached the broker. "
                 "Distinct from a rejection: the broker never saw this.",
                 reason=CloudErrorReason.SUBSCRIPTION_NOT_SENT,
             )
         if rejected:
             raise SubscriptionRejectedError(
-                f"Broker REJECTED subscription (SUBACK failure code) for: {rejected}. "
+                f"Broker REJECTED subscription (SUBACK failure code) for: "
+                f"{ {redact_topic(t): c for t, c in rejected.items()} }. "
                 "This is a different, more specific finding than 'nothing arrived' -- "
                 "the broker's own IoT policy denied this topic outright, not a silent "
                 "absence of traffic on it."
@@ -1013,7 +1041,8 @@ class PrimeMqttClient:
             return
         if any(_suback_is_failure(rc) for rc in task.result() or ()):
             _LOGGER.warning(
-                "roombapy-prime: late SUBACK REJECTED the subscription to %s", topic
+                "roombapy-prime: late SUBACK REJECTED the subscription to %s",
+                redact_topic(topic),
             )
         else:
             _LOGGER.debug("roombapy-prime: late SUBACK for %s", topic)
@@ -1105,7 +1134,7 @@ class PrimeMqttClient:
                 _LOGGER.exception(
                     "roombapy-prime: a shadow callback raised for %s -- "
                     "the message is lost, the connection is not",
-                    topic,
+                    redact_topic(topic),
                 )
         # PERSISTENT SUBSCRIBERS ARE MATCHED BY PATTERN, not by an exact
         # key: a registration can be a wildcard filter (watch_raw_topic's
@@ -1122,7 +1151,7 @@ class PrimeMqttClient:
                         _LOGGER.exception(
                             "roombapy-prime: a watcher raised for %s -- "
                             "the message is lost, the connection is not",
-                            topic,
+                            redact_topic(topic),
                         )
 
     async def _publish(

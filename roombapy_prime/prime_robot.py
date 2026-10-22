@@ -68,7 +68,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, 
 from typing import Any, TypeVar
 
 from .auth import LoginResult
-from .mqtt_client import PrimeMqttClient, ShadowResponse
+from .mqtt_client import PrimeMqttClient, ShadowResponse, mask_id, redact_topic, redact_topics
 from .rest_client import PrimeRestClient
 from .models import (
     DNDStatusResponse,
@@ -198,18 +198,37 @@ def _put_with_backpressure(
                     "watch_*() queue for topic %s full -- an ERROR was dropped "
                     "while discarding the oldest entry (not just a routine "
                     "message): %r. The caller missed this error signal.",
-                    topic,
+                    redact_topic(topic),
                     dropped,
                 )
             else:
                 _LOGGER.warning(
                     "watch_*() queue for topic %s full -- oldest entry "
                     "dropped to make room (consumer is falling behind)",
-                    topic,
+                    redact_topic(topic),
                 )
         except asyncio.QueueEmpty:
             pass
     queue.put_nowait(item)
+
+
+class _ResumeTiming:
+    """Seconds spent in each stage of one resume after a drop (0.8.2)."""
+
+    __slots__ = ("start", "waiting", "login", "connecting", "backoff",
+                 "subscriptions", "failed_attempts")
+
+    def __init__(self, start: float) -> None:
+        self.start = start
+        self.waiting = 0.0
+        self.login = 0.0
+        self.connecting = 0.0
+        self.backoff = 0.0
+        self.subscriptions = 0.0
+        self.failed_attempts = 0
+
+    def since_start(self) -> float:
+        return _time.monotonic() - self.start
 
 
 class PrimeRobot:
@@ -322,6 +341,7 @@ class PrimeRobot:
         self._recent_drops: list[float] = []
         #: The last connection whose drop was logged -- see _report_drop().
         self._drop_reported_generation = 0
+        self._reconnect_log: list[dict[str, Any]] = []
         self._rest = rest_client
         self._relogin = relogin
         self._irbt_topic_prefix = irbt_topic_prefix
@@ -436,7 +456,7 @@ class PrimeRobot:
                     _LOGGER.warning(
                         "roombapy-prime: the new token for %s is due for refresh at "
                         "once -- is the system clock right? Next attempt in %.0fs",
-                        self.blid, self._REFRESH_RETRY_SECONDS,
+                        mask_id(self.blid), self._REFRESH_RETRY_SECONDS,
                     )
                     await asyncio.sleep(self._REFRESH_RETRY_SECONDS)
             except Exception as exc:  # noqa: BLE001
@@ -462,14 +482,14 @@ class PrimeRobot:
                         "roombapy-prime: token refresh for %s timed out -- "
                         "retrying in %.0fs (the refresh runs %.0fs before "
                         "expiry, so there is room for this)",
-                        self.blid, self._REFRESH_RETRY_SECONDS,
+                        mask_id(self.blid), self._REFRESH_RETRY_SECONDS,
                         self._mqtt.REFRESH_MARGIN_SECONDS,
                     )
                 else:
                     _LOGGER.exception(
                         "roombapy-prime: proactive token refresh failed for %s -- "
                         "will retry in %.0fs rather than giving up on future refreshes",
-                        self.blid, self._REFRESH_RETRY_SECONDS,
+                        mask_id(self.blid), self._REFRESH_RETRY_SECONDS,
                     )
                 await asyncio.sleep(self._REFRESH_RETRY_SECONDS)
 
@@ -1687,7 +1707,7 @@ class PrimeRobot:
         self._drop_reported_generation = generation
         _LOGGER.warning(
             "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
-            reason, topic,
+            reason, redact_topic(topic),
         )
         # DROPS ARE NORMAL. EVICTION IS ONE CAUSE OF MANY.
         #
@@ -1736,7 +1756,7 @@ class PrimeRobot:
                 "the same client_id, and this server assigns it. Each "
                 "drop reconnects on its own; watch for the 'watch "
                 "resumed' line.",
-                len(recent), topic,
+                len(recent), redact_topic(topic),
             )
         return True
 
@@ -1767,13 +1787,19 @@ class PrimeRobot:
         watcher waits until connect() opens it again (review finding:
         watch_live_map() used to undo a disconnect at once)."""
         mqtt = self._mqtt
+        # HOW LONG EACH STAGE TOOK (0.8.2, @glowpartyy): one resume took
+        # 40.6 s with no warning in between, and the log could not say
+        # where the time went. Durations and counts only.
+        timing = _ResumeTiming(_time.monotonic())
         # A token swap or another reconnect in progress finishes first:
         # its result is the connection to watch.
         await mqtt.wait_until_settled()
         if self._reconnect_lock is None:
             self._reconnect_lock = asyncio.Lock()
         reported = False
+        reason: str | None = None
         async with self._reconnect_lock:
+            timing.waiting = timing.since_start()
             backoff = self._FIRST_RECONNECT_BACKOFF
             while not mqtt.closed:
                 current = mqtt.generation
@@ -1783,22 +1809,22 @@ class PrimeRobot:
                     # drop repaired that way is still worth its line.
                     end = mqtt.ended(generation)
                     if end is not None and not end[1]:
+                        reason = end[0]
                         reported = self._report_drop(generation, end[0], topic) or reported
                     if reported:
-                        _LOGGER.warning(
-                            "roombapy-prime: MQTT reconnected, watch resumed for %s", topic
-                        )
+                        self._resumed(topic, timing, reason, rebuilt_by="another_caller")
                     else:
                         _LOGGER.debug(
-                            "roombapy-prime: resuming %s on connection %d", topic, current
+                            "roombapy-prime: resuming %s on connection %d",
+                            redact_topic(topic), current,
                         )
                     return current
 
                 # Down, and nobody is rebuilding it: this watcher does.
-                reported = (
-                    self._report_drop(current, mqtt.disconnect_reason or "unknown", topic)
-                    or reported
-                )
+                now_reason = mqtt.disconnect_reason or "unknown"
+                reason = reason or now_reason
+                reported = self._report_drop(current, now_reason, topic) or reported
+                started = _time.monotonic()
                 try:
                     # A FRESH TOKEN ONLY WHEN THE OLD ONE IS DUE. reconnect()
                     # reuses the token it has; if a drop lands after it
@@ -1814,12 +1840,17 @@ class PrimeRobot:
                     relogin = self._relogin
                     if relogin is not None and mqtt.seconds_until_token_refresh_due() == 0.0:
                         login_result = await relogin()
+                        timing.login += _time.monotonic() - started
+                        started = _time.monotonic()
                         await mqtt.replace_token(login_result.token_for_blid(self.blid))
                     else:
                         await mqtt.reconnect(if_generation=current)
+                    timing.connecting += _time.monotonic() - started
                 except Exception as exc:  # noqa: BLE001
+                    timing.connecting += _time.monotonic() - started
                     if mqtt.closed:
                         break
+                    timing.failed_attempts += 1
                     _LOGGER.warning(
                         "roombapy-prime: MQTT reconnect attempt failed (%s) -- retrying in %.0fs",
                         exc, backoff,
@@ -1827,24 +1858,71 @@ class PrimeRobot:
                     # Ends early if a shadow read or a command rebuilds
                     # the connection meanwhile: the other watchers wait
                     # behind this lock (review finding).
+                    started = _time.monotonic()
                     await mqtt.wait_for_state_change(backoff)
+                    timing.backoff += _time.monotonic() - started
                     backoff = min(backoff * 2, max_reconnect_backoff)
                     continue
 
+                started = _time.monotonic()
                 await self._confirm_subscriptions(topic, backoff, max_reconnect_backoff)
+                timing.subscriptions = _time.monotonic() - started
                 # WARNING, MATCHING THE DROP THAT PRECEDED IT. This used
                 # to be INFO, so at Home Assistant's default level a user
                 # saw the failure and never the recovery; @ratpic83 read
                 # "nothing further from roombapy_prime" as a dead
                 # reconnect and spent two hours on it.
                 if reported:
-                    _LOGGER.warning(
-                        "roombapy-prime: MQTT reconnected, watch resumed for %s", topic
-                    )
+                    self._resumed(topic, timing, reason, rebuilt_by="this_watcher")
                 return mqtt.generation
 
         await mqtt.wait_until_open()
         return mqtt.generation
+
+    #: How many resumes `reconnect_log` keeps.
+    RECONNECT_LOG_SIZE = 20
+
+    @property
+    def reconnect_log(self) -> tuple[dict[str, Any], ...]:
+        """The last reconnects after a drop, newest last (0.8.2): when,
+        the broker's reason, and how long each stage took, in seconds.
+        No topic, id or payload -- for a diagnostics download."""
+        return tuple(dict(entry) for entry in self._reconnect_log)
+
+    def _resumed(
+        self, topic: str, timing: _ResumeTiming, reason: str | None, *, rebuilt_by: str
+    ) -> None:
+        """The "watch resumed" line, with where the time went, and its
+        entry in `reconnect_log`."""
+        total = timing.since_start()
+        if rebuilt_by == "another_caller":
+            _LOGGER.warning(
+                "roombapy-prime: MQTT reconnected, watch resumed for %s after %.1fs "
+                "(rebuilt by another caller; waited %.1fs for it)",
+                redact_topic(topic), total, timing.waiting,
+            )
+        else:
+            _LOGGER.warning(
+                "roombapy-prime: MQTT reconnected, watch resumed for %s after %.1fs "
+                "(waiting for another reconnect %.1fs, login %.1fs, connecting %.1fs, "
+                "%d failed attempt(s) with %.1fs backoff, subscriptions %.1fs)",
+                redact_topic(topic), total, timing.waiting, timing.login,
+                timing.connecting, timing.failed_attempts, timing.backoff,
+                timing.subscriptions,
+            )
+        self._reconnect_log.append({
+            "at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "reason": reason,
+            "rebuilt_by": rebuilt_by,
+            "total_s": round(total, 3),
+            "waiting_s": round(timing.waiting, 3),
+            "login_s": round(timing.login, 3),
+            "connecting_s": round(timing.connecting, 3),
+            "failed_attempts": timing.failed_attempts,
+            "backoff_s": round(timing.backoff, 3),
+            "subscriptions_s": round(timing.subscriptions, 3),
+        })
+        del self._reconnect_log[: -self.RECONNECT_LOG_SIZE]
 
     async def _confirm_subscriptions(
         self, topic: str, backoff: float, max_reconnect_backoff: float
@@ -1875,13 +1953,13 @@ class PrimeRobot:
                     "roombapy-prime: after %d reconnects, %d subscription(s) are still "
                     "unacknowledged (%s) -- resuming anyway. Some sessions deliver "
                     "without a visible SUBACK; if %s stays silent, this is why.",
-                    attempt, len(unconfirmed), unconfirmed, topic,
+                    attempt, len(unconfirmed), redact_topics(unconfirmed), redact_topic(topic),
                 )
                 return
             _LOGGER.warning(
                 "roombapy-prime: MQTT reconnected for %s but %d subscription(s) were "
                 "never acknowledged (%s) -- reconnecting again in %.0fs (%d of %d)",
-                topic, len(unconfirmed), unconfirmed, backoff,
+                redact_topic(topic), len(unconfirmed), redact_topics(unconfirmed), backoff,
                 attempt + 1, self._MAX_UNCONFIRMED_RETRIES,
             )
             # BACK OFF BEFORE TRYING AGAIN: the broker is already

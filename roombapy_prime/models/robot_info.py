@@ -2782,7 +2782,27 @@ class RuntimeStatsSummary:
     lifetime runtime, hours+minutes. Plausibly analogous to
     ha_roomba_plus's own Classic-tier bbrun.hr ("wear data"/runtime
     hours, see MISSIONSTORE_FIELD_REGISTRY.md) -- same underlying
-    concept, not confirmed to be computed identically."""
+    concept, not confirmed to be computed identically.
+
+    WHAT THE APPS DO WITH IT (APK research, 21 Oct 2026,
+    claude/APK_RUNTIMESTATS_RECHERCHE.md):
+      * The Classic app (iRobot Home 7.18.0) reads `runtimeStats` in the
+        same branch as `bbrun`: `hr` runtime hours, `min` the minutes
+        left over (0-59), `sqft` in units of 100 ft² (it multiplies by
+        100). It shows hr·60+min as the total job time and computes the
+        wear of time-based maintenance parts from it.
+      * The Prime app (Roomba Home 3.2.0) parses it and throws it away:
+        it never shows it, never converts it, and has no branch by model
+        family.
+    So the meaning is the Classic one; that Prime firmware fills it the
+    same way is not shown by either app.
+
+    A VALUE THAT CANNOT BE HOURS (0.8.2 note, @jdmasuta): a Roomba Plus
+    410 Combo (G284020, firmware family p25-415) sent `{"hr": 497874,
+    "min": 56}` three weeks after it was set up, beside `bbsys.hr` 476
+    in ro-stats. Read the Classic way that is 56 years. This model
+    passes it on as sent; a consumer that shows it as hours should check
+    it against `BbSysStats.hours` (Roomba+ does, from 4.5.0b4)."""
 
     hours: int | None = None
     minutes: int | None = None
@@ -2792,9 +2812,9 @@ class RuntimeStatsSummary:
     #: model was built from real payloads, and a key the robot does not
     #: send cannot be discovered that way.
     #:
-    #: UNIT NOT CONFIRMED BEYOND THE NAME. Whether a robot in a metric
-    #: locale reports square feet under this key or converts is unknown;
-    #: nothing here converts it.
+    #: IN UNITS OF 100 FT²: the Classic app multiplies it by 100 before
+    #: showing it (APK research 21 Oct 2026, [C]); so does Roomba+ for
+    #: `bbrun.sqft`. Passed on unscaled here, as sent.
     sqft: int | None = None
 
     @classmethod
@@ -3319,6 +3339,11 @@ class BbSysStats:
     PRACTICAL CONSEQUENCE: do NOT present this to users as "time since
     you got the robot". It is an operating-hours meter, and on a robot
     that has spent months unplugged the two differ by more than half.
+
+    NO APP READS IT. The Prime app does not subscribe to ro-stats at all
+    (`ShadowType.STATS` is defined and never used), and the Classic app
+    has no `bbsys` in its schema (APK research, 21 Oct 2026). Everything
+    known about it comes from field captures like the two above.
     """
 
     hours: int | None = None

@@ -281,6 +281,17 @@ and a drop is logged once however many watchers notice it. Our own token refresh
 as a drop. After a reconnect, subscriptions still unacknowledged a second later trigger at most
 two further reconnects; then the watch resumes regardless.
 
+**Where the time went (0.8.2).** The "watch resumed" warning gives the total and each stage:
+waiting for another reconnect or token swap already in progress, a login when the token was due,
+connecting, failed attempts with their backoff, and the subscription check.
+`robot.reconnect_log` keeps the last 20 of these as dicts (`at`, `reason`, `rebuilt_by`,
+`total_s`, `waiting_s`, `login_s`, `connecting_s`, `failed_attempts`, `backoff_s`,
+`subscriptions_s`): durations and counts, no topic, id or payload, for a diagnostics download.
+
+**No robot id in the log (0.8.2).** Warnings and errors show a robot id by its last four
+characters (`…CDEF`), in a topic or alone; `mask_id()` and `redact_topic()` in `mqtt_client`
+do it.
+
 Watchers run on the event loop (since 0.5.0; before that, on paho's network thread). A watcher
 that raises is logged and the others still run. A watcher must not block: it holds up every other
 message on the connection until it returns. Hand slow work to a task.
