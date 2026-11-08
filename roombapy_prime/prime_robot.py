@@ -310,8 +310,13 @@ class PrimeRobot:
         robot_id: str | None = None,
         irbt_topic_prefix: str | None = None,
         deployment: dict[str, Any] | None = None,
+        svc_deployment_id: str | None = None,
     ) -> None:
         self.blid = blid
+        #: The robot's own deployment (`svcDeplId` from the login answer,
+        #: 0.8.3). Its topic prefix is chosen by it; diagnostics report it
+        #: next to the prefix, so a mismatch shows (@ecovictor75).
+        self.svc_deployment_id = svc_deployment_id
         # The account-level identifier the LOGIN response gives for this
         # BLID. NOT always the same string as the BLID itself -- see
         # get_household_id()'s own docstring for the real account where

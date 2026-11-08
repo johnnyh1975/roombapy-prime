@@ -1163,6 +1163,9 @@ class TestSkuGeneration:
         # 0.7.1: the Combo j-series starts with "c"; both were Prime by default.
         ("c755020", "classic", "connormxy, Combo j7+"),
         ("c975860", "classic", "kyoheimukaida, Combo j9+"),
+        # 0.8.3: the 600 series was unknown and set up cloud-only.
+        ("R694020", "classic", "tankdeer, Roomba 694"),
+        ("R671020", "classic", "egold555, Roomba 6xx (reported as 617)"),
         # Prime
         ("G185020", "prime", "chairstacker"),
         ("N185240", "prime", "DaRealGuGu, 505 Combo"),
@@ -1697,3 +1700,116 @@ def test_the_combo_j_series_is_classic_by_its_whole_family() -> None:
     for sku in ("c755020", "C755040", "c975860", "c975020", "C955840"):
         assert is_classic_sku(sku) is True, sku
         assert is_prime_sku(sku) is False, sku
+
+
+# --- The robot's own deployment for the topic prefix (0.8.3) -------------
+
+def _prefix_result(robot_depl, *, prefix="v007-irbthbu", deployments=None):
+    from roombapy_prime.auth import CloudCredentials, LoginResult, RobotLoginEntry
+
+    creds = CloudCredentials(
+        access_key_id="ak", secret_key="sk", session_token="st", cognito_id="us-east-1:0",
+    )
+    return LoginResult(
+        mqtt_endpoint="e", http_base="h", http_base_auth="ha", credentials=creds,
+        robots={"0123456789ABCDEF": RobotLoginEntry.from_json({"svcDeplId": robot_depl})},
+        connection_tokens=[], raw={},
+        irbt_topic_prefix=prefix,
+        deployments=deployments or {},
+    )
+
+
+def test_a_robot_moved_to_another_deployment_gets_its_prefix() -> None:
+    """@ecovictor75 (Combo 105, FR, end of October 2026): the current
+    deployment said v007-irbthbu, the robot's svcDeplId was v011.
+    Commands under v007 were acknowledged and ignored; under v011 the
+    robot started. The app takes the robot's deployment entry."""
+    result = _prefix_result(
+        "v011", deployments={"v007": {"irbtTopics": "v007-irbthbu"},
+                             "v011": {"irbtTopics": "v011-irbthbu"}},
+    )
+    assert result.irbt_topic_prefix_for("0123456789ABCDEF") == "v011-irbthbu"
+
+
+def test_a_deployment_the_discovery_does_not_list_is_warned_about(caplog) -> None:
+    """Not invented from the name: the app falls back to the base
+    prefix and says it may be wrong. So does this."""
+    result = _prefix_result("v011")
+    with caplog.at_level("WARNING"):
+        assert result.irbt_topic_prefix_for("0123456789ABCDEF") == "v007-irbthbu"
+    assert "deployment v011" in caplog.text
+    assert "0123456789ABCDEF" not in caplog.text
+
+
+def test_the_robots_deployment_from_discovery_wins() -> None:
+    result = _prefix_result(
+        "v011", deployments={"v011": {"irbtTopics": "v011-irbthbu-x"}},
+    )
+    assert result.irbt_topic_prefix_for("0123456789ABCDEF") == "v011-irbthbu-x"
+
+
+@pytest.mark.parametrize("robot_depl", ["v007", None, ""])
+def test_the_account_prefix_stays_otherwise(robot_depl, caplog) -> None:
+    result = _prefix_result(robot_depl)
+    with caplog.at_level("WARNING"):
+        assert result.irbt_topic_prefix_for("0123456789ABCDEF") == "v007-irbthbu"
+    assert caplog.text == ""
+
+
+def test_an_unknown_robot_keeps_the_account_prefix() -> None:
+    assert _prefix_result("v011").irbt_topic_prefix_for("FEDCBA9876543210") == "v007-irbthbu"
+
+
+@pytest.mark.asyncio
+async def test_login_keeps_every_deployment() -> None:
+    discovery = {
+        "current_deployment": "v007",
+        "deployments": {
+            "v007": {
+                "mqtt": "mqtt.example.invalid",
+                "httpBase": "https://api.example.invalid",
+                "httpBaseAuth": "https://api-auth.example.invalid",
+                "irbtTopics": "v007-irbthbu",
+            },
+            "v011": {"irbtTopics": "v011-irbthbu"},
+            "broken": "not an object",
+        },
+        "gigya": {"datacenter_domain": "eu1.gigya.com", "api_key": "fake-api-key"},
+    }
+    session = _FakeSequentialSession(
+        [
+            _FakeResp(200, json_body=discovery),
+            _FakeResp(200, text_body=json.dumps(_GIGYA_RESPONSE)),
+            _FakeResp(200, text_body=json.dumps(_IROBOT_LOGIN_RESPONSE)),
+        ]
+    )
+
+    result = await login(session, "user@example.com", "hunter2", "FR")
+
+    assert set(result.deployments) == {"v007", "v011"}
+    assert "deployments" not in repr(result)
+
+
+def test_ecovictor75s_account_as_he_reported_it() -> None:
+    """Discovery for FR: current v007, deployments v005/v007/v011, each
+    with its own irbtTopics. Login: the Combo 105 on v011, the two other
+    robots on v007. Only the Combo 105 ignored commands."""
+    from roombapy_prime.auth import CloudCredentials, LoginResult, RobotLoginEntry
+
+    result = LoginResult(
+        mqtt_endpoint="e", http_base="h", http_base_auth="ha",
+        credentials=CloudCredentials(
+            access_key_id="ak", secret_key="sk", session_token="st", cognito_id="us-east-1:0",
+        ),
+        robots={
+            "0123456789ABCDE1": RobotLoginEntry.from_json({"sku": "Y311240", "svcDeplId": "v011"}),
+            "0123456789ABCDE2": RobotLoginEntry.from_json({"sku": "m613440", "svcDeplId": "v007"}),
+            "0123456789ABCDE3": RobotLoginEntry.from_json({"sku": "i515440", "svcDeplId": "v007"}),
+        },
+        connection_tokens=[], raw={},
+        irbt_topic_prefix="v007-irbthbu",
+        deployments={d: {"irbtTopics": f"{d}-irbthbu"} for d in ("v005", "v007", "v011")},
+    )
+    assert result.irbt_topic_prefix_for("0123456789ABCDE1") == "v011-irbthbu"
+    assert result.irbt_topic_prefix_for("0123456789ABCDE2") == "v007-irbthbu"
+    assert result.irbt_topic_prefix_for("0123456789ABCDE3") == "v007-irbthbu"

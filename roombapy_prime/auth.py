@@ -827,7 +827,16 @@ CLASSIC_SKU_PREFIXES: frozenset[str] = frozenset(
         # from the account was set up cloud-only, and neither model
         # appeared in the integration's local robot list.
         "c75 "   # Combo j7+ -- a real device (c755020)
-        "c97"    # Combo j9+ -- a real device (c975860, firmware stingray)
+        "c97 "   # Combo j9+ -- a real device (c975860, firmware stingray)
+        #
+        # THE 600 SERIES (0.8.3), from two real devices (tankdeer, R694020;
+        # egold555, R671020). Matching is on two characters, so this entry
+        # covers every R6* SKU.
+        # Missing, it was "unknown" and took the Prime path from the
+        # account: commands reached it, but it has only the unnamed
+        # Classic-format shadow and no ro-currentstate, so its state
+        # never changed. No Prime SKU starts with "R6".
+        "R69"    # Roomba 690/694 and the rest of the 600 series (R6*)
     ).split()
 )
 
@@ -1010,6 +1019,11 @@ class LoginResult:
     instead of guessing again without evidence."""
     irbt_topic_prefix: str | None = None
     iot_topic_prefix: str | None = None
+    deployments: dict[str, Any] = field(default_factory=dict, repr=False)
+    """NEW (0.8.3). Every deployment the discovery response lists
+    (`disc["deployments"]`), keyed by id (`v007`, `v011`, ...). Holds
+    endpoints and topic prefixes, no account data. See
+    irbt_topic_prefix_for()."""
     conflicted_robots: tuple[str, ...] = ()
     """NEW (0.7.1). Robot ids the login names as owned by ANOTHER
     account, from the response's `conflicted_robots`.
@@ -1058,6 +1072,51 @@ class LoginResult:
             if blid in token.devices:
                 return token
         return self.primary_token()
+
+    def irbt_topic_prefix_for(self, blid: str) -> str | None:
+        """The irbt topic prefix for this robot (0.8.3), as the Prime app
+        resolves it.
+
+        PER ROBOT, NOT PER ACCOUNT. The prefix used to come from the
+        discovery response's CURRENT deployment alone. The Prime app
+        3.0.0 resolves irbt topics through a prefix holder per
+        deployment (`perimeter/mqtt/TopicResolver`), maps each robot to
+        its deployment by the login answer's `svcDeplId`
+        (`AssetDeploymentMap`, 3.2.0), and falls back to the base prefix
+        only when a robot has no mapping, logging that the topic "may be
+        wrong". @ecovictor75's Combo 105 (FR) was moved to `v011` at the
+        end of October 2026 while the current deployment still said
+        `v007-irbthbu`: commands were acknowledged and ignored, and under
+        `v011-irbthbu` the same `start` started a mission at once.
+
+        The robot's deployment as the discovery response lists it, when
+        it has an `irbtTopics`; the account prefix otherwise. A robot
+        whose deployment the discovery does not list is logged as a
+        warning, as the app does: the prefix may be wrong for it.
+        """
+        prefix = self.irbt_topic_prefix
+        entry = self.robots.get(blid)
+        robot_depl = getattr(entry, "svc_deployment_id", None)
+        if not isinstance(robot_depl, str) or not robot_depl:
+            return prefix
+        own = self.deployments.get(robot_depl)
+        own_prefix = own.get("irbtTopics") if isinstance(own, dict) else None
+        if isinstance(own_prefix, str) and own_prefix:
+            if own_prefix != prefix:
+                _LOGGER.info(
+                    "roombapy-prime: robot …%s is on deployment %s; topic prefix %s "
+                    "instead of the account's %s",
+                    str(blid)[-4:], robot_depl, own_prefix, prefix,
+                )
+            return own_prefix
+        if prefix is not None and not prefix.startswith(f"{robot_depl}-"):
+            _LOGGER.warning(
+                "roombapy-prime: robot …%s is on deployment %s, which the discovery "
+                "response does not list; using the account's topic prefix %s, which "
+                "may be wrong for it (commands acknowledged and ignored)",
+                str(blid)[-4:], robot_depl, prefix,
+            )
+        return prefix
 
     def primary_blid(self) -> str:
         """The BLID to use when the caller didn't name one.
@@ -1261,6 +1320,10 @@ async def login(
         # testing.
         irbt_topic_prefix=deployment.get("irbtTopics"),
         iot_topic_prefix=deployment.get("iotTopics"),
+        deployments=(
+            {k: v for k, v in disc["deployments"].items() if isinstance(v, dict)}
+            if isinstance(disc.get("deployments"), dict) else {}
+        ),
         conflicted_robots=_parse_conflicted_robots(login_result.get("conflicted_robots")),
         conflicted_user_count=_parse_conflicted_user_count(login_result.get("conflicted_user_count")),
     )

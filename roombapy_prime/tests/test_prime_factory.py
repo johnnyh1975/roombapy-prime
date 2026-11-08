@@ -173,3 +173,26 @@ async def test_create_prime_robot_auto_refresh_wires_relogin_closure(monkeypatch
     second_result = await robot._relogin()
     assert login_call_count == 2
     assert isinstance(second_result, LoginResult)
+
+
+@pytest.mark.asyncio
+async def test_the_robot_publishes_under_its_own_deployment() -> None:
+    """0.8.3, @ecovictor75: the robot was on v011, discovery said v007,
+    and commands under v007 were acknowledged and ignored."""
+    from dataclasses import replace
+
+    from roombapy_prime.auth import RobotLoginEntry
+
+    moved = replace(
+        _fake_login_result(),
+        robots={"BLID123": RobotLoginEntry.from_json({"svcDeplId": "v011"})},
+        irbt_topic_prefix="v007-irbthbu",
+        deployments={"v011": {"irbtTopics": "v011-irbthbu"}},
+    )
+    robot = await prime_factory.PrimeFactory.create_prime_robot(
+        session=object(), username="user@example.invalid", password="hunter2",
+        country_code="FR", login_result=moved,
+    )
+    assert robot._irbt_topic_prefix == "v011-irbthbu"
+    # 0.8.3: and it knows its deployment, for the diagnostics.
+    assert robot.svc_deployment_id == "v011"

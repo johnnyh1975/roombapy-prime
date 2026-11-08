@@ -115,6 +115,11 @@ class PrimeFactory:
             mqtt_client=mqtt_client,
             rest_client=rest_client,
             relogin=relogin,
-            irbt_topic_prefix=login_result.irbt_topic_prefix,
+            # The robot's own deployment, not only the account's (0.8.3,
+            # @ecovictor75): see LoginResult.irbt_topic_prefix_for().
+            irbt_topic_prefix=login_result.irbt_topic_prefix_for(target_blid),
             deployment=login_result.deployment,
+            svc_deployment_id=getattr(
+                login_result.robots.get(target_blid), "svc_deployment_id", None
+            ),
         )

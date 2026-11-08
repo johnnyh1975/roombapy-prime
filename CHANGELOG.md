@@ -6,6 +6,38 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.8.3] - 2026-11-08
+
+Commands reach a robot on another deployment than its account, and the
+600 series is Classic. Summary: `release-notes/v0.8.3.md`.
+
+### Fixed
+
+- **Topic prefix per robot.** The irbt topic prefix came from the
+  discovery response's current deployment alone. A robot on another
+  deployment took no commands under it: they were acknowledged and
+  ignored. @ecovictor75's Combo 105 (FR) was on `v011` while the account
+  said `v007-irbthbu`; under `v011-irbthbu` the same `start` started at
+  once. The prefix now follows the robot's own deployment (`svcDeplId`)
+  as the Prime app resolves it, falling back to the account's prefix
+  with a warning when the discovery does not list that deployment.
+- **The 600 series is Classic** (`R6`). A Roomba 694 (`R694020`,
+  tankdeer) and a `R671020` (egold555) were "unknown" and set up from
+  the account as Prime robots, where their state never changed.
+
+### Added
+
+- `LoginResult.deployments` (every deployment the discovery lists) and
+  `LoginResult.irbt_topic_prefix_for(blid)`.
+- `PrimeRobot.svc_deployment_id`, set by `PrimeFactory`.
+- Diagnostics: the robot's deployment next to its topic prefix (OK,
+  FAILED with a request to report, SKIPPED without one).
+
+### Changed
+
+- CI: ruff pinned to 0.17.3, mypy 2.4.1; `upload-artifact` v7,
+  `codeql-action` v4, `action-gh-release` v3.
+
 ## [0.8.2] - 2026-10-21
 
 Where a reconnect spends its time, and no robot id in the log. Summary:

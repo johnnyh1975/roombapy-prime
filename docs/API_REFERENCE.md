@@ -87,6 +87,7 @@ and hands out what each robot on the account needs:
 | `account.robots -> dict[str, RobotLoginEntry]` | Every robot the login lists, by BLID. A robot owned by another account is not among them; see `login_result.conflicted_robots` below. |
 | `account.login_result.conflicted_robots -> tuple[str, ...]`, `.conflicted_user_count -> int \| None`, `.has_ownership_conflict() -> bool` | 🟡 (0.7.1; read as the Classic app reads them, not yet seen on a real answer) | Robots the login names as owned by **another account**, and how many accounts are involved. The Classic app offers to take such robots over; this library never does (it sends `assume_robot_ownership: "0"`). Report the count, not the ids. `()` / `None` when the answer has no such field. |
 | `await account.get_associated_robots_raw() -> Any` | 🟡 (0.7.1; host and signing inferred, not yet called live) | `GET /v1/user/associations/robots`, unparsed — the list the **Prime app** shows its devices from. Works on a login with no robots, which is what it is for: telling "the account has none" from "the login did not return them". `count_associated_robots(answer) -> int \| None` counts it without assuming a shape (`None`, never 0, when the shape does not say). A robot listed only here has no deployment or password from the login and cannot be connected. Also on every REST client. |
+| `account.login_result.irbt_topic_prefix_for(blid) -> str \| None` | 🟢 (0.8.3, confirmed on a real robot) | The irbt topic prefix for **this robot**, as the Prime app resolves it: the prefix of the robot's own deployment (`svcDeplId` in the login answer) from the discovery response's deployment list (`login_result.deployments`), else the account's prefix. A robot on another deployment than the account's current one takes its commands only under its own prefix: @ecovictor75's Combo 105 was on `v011` while the account said `v007-irbthbu`, and every command was acknowledged and ignored. A robot whose deployment the discovery does not list keeps the account prefix, with a warning. `PrimeFactory` uses it; `robot.svc_deployment_id` holds the robot's deployment, and the diagnostics report it next to the prefix. |
 | `account.generation(blid) -> "prime" \| "classic" \| None` | From the SKU. `None` means **unknown** — the SKU tables are incomplete — and is not guessed. `KeyError` for a BLID not on the account. |
 | `account.rest(blid)` | `ClassicRestClient` or `PrimeRestClient` for that robot's generation; `ValueError` when it is unknown. `account.classic_rest()` / `account.prime_rest()` when you know better. |
 | `await account.prime_robot(blid, *, auto_refresh=False)` | A `PrimeRobot` from this login, no second one. Refuses a Classic robot. |
@@ -757,6 +758,11 @@ import-time check now keeps the two tables from drifting apart.
 j7+, `c755020`) and `C9` (Combo j9+, `c975860`), both from real robots
 on the local connection. Their SKUs start with `c`, not `j`, and fell
 outside the table, so `sku_generation()` said `"unknown"`.
+
+The 600 series since 0.8.3: `R6` (a Roomba 694, `R694020`, and a
+`R671020`), both from real robots. Unknown before, they were set up from
+the account as Prime robots; a 600 has only the Classic-format shadow,
+so its state never changed there. No Prime SKU starts with `R6`.
 
 ## Doorway thresholds (0.6.0)
 

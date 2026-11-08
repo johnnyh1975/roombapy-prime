@@ -341,6 +341,28 @@ def _report_device_info(report: Report, state: Any) -> None:
     report.add("Device info extracted from get_state()", "OK", detail)
 
 
+def _report_robot_deployment(report: Report, prefix: str, robot_depl: Any) -> None:
+    """The robot's deployment next to its topic prefix (0.8.3).
+
+    @ecovictor75's robot was on `v011` while its commands went out under
+    `v007-irbthbu`: acknowledged, and ignored, with nothing in any report.
+    Deployment ids and prefixes name iRobot's service deployment, not the
+    account or the robot, so both are shown in full."""
+    if not isinstance(robot_depl, str) or not robot_depl:
+        report.add("robot deployment (svcDeplId)", "SKIPPED", "not in the login answer")
+        return
+    if prefix.startswith(f"{robot_depl}-"):
+        report.add("robot deployment (svcDeplId)", "OK", f"{robot_depl!r}, matches the prefix")
+        return
+    report.add(
+        "robot deployment (svcDeplId)",
+        "FAILED",
+        f"{robot_depl!r}, but the topic prefix is {prefix!r}: commands may be "
+        "acknowledged and ignored. Please report this with the discovery response's "
+        "deployment ids.",
+    )
+
+
 def _report_topic_prefix_status(report: Report, robot: Any) -> None:
     """NEW (session 41). A live test (chairstacker) first showed
     irbt_topic_prefix coming back None -- the guessed discovery-response
@@ -360,6 +382,7 @@ def _report_topic_prefix_status(report: Report, robot: Any) -> None:
     prefix = getattr(robot, "_irbt_topic_prefix", None)
     if prefix is not None:
         report.add("irbt_topic_prefix (from discovery response)", "OK", f"found: {prefix!r}")
+        _report_robot_deployment(report, prefix, getattr(robot, "svc_deployment_id", None))
         return
     deployment = getattr(robot, "deployment", None) or {}
     if not deployment:

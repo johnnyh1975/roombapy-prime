@@ -306,6 +306,25 @@ def test_report_topic_prefix_status_ok_when_found() -> None:
     assert "v011-irbthbu" in report.results[0].detail
 
 
+@pytest.mark.parametrize(
+    ("robot_depl", "status"),
+    [("v011", "OK"), ("v007", "FAILED"), (None, "SKIPPED")],
+)
+def test_the_robots_deployment_is_reported_next_to_the_prefix(robot_depl, status) -> None:
+    """0.8.3, @ecovictor75: robot on v011, commands under v007-irbthbu,
+    nothing in any report. Now the second line says so."""
+    from roombapy_prime.diagnostics import Report, _report_topic_prefix_status
+
+    report = Report()
+    robot = _FakeRobotForTopicPrefix("v011-irbthbu")
+    robot.svc_deployment_id = robot_depl
+    _report_topic_prefix_status(report, robot)
+
+    line = report.results[1]
+    assert line.name == "robot deployment (svcDeplId)"
+    assert line.status == status
+
+
 def test_report_topic_prefix_status_reports_actual_deployment_keys_when_missing() -> None:
     """NEW (session 41) -- regression test against the bug a live test
     found: the guessed keys don't match reality for this account. Must
