@@ -115,8 +115,11 @@ jobs:
       - name: Check tools/core version pin (never release a mismatched pair)
         run: python scripts/check_version_pin.py
 
+      # PINNED (0.8.3), as in ha_roomba_plus: an unpinned ruff can turn
+      # CI red with nothing changed here. Raise it on purpose, after
+      # `ruff check` passes locally with the new one.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "ruff==0.17.3"
 
       - name: Ruff check (never release on red)
         run: ruff check roombapy_prime tools examples scripts --output-format=github
@@ -169,7 +172,7 @@ jobs:
       # The comment that stood here said every tag was marked a
       # pre-release while the line below said `false` -- the code won.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.resolve.outputs.tag }}
           prerelease: ${{ steps.resolve.outputs.prerelease }}

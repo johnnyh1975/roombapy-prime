@@ -63,7 +63,7 @@ jobs:
         run: python scripts/check_coverage_per_module.py coverage.xml
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-html-py${{ matrix.python-version }}
           path: htmlcov/
@@ -85,8 +85,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      # PINNED (0.8.3), as in ha_roomba_plus: an unpinned ruff can turn
+      # CI red with nothing changed here. Raise it on purpose, after
+      # `ruff check` passes locally with the new one.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "ruff==0.17.3"
 
       - name: Ruff check
         run: ruff check roombapy_prime tools examples scripts --output-format=github
@@ -114,7 +117,7 @@ jobs:
       - name: Install package + typing dependencies
         run: |
           pip install -e ".[test,map]"
-          pip install "mypy==2.3.1"
+          pip install "mypy==2.4.1"
 
       # --strict SINCE 0.4.0. The 57 findings it reported on production
       # code were 52 missing type arguments and Any returns, five
