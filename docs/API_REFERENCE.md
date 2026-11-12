@@ -90,14 +90,17 @@ and hands out what each robot on the account needs:
 | `account.login_result.irbt_topic_prefix_for(blid) -> str \| None` | 🟢 (0.8.3, confirmed on a real robot) | The irbt topic prefix for **this robot**, as the Prime app resolves it: the prefix of the robot's own deployment (`svcDeplId` in the login answer) from the discovery response's deployment list (`login_result.deployments`), else the account's prefix. A robot on another deployment than the account's current one takes its commands only under its own prefix: @ecovictor75's Combo 105 was on `v011` while the account said `v007-irbthbu`, and every command was acknowledged and ignored. A robot whose deployment the discovery does not list keeps the account prefix, with a warning. `PrimeFactory` uses it; `robot.svc_deployment_id` holds the robot's deployment, and the diagnostics report it next to the prefix. |
 | `account.generation(blid) -> "prime" \| "classic" \| None` | From the SKU. `None` means **unknown** — the SKU tables are incomplete — and is not guessed. `KeyError` for a BLID not on the account. |
 | `account.rest(blid)` | `ClassicRestClient` or `PrimeRestClient` for that robot's generation; `ValueError` when it is unknown. `account.classic_rest()` / `account.prime_rest()` when you know better. |
-| `await account.prime_robot(blid, *, auto_refresh=False)` | A `PrimeRobot` from this login, no second one. Refuses a Classic robot. |
+| `await account.prime_robot(blid, *, auto_refresh=False)` | 🟢 (0.9.0, one connection confirmed on a real account with two robots) | A `PrimeRobot` from this login, no second one. Refuses a Classic robot. **Robots of one connection token share one MQTT connection** (0.9.0, #91): the login gives them one client id, and AWS IoT drops the older of two connections that use it. Each robot gets a channel of the shared connection; `robot.disconnect()` closes its channel, and the connection closes with the last one. A drop is rebuilt once for all of them, and the token is renewed once. |
 | `await account.relogin()` | A fresh login now. |
 
 Every REST client the account hands out relogs **through the account** on
 HTTP 403: clients that hit it together share one login, and a client whose
 credentials were already replaced takes the new ones without logging in.
-`prime_robot()` still goes through `PrimeFactory`, which keeps its own
-relogin for the MQTT token.
+`prime_robot()` still goes through `PrimeFactory`, with the account's
+relogin for the MQTT token and the account's connection. A robot built by
+`PrimeFactory` alone has a connection of its own; two of those on one
+account evict each other, so build several robots of one account through
+`CloudAccount`.
 
 There is deliberately no robot class for both generations. It would carry
 methods that fail at runtime for one of them.

@@ -243,6 +243,21 @@ async def _settle():
         await asyncio.sleep(0)
 
 
+class TestTheReportSaysHowLongItRan:
+    def test_a_run_stopped_early_says_so(self):
+        """@Baby-scarf: two minutes read as "0 in 75 min"."""
+        clock = iter([0.0, 120.0])
+
+        async def no_relogin():
+            raise AssertionError("no relogin expected")
+
+        probe = SharedConnectionProbe(
+            FakeClient(_token({BLID_A: 0, BLID_B: 0})), TARGETS, no_relogin, "irbt",
+            all_blids=[BLID_A, BLID_B], now=lambda: next(clock),
+        )
+        assert _verdicts(probe)["2c. No connection drops"] == ("OK", "0 in 2 of 75 min")
+
+
 class TestOneConnectionForTwoRobots:
     @pytest.mark.asyncio
     async def test_both_robots_answering_without_a_drop_passes(self):

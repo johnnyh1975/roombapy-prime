@@ -26,7 +26,7 @@ from __future__ import annotations
 import aiohttp
 
 from .auth import LoginResult, login
-from .mqtt_client import PrimeMqttClient
+from .mqtt_client import PrimeMqttClient, RobotChannel
 from .prime_robot import PrimeRobot, Relogin
 from .rest_client import PrimeRestClient
 
@@ -46,6 +46,7 @@ class PrimeFactory:
         auto_refresh: bool = False,
         login_result: LoginResult | None = None,
         relogin: Relogin | None = None,
+        mqtt_client: PrimeMqttClient | RobotChannel | None = None,
     ) -> PrimeRobot:
         """Logs in, selects the robot (first one found if blid isn't
         given), wires up the MQTT and REST clients, returns a
@@ -81,17 +82,22 @@ class PrimeFactory:
         relogin: the callback to renew with, instead of one holding this
         robot's own credentials. CloudAccount.prime_robot() passes the
         account's, so robots of one account share their logins (0.5.0b2).
-        Implies auto_refresh."""
+        Implies auto_refresh.
+
+        mqtt_client: the connection to use instead of a new one (0.9.0).
+        CloudAccount.prime_robot() passes a channel of the connection the
+        robot shares with the other robots of its token."""
         if login_result is None:
             login_result = await login(session, username, password, country_code)
         target_blid = blid or login_result.primary_blid()
         token = login_result.token_for_blid(target_blid)
 
-        mqtt_client = PrimeMqttClient(
-            token=token,
-            endpoint=login_result.mqtt_endpoint,
-            blid=target_blid,
-        )
+        if mqtt_client is None:
+            mqtt_client = PrimeMqttClient(
+                token=token,
+                endpoint=login_result.mqtt_endpoint,
+                blid=target_blid,
+            )
 
         # A relogin handed in -- CloudAccount's, shared by every robot of
         # the account -- wins over one of the robot's own.

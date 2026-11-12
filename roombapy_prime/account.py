@@ -40,6 +40,14 @@ ago -- and only logs in when it does not. Three Prime robots from one
 login refresh with one login, not three, and the robot's REST client
 relogs through the account like every other client.
 
+ONE MQTT CONNECTION FOR THEM AS WELL (0.9.0, #91). The login gives every
+robot one connection token, with one client id, and AWS IoT drops the
+older of two connections that use the same id. A connection per robot
+made two Prime robots on one account evict each other every few seconds
+(@mattdmrc, @Baby-scarf). prime_robot() now hands each robot a channel
+of the account's connection for its token (PrimeMqttClient.channel());
+robots of one token share it, and it closes with the last of them.
+
 A FAILED LOGIN ANSWERS FOR HALF A MINUTE. Against a locked account every
 attempt extends the lock; robots retrying on their own schedules would
 keep it locked. The failure is handed to anyone asking within
@@ -101,6 +109,9 @@ class CloudAccount:
         self._relogin_lock = asyncio.Lock()
         #: The last failed login and when (monotonic), see _login().
         self._failure: tuple[float, Exception] | None = None
+        #: The MQTT connections Prime robots share, one per client id
+        #: (0.9.0) -- see prime_robot().
+        self._connections: list[PrimeMqttClient] = []
         #: The id this account logged in with. Classic's mission history
         #: sends it again, so the Classic client gets it too.
         self.app_id = app_id
@@ -208,6 +219,7 @@ class CloudAccount:
         if self.generation(blid) == CLASSIC:
             raise ValueError(f"{blid} is a Classic robot; PrimeRobot is for Prime robots")
         robot = await PrimeFactory.create_prime_robot(
+            mqtt_client=self._connection_for(blid).channel(blid),
             session=self._session,
             username=self._username,
             password=self._password,
@@ -219,6 +231,28 @@ class CloudAccount:
         if auto_refresh:
             self._attach(robot._rest)  # noqa: SLF001 - the account owns its clients' relogin
         return robot
+
+    def _connection_for(self, blid: str) -> PrimeMqttClient:
+        """The connection a robot shares with the others of its token
+        (0.9.0): the one already using the token's client id, else one
+        whose token names the robot, else a new one.
+
+        BY THE ID A CONNECTION USES NOW, so one whose token was renewed is
+        found. And by the robots its token names as well: should a new
+        login ever bring a new client id, a robot added after it must
+        still join the connection of its companions -- a second
+        connection would take that id over at its first renewal, and the
+        two would evict each other again."""
+        token = self._login_result.token_for_blid(blid)
+        for connection in self._connections:
+            if connection.client_id == token.client_id:
+                return connection
+        for connection in self._connections:
+            if connection.covers(blid):
+                return connection
+        connection = PrimeMqttClient(token, self._login_result.mqtt_endpoint, blid)
+        self._connections.append(connection)
+        return connection
 
     #: A token with more than this many seconds left is fresh enough to
     #: hand to a robot whose own is due. One minute above the robot's own

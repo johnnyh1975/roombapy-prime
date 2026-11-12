@@ -10,7 +10,7 @@ import pytest
 
 from roombapy_prime import account as account_module
 from roombapy_prime.account import CLASSIC, PRIME, CloudAccount
-from roombapy_prime.auth import CloudCredentials, LoginResult, RobotLoginEntry
+from roombapy_prime.auth import CloudCredentials, ConnectionToken, LoginResult, RobotLoginEntry
 from roombapy_prime.rest_client import ClassicRestClient, PrimeRestClient
 
 _CLASSIC_BLID = "CLASSIC1"
@@ -31,7 +31,11 @@ def _login_result(token: str = "t1") -> LoginResult:
             _PRIME_BLID: RobotLoginEntry(sku="W155020"),
             _UNKNOWN_BLID: RobotLoginEntry(sku="Z000000"),
         },
-        connection_tokens=[],
+        connection_tokens=[ConnectionToken(
+            client_id="app-client", iot_token="tok", iot_signature="sig",
+            iot_authorizer_name="auth", expires=None,
+            devices=[_CLASSIC_BLID, _PRIME_BLID, _UNKNOWN_BLID],
+        )],
         raw={},
     )
 
@@ -346,3 +350,28 @@ async def test_associated_robots_needs_no_robot_and_relogs_through_the_account()
     assert data == {"robot_id": "X", "num_parts": 0, "parts": []}
     assert session.tokens_seen == ["t1", "t2"]
     fake_login.assert_awaited_once()
+
+
+def test_robots_of_one_token_share_one_connection_also_after_a_new_client_id() -> None:
+    """#91: one connection per token. A login that brought a new client
+    id must not give a robot added after it a second connection."""
+    account = _account()
+    first = account._connection_for(_PRIME_BLID)
+    assert account._connection_for(_PRIME_BLID) is first
+    assert account._connection_for(_UNKNOWN_BLID) is first
+
+    renewed = _login_result("t2")
+    renewed.connection_tokens[0] = ConnectionToken(
+        client_id="app-client-2", iot_token="tok2", iot_signature="sig",
+        iot_authorizer_name="auth", expires=None, devices=[_PRIME_BLID, _UNKNOWN_BLID],
+    )
+    account._login_result = renewed
+    assert account._connection_for(_UNKNOWN_BLID) is first
+
+    other = _login_result("t3")
+    other.connection_tokens[0] = ConnectionToken(
+        client_id="elsewhere", iot_token="tok3", iot_signature="sig",
+        iot_authorizer_name="auth", expires=None, devices=["0000000000000001"],
+    )
+    account._login_result = other
+    assert account._connection_for("0000000000000001") is not first

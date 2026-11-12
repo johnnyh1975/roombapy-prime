@@ -6,6 +6,42 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.9.0] - 2026-11-11
+
+One MQTT connection for the Prime robots of an account. Summary for
+upgraders: `release-notes/v0.9.0.md`.
+
+### Fixed
+
+- **Two Prime robots on one account no longer evict each other** (#91,
+  @mattdmrc, @Baby-scarf). One login gives every robot of an account one
+  connection token with one client id, and AWS IoT drops the older of two
+  connections that use the same id. `CloudAccount.prime_robot()` gave
+  each robot a connection of its own, so two robots knocked each other
+  off every couple of seconds -- about 120 drops in five minutes on each,
+  for as long as both ran. The robots of one token now share **one connection**:
+  - `CloudAccount.prime_robot()` hands each robot a channel
+    (`RobotChannel`) of the account's connection for its token, found by
+    the client id it uses now or by the robots its token names.
+  - A drop is rebuilt once and logged once for all robots on it, under
+    one lock (`ConnectionShare`), and the token is renewed once: each
+    robot's refresh wakes for it, and the second finds it renewed.
+  - `robot.disconnect()` closes the robot's channel; the connection
+    closes with the last one, so unloading one robot leaves the others
+    connected.
+  - Every `PrimeMqttClient` method that names a robot takes `blid`,
+    defaulting to the robot it was built for.
+
+  @Baby-scarf's account carried two robots on one connection for 75
+  minutes, across a token refresh, without a drop
+  (`roombapy-prime-verify-shared-connection`). A robot built with
+  `PrimeFactory` alone still has a connection of its own.
+
+- **`roombapy-prime-verify-shared-connection` says how long it ran**
+  (tools): line 2c read "0 in 75 min" after a run stopped at two
+  minutes. It now gives the minutes run and the minutes asked for, "0 in
+  2 of 75 min" (@Baby-scarf).
+
 ## [0.8.3] - 2026-11-08
 
 Commands reach a robot on another deployment than its account, and the

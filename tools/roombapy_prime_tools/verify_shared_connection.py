@@ -517,13 +517,16 @@ class SharedConnectionProbe:
                 for t in self.tallies
             ),
         ))
+        # THE TIME IT RAN, NOT THE TIME ASKED FOR (@Baby-scarf): a run
+        # stopped after two minutes reported "0 in 75 min".
+        ran = self.elapsed() / 60
         if self.drops:
             shown = "; ".join(f"at {clock(when).strip()} {why}" for when, why in self.drops[:3])
             more = f" (+{len(self.drops) - 3} more)" if len(self.drops) > 3 else ""
             out.append(("2c. No connection drops", "FAILED",
-                        f"{len(self.drops)} in {minutes:.0f} min: {shown}{more}"))
+                        f"{len(self.drops)} in {ran:.0f} of {minutes:.0f} min: {shown}{more}"))
         else:
-            out.append(("2c. No connection drops", "OK", f"0 in {minutes:.0f} min"))
+            out.append(("2c. No connection drops", "OK", f"0 in {ran:.0f} of {minutes:.0f} min"))
         if self.refreshes:
             behind = [t for t in self.tallies if t.subscribed and t.answered_after_refresh == 0]
             ids = "same client id" if all(same for _, same in self.refreshes) else "new client id"

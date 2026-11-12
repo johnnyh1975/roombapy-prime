@@ -68,7 +68,15 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, 
 from typing import Any, TypeVar
 
 from .auth import LoginResult
-from .mqtt_client import PrimeMqttClient, ShadowResponse, mask_id, redact_topic, redact_topics
+from .mqtt_client import (
+    ConnectionShare,
+    PrimeMqttClient,
+    RobotChannel,
+    ShadowResponse,
+    mask_id,
+    redact_topic,
+    redact_topics,
+)
 from .rest_client import PrimeRestClient
 from .models import (
     DNDStatusResponse,
@@ -304,7 +312,7 @@ class PrimeRobot:
     def __init__(
         self,
         blid: str,
-        mqtt_client: PrimeMqttClient,
+        mqtt_client: PrimeMqttClient | RobotChannel,
         rest_client: PrimeRestClient,
         relogin: Relogin | None = None,
         robot_id: str | None = None,
@@ -324,7 +332,8 @@ class PrimeRobot:
         # falls back to the BLID, which is correct wherever they match.
         self.robot_id = robot_id or blid
         self._mqtt = mqtt_client
-        # Serialises reconnects across concurrent watch tasks.
+        # Serialises reconnects across concurrent watch tasks -- on the
+        # connection since 0.9.0, see ConnectionShare and _share.
         #
         # REAL BUG FOUND IN THE FIELD (DaRealGuGu): every watcher had its
         # own reconnect loop, but they all share ONE mqtt client. When
@@ -340,12 +349,11 @@ class PrimeRobot:
         # It cost two of three test stages their result: the publish
         # went out during a torn-down connection and never got a PUBACK,
         # which the script then reported as a possible policy block.
-        self._reconnect_lock: asyncio.Lock | None = None
-        #: Timestamps of recent disconnections, for the eviction check.
-        #: A blip does not recur every few seconds; an eviction loop does.
-        self._recent_drops: list[float] = []
-        #: The last connection whose drop was logged -- see _report_drop().
-        self._drop_reported_generation = 0
+        #: The lock, and the drop record for the eviction check (a blip
+        #: does not recur every few seconds; an eviction loop does), for a
+        #: client that does not carry a ConnectionShare of its own -- a
+        #: stand-in in a test, say.
+        self._own_share = ConnectionShare()
         self._reconnect_log: list[dict[str, Any]] = []
         self._rest = rest_client
         self._relogin = relogin
@@ -357,6 +365,13 @@ class PrimeRobot:
         self._timeline_request_id = 0
         self.deployment = deployment or {}
         self._refresh_task: asyncio.Task[None] | None = None
+
+    @property
+    def _share(self) -> ConnectionShare:
+        """The connection's lock and drop record, shared with every robot
+        on it (0.9.0); this robot's own for a client without one."""
+        share = getattr(self._mqtt, "share", None)
+        return share if isinstance(share, ConnectionShare) else self._own_share
 
     _REFRESH_RETRY_SECONDS = 60.0
     """NEW (this session, _refresh_loop() hardening). How long to wait
@@ -435,15 +450,17 @@ class PrimeRobot:
                 # A disconnect() that ran while connect() was starting
                 # this loop: no login for a connection nobody reopens.
                 return
-            if self._reconnect_lock is None:
-                self._reconnect_lock = asyncio.Lock()
             try:
                 # UNDER THE WATCHERS' LOCK, AND ONLY IF STILL DUE. A
                 # watcher that reconnected with a due token has logged in
                 # already; refreshing again on the old schedule would be
                 # a second login and a second reconnect for nothing
                 # (review finding).
-                async with self._reconnect_lock:
+                #
+                # AND UNDER THE CONNECTION'S LOCK (0.9.0): robots sharing a
+                # connection all wake for the same token. The first renews
+                # it; the others find it no longer due.
+                async with self._share.lock:
                     still_due = self._mqtt.seconds_until_token_refresh_due()
                     if still_due is None:
                         return
@@ -1707,9 +1724,10 @@ class PrimeRobot:
         Assistant's three watchers one ordinary drop made three WARNING
         lines and tripped the three-drops warning below on its own
         (review finding, 0.5.0b1)."""
-        if generation <= self._drop_reported_generation:
+        share = self._share
+        if generation <= share.drop_reported_generation:
             return False
-        self._drop_reported_generation = generation
+        share.drop_reported_generation = generation
         _LOGGER.warning(
             "roombapy-prime: MQTT connection dropped (%s) while watching %s -- reconnecting",
             reason, redact_topic(topic),
@@ -1745,9 +1763,9 @@ class PrimeRobot:
         # SEPARATE machine on the same account, passed 28 checks on the
         # first try.
         now = _time.monotonic()
-        recent = [t for t in self._recent_drops if now - t < 300.0]
+        recent = [t for t in share.recent_drops if now - t < 300.0]
         recent.append(now)
-        self._recent_drops = recent
+        share.recent_drops = recent
         if len(recent) >= 3:
             _LOGGER.warning(
                 "roombapy-prime: %d disconnections in five minutes on "
@@ -1799,11 +1817,11 @@ class PrimeRobot:
         # A token swap or another reconnect in progress finishes first:
         # its result is the connection to watch.
         await mqtt.wait_until_settled()
-        if self._reconnect_lock is None:
-            self._reconnect_lock = asyncio.Lock()
         reported = False
         reason: str | None = None
-        async with self._reconnect_lock:
+        # THE CONNECTION'S LOCK (0.9.0): one coordinator for every robot
+        # on it, not one per robot.
+        async with self._share.lock:
             timing.waiting = timing.since_start()
             backoff = self._FIRST_RECONNECT_BACKOFF
             while not mqtt.closed:

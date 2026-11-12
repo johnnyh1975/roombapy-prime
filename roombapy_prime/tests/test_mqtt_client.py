@@ -1954,3 +1954,104 @@ class TestNoRobotIdInTheLog:
 
         source = inspect.getsource(mqtt_client.PrimeMqttClient)
         assert "timeout, redact_topics(unconfirmed)," in source
+
+
+class TestARobotsChannel:
+    """0.9.0 (#91): a robot's view of a shared connection names its own
+    robot in every topic and request, and passes the rest through."""
+
+    _A = "0123456789ABCDEF"
+    _B = "FEDCBA9876543210"
+
+    def _connection(self) -> PrimeMqttClient:
+        token = ConnectionToken(
+            client_id="cid", iot_token="t", iot_signature="s", iot_authorizer_name="a",
+            expires=None, devices=[self._A, self._B],
+        )
+        return PrimeMqttClient(token, "e", self._A)
+
+    def test_the_topics_are_the_robots_own(self) -> None:
+        connection = self._connection()
+        view = connection.channel(self._B)
+        assert view.shadow_topic("get", "rw-settings") == (
+            f"$aws/things/{self._B}/shadow/name/rw-settings/get"
+        )
+        for name in ("livemap_topic", "cmd_topic", "rejected_report_topic", "dock_report_topic",
+                     "mission_timeline_topic"):
+            assert f"/things/{self._B}/" in getattr(view, name)("irbt")
+            assert f"/things/{self._A}/" in getattr(connection, name)("irbt")
+
+    @pytest.mark.asyncio
+    async def test_requests_name_the_robot_and_the_rest_passes_through(self) -> None:
+        connection = self._connection()
+        view = connection.channel(self._B)
+        for name in ("get_shadow", "update_shadow", "publish_cmd", "publish_cmd_payload",
+                     "request_mission_timeline", "subscribe", "unsubscribe", "reconnect",
+                     "replace_token", "wait_until_settled", "wait_for_disconnect"):
+            setattr(connection, name, AsyncMock(return_value=name))
+        assert await view.get_shadow("rw-settings") == "get_shadow"
+        connection.get_shadow.assert_awaited_once_with("rw-settings", 8.0, blid=self._B)
+        await view.update_shadow({"x": 1})
+        connection.update_shadow.assert_awaited_once_with({"x": 1}, None, 8.0, blid=self._B)
+        await view.publish_cmd("irbt", "find")
+        connection.publish_cmd.assert_awaited_once_with("irbt", "find", "localApp", blid=self._B)
+        await view.publish_cmd_payload("irbt", {"command": "start"})
+        connection.publish_cmd_payload.assert_awaited_once_with(
+            "irbt", {"command": "start"}, confirm_timeout=5.0, blid=self._B
+        )
+        await view.request_mission_timeline("irbt", 3)
+        connection.request_mission_timeline.assert_awaited_once_with("irbt", 3, blid=self._B)
+
+        callback = MagicMock()
+        await view.subscribe("topic", callback)
+        await view.unsubscribe("topic", callback)
+        connection.subscribe.assert_awaited_once_with("topic", callback)
+        connection.unsubscribe.assert_awaited_once_with("topic", callback)
+        await view.reconnect(if_generation=2)
+        connection.reconnect.assert_awaited_once_with(10.0, force=False, if_generation=2)
+        token = MagicMock()
+        await view.replace_token(token)
+        connection.replace_token.assert_awaited_once_with(token, 10.0)
+        await view.wait_until_settled()
+        await view.wait_for_disconnect(1)
+        connection.wait_for_disconnect.assert_awaited_once_with(1)
+
+        assert view.share is connection.share
+        assert view._token is connection._token
+        assert view.client_id == "cid"
+        assert view.generation == connection.generation
+        assert view.connected is False
+        assert view.disconnect_reason is None
+        assert view.ended(1) is None
+        assert view.seconds_until_token_refresh_due() is None
+        assert view.resubscribe_still_unconfirmed() == []
+        assert view.REFRESH_MARGIN_SECONDS == PrimeMqttClient.REFRESH_MARGIN_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_a_closed_channel_waits_until_its_robot_connects_again(self) -> None:
+        connection = self._connection()
+        connection.connect = AsyncMock()  # type: ignore[method-assign]
+        connection.disconnect = AsyncMock()  # type: ignore[method-assign]
+        first, second = connection.channel(self._A), connection.channel(self._B)
+        assert first.closed, "closed until its robot connects"
+        await first.wait_for_state_change(0.01)  # returns at once while closed
+
+        waiting = asyncio.ensure_future(first.wait_until_open())
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        await first.connect()
+        await second.connect()
+        await asyncio.wait_for(waiting, 1.0)
+
+        await first.disconnect()
+        connection.disconnect.assert_not_awaited()
+        await second.disconnect()
+        connection.disconnect.assert_awaited_once()
+        assert connection._channels == [], "closed channels leave the registry"
+        await first.connect()
+        assert connection._channels == [first]
+
+    def test_a_connection_covers_the_robots_of_its_token(self) -> None:
+        connection = self._connection()
+        assert connection.covers(self._A) and connection.covers(self._B)
+        assert not connection.covers("0000000000000000")

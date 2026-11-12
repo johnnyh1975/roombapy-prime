@@ -43,6 +43,9 @@ class _Broker:
         self.connect_delay = 0.0
         self.suback: Callable[[str], Any] = lambda _topic: [1]
         self.on_publish: Callable[[_Conn, str, Any], None] | None = None
+        #: AWS IoT's rule: a second connection with the same client id
+        #: drops the older one. Every connection here has the same id.
+        self.evict_same_id = False
 
     @property
     def live(self) -> _Conn:
@@ -76,6 +79,10 @@ class _Conn:
             raise MqttError("fake connect failure")
         self.entered = True
         self.entered_at = time.monotonic()
+        if self.broker.evict_same_id:
+            for other in self.broker.open_connections():
+                if other is not self:
+                    other.drop("Normal disconnection")
         return self
 
     async def __aexit__(self, *_exc: Any) -> None:
@@ -912,3 +919,156 @@ def test_the_log_keeps_the_last_twenty_and_hands_out_copies() -> None:
     assert len(robot.reconnect_log) == PrimeRobot.RECONNECT_LOG_SIZE == 20
     robot.reconnect_log[0]["reason"] = "changed"
     assert robot.reconnect_log[0]["reason"] == "r"
+
+
+# --- two robots, one account (0.9.0, #91) ---------------------------------
+
+_BLID_A = "0123456789ABCDEF"
+_BLID_B = "FEDCBA9876543210"
+
+
+def _two_robot_account(broker: _Broker, monkeypatch: Any, expires: int | None = None) -> Any:
+    """A CloudAccount whose one login covers two Prime robots with one
+    token, as @Baby-scarf's does, over the fake broker."""
+    from roombapy_prime.account import CloudAccount
+    from roombapy_prime.auth import CloudCredentials, LoginResult, RobotLoginEntry
+
+    monkeypatch.setattr(PrimeMqttClient, "_build_client", lambda self, timeout: broker.build(timeout))
+    monkeypatch.setattr(PrimeMqttClient, "SUBACK_TIMEOUT_SECONDS", 0.05)
+    token = ConnectionToken(
+        client_id="cid", iot_token="t", iot_signature="s", iot_authorizer_name="a",
+        expires=expires, devices=[_BLID_A, _BLID_B],
+    )
+    login_result = LoginResult(
+        mqtt_endpoint="e", http_base="https://base.example.invalid",
+        http_base_auth="https://auth.example.invalid",
+        credentials=CloudCredentials(
+            access_key_id="A", secret_key="S", session_token="x", cognito_id="us-east-1:0",
+        ),
+        robots={_BLID_A: RobotLoginEntry(sku="W155020"), _BLID_B: RobotLoginEntry(sku="W155020")},
+        connection_tokens=[token], raw={}, irbt_topic_prefix="irbt",
+    )
+    return CloudAccount(MagicMock(), "user", "secret", "DE", login_result)
+
+
+async def _two_robots(broker: _Broker, monkeypatch: Any, **kw: Any) -> tuple[Any, PrimeRobot, PrimeRobot]:
+    account = _two_robot_account(broker, monkeypatch, **kw)
+    first = await account.prime_robot(_BLID_A)
+    second = await account.prime_robot(_BLID_B)
+    for robot in (first, second):
+        robot._SUBACK_RECHECK_SECONDS = 0.01
+        robot._FIRST_RECONNECT_BACKOFF = 0.01
+    await first.connect()
+    await second.connect()
+    return account, first, second
+
+
+@pytest.mark.asyncio
+async def test_two_robots_of_one_account_share_one_connection(monkeypatch, caplog) -> None:
+    """@Baby-scarf, @mattdmrc (#91): one login, one token, one client id
+    for both robots. A connection per robot made the broker drop the
+    older one every time the other connected: 120 drops in five minutes,
+    on both robots, for hours."""
+    caplog.set_level(logging.WARNING, logger="roombapy_prime")
+    broker = _Broker()
+    broker.evict_same_id = True
+    _account, first, second = await _two_robots(broker, monkeypatch)
+    watches = [_Watch(first.watch_state()), _Watch(second.watch_state())]
+    topic_a = f"$aws/things/{_BLID_A}/shadow/update/delta"
+    topic_b = f"$aws/things/{_BLID_B}/shadow/update/delta"
+    await _subscribed(broker, topic_a, topic_b)
+    await asyncio.sleep(0.2)
+
+    broker.live.deliver(topic_a, b'{"a": 1}')
+    broker.live.deliver(topic_b, b'{"b": 2}')
+    await _until(lambda: watches[0].got == [{"a": 1}] and watches[1].got == [{"b": 2}])
+    assert len(broker.conns) == 1
+    assert "MQTT connection dropped" not in caplog.text
+    for watch in watches:
+        await watch.stop()
+    await first.disconnect()
+    await second.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a_drop_of_the_shared_connection_is_rebuilt_once(monkeypatch, caplog) -> None:
+    """One coordinator and one warning for both robots, not one each."""
+    caplog.set_level(logging.WARNING, logger="roombapy_prime")
+    broker = _Broker()
+    _account, first, second = await _two_robots(broker, monkeypatch)
+    watches = [_Watch(first.watch_state()), _Watch(second.watch_state())]
+    topic_a = f"$aws/things/{_BLID_A}/shadow/update/delta"
+    topic_b = f"$aws/things/{_BLID_B}/shadow/update/delta"
+    await _subscribed(broker, topic_a, topic_b)
+
+    broker.live.drop("blip")
+    await _until(lambda: len(broker.conns) == 2 and first._mqtt.connected)
+    await _until(lambda: "watch resumed" in caplog.text)
+    await asyncio.sleep(0.05)
+    broker.live.deliver(topic_a, b'{"a": 1}')
+    broker.live.deliver(topic_b, b'{"b": 2}')
+    await _until(lambda: watches[0].got == [{"a": 1}] and watches[1].got == [{"b": 2}])
+
+    assert len(broker.conns) == 2
+    assert caplog.text.count("MQTT connection dropped") == 1
+    for watch in watches:
+        await watch.stop()
+    await first.disconnect()
+    await second.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_the_connection_closes_with_the_last_robot(monkeypatch) -> None:
+    """Unloading one robot in Home Assistant must not cut off the other."""
+    broker = _Broker()
+    _account, first, second = await _two_robots(broker, monkeypatch)
+    watch = _Watch(second.watch_state())
+    topic_b = f"$aws/things/{_BLID_B}/shadow/update/delta"
+    await _subscribed(broker, topic_b)
+
+    await first.disconnect()
+    assert broker.open_connections() == [broker.live]
+    assert first._mqtt.closed and not second._mqtt.closed
+    broker.live.deliver(topic_b, b'{"b": 2}')
+    await _until(lambda: watch.got == [{"b": 2}])
+
+    await watch.stop()
+    await second.disconnect()
+    assert broker.open_connections() == []
+
+    await first.connect()
+    assert first._mqtt.connected and len(broker.conns) == 2
+    await first.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_both_robots_renew_the_token_with_one_login_and_one_reconnect(monkeypatch) -> None:
+    """Each robot's refresh loop wakes for the same token. The first
+    renews it under the connection's lock; the second finds it renewed."""
+    broker = _Broker()
+    account = _two_robot_account(broker, monkeypatch, expires=int(time.time()) + 300)
+    logins: list[int] = []
+    fresh = ConnectionToken(
+        client_id="cid", iot_token="t2", iot_signature="s", iot_authorizer_name="a",
+        expires=int(time.time()) + 3600, devices=[_BLID_A, _BLID_B],
+    )
+
+    async def relogin(_blid: str) -> Any:
+        logins.append(1)
+        await asyncio.sleep(0.02)
+        result = MagicMock()
+        result.token_for_blid.return_value = fresh
+        return result
+
+    monkeypatch.setattr(account, "_prime_relogin", relogin)
+    first = await account.prime_robot(_BLID_A, auto_refresh=True)
+    second = await account.prime_robot(_BLID_B, auto_refresh=True)
+    await first.connect()
+    await second.connect()
+    await _until(lambda: len(broker.conns) == 2 and first._mqtt.connected)
+    await asyncio.sleep(0.1)
+
+    assert logins == [1]
+    assert len(broker.conns) == 2
+    await first.disconnect()
+    await second.disconnect()

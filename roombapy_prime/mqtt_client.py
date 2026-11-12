@@ -384,8 +384,42 @@ def _discard_late_connection(
     closings.append(task)
 
 
+class ConnectionShare:
+    """What the robots on one connection share (0.9.0): the lock their
+    watchers rebuild it under, and the record of its drops.
+
+    ONE CONNECTION, ONE COORDINATOR. Each robot used to have its own lock
+    and drop record. On a shared connection two robots would then each
+    rebuild it after the same drop, back off on their own clocks and log
+    the drop twice -- the ping-pong `_resume_after_end()` exists to
+    prevent, one level up. A robot on a connection of its own gets one of
+    these as well, so the code is the same either way."""
+
+    def __init__(self) -> None:
+        #: Held by the watcher that rebuilds the connection, and by the
+        #: token refresh, so a robot whose turn comes second finds the
+        #: work done.
+        self.lock = asyncio.Lock()
+        #: The last connection whose drop was logged.
+        self.drop_reported_generation = 0
+        #: When recent drops happened, for the eviction warning.
+        self.recent_drops: list[float] = []
+
+
 class PrimeMqttClient:
-    """One connection, one blid.
+    """One connection, for one robot or several (0.9.0).
+
+    SEVERAL ROBOTS SINCE 0.9.0 (#91, @Baby-scarf). One login gives every
+    robot of an account one connection token with one client id, and
+    AWS IoT drops the older of two connections that use the same id.
+    With a connection per robot, two Prime robots on one account knocked
+    each other off every few seconds, for as long as both ran. A
+    connection carries any robot its token covers: every method that
+    names a robot takes `blid`, defaulting to the one it was built for,
+    and `channel()` hands each robot a view of it (RobotChannel) that
+    fills it in. @Baby-scarf's account carried two robots on one
+    connection for 75 minutes, across a token refresh, without a drop
+    (`roombapy-prime-verify-shared-connection`).
 
     ON AIOMQTT SINCE 0.5.0. Up to 0.4.x this class drove paho-mqtt's own
     network thread, and every public method was synchronous -- PrimeRobot
@@ -416,6 +450,10 @@ class PrimeMqttClient:
         self._token = token
         self._endpoint = endpoint
         self._blid = blid
+        #: Shared by every robot on this connection -- see ConnectionShare.
+        self.share = ConnectionShare()
+        #: The robots' views of this connection (channel()).
+        self._channels: list[RobotChannel] = []
         self._client: aiomqtt.Client | None = None
         self._connected = False
         #: Reads incoming messages and dispatches them; its end is the
@@ -765,6 +803,28 @@ class PrimeMqttClient:
         """Counts successful connects: a watcher remembers the one it
         watches."""
         return self._generation
+
+    @property
+    def client_id(self) -> str:
+        """The server-issued client id this connection uses."""
+        return self._token.client_id
+
+    def covers(self, blid: str) -> bool:
+        """Whether this connection's token may reach `blid`: the robot it
+        was built for, or one the token's device list names."""
+        return blid == self._blid or blid in (self._token.devices or ())
+
+    def channel(self, blid: str) -> RobotChannel:
+        """A robot's view of this connection (0.9.0). Closed until its
+        connect(); the connection closes once every channel is closed."""
+        view = RobotChannel(self, blid)
+        self._channels.append(view)
+        return view
+
+    def _release(self, view: RobotChannel) -> bool:
+        """A channel is closing. True when it was the last open one, so
+        the connection closes with it."""
+        return not any(c is not view and not c.closed_by_robot for c in self._channels)
 
     @property
     def connected(self) -> bool:
@@ -1195,14 +1255,16 @@ class PrimeMqttClient:
             ) from exc
 
 
-    def shadow_topic(self, suffix: str, named: str | None = None) -> str:
+    def shadow_topic(
+        self, suffix: str, named: str | None = None, *, blid: str | None = None
+    ) -> str:
         """Public accessor for building a full shadow topic, e.g.
         shadow_topic("update/delta") -> "$aws/things/{blid}/shadow/update/delta".
         Exists so callers (prime_robot.py) don't need to reach into the
         private _shadow_base() helper."""
-        return f"{_shadow_base(self._blid, named)}/{suffix}"
+        return f"{_shadow_base(blid or self._blid, named)}/{suffix}"
 
-    def livemap_topic(self, irbt_topic_prefix: str) -> str:
+    def livemap_topic(self, irbt_topic_prefix: str, *, blid: str | None = None) -> str:
         """CONFIRMED LIVE (this session, jayjay13011, roombapy-prime
         v0.1.11a6 -- the first capture with response.topic tracking,
         settling this exactly): this topic pattern
@@ -1220,9 +1282,9 @@ class PrimeMqttClient:
         assetId) in P2MapAPIFetching.observeLiveMap()) -- NOT a shadow
         topic, completely independent of get_shadow()/update_shadow().
         """
-        return f"{irbt_topic_prefix}/things/{self._blid}/livemap/update"
+        return f"{irbt_topic_prefix}/things/{blid or self._blid}/livemap/update"
 
-    def cmd_topic(self, irbt_topic_prefix: str) -> str:
+    def cmd_topic(self, irbt_topic_prefix: str, *, blid: str | None = None) -> str:
         """NEW (session 39). Mission commands (start/pause/stop/resume/
         dock/find/evac/reset/etc.) do NOT go through the device shadow
         at all, unlike this library's previous assumption (see
@@ -1233,9 +1295,11 @@ class PrimeMqttClient:
     Full evidence trail, correction history and open questions:
     docs/internal/EVIDENCE_TRAIL.md#mqtt_clientcmd_topic
     """
-        return f"{irbt_topic_prefix}/things/{self._blid}/cmd"
+        return f"{irbt_topic_prefix}/things/{blid or self._blid}/cmd"
 
-    def mission_timeline_topic(self, irbt_topic_prefix: str, *, report: bool = True) -> str:
+    def mission_timeline_topic(
+        self, irbt_topic_prefix: str, *, report: bool = True, blid: str | None = None
+    ) -> str:
         """NEW (this session). Found via native decompilation
         (libcorebase.so's core::protocol::AssetIotTopicFactory::
         createMissionTimelineTopic(IotTopicType), a sibling method of
@@ -1246,10 +1310,10 @@ class PrimeMqttClient:
     docs/internal/EVIDENCE_TRAIL.md#mqtt_clientmission_timeline_topic
     """
         direction = "report" if report else "request"
-        return f"{irbt_topic_prefix}/things/{self._blid}/mission/timeline/{direction}"
+        return f"{irbt_topic_prefix}/things/{blid or self._blid}/mission/timeline/{direction}"
 
     def dock_report_topic(
-        self, irbt_topic_prefix: str, report_type: str | None = None
+        self, irbt_topic_prefix: str, report_type: str | None = None, *, blid: str | None = None
     ) -> str:
         """A dock report topic in the `dock/{reportType}/report` family.
 
@@ -1285,10 +1349,10 @@ class PrimeMqttClient:
         for that one.
         """
         segment = report_type if report_type else "+"
-        return f"{irbt_topic_prefix}/things/{self._blid}/dock/{segment}/report"
+        return f"{irbt_topic_prefix}/things/{blid or self._blid}/dock/{segment}/report"
 
     async def request_mission_timeline(
-        self, irbt_topic_prefix: str, request_id: int
+        self, irbt_topic_prefix: str, request_id: int, *, blid: str | None = None
     ) -> bool:
         """Asks the robot to send its mission timeline now.
 
@@ -1324,7 +1388,7 @@ class PrimeMqttClient:
         and increments; a caller that reuses an id cannot tell which
         report answered which request.
         """
-        topic = self.mission_timeline_topic(irbt_topic_prefix, report=False)
+        topic = self.mission_timeline_topic(irbt_topic_prefix, report=False, blid=blid)
         payload = json.dumps({"timelineRequestId": request_id}).encode()
         if self._client is None:
             # This path had no check at all, unlike publish_cmd_payload()
@@ -1453,7 +1517,7 @@ class PrimeMqttClient:
     #: But watch_dock_reports() with no argument would catch refill and
     #: padwash too, since both are `dock/{type}/report` -- so a capture
     #: is now one subscription away rather than needing new code.
-    def rejected_report_topic(self, irbt_topic_prefix: str) -> str:
+    def rejected_report_topic(self, irbt_topic_prefix: str, *, blid: str | None = None) -> str:
         """NEW (this session). Found via the same native decompilation
         pass as mission_timeline_topic() -- AssetIotTopicFactory's
         third method, createCommandRejectedTopic(), a sibling of
@@ -1469,7 +1533,7 @@ class PrimeMqttClient:
         here now CONFIRMED (same decompiled call-site evidence -- see
         mission_timeline_topic()'s own entry in docs/internal/EVIDENCE_TRAIL.md), payload shape
         unknown."""
-        return f"{irbt_topic_prefix}/things/{self._blid}/rejected/report"
+        return f"{irbt_topic_prefix}/things/{blid or self._blid}/rejected/report"
 
     # NOTE (this session, for future contributors -- saves re-investigating
     # both of these): AssetIotTopicFactory has a FOURTH method beyond the
@@ -1579,7 +1643,8 @@ class PrimeMqttClient:
     # jayjay13011 re-run, with the fixed tooling, settled it directly.
 
     async def publish_cmd(
-        self, irbt_topic_prefix: str, command: str, initiator: str = "localApp"
+        self, irbt_topic_prefix: str, command: str, initiator: str = "localApp",
+        *, blid: str | None = None,
     ) -> bool:
         """NEW (session 39). Publishes a simple mission command via
         cmd_topic() -- see that method's docstring for the full
@@ -1590,11 +1655,12 @@ class PrimeMqttClient:
         broker, not the robot. Callers who want to know the ROBOT reacted
         should still read its state afterwards."""
         return await self.publish_cmd_payload(
-            irbt_topic_prefix, {"command": command, "initiator": initiator}
+            irbt_topic_prefix, {"command": command, "initiator": initiator}, blid=blid
         )
 
     async def publish_cmd_payload(
         self, irbt_topic_prefix: str, payload: dict[str, Any], *, confirm_timeout: float = 5.0,
+        blid: str | None = None,
     ) -> bool:
         """NEW (session 46). Lower-level sibling of publish_cmd() --
         publishes an ARBITRARY payload dict to cmd_topic(), adding a
@@ -1626,7 +1692,7 @@ class PrimeMqttClient:
                 )
                 await self.reconnect(timeout=confirm_timeout)
 
-        topic = self.cmd_topic(irbt_topic_prefix)
+        topic = self.cmd_topic(irbt_topic_prefix, blid=blid)
         full_payload = {**payload}
         full_payload.setdefault("time", int(time.time()))
         try:
@@ -1777,7 +1843,9 @@ class PrimeMqttClient:
                     if not waiters:
                         self._pending.pop(topic, None)
 
-    async def get_shadow(self, named: str | None = None, timeout: float = 8.0) -> ShadowResponse:
+    async def get_shadow(
+        self, named: str | None = None, timeout: float = 8.0, *, blid: str | None = None
+    ) -> ShadowResponse:
         """Fetch current shadow state. named=None for the classic/unnamed
         shadow (confirmed working on all tested tiers so far); pass a
         specific name (e.g. "rw-settings") to try a named shadow — only
@@ -1790,7 +1858,7 @@ class PrimeMqttClient:
     docs/internal/EVIDENCE_TRAIL.md#mqtt_clientget_shadow
     """
         async with self._lock:
-            base = _shadow_base(self._blid, named)
+            base = _shadow_base(blid or self._blid, named)
             response = await self._request(
                 base, "get", b"", ("get/accepted", "get/rejected"), timeout,
                 subscribe_every_time=False,
@@ -1802,7 +1870,8 @@ class PrimeMqttClient:
             return response
 
     async def update_shadow(
-        self, desired: dict[str, Any], named: str | None = None, timeout: float = 8.0
+        self, desired: dict[str, Any], named: str | None = None, timeout: float = 8.0,
+        *, blid: str | None = None,
     ) -> ShadowResponse:
         """Set desired state. Confirmed to actually propagate to the
         physical robot, not just the shadow document — verified via a
@@ -1815,7 +1884,7 @@ class PrimeMqttClient:
         Reconnects first if the connection is known to be down, and
         runs under the same lock as get_shadow() and replace_token()."""
         async with self._lock:
-            base = _shadow_base(self._blid, named)
+            base = _shadow_base(blid or self._blid, named)
             response = await self._request(
                 base, "update", json.dumps({"state": {"desired": desired}}),
                 ("update/accepted", "update/rejected", "update/delta"), timeout,
@@ -1826,3 +1895,169 @@ class PrimeMqttClient:
                     f"UPDATE rejected: {response.payload}", reason=CloudErrorReason.SHADOW_REJECTED
                 )
             return response
+
+
+class RobotChannel:
+    """One robot's view of a connection that may carry several (0.9.0).
+
+    Everything a PrimeRobot asks of its client, with the robot's id
+    filled in. The connection itself -- its generation, its drops, its
+    token, its reconnects -- is the shared one: a drop seen through one
+    channel is a drop for every robot on it, and is rebuilt once.
+
+    OPEN AND CLOSED PER ROBOT. A robot's disconnect() closes its channel;
+    the connection closes with the last open channel, so unloading one
+    robot leaves the others connected. A closed channel reports `closed`
+    to its watchers, who wait instead of reconnecting, exactly as they do
+    on a connection of their own."""
+
+    REFRESH_MARGIN_SECONDS = PrimeMqttClient.REFRESH_MARGIN_SECONDS
+
+    def __init__(self, connection: PrimeMqttClient, blid: str) -> None:
+        self.connection = connection
+        self.blid = blid
+        self.closed_by_robot = True
+        self._reopened = asyncio.Event()
+
+    # --- This robot's lifecycle ----------------------------------------
+
+    async def connect(self, timeout: float = 10.0) -> None:
+        """Opens the shared connection unless it is up already."""
+        await self.connection.connect(timeout)
+        if self not in self.connection._channels:  # noqa: SLF001 - its own registry
+            self.connection._channels.append(self)  # noqa: SLF001
+        self.closed_by_robot = False
+        self._reopened.set()
+
+    async def disconnect(self, deliberate: bool = True) -> None:
+        """Closes this robot's channel, and the connection with the last
+        open one."""
+        last = self.connection._release(self)  # noqa: SLF001 - its own registry
+        self.closed_by_robot = True
+        self._reopened.clear()
+        # OUT OF THE REGISTRY, so a robot unloaded and set up again -- a
+        # reload in Home Assistant -- does not leave a closed channel
+        # behind each time. connect() puts it back.
+        with contextlib.suppress(ValueError):
+            self.connection._channels.remove(self)  # noqa: SLF001
+        if last:
+            await self.connection.disconnect(deliberate)
+
+    @property
+    def closed(self) -> bool:
+        return self.closed_by_robot or self.connection.closed
+
+    async def wait_until_open(self) -> None:
+        while self.closed_by_robot:
+            await self._reopened.wait()
+        await self.connection.wait_until_open()
+
+    async def wait_for_state_change(self, timeout: float) -> None:
+        if self.closed_by_robot:
+            return
+        await self.connection.wait_for_state_change(timeout)
+
+    # --- The shared connection -----------------------------------------
+
+    @property
+    def share(self) -> ConnectionShare:
+        return self.connection.share
+
+    @property
+    def _token(self) -> ConnectionToken:
+        """The connection's token, for diagnostics that read it."""
+        return self.connection._token  # noqa: SLF001 - a view of it
+
+    @property
+    def client_id(self) -> str:
+        return self.connection.client_id
+
+    @property
+    def generation(self) -> int:
+        return self.connection.generation
+
+    @property
+    def connected(self) -> bool:
+        return self.connection.connected
+
+    @property
+    def disconnect_reason(self) -> str | None:
+        return self.connection.disconnect_reason
+
+    def ended(self, generation: int) -> tuple[str, bool] | None:
+        return self.connection.ended(generation)
+
+    async def wait_until_settled(self) -> None:
+        await self.connection.wait_until_settled()
+
+    async def wait_for_disconnect(self, generation: int | None = None) -> str:
+        return await self.connection.wait_for_disconnect(generation)
+
+    def seconds_until_token_refresh_due(self) -> float | None:
+        return self.connection.seconds_until_token_refresh_due()
+
+    async def replace_token(self, new_token: ConnectionToken, timeout: float = 10.0) -> None:
+        await self.connection.replace_token(new_token, timeout)
+
+    async def reconnect(
+        self, timeout: float = 10.0, *, force: bool = False, if_generation: int | None = None
+    ) -> None:
+        await self.connection.reconnect(timeout, force=force, if_generation=if_generation)
+
+    def resubscribe_still_unconfirmed(self) -> list[str]:
+        return self.connection.resubscribe_still_unconfirmed()
+
+    async def subscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
+        await self.connection.subscribe(topic, callback)
+
+    async def unsubscribe(self, topic: str, callback: Callable[[ShadowResponse], None]) -> None:
+        await self.connection.unsubscribe(topic, callback)
+
+    # --- This robot's topics and requests ------------------------------
+
+    def shadow_topic(self, suffix: str, named: str | None = None) -> str:
+        return self.connection.shadow_topic(suffix, named, blid=self.blid)
+
+    def livemap_topic(self, irbt_topic_prefix: str) -> str:
+        return self.connection.livemap_topic(irbt_topic_prefix, blid=self.blid)
+
+    def cmd_topic(self, irbt_topic_prefix: str) -> str:
+        return self.connection.cmd_topic(irbt_topic_prefix, blid=self.blid)
+
+    def mission_timeline_topic(self, irbt_topic_prefix: str, *, report: bool = True) -> str:
+        return self.connection.mission_timeline_topic(
+            irbt_topic_prefix, report=report, blid=self.blid
+        )
+
+    def dock_report_topic(self, irbt_topic_prefix: str, report_type: str | None = None) -> str:
+        return self.connection.dock_report_topic(irbt_topic_prefix, report_type, blid=self.blid)
+
+    def rejected_report_topic(self, irbt_topic_prefix: str) -> str:
+        return self.connection.rejected_report_topic(irbt_topic_prefix, blid=self.blid)
+
+    async def request_mission_timeline(self, irbt_topic_prefix: str, request_id: int) -> bool:
+        return await self.connection.request_mission_timeline(
+            irbt_topic_prefix, request_id, blid=self.blid
+        )
+
+    async def publish_cmd(
+        self, irbt_topic_prefix: str, command: str, initiator: str = "localApp"
+    ) -> bool:
+        return await self.connection.publish_cmd(
+            irbt_topic_prefix, command, initiator, blid=self.blid
+        )
+
+    async def publish_cmd_payload(
+        self, irbt_topic_prefix: str, payload: dict[str, Any], *, confirm_timeout: float = 5.0,
+    ) -> bool:
+        return await self.connection.publish_cmd_payload(
+            irbt_topic_prefix, payload, confirm_timeout=confirm_timeout, blid=self.blid
+        )
+
+    async def get_shadow(self, named: str | None = None, timeout: float = 8.0) -> ShadowResponse:
+        return await self.connection.get_shadow(named, timeout, blid=self.blid)
+
+    async def update_shadow(
+        self, desired: dict[str, Any], named: str | None = None, timeout: float = 8.0
+    ) -> ShadowResponse:
+        return await self.connection.update_shadow(desired, named, timeout, blid=self.blid)
