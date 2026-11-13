@@ -836,7 +836,13 @@ CLASSIC_SKU_PREFIXES: frozenset[str] = frozenset(
         # account: commands reached it, but it has only the unnamed
         # Classic-format shadow and no ro-currentstate, so its state
         # never changed. No Prime SKU starts with "R6".
-        "R69"    # Roomba 690/694 and the rest of the 600 series (R6*)
+        "R69 "   # Roomba 690/694 and the rest of the 600 series (R6*)
+        #
+        # THE j8+ (0.9.1), from a real device (j855020, firmware
+        # sapphire 24.29.3 -- the j7's platform). Unknown, it took the
+        # Prime path from the account: set up cloud-only, without the
+        # local connection a j7 gets. No Prime SKU starts with "J8".
+        "j85"    # Roomba j8/j8+
     ).split()
 )
 

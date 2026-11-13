@@ -6,6 +6,17 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.9.1] - 2026-11-13
+
+One SKU. Summary for upgraders: `release-notes/v0.9.1.md`.
+
+### Fixed
+
+- **The Roomba j8+ is Classic** (`J8`, a real device: j855020, firmware
+  sapphire 24.29.3, the j7's platform). Unknown, it took the Prime path
+  when added from the account and was set up cloud-only, without the
+  local connection a j7 gets.
+
 ## [0.9.0] - 2026-11-11
 
 One MQTT connection for the Prime robots of an account. Summary for

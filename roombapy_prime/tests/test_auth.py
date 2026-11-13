@@ -1166,6 +1166,8 @@ class TestSkuGeneration:
         # 0.8.3: the 600 series was unknown and set up cloud-only.
         ("R694020", "classic", "tankdeer, Roomba 694"),
         ("R671020", "classic", "egold555, Roomba 6xx (reported as 617)"),
+        # 0.9.1: the j8+ was unknown and set up cloud-only.
+        ("j855020", "classic", "a tester, Roomba j8+"),
         # Prime
         ("G185020", "prime", "chairstacker"),
         ("N185240", "prime", "DaRealGuGu, 505 Combo"),
