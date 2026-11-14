@@ -218,16 +218,22 @@ class CloudAccount:
         see the module docstring."""
         if self.generation(blid) == CLASSIC:
             raise ValueError(f"{blid} is a Classic robot; PrimeRobot is for Prime robots")
-        robot = await PrimeFactory.create_prime_robot(
-            mqtt_client=self._connection_for(blid).channel(blid),
-            session=self._session,
-            username=self._username,
-            password=self._password,
-            country_code=self._country_code,
-            blid=blid,
-            login_result=self._login_result,
-            relogin=functools.partial(self._prime_relogin, blid) if auto_refresh else None,
-        )
+        connection = self._connection_for(blid)
+        # A renewal holds this lock from obtaining its login through the
+        # token swap. Do not let a handle built from a newer account
+        # login join before that older result has finished applying.
+        async with connection.share.lock:
+            login_result = self._login_result
+            robot = await PrimeFactory.create_prime_robot(
+                mqtt_client=connection.channel(blid),
+                session=self._session,
+                username=self._username,
+                password=self._password,
+                country_code=self._country_code,
+                blid=blid,
+                login_result=login_result,
+                relogin=functools.partial(self._prime_relogin, blid) if auto_refresh else None,
+            )
         if auto_refresh:
             self._attach(robot._rest)  # noqa: SLF001 - the account owns its clients' relogin
         return robot

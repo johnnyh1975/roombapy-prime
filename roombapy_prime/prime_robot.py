@@ -69,6 +69,7 @@ from typing import Any, TypeVar
 
 from .auth import LoginResult
 from .mqtt_client import (
+    _DeploymentCallback,
     ConnectionShare,
     PrimeMqttClient,
     RobotChannel,
@@ -365,6 +366,50 @@ class PrimeRobot:
         self._timeline_request_id = 0
         self.deployment = deployment or {}
         self._refresh_task: asyncio.Task[None] | None = None
+        self._share.robots.add(self)
+        if isinstance(self._mqtt, (PrimeMqttClient, RobotChannel)) and irbt_topic_prefix:
+            self._mqtt.set_topic_prefix(irbt_topic_prefix, initial=True)
+
+    def _adopt_deployments(self, login_result: LoginResult) -> None:
+        """A renewed token is not the only thing a fresh login can change.
+
+        Update every robot sharing it before reconnect restores callbacks,
+        including companions whose own refresh finds the token fresh.
+        """
+        robots = getattr(login_result, "robots", None)
+        if not isinstance(robots, Mapping):
+            return
+        # Resolve all routes first: a bad renewal must not leave only
+        # some companions on the new deployment with the old token.
+        resolved: list[tuple[PrimeRobot, str | None, str | None]] = []
+        for robot in tuple(self._share.robots):
+            entry = robots.get(robot.blid)
+            prefix = login_result.irbt_topic_prefix_for(robot.blid) if entry is not None else None
+            if prefix is not None and not isinstance(prefix, str):
+                raise TypeError("Renewed irbt topic prefix is not a string")
+            resolved.append((robot, prefix, getattr(entry, "svc_deployment_id", None)))
+        for robot, prefix, deployment_id in resolved:
+            previous_prefix = robot._irbt_topic_prefix
+            # An optional, missing prefix is not evidence that a known
+            # working namespace disappeared. Keep it, but report the fresh
+            # (possibly unknown) deployment rather than cached agreement.
+            if prefix:
+                robot._irbt_topic_prefix = prefix
+            robot.svc_deployment_id = deployment_id
+            robot.deployment = login_result.deployment
+            if isinstance(robot._mqtt, (PrimeMqttClient, RobotChannel)) and prefix:
+                robot._mqtt.set_topic_prefix(prefix, previous_prefix=previous_prefix)
+
+    async def _replace_login(self, login_result: LoginResult) -> None:
+        token = login_result.token_for_blid(self.blid)
+        if isinstance(self._mqtt, (PrimeMqttClient, RobotChannel)):
+            await self._mqtt.replace_token(
+                token, before_reconnect=lambda: self._adopt_deployments(login_result),
+            )
+        else:
+            # Stand-ins/third-party clients with the older transport API.
+            self._adopt_deployments(login_result)
+            await self._mqtt.replace_token(token)
 
     @property
     def _share(self) -> ConnectionShare:
@@ -467,8 +512,7 @@ class PrimeRobot:
                     if still_due > 1.0:
                         continue
                     login_result = await self._relogin()
-                    new_token = login_result.token_for_blid(self.blid)
-                    await self._mqtt.replace_token(new_token)
+                    await self._replace_login(login_result)
                 # A TOKEN THAT IS DUE AT ONCE would make the next wait
                 # zero, and this loop would log in as fast as the server
                 # answers (review finding: thousands of logins in two
@@ -1495,7 +1539,8 @@ class PrimeRobot:
         # reliably when THIS generator is closed.
         async with contextlib.aclosing(
             self._watch_topic(
-                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+                topic, queue_maxsize=queue_maxsize,
+                max_reconnect_backoff=max_reconnect_backoff, follow_deployment=True,
             )
         ) as inner:
             async for response in inner:
@@ -1531,7 +1576,8 @@ class PrimeRobot:
         topic = self._mqtt.dock_report_topic(self._irbt_topic_prefix, report_type)
         async with contextlib.aclosing(
             self._watch_topic(
-                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+                topic, queue_maxsize=queue_maxsize,
+                max_reconnect_backoff=max_reconnect_backoff, follow_deployment=True,
             )
         ) as inner:
             async for response in inner:
@@ -1573,7 +1619,8 @@ class PrimeRobot:
         topic = self._mqtt.rejected_report_topic(self._irbt_topic_prefix)
         async with contextlib.aclosing(
             self._watch_topic(
-                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+                topic, queue_maxsize=queue_maxsize,
+                max_reconnect_backoff=max_reconnect_backoff, follow_deployment=True,
             )
         ) as inner:
             async for response in inner:
@@ -1656,6 +1703,7 @@ class PrimeRobot:
         *,
         queue_maxsize: int,
         max_reconnect_backoff: float,
+        follow_deployment: bool = False,
     ) -> AsyncGenerator[ShadowResponse, None]:
         """Shared core behind watch_state()/watch_mission_timeline() --
         extracted (this session) when the second caller appeared, to
@@ -1681,7 +1729,10 @@ class PrimeRobot:
         def _on_message(response: ShadowResponse) -> None:
             loop.call_soon_threadsafe(_put_with_backpressure, queue, response, topic)
 
-        await self._mqtt.subscribe(topic, _on_message)
+        callback: Callable[[ShadowResponse], None] = (
+            _DeploymentCallback(_on_message) if follow_deployment else _on_message
+        )
+        await self._mqtt.subscribe(topic, callback)
         # THE CONNECTION THIS WATCHER WATCHES. A drop is "this generation
         # has ended", which stays true however late the watcher asks --
         # see wait_for_disconnect() for what an event missed before.
@@ -1702,7 +1753,7 @@ class PrimeRobot:
                     generation, topic, max_reconnect_backoff
                 )
         finally:
-            await self._mqtt.unsubscribe(topic, _on_message)
+            await self._mqtt.unsubscribe(topic, callback)
 
     _MAX_UNCONFIRMED_RETRIES = 2
     _SUBACK_RECHECK_SECONDS = 1.0
@@ -1865,7 +1916,7 @@ class PrimeRobot:
                         login_result = await relogin()
                         timing.login += _time.monotonic() - started
                         started = _time.monotonic()
-                        await mqtt.replace_token(login_result.token_for_blid(self.blid))
+                        await self._replace_login(login_result)
                     else:
                         await mqtt.reconnect(if_generation=current)
                     timing.connecting += _time.monotonic() - started
@@ -2162,7 +2213,8 @@ class PrimeRobot:
                     else expiry.next_delay(keep_alive_interval)
                 )
 
-        await self._mqtt.subscribe(topic, _on_livemap_message)
+        callback = _DeploymentCallback(_on_livemap_message)
+        await self._mqtt.subscribe(topic, callback)
         generation = self._mqtt.generation
         keep_alive_task = asyncio.ensure_future(_keep_alive_loop())
         try:
@@ -2201,4 +2253,4 @@ class PrimeRobot:
         finally:
             keep_alive_task.cancel()
             await asyncio.wait({keep_alive_task})
-            await self._mqtt.unsubscribe(topic, _on_livemap_message)
+            await self._mqtt.unsubscribe(topic, callback)

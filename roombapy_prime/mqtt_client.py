@@ -49,7 +49,8 @@ import ssl
 import time
 from dataclasses import dataclass
 from json.decoder import JSONDecodeError
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
+from weakref import WeakSet
 from collections.abc import Callable
 
 import aiomqtt
@@ -60,6 +61,9 @@ from aiomqtt.exceptions import MqttConnectError
 from .errors import CloudError, CloudErrorReason
 
 from .auth import ConnectionToken, _ssl_diagnosis
+
+if TYPE_CHECKING:
+    from .prime_robot import PrimeRobot
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -384,6 +388,21 @@ def _discard_late_connection(
     closings.append(task)
 
 
+@dataclass(eq=False, slots=True)
+class _DeploymentCallback:
+    """A robot-derived subscription follows deployment; plain ones are literal.
+
+    Keep policy on the callback, not the topic: a raw watcher and a
+    dedicated watcher can start on the same topic and later diverge.
+    Identity is stable through reconnect and unsubscribe.
+    """
+
+    callback: Callable[[ShadowResponse], None]
+
+    def __call__(self, response: ShadowResponse) -> None:
+        self.callback(response)
+
+
 class ConnectionShare:
     """What the robots on one connection share (0.9.0): the lock their
     watchers rebuild it under, and the record of its drops.
@@ -404,6 +423,8 @@ class ConnectionShare:
         self.drop_reported_generation = 0
         #: When recent drops happened, for the eviction warning.
         self.recent_drops: list[float] = []
+        # One refreshed login describes every robot on this connection.
+        self.robots: WeakSet[PrimeRobot] = WeakSet()
 
 
 class PrimeMqttClient:
@@ -469,6 +490,9 @@ class PrimeMqttClient:
         # multiple callbacks per topic can coexist (reference-counted at
         # the broker-subscribe level, see unsubscribe()).
         self._persistent: dict[str, list[Callable[[ShadowResponse], None]]] = {}
+        # Current and previously used prefixes per robot. Running watchers
+        # retain their original topic for cleanup and later subscribe calls.
+        self._topic_prefixes: dict[str, tuple[str, set[str]]] = {}
         #: Topics this client has subscribed to and not released, so a
         #: repeat read does not re-subscribe to what the broker already
         #: granted. Cleared on disconnect, because a new session starts
@@ -549,6 +573,51 @@ class PrimeMqttClient:
         #: Counts reconnects (logging only; the client id stays the
         #: server-issued one -- see reconnect()).
         self._reconnects = 1
+
+    def set_topic_prefix(
+        self, prefix: str, *, blid: str | None = None, initial: bool = False,
+        previous_prefix: str | None = None,
+    ) -> None:
+        """Retarget this robot's deployment-following callbacks before a token swap.
+
+        No network operation: reconnect restores the new keys. Old topic
+        handles remain valid for unsubscribe/resubscribe; literal callbacks,
+        other robots and AWS shadows are untouched. initial registers the first handle
+        without moving callbacks when another handle already exists.
+        previous_prefix includes handles created from a newer login
+        before this connection swapped its token.
+        """
+        robot = blid or self._blid
+        previous = self._topic_prefixes.get(robot)
+        if previous is not None and initial:
+            return
+        known = (previous[1] if previous else set()) | {prefix}
+        if previous_prefix:
+            known.add(previous_prefix)
+        if previous is not None and previous[0] == prefix and previous[1] == known:
+            return
+        self._topic_prefixes[robot] = (prefix, known)
+        for topic, callbacks in list(self._persistent.items()):
+            current = self._current_topic(topic)
+            if current == topic:
+                continue
+            following = [cb for cb in callbacks if isinstance(cb, _DeploymentCallback)]
+            if not following:
+                continue
+            callbacks[:] = [cb for cb in callbacks if not isinstance(cb, _DeploymentCallback)]
+            if not callbacks:
+                self._persistent.pop(topic)
+            destination = self._persistent.setdefault(current, [])
+            destination.extend(cb for cb in following if cb not in destination)
+
+    def _current_topic(self, topic: str) -> str:
+        """Resolve a known former prefix, including a move back to it."""
+        for robot, (prefix, known) in self._topic_prefixes.items():
+            for former in known:
+                base = f"{former}/things/{robot}/"
+                if topic.startswith(base):
+                    return f"{prefix}/things/{robot}/" + topic[len(base):]
+        return topic
 
     def _build_client(self, timeout: float) -> aiomqtt.Client:
         try:
@@ -888,7 +957,10 @@ class PrimeMqttClient:
             return None
         return max(remaining - self.REFRESH_MARGIN_SECONDS, 0.0)
 
-    async def replace_token(self, new_token: ConnectionToken, timeout: float = 10.0) -> None:
+    async def replace_token(
+        self, new_token: ConnectionToken, timeout: float = 10.0, *,
+        before_reconnect: Callable[[], None] | None = None,
+    ) -> None:
         """Swaps the token, disconnects, reconnects, restores all
         running persistent subscriptions (see subscribe()) -- so
         running watch_*() generators keep going transparently, without
@@ -897,13 +969,24 @@ class PrimeMqttClient:
         NOT restored: open _pending entries (in-flight get_shadow()/
         update_shadow() calls) -- but none can be open: both hold the
         same lock this does, so a swap waits for a running read or write
-        and a read or write waits for the swap."""
-        async with self._lock:
+        and a read or write waits for the swap.
+
+        before_reconnect, when supplied, commits synchronous routing
+        metadata with the token under both locks, before the close and
+        restoration of subscriptions. Cancellation while waiting for
+        either lock commits nothing. It must not perform I/O or return
+        a coroutine."""
+        def commit() -> None:
+            if before_reconnect is not None:
+                before_reconnect()
             self._token = new_token
-            await self.reconnect(timeout=timeout, force=True)
+
+        async with self._lock:
+            await self.reconnect(timeout=timeout, force=True, before_reconnect=commit)
 
     async def reconnect(
-        self, timeout: float = 10.0, *, force: bool = False, if_generation: int | None = None
+        self, timeout: float = 10.0, *, force: bool = False, if_generation: int | None = None,
+        before_reconnect: Callable[[], None] | None = None,
     ) -> None:
         """Disconnects, connects again with the same, server-issued
         client id, and restores every persistent subscription.
@@ -952,6 +1035,8 @@ class PrimeMqttClient:
                 )
             if not force and self._connected and self._generation != generation:
                 return  # another caller reconnected while this one waited
+            if before_reconnect is not None:
+                before_reconnect()
             _LOGGER.info(
                 "roombapy-prime MQTT: reconnecting (%d persistent subscription(s) to restore)",
                 len(self._persistent),
@@ -1224,6 +1309,7 @@ class PrimeMqttClient:
         the same from the caller: silence, then a timeout. The two are
         told apart here.
         """
+        topic = self._current_topic(topic)
         client = self._client
         if client is None or not self._connected:
             raise ShadowError(
@@ -1722,6 +1808,9 @@ class PrimeMqttClient:
         "nothing happened"."""
         if self._client is None or not self._connected:
             await self.reconnect()
+        follows = isinstance(callback, _DeploymentCallback)
+        if follows:
+            topic = self._current_topic(topic)
         is_new_topic = topic not in self._persistent
         # SUBSCRIBE FIRST, REGISTER SECOND (@jouwdan, PR #62). Registered
         # first, a failing subscribe left the topic in `_persistent` with
@@ -1738,6 +1827,11 @@ class PrimeMqttClient:
             while True:
                 generation = self._generation
                 await self._subscribe_and_wait([topic])
+                current = self._current_topic(topic) if follows else topic
+                if current != topic:
+                    # Metadata changed while its old SUBACK was pending.
+                    topic = current
+                    continue
                 if not self._connected or self._generation == generation:
                     break
         callbacks = self._persistent.setdefault(topic, [])
@@ -1756,6 +1850,8 @@ class PrimeMqttClient:
 
         Never raises: this runs from finally-blocks, where an exception
         would mask the original error."""
+        if isinstance(callback, _DeploymentCallback):
+            topic = self._current_topic(topic)
         callbacks = self._persistent.get(topic)
         if callbacks is None:
             return
@@ -1996,8 +2092,21 @@ class RobotChannel:
     def seconds_until_token_refresh_due(self) -> float | None:
         return self.connection.seconds_until_token_refresh_due()
 
-    async def replace_token(self, new_token: ConnectionToken, timeout: float = 10.0) -> None:
-        await self.connection.replace_token(new_token, timeout)
+    def set_topic_prefix(
+        self, prefix: str, *, initial: bool = False, previous_prefix: str | None = None,
+    ) -> None:
+        self.connection.set_topic_prefix(
+            prefix, blid=self.blid, initial=initial, previous_prefix=previous_prefix,
+        )
+
+    async def replace_token(
+        self, new_token: ConnectionToken, timeout: float = 10.0, *,
+        before_reconnect: Callable[[], None] | None = None,
+    ) -> None:
+        if before_reconnect is None:
+            await self.connection.replace_token(new_token, timeout)
+        else:
+            await self.connection.replace_token(new_token, timeout, before_reconnect=before_reconnect)
 
     async def reconnect(
         self, timeout: float = 10.0, *, force: bool = False, if_generation: int | None = None

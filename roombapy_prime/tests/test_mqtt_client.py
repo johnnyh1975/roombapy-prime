@@ -958,6 +958,77 @@ class TestPublishCmdPayloadPubackConfirmation:
         assert await client.publish_cmd_payload("p", {"command": "start"}) is False
 
 
+class TestChangedRobotTopicPrefix:
+    @pytest.mark.asyncio
+    async def test_old_handles_follow_moves_back_and_unsubscribe_without_duplicates(self):
+        client, fake = _connected_client(blid="0123456789ABCDEF")
+        from roombapy_prime.mqtt_client import _DeploymentCallback
+        callback = _DeploymentCallback(lambda _message: None)
+        first = "v007-irbthbu/things/0123456789ABCDEF/mission/timeline/report"
+        second = first.replace("v007", "v011")
+        shadow = client.shadow_topic("update/delta")
+        other = "v007-irbthbu/things/FEDCBA9876543210/mission/timeline/report"
+        client.set_topic_prefix("v007-irbthbu")
+        await client.subscribe(first, callback)
+        await client.subscribe(shadow, callback)
+        await client.subscribe(other, callback)
+        client.set_topic_prefix("v011-irbthbu")
+        await client.subscribe(first, callback)
+        assert client._persistent[second] == [callback]
+        assert shadow in client._persistent and other in client._persistent
+        assert await client.publish_cmd("v007-irbthbu", "start") is True
+        assert fake.published[-1][0].endswith("/cmd")
+        assert fake.published[-1][0].startswith("v011-irbthbu/")
+        client.set_topic_prefix("v007-irbthbu")
+        assert client._persistent[first] == [callback]
+        assert await client.publish_cmd("v011-irbthbu", "start") is True
+        assert fake.published[-1][0].startswith("v007-irbthbu/")
+        await client.unsubscribe(second, callback)
+        assert first not in client._persistent
+        assert shadow in client._persistent and other in client._persistent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("follows", [False, True])
+    async def test_a_prefix_change_while_suback_waits_respects_callback_policy(self, follows):
+        entered, finish = asyncio.Event(), asyncio.Event()
+        async def delay():
+            entered.set()
+            await finish.wait()
+            return [1]
+        client, fake = _connected_client(blid="0123456789ABCDEF")
+        old = "v007-irbthbu/things/0123456789ABCDEF/rejected/report"
+        new = old.replace("v007", "v011")
+        client.set_topic_prefix("v007-irbthbu")
+        fake.suback = lambda topic: delay() if topic == old else [1]
+        from roombapy_prime.mqtt_client import _DeploymentCallback
+        callback = lambda _message: None
+        if follows:
+            callback = _DeploymentCallback(callback)
+        pending = asyncio.create_task(client.subscribe(old, callback))
+        await entered.wait()
+        client.set_topic_prefix("v011-irbthbu")
+        finish.set()
+        await pending
+        target = new if follows else old
+        assert client._persistent == {target: [callback]}
+        assert fake.subscribed == ([old, new] if follows else [old])
+
+    @pytest.mark.asyncio
+    async def test_cancelled_token_swap_waiting_for_a_read_does_not_commit_metadata(self):
+        client, _fake = _connected_client()
+        committed = []
+        await client._lock.acquire()
+        pending = asyncio.create_task(client.replace_token(_dummy_token(), before_reconnect=lambda: committed.append(True)))
+        try:
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            assert committed == []
+        finally:
+            client._lock.release()
+
+
 class TestPublishRevivesADeadConnection:
     """@DaRealGuGu, three sessions: the FIRST send of every session got no
     PUBACK. The connection was already dead before the send -- killed by
