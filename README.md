@@ -201,7 +201,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-1500+ tests for the library, plus 561 for the command-line tools —
+1530+ tests for the library, plus 562 for the command-line tools —
 structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, concurrency
 tests for the connection lock and reconnects, and more. This validates

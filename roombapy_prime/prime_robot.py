@@ -365,6 +365,50 @@ class PrimeRobot:
         self._timeline_request_id = 0
         self.deployment = deployment or {}
         self._refresh_task: asyncio.Task[None] | None = None
+        self._share.robots.add(self)
+        if isinstance(self._mqtt, (PrimeMqttClient, RobotChannel)) and irbt_topic_prefix:
+            self._mqtt.set_topic_prefix(irbt_topic_prefix, initial=True)
+
+    def _adopt_deployments(self, login_result: LoginResult) -> None:
+        """A renewed token is not the only thing a fresh login can change.
+
+        Update every robot sharing it before reconnect restores callbacks,
+        including companions whose own refresh finds the token fresh.
+        """
+        robots = getattr(login_result, "robots", None)
+        if not isinstance(robots, Mapping):
+            return
+        # Resolve all routes first: a bad renewal must not leave only
+        # some companions on the new deployment with the old token.
+        resolved: list[tuple[PrimeRobot, str | None, str | None]] = []
+        for robot in tuple(self._share.robots):
+            entry = robots.get(robot.blid)
+            prefix = login_result.irbt_topic_prefix_for(robot.blid) if entry is not None else None
+            if prefix is not None and not isinstance(prefix, str):
+                raise TypeError("Renewed irbt topic prefix is not a string")
+            resolved.append((robot, prefix, getattr(entry, "svc_deployment_id", None)))
+        for robot, prefix, deployment_id in resolved:
+            previous_prefix = robot._irbt_topic_prefix
+            # An optional, missing prefix is not evidence that a known
+            # working namespace disappeared. Keep it, but report the fresh
+            # (possibly unknown) deployment rather than cached agreement.
+            if prefix:
+                robot._irbt_topic_prefix = prefix
+            robot.svc_deployment_id = deployment_id
+            robot.deployment = login_result.deployment
+            if isinstance(robot._mqtt, (PrimeMqttClient, RobotChannel)) and prefix:
+                robot._mqtt.set_topic_prefix(prefix, previous_prefix=previous_prefix)
+
+    async def _replace_login(self, login_result: LoginResult) -> None:
+        token = login_result.token_for_blid(self.blid)
+        if isinstance(self._mqtt, (PrimeMqttClient, RobotChannel)):
+            await self._mqtt.replace_token(
+                token, before_reconnect=lambda: self._adopt_deployments(login_result),
+            )
+        else:
+            # Stand-ins/third-party clients with the older transport API.
+            self._adopt_deployments(login_result)
+            await self._mqtt.replace_token(token)
 
     @property
     def _share(self) -> ConnectionShare:
@@ -467,8 +511,7 @@ class PrimeRobot:
                     if still_due > 1.0:
                         continue
                     login_result = await self._relogin()
-                    new_token = login_result.token_for_blid(self.blid)
-                    await self._mqtt.replace_token(new_token)
+                    await self._replace_login(login_result)
                 # A TOKEN THAT IS DUE AT ONCE would make the next wait
                 # zero, and this loop would log in as fast as the server
                 # answers (review finding: thousands of logins in two
@@ -1865,7 +1908,7 @@ class PrimeRobot:
                         login_result = await relogin()
                         timing.login += _time.monotonic() - started
                         started = _time.monotonic()
-                        await mqtt.replace_token(login_result.token_for_blid(self.blid))
+                        await self._replace_login(login_result)
                     else:
                         await mqtt.reconnect(if_generation=current)
                     timing.connecting += _time.monotonic() - started
