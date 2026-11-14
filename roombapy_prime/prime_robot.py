@@ -69,6 +69,7 @@ from typing import Any, TypeVar
 
 from .auth import LoginResult
 from .mqtt_client import (
+    _DeploymentCallback,
     ConnectionShare,
     PrimeMqttClient,
     RobotChannel,
@@ -1538,7 +1539,8 @@ class PrimeRobot:
         # reliably when THIS generator is closed.
         async with contextlib.aclosing(
             self._watch_topic(
-                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+                topic, queue_maxsize=queue_maxsize,
+                max_reconnect_backoff=max_reconnect_backoff, follow_deployment=True,
             )
         ) as inner:
             async for response in inner:
@@ -1574,7 +1576,8 @@ class PrimeRobot:
         topic = self._mqtt.dock_report_topic(self._irbt_topic_prefix, report_type)
         async with contextlib.aclosing(
             self._watch_topic(
-                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+                topic, queue_maxsize=queue_maxsize,
+                max_reconnect_backoff=max_reconnect_backoff, follow_deployment=True,
             )
         ) as inner:
             async for response in inner:
@@ -1616,7 +1619,8 @@ class PrimeRobot:
         topic = self._mqtt.rejected_report_topic(self._irbt_topic_prefix)
         async with contextlib.aclosing(
             self._watch_topic(
-                topic, queue_maxsize=queue_maxsize, max_reconnect_backoff=max_reconnect_backoff
+                topic, queue_maxsize=queue_maxsize,
+                max_reconnect_backoff=max_reconnect_backoff, follow_deployment=True,
             )
         ) as inner:
             async for response in inner:
@@ -1699,6 +1703,7 @@ class PrimeRobot:
         *,
         queue_maxsize: int,
         max_reconnect_backoff: float,
+        follow_deployment: bool = False,
     ) -> AsyncGenerator[ShadowResponse, None]:
         """Shared core behind watch_state()/watch_mission_timeline() --
         extracted (this session) when the second caller appeared, to
@@ -1724,7 +1729,10 @@ class PrimeRobot:
         def _on_message(response: ShadowResponse) -> None:
             loop.call_soon_threadsafe(_put_with_backpressure, queue, response, topic)
 
-        await self._mqtt.subscribe(topic, _on_message)
+        callback: Callable[[ShadowResponse], None] = (
+            _DeploymentCallback(_on_message) if follow_deployment else _on_message
+        )
+        await self._mqtt.subscribe(topic, callback)
         # THE CONNECTION THIS WATCHER WATCHES. A drop is "this generation
         # has ended", which stays true however late the watcher asks --
         # see wait_for_disconnect() for what an event missed before.
@@ -1745,7 +1753,7 @@ class PrimeRobot:
                     generation, topic, max_reconnect_backoff
                 )
         finally:
-            await self._mqtt.unsubscribe(topic, _on_message)
+            await self._mqtt.unsubscribe(topic, callback)
 
     _MAX_UNCONFIRMED_RETRIES = 2
     _SUBACK_RECHECK_SECONDS = 1.0
@@ -2205,7 +2213,8 @@ class PrimeRobot:
                     else expiry.next_delay(keep_alive_interval)
                 )
 
-        await self._mqtt.subscribe(topic, _on_livemap_message)
+        callback = _DeploymentCallback(_on_livemap_message)
+        await self._mqtt.subscribe(topic, callback)
         generation = self._mqtt.generation
         keep_alive_task = asyncio.ensure_future(_keep_alive_loop())
         try:
@@ -2244,4 +2253,4 @@ class PrimeRobot:
         finally:
             keep_alive_task.cancel()
             await asyncio.wait({keep_alive_task})
-            await self._mqtt.unsubscribe(topic, _on_livemap_message)
+            await self._mqtt.unsubscribe(topic, callback)

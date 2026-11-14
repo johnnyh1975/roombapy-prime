@@ -388,6 +388,21 @@ def _discard_late_connection(
     closings.append(task)
 
 
+@dataclass(eq=False, slots=True)
+class _DeploymentCallback:
+    """A robot-derived subscription follows deployment; plain ones are literal.
+
+    Keep policy on the callback, not the topic: a raw watcher and a
+    dedicated watcher can start on the same topic and later diverge.
+    Identity is stable through reconnect and unsubscribe.
+    """
+
+    callback: Callable[[ShadowResponse], None]
+
+    def __call__(self, response: ShadowResponse) -> None:
+        self.callback(response)
+
+
 class ConnectionShare:
     """What the robots on one connection share (0.9.0): the lock their
     watchers rebuild it under, and the record of its drops.
@@ -563,11 +578,11 @@ class PrimeMqttClient:
         self, prefix: str, *, blid: str | None = None, initial: bool = False,
         previous_prefix: str | None = None,
     ) -> None:
-        """Retarget this robot's persistent callbacks before a token swap.
+        """Retarget this robot's deployment-following callbacks before a token swap.
 
         No network operation: reconnect restores the new keys. Old topic
-        handles remain valid for unsubscribe/resubscribe; other robots and
-        AWS shadows are untouched. initial registers the first handle
+        handles remain valid for unsubscribe/resubscribe; literal callbacks,
+        other robots and AWS shadows are untouched. initial registers the first handle
         without moving callbacks when another handle already exists.
         previous_prefix includes handles created from a newer login
         before this connection swapped its token.
@@ -582,13 +597,18 @@ class PrimeMqttClient:
         if previous is not None and previous[0] == prefix and previous[1] == known:
             return
         self._topic_prefixes[robot] = (prefix, known)
-        for topic in list(self._persistent):
+        for topic, callbacks in list(self._persistent.items()):
             current = self._current_topic(topic)
             if current == topic:
                 continue
-            callbacks = self._persistent.pop(topic)
+            following = [cb for cb in callbacks if isinstance(cb, _DeploymentCallback)]
+            if not following:
+                continue
+            callbacks[:] = [cb for cb in callbacks if not isinstance(cb, _DeploymentCallback)]
+            if not callbacks:
+                self._persistent.pop(topic)
             destination = self._persistent.setdefault(current, [])
-            destination.extend(cb for cb in callbacks if cb not in destination)
+            destination.extend(cb for cb in following if cb not in destination)
 
     def _current_topic(self, topic: str) -> str:
         """Resolve a known former prefix, including a move back to it."""
@@ -1788,7 +1808,9 @@ class PrimeMqttClient:
         "nothing happened"."""
         if self._client is None or not self._connected:
             await self.reconnect()
-        topic = self._current_topic(topic)
+        follows = isinstance(callback, _DeploymentCallback)
+        if follows:
+            topic = self._current_topic(topic)
         is_new_topic = topic not in self._persistent
         # SUBSCRIBE FIRST, REGISTER SECOND (@jouwdan, PR #62). Registered
         # first, a failing subscribe left the topic in `_persistent` with
@@ -1805,7 +1827,7 @@ class PrimeMqttClient:
             while True:
                 generation = self._generation
                 await self._subscribe_and_wait([topic])
-                current = self._current_topic(topic)
+                current = self._current_topic(topic) if follows else topic
                 if current != topic:
                     # Metadata changed while its old SUBACK was pending.
                     topic = current
@@ -1828,7 +1850,8 @@ class PrimeMqttClient:
 
         Never raises: this runs from finally-blocks, where an exception
         would mask the original error."""
-        topic = self._current_topic(topic)
+        if isinstance(callback, _DeploymentCallback):
+            topic = self._current_topic(topic)
         callbacks = self._persistent.get(topic)
         if callbacks is None:
             return

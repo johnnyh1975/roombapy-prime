@@ -962,7 +962,8 @@ class TestChangedRobotTopicPrefix:
     @pytest.mark.asyncio
     async def test_old_handles_follow_moves_back_and_unsubscribe_without_duplicates(self):
         client, fake = _connected_client(blid="0123456789ABCDEF")
-        callback = lambda _message: None
+        from roombapy_prime.mqtt_client import _DeploymentCallback
+        callback = _DeploymentCallback(lambda _message: None)
         first = "v007-irbthbu/things/0123456789ABCDEF/mission/timeline/report"
         second = first.replace("v007", "v011")
         shadow = client.shadow_topic("update/delta")
@@ -987,7 +988,8 @@ class TestChangedRobotTopicPrefix:
         assert shadow in client._persistent and other in client._persistent
 
     @pytest.mark.asyncio
-    async def test_a_prefix_change_while_suback_waits_registers_the_current_topic(self):
+    @pytest.mark.parametrize("follows", [False, True])
+    async def test_a_prefix_change_while_suback_waits_respects_callback_policy(self, follows):
         entered, finish = asyncio.Event(), asyncio.Event()
         async def delay():
             entered.set()
@@ -998,15 +1000,18 @@ class TestChangedRobotTopicPrefix:
         new = old.replace("v007", "v011")
         client.set_topic_prefix("v007-irbthbu")
         fake.suback = lambda topic: delay() if topic == old else [1]
+        from roombapy_prime.mqtt_client import _DeploymentCallback
         callback = lambda _message: None
+        if follows:
+            callback = _DeploymentCallback(callback)
         pending = asyncio.create_task(client.subscribe(old, callback))
         await entered.wait()
         client.set_topic_prefix("v011-irbthbu")
         finish.set()
         await pending
-        assert old not in client._persistent
-        assert client._persistent[new] == [callback]
-        assert fake.subscribed == [old, new]
+        target = new if follows else old
+        assert client._persistent == {target: [callback]}
+        assert fake.subscribed == ([old, new] if follows else [old])
 
     @pytest.mark.asyncio
     async def test_cancelled_token_swap_waiting_for_a_read_does_not_commit_metadata(self):

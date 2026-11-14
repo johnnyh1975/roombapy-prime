@@ -27,7 +27,7 @@ import pytest
 from aiomqtt import MqttError
 
 from roombapy_prime.auth import ConnectionToken
-from roombapy_prime.mqtt_client import PrimeMqttClient, ShadowError
+from roombapy_prime.mqtt_client import PrimeMqttClient, ShadowError, _DeploymentCallback
 from roombapy_prime.prime_robot import PrimeRobot, _first_of
 
 NEVER = object()
@@ -66,6 +66,7 @@ class _Conn:
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
         self.subscribed: list[str] = []
         self.published: list[tuple[str, Any]] = []
+        self.unsubscribed: list[str] = []
         self.entered = False
         self.entered_at: float | None = None
         self.exited = False
@@ -109,7 +110,7 @@ class _Conn:
         return answer
 
     async def unsubscribe(self, topic: str, timeout: float | None = None) -> None:
-        return None
+        self.unsubscribed.append(topic)
 
     async def publish(
         self, topic: str, payload: Any = None, qos: int = 0, timeout: float | None = None
@@ -957,9 +958,8 @@ async def test_a_new_deployment_reaches_commands_and_running_watchers(monkeypatc
     old = f"v007-irbthbu/things/{_BLID_A}/mission/timeline/report"
     new = f"v011-irbthbu/things/{_BLID_A}/mission/timeline/report"
     other = f"v007-irbthbu/things/{_BLID_B}/mission/timeline/report"
-    # Raw observers use the same subscription core; payload parsing is not under test.
-    watcher = _Watch(first.watch_raw_topic(old))
-    companion = _Watch(second.watch_raw_topic(other))
+    watcher = _Watch(first.watch_mission_timeline())
+    companion = _Watch(second.watch_mission_timeline())
     client = first._mqtt.connection
     try:
         await _subscribed(broker, old, other)
@@ -1271,7 +1271,7 @@ async def test_failed_connect_after_commit_can_restore_without_command_replay(mo
     old = f'v007-irbthbu/things/{_BLID_A}/mission/timeline/report'
     new = old.replace('v007', 'v011')
     got = []
-    callback = lambda response: got.append(response.payload)
+    callback = _DeploymentCallback(lambda response: got.append(response.payload))
     await client.subscribe(old, callback)
     try:
         broker.connect_fail = 1
@@ -1299,7 +1299,7 @@ async def test_single_robot_migration_survives_an_ordinary_drop_without_extra_lo
     robot = robots[0]
     old = f'v007-irbthbu/things/{_BLID_A}/mission/timeline/report'
     new = old.replace('v007', 'v011')
-    watcher = _Watch(robot.watch_raw_topic(old))
+    watcher = _Watch(robot.watch_mission_timeline())
     relogin = AsyncMock(return_value=after)
     robot._relogin = relogin
     robot._FIRST_RECONNECT_BACKOFF = .01
@@ -1391,7 +1391,7 @@ async def test_cancel_after_close_retains_the_new_routes_for_later_recovery(monk
     client = robot._mqtt.connection
     old = f'v007-irbthbu/things/{_BLID_A}/mission/timeline/report'
     new = old.replace('v007', 'v011')
-    callback = lambda response: None
+    callback = _DeploymentCallback(lambda response: None)
     await client.subscribe(old, callback)
     broker.connect_delay = .05
     pending = asyncio.create_task(robot._replace_login(after))
@@ -1463,8 +1463,8 @@ async def test_constructing_a_second_handle_does_not_retarget_a_live_subscriptio
     old = f'v007-irbthbu/things/{_BLID_A}/mission/timeline/report'
     new = old.replace('v007', 'v011')
     got_first, got_second = [], []
-    callback_a = lambda response: got_first.append(response.payload)
-    callback_b = lambda response: got_second.append(response.payload)
+    callback_a = _DeploymentCallback(lambda response: got_first.append(response.payload))
+    callback_b = _DeploymentCallback(lambda response: got_second.append(response.payload))
     await client.subscribe(old, callback_a)
     account._login_result = after
     second = await account.prime_robot(_BLID_A)
