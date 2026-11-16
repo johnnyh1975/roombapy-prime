@@ -358,6 +358,15 @@ class PrimeRobot:
         self._rest = rest_client
         self._relogin = relogin
         self._irbt_topic_prefix = irbt_topic_prefix
+        self._topic_prefix_changed = False
+        self._topic_prefix_changed_callback: Callable[[], None] | None = None
+        if relogin is not None:
+            async def observed_relogin() -> LoginResult:
+                result = await relogin()
+                self._check_topic_prefix(result)
+                return result
+
+            self._relogin = observed_relogin
         #: Timeline requests are matched to their reports by this id.
         #: The app starts at 1 and increments; reusing one would make
         #: two requests indistinguishable, which is the single thing the
@@ -365,6 +374,78 @@ class PrimeRobot:
         self._timeline_request_id = 0
         self.deployment = deployment or {}
         self._refresh_task: asyncio.Task[None] | None = None
+
+    @property
+    def topic_prefix_changed(self) -> bool:
+        """A renewed login resolved a different known robot prefix.
+
+        Latched until this robot is rebuilt. No topics, subscriptions or
+        commands are changed here; the consumer chooses how to recover.
+        A mid-session deployment move has not been confirmed in the field.
+        """
+        return self._topic_prefix_changed
+
+    def set_topic_prefix_changed_callback(self, callback: Callable[[], None] | None) -> None:
+        """Set one synchronous, nonblocking observer; None detaches it.
+
+        If a change was already detected, notify a newly attached observer
+        immediately. Called on the event loop, possibly during renewal:
+        schedule recovery rather than awaiting it inside this callback.
+        """
+        if self._topic_prefix_changed_callback is callback:
+            return
+        self._topic_prefix_changed_callback = callback
+        if self._topic_prefix_changed:
+            self._notify_topic_prefix_changed()
+
+    def _notify_topic_prefix_changed(self) -> None:
+        if self._topic_prefix_changed_callback is not None:
+            try:
+                self._topic_prefix_changed_callback()
+            except Exception:  # noqa: BLE001 - an observer must not break authentication
+                _LOGGER.warning("roombapy-prime: topic prefix change observer failed")
+
+    def _check_topic_prefix(self, result: LoginResult) -> None:
+        if self._topic_prefix_changed or not self._irbt_topic_prefix:
+            return
+        entry = result.robots.get(self.blid)
+        if entry is None:
+            return
+        # The prefix LoginResult.irbt_topic_prefix_for() would give a rebuild,
+        # without its logs: the robot's own deployment first.
+        deployment_id = getattr(entry, "svc_deployment_id", None)
+        if not isinstance(deployment_id, str) or not deployment_id:
+            deployment_id = None
+        deployment = result.deployments.get(deployment_id) if deployment_id else None
+        known_prefix = deployment.get("irbtTopics") if isinstance(deployment, dict) else None
+        if not isinstance(known_prefix, str) or not known_prefix:
+            # Otherwise the account's fallback -- evidence only for a robot
+            # built from that fallback, not one whose prefix belonged to its
+            # own deployment (replacing that is incomplete discovery, not a
+            # move), and only a fallback 0.9.1 does not warn may be wrong.
+            known_prefix = result.irbt_topic_prefix
+            built_id = self.svc_deployment_id
+            if (
+                not isinstance(known_prefix, str)
+                or not known_prefix
+                or self._irbt_topic_prefix != self.deployment.get("irbtTopics")
+                or (
+                    isinstance(built_id, str)
+                    and bool(built_id)
+                    and self._irbt_topic_prefix.startswith(f"{built_id}-")
+                )
+                or (deployment_id is not None and not known_prefix.startswith(f"{deployment_id}-"))
+            ):
+                return
+        if known_prefix == self._irbt_topic_prefix:
+            return
+        self._topic_prefix_changed = True
+        _LOGGER.warning(
+            "roombapy-prime: MQTT topic prefix changed for robot %s in a renewed "
+            "login; rebuild the robot to use it",
+            mask_id(self.blid),
+        )
+        self._notify_topic_prefix_changed()
 
     @property
     def _share(self) -> ConnectionShare:

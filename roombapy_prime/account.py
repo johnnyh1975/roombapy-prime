@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
+from weakref import WeakSet
 from typing import Any, TypeVar
 
 import aiohttp
@@ -112,6 +113,9 @@ class CloudAccount:
         #: The MQTT connections Prime robots share, one per client id
         #: (0.9.0) -- see prime_robot().
         self._connections: list[PrimeMqttClient] = []
+        # Observe successful account logins for companions too, including
+        # REST-only renewals. No routing state or connection lock is shared.
+        self._prime_robots: WeakSet[PrimeRobot] = WeakSet()
         #: The id this account logged in with. Classic's mission history
         #: sends it again, so the Classic client gets it too.
         self.app_id = app_id
@@ -230,6 +234,7 @@ class CloudAccount:
         )
         if auto_refresh:
             self._attach(robot._rest)  # noqa: SLF001 - the account owns its clients' relogin
+        self._prime_robots.add(robot)
         return robot
 
     def _connection_for(self, blid: str) -> PrimeMqttClient:
@@ -270,7 +275,7 @@ class CloudAccount:
             remaining = self._login_result.token_for_blid(blid).seconds_until_expiry()
             if remaining is not None and remaining > self.PRIME_TOKEN_FRESH_SECONDS:
                 return self._login_result
-            self._login_result = await self._login()
+            await self._login()
             return self._login_result
 
     async def relogin(self) -> LoginResult:
@@ -278,7 +283,7 @@ class CloudAccount:
         login. Clients relog on their own on HTTP 403; this is for a
         caller that knows the login has gone stale."""
         async with self._relogin_lock:
-            self._login_result = await self._login()
+            await self._login()
             return self._login_result
 
     def _attach(self, client: _ClientT) -> _ClientT:
@@ -296,7 +301,7 @@ class CloudAccount:
         async with self._relogin_lock:
             if self._login_result.credentials is not stale:
                 return self._login_result
-            self._login_result = await self._login()
+            await self._login()
             return self._login_result
 
     async def _login(self) -> LoginResult:
@@ -314,4 +319,9 @@ class CloudAccount:
             self._failure = (time.monotonic(), exc)
             raise
         self._failure = None
+        # Observers may read login_result or build a new handle immediately.
+        # Publish the snapshot first, under the same existing account lock.
+        self._login_result = result
+        for robot in tuple(self._prime_robots):
+            robot._check_topic_prefix(result)
         return result

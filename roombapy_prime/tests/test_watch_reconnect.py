@@ -1072,3 +1072,37 @@ async def test_both_robots_renew_the_token_with_one_login_and_one_reconnect(monk
     assert len(broker.conns) == 2
     await first.disconnect()
     await second.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recovery', ['proactive', 'after_drop'])
+async def test_prefix_change_is_signalled_without_migrating_raw_or_sending_commands(deployment_login, recovery):
+    blid = '0123456789ABCDEF'
+    renewed = deployment_login({blid: 'v011'})
+    authenticate = AsyncMock(return_value=renewed)
+    robot, client, broker = await _setup(relogin=authenticate, blid=blid)
+    await robot._refresh_task  # original token has no expiry; loop exits normally
+    raw = f'irbt/things/{blid}/diagnostic/report'
+    watch = _Watch(robot.watch_raw_topic(raw))
+    callbacks = []
+    robot.set_topic_prefix_changed_callback(lambda: callbacks.append(True))
+    try:
+        await _subscribed(broker, raw)
+        client._token = _token(expires=int(time.time()) - 1)
+        if recovery == 'proactive':
+            await robot._refresh_loop()
+        else:
+            broker.live.drop()
+        await _until(lambda: len(broker.conns) == 2 and client.connected)
+        await _subscribed(broker, raw)
+        assert robot.topic_prefix_changed is True
+        assert callbacks == [True]
+        assert list(client._persistent) == [raw]
+        assert robot._irbt_topic_prefix == 'irbt'
+        assert not any(c.published for c in broker.conns)
+        broker.live.deliver(raw, b'{"literal":true}')
+        await _until(lambda: watch.got == [{'literal': True}])
+    finally:
+        await watch.stop()
+        assert not client._persistent
+        await robot.disconnect()

@@ -196,3 +196,23 @@ async def test_the_robot_publishes_under_its_own_deployment() -> None:
     assert robot._irbt_topic_prefix == "v011-irbthbu"
     # 0.8.3: and it knows its deployment, for the diagnostics.
     assert robot.svc_deployment_id == "v011"
+
+
+@pytest.mark.asyncio
+async def test_standalone_rest_renewal_exposes_prefix_signal(monkeypatch, deployment_login):
+    from unittest.mock import AsyncMock
+    from roombapy_prime.tests.test_account import _Session
+    blid = '0123456789ABCDEF'
+    before = deployment_login({blid: 'v007'}, token='old')
+    after = deployment_login({blid: 'v011'})
+    session = _Session(expired={'old'})
+    authenticate = AsyncMock(return_value=after)
+    monkeypatch.setattr(prime_factory, 'login', authenticate)
+    robot = await prime_factory.PrimeFactory.create_prime_robot(
+        session, 'user@example.com', 'synthetic', 'DE', blid,
+        login_result=before, auto_refresh=True)
+    await robot.get_robot_parts()
+    assert robot.topic_prefix_changed is True
+    assert robot._irbt_topic_prefix == 'v007-irbthbu'
+    assert robot._mqtt._client is None
+    authenticate.assert_awaited_once()

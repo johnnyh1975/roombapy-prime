@@ -126,6 +126,25 @@ them safely.
 
 Requires Python 3.11+. Dependencies: `aiohttp`, `aiomqtt` (with `paho-mqtt` beneath it), `certifi`.
 
+## A changed deployment during renewal
+
+A move during an active session is plausible, but has not been confirmed
+in the field. If a renewed login resolves a different robot MQTT prefix
+than the robot was built with, `robot.topic_prefix_changed` latches true and
+a warning is logged once per instance. The comparison follows what a rebuild
+would use (`LoginResult.irbt_topic_prefix_for()`): the robot's own
+deployment, or the account's prefix for a robot built from that fallback.
+Missing discovery data does not count as a move: an own prefix replaced by
+the fallback, or a fallback that does not belong to the robot's deployment,
+is not signalled.
+`robot.set_topic_prefix_changed_callback(callback)` installs one synchronous,
+nonblocking observer (or `None` to detach); a late observer is notified
+immediately. Schedule recovery outside that callback. The consumer can
+rebuild the robot using the current login and the existing factory.
+Renewal, raw topics and command sending remain unchanged; detection never
+replays a command or migrates subscriptions. CloudAccount observes its
+successful logins for every handle it built, including REST-only renewal.
+
 ## Quick start
 
 ```python
@@ -201,7 +220,7 @@ pip install -e ".[test]"
 pytest roombapy_prime/tests/
 ```
 
-1500+ tests for the library, plus 561 for the command-line tools —
+1530+ tests for the library, plus 561 for the command-line tools —
 structural checks against decompiled source,
 a byte-for-byte regression pin for the SigV4 signer, concurrency
 tests for the connection lock and reconnects, and more. This validates
