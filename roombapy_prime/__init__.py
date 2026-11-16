@@ -81,7 +81,7 @@ from .rest_client import (
     count_associated_robots,
 )
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 __all__ = [
     "AuthConnectionError",

@@ -6,6 +6,23 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.9.2] - 2026-11-16
+
+A signal for a changed topic prefix. Summary for upgraders:
+`release-notes/v0.9.2.md`.
+
+### Added
+
+- **`PrimeRobot.topic_prefix_changed` and
+  `set_topic_prefix_changed_callback()`** (#101, @Rickeeh). When a renewed
+  login resolves a different irbt topic prefix for a robot than it was
+  built with, the robot latches the flag, logs a warning once (the robot
+  id masked) and calls the observer. The caller rebuilds the robot; the
+  library changes no topic, subscription or command. A robot built from
+  its own deployment's prefix is not signalled when a renewed login falls
+  back to the account's prefix: that is incomplete discovery, not a move.
+  A move during a running session has not been seen in the field.
+
 ## [0.9.1] - 2026-11-13
 
 One SKU. Summary for upgraders: `release-notes/v0.9.1.md`.
