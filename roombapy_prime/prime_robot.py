@@ -405,6 +405,31 @@ class PrimeRobot:
             except Exception:  # noqa: BLE001 - an observer must not break authentication
                 _LOGGER.warning("roombapy-prime: topic prefix change observer failed")
 
+    def _fallback_is_evidence(self, fallback: Any, deployment_id: str | None) -> bool:
+        """Whether the account's fallback prefix may stand for this robot.
+
+        Used when the renewed login lists no own prefix for the robot.
+        Comparing with the fallback is evidence of a move only for a robot
+        that was built from that fallback itself.
+        """
+        if not isinstance(fallback, str) or not fallback:
+            return False
+        # Built from its own deployment, which named a prefix other than
+        # the account's: a fallback now means incomplete discovery, not a
+        # move, and a rebuild would swap a known prefix for a guess.
+        if self._irbt_topic_prefix != self.deployment.get("irbtTopics"):
+            return False
+        # Built from its own deployment that matched the account's
+        # (named "<id>-..."): the same, by name rather than by value.
+        built_id = self.svc_deployment_id
+        built_prefix = self._irbt_topic_prefix or ""
+        if isinstance(built_id, str) and built_id and built_prefix.startswith(f"{built_id}-"):
+            return False
+        # The robot names a deployment the fallback does not belong to:
+        # 0.9.1 warns that this fallback may be wrong for it, so it is no
+        # evidence either.
+        return deployment_id is None or fallback.startswith(f"{deployment_id}-")
+
     def _check_topic_prefix(self, result: LoginResult) -> None:
         if self._topic_prefix_changed or not self._irbt_topic_prefix:
             return
@@ -419,23 +444,8 @@ class PrimeRobot:
         deployment = result.deployments.get(deployment_id) if deployment_id else None
         known_prefix = deployment.get("irbtTopics") if isinstance(deployment, dict) else None
         if not isinstance(known_prefix, str) or not known_prefix:
-            # Otherwise the account's fallback -- evidence only for a robot
-            # built from that fallback, not one whose prefix belonged to its
-            # own deployment (replacing that is incomplete discovery, not a
-            # move), and only a fallback 0.9.1 does not warn may be wrong.
             known_prefix = result.irbt_topic_prefix
-            built_id = self.svc_deployment_id
-            if (
-                not isinstance(known_prefix, str)
-                or not known_prefix
-                or self._irbt_topic_prefix != self.deployment.get("irbtTopics")
-                or (
-                    isinstance(built_id, str)
-                    and bool(built_id)
-                    and self._irbt_topic_prefix.startswith(f"{built_id}-")
-                )
-                or (deployment_id is not None and not known_prefix.startswith(f"{deployment_id}-"))
-            ):
+            if not self._fallback_is_evidence(known_prefix, deployment_id):
                 return
         if known_prefix == self._irbt_topic_prefix:
             return
