@@ -2565,3 +2565,101 @@ async def test_a_rate_limit_backs_off_much_further() -> None:
     assert max(long_waits) <= 300.0, (
         f"and stay capped so the stream is not abandoned, got {long_waits}"
     )
+
+
+class TestTopicPrefixChangeSignal:
+    @pytest.mark.asyncio
+    async def test_renewal_signals_once_without_retargeting_or_replaying(self, deployment_login, caplog):
+        blid = '0123456789ABCDEF'
+        renewed = deployment_login({blid: 'v011'})
+        mqtt = _mqtt_mock()
+        robot = PrimeRobot(blid=blid, mqtt_client=mqtt, rest_client=AsyncMock(),
+                           irbt_topic_prefix='v007-irbthbu', relogin=AsyncMock(return_value=renewed))
+        callback = MagicMock()
+        robot.set_topic_prefix_changed_callback(callback)
+        assert robot.topic_prefix_changed is False
+        assert await robot._relogin() is renewed
+        await robot._relogin()
+        assert robot.topic_prefix_changed is True
+        callback.assert_called_once_with()
+        assert robot._irbt_topic_prefix == 'v007-irbthbu'
+        mqtt.publish_cmd.assert_not_awaited()
+        mqtt.replace_token.assert_not_awaited()  # observer does not drive recovery
+        assert caplog.text.count('MQTT topic prefix changed') == 1
+        assert blid not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_no_change_or_failed_login_does_not_signal(self, deployment_login):
+        blid = '0123456789ABCDEF'
+        login = AsyncMock(return_value=deployment_login({blid: 'v007'}))
+        robot = PrimeRobot(blid=blid, mqtt_client=_mqtt_mock(), rest_client=AsyncMock(),
+                           irbt_topic_prefix='v007-irbthbu', relogin=login)
+        callback = MagicMock()
+        robot.set_topic_prefix_changed_callback(callback)
+        await robot._relogin()
+        login.side_effect = RuntimeError('synthetic login failed')
+        with pytest.raises(RuntimeError, match='synthetic login failed'):
+            await robot._relogin()
+        assert robot.topic_prefix_changed is False
+        callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('incomplete', ['missing_robot', 'missing_deployment', 'missing_prefix', 'invalid_prefix'])
+    async def test_incomplete_discovery_is_not_reported_as_a_move(self, deployment_login, incomplete):
+        from dataclasses import replace
+        blid = '0123456789ABCDEF'
+        result = deployment_login({blid: 'v011'})
+        if incomplete == 'missing_robot':
+            result = replace(result, robots={})
+        elif incomplete == 'missing_deployment':
+            result = replace(result, deployments={})
+        else:
+            result = replace(result, deployments={'v011': {'irbtTopics': None if incomplete == 'missing_prefix' else {'invalid': True}}})
+        robot = PrimeRobot(blid=blid, mqtt_client=_mqtt_mock(), rest_client=AsyncMock(),
+                           irbt_topic_prefix='v011-irbthbu', relogin=AsyncMock(return_value=result))
+        callback = MagicMock()
+        robot.set_topic_prefix_changed_callback(callback)
+        await robot._relogin()
+        assert robot.topic_prefix_changed is False
+        callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_late_observer_is_replayed_once_and_can_detach(self, deployment_login, caplog):
+        blid = '0123456789ABCDEF'
+        login = AsyncMock(return_value=deployment_login({blid: 'v011'}))
+        robot = PrimeRobot(blid=blid, mqtt_client=_mqtt_mock(), rest_client=AsyncMock(),
+                           irbt_topic_prefix='v007-irbthbu', relogin=login)
+        await robot._relogin()
+        callback = MagicMock()
+        robot.set_topic_prefix_changed_callback(callback)
+        robot.set_topic_prefix_changed_callback(callback)
+        callback.assert_called_once_with()
+        robot.set_topic_prefix_changed_callback(None)
+        login.return_value = deployment_login({blid: 'v007'})
+        await robot._relogin()
+        assert robot.topic_prefix_changed is True  # do not oscillate or reset an old instance
+        callback.assert_called_once()
+        assert caplog.text.count('MQTT topic prefix changed') == 1
+
+    @pytest.mark.asyncio
+    async def test_observer_failure_cannot_break_authentication(self, deployment_login, caplog):
+        blid = '0123456789ABCDEF'
+        result = deployment_login({blid: 'v011'})
+        robot = PrimeRobot(blid=blid, mqtt_client=_mqtt_mock(), rest_client=AsyncMock(),
+                           irbt_topic_prefix='v007-irbthbu', relogin=AsyncMock(return_value=result))
+        robot.set_topic_prefix_changed_callback(MagicMock(side_effect=RuntimeError('private synthetic detail')))
+        assert await robot._relogin() is result
+        assert robot.topic_prefix_changed is True
+        assert 'observer failed' in caplog.text
+        assert 'private synthetic detail' not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_robot_and_account_deployments_can_differ_without_a_session_change(self, deployment_login, caplog):
+        blid = '0123456789ABCDEF'
+        result = deployment_login({blid: 'v011'})  # account default remains v007
+        robot = PrimeRobot(blid=blid, mqtt_client=_mqtt_mock(), rest_client=AsyncMock(),
+                           irbt_topic_prefix='v011-irbthbu', relogin=AsyncMock(return_value=result))
+        caplog.set_level(20, logger='roombapy_prime')
+        await robot._relogin()
+        assert robot.topic_prefix_changed is False
+        assert not caplog.records

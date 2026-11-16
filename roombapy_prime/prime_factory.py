@@ -115,7 +115,7 @@ class PrimeFactory:
             relogin=relogin,
         )
 
-        return PrimeRobot(
+        robot = PrimeRobot(
             blid=target_blid,
             robot_id=getattr(login_result.robots.get(target_blid), "robot_id", None),
             mqtt_client=mqtt_client,
@@ -129,3 +129,7 @@ class PrimeFactory:
                 login_result.robots.get(target_blid), "svc_deployment_id", None
             ),
         )
+        # Standalone REST renewals observe the same signal as MQTT renewal.
+        # CloudAccount replaces this with its account-wide observer.
+        rest_client._relogin = robot._relogin
+        return robot
