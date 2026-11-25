@@ -6,7 +6,10 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
-## [Unreleased]
+## [0.9.3] - 2026-11-25
+
+The Vac and Combo Essential are Classic. Summary for upgraders:
+`release-notes/v0.9.3.md`.
 
 ### Fixed
 
