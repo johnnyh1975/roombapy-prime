@@ -1217,17 +1217,20 @@ class TestSkuGeneration:
         for sku in ("i455640", "i555640", "i655640", "j555640", "j655640", "e515840"):
             assert sku_generation(sku) == "classic", sku
 
-    def test_q0_is_prime_and_was_deliberately_not_claimed_for_classic(self):
-        """The one candidate that had to be dropped. iRobot sold a
-        Classic "q" series, but Prime's CongoVacuum is Q012020 — so "Q0"
-        belongs to Prime, and claiming it for Classic would have routed
-        a cloud-only robot down the local path.
+    def test_the_essentials_are_classic(self):
+        """Vac and Combo Essential ("Congo" in iRobot Home 7.18). Three
+        Combo Essentials (y014020, firmware congo) ran on the local
+        connection; listed as Prime, they were set up cloud-only and the
+        broker refused every status subscription. The Prime app's model
+        table has neither."""
+        from roombapy_prime.auth import is_prime_sku, sku_generation
 
-        This is why widening the Classic list is only safe when each
-        addition is checked against the Prime set first."""
-        from roombapy_prime.auth import sku_generation
-
-        assert sku_generation("Q012020") == "prime"
+        for sku in ("y014020", "Y011040", "Q012020", "q011020"):
+            assert sku_generation(sku) == "classic", sku
+            assert not is_prime_sku(sku), sku
+        # The Prime 105 and 115 families are next door and stay Prime.
+        for sku in ("Q355020", "Y354020", "Y414040"):
+            assert sku_generation(sku) == "prime", sku
 
     def test_docks_are_neither(self):
         from roombapy_prime.auth import sku_generation

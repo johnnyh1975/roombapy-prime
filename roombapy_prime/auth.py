@@ -662,7 +662,7 @@ class RobotDigitalCapabilities:
 # in this set -- the gap that let five slip through is a test failure
 # now, not a reading exercise.
 PRIME_SKU_PREFIXES: frozenset[str] = frozenset(
-    "G18 G28 N18 N28 Q35 Q01 Y35 Y41 Y01 L12 K15 R28 W15 X18 X28 F15 "
+    "G18 G28 N18 N28 Q35 Y35 Y41 L12 K15 R28 W15 X18 X28 F15 "
     "U10 V10 W20 Z10 Q4 Q5 F2 W3 Z2".split()
 )
 
@@ -808,9 +808,8 @@ CLASSIC_SKU_PREFIXES: frozenset[str] = frozenset(
         # Safe to be generous here for two reasons. Classic is a closed
         # generation: iRobot has moved to the Prime line, so this set
         # will not grow further. And every entry below was checked
-        # against PRIME_SKU_PREFIXES first -- "q0" was a candidate and
-        # was DROPPED, because Prime's CongoVacuum (Q012020) claims it.
-        # That collision is exactly the kind this list must not create.
+        # against PRIME_SKU_PREFIXES first. That collision is exactly
+        # the kind this list must not create.
         "i45 "   # i4/i4+ (retail variant)
         "i55 "   # i5/i5+ Combo
         "i65 "   # i6+ (Amazon exclusive)
@@ -842,7 +841,18 @@ CLASSIC_SKU_PREFIXES: frozenset[str] = frozenset(
         # sapphire 24.29.3 -- the j7's platform). Unknown, it took the
         # Prime path from the account: set up cloud-only, without the
         # local connection a j7 gets. No Prime SKU starts with "J8".
-        "j85"    # Roomba j8/j8+
+        "j85 "   # Roomba j8/j8+
+        #
+        # THE VAC AND COMBO ESSENTIAL (0.9.3), "Congo" in iRobot Home
+        # 7.18 (SkuType CongoVacuum ^[Qq]0, CongoCombo ^[Yy]0). They
+        # were listed as Prime from app code nobody had checked on a
+        # robot, and the Prime app's own model table (3.2.0) has neither.
+        # Three real Combo Essentials (gloopy-purple-liquid, y014020,
+        # firmware congo 1.1.22) ran on the built-in integration's local
+        # connection; set up as Prime, the cloud broker refused every
+        # status subscription, so their state never changed.
+        "q01 "   # Roomba Vac Essential (CongoVacuum)
+        "y01"    # Roomba Combo Essential (CongoCombo) -- three real devices
     ).split()
 )
 

@@ -6,6 +6,18 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [Unreleased]
+
+### Fixed
+
+- **The Vac and Combo Essential are Classic.** SKUs starting `Q0` and
+  `Y0` were listed as Prime, from app code never checked on a robot; the
+  Prime app's model table (3.2.0) has neither, and iRobot Home 7.18 names
+  them CongoVacuum and CongoCombo. `is_prime_sku()` is now False and
+  `sku_generation()` "classic" for them. Three Combo Essentials
+  (`y014020`, firmware congo) set up as Prime had every status
+  subscription refused by the cloud broker.
+
 ## [0.9.2] - 2026-11-16
 
 A signal for a changed topic prefix. Summary for upgraders:
