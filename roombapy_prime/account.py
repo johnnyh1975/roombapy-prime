@@ -213,14 +213,25 @@ class CloudAccount:
             "use classic_rest() or prime_rest() if you know which it is"
         )
 
-    async def prime_robot(self, blid: str, *, auto_refresh: bool = False) -> PrimeRobot:
+    async def prime_robot(
+        self, blid: str, *, auto_refresh: bool = False, allow_classic: bool = False
+    ) -> PrimeRobot:
         """A PrimeRobot for this BLID, built from this account's login --
-        no second login. Refuses a robot known to be Classic.
+        no second login. Refuses a robot known to be Classic, unless
+        allow_classic.
 
         auto_refresh=True: the robot renews its MQTT token through this
         account, and its REST client relogs through it on HTTP 403 --
-        see the module docstring."""
-        if self.generation(blid) == CLASSIC:
+        see the module docstring.
+
+        allow_classic=True (0.9.4): build it for a Classic robot all the
+        same, over the cloud. 0.9.3 moved the Vac and Combo Essential to
+        Classic, and a caller that had set one up this way before -- where
+        it worked -- lost it outright. Whether a Classic robot answers
+        everything a PrimeRobot asks is not known: the Essentials took its
+        commands, and on some the cloud refused the status subscriptions.
+        The caller decides, and says so."""
+        if self.generation(blid) == CLASSIC and not allow_classic:
             raise ValueError(f"{blid} is a Classic robot; PrimeRobot is for Prime robots")
         robot = await PrimeFactory.create_prime_robot(
             mqtt_client=self._connection_for(blid).channel(blid),

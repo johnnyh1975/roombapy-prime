@@ -132,6 +132,21 @@ async def test_prime_robot_reuses_the_login_and_refuses_a_classic_robot() -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_classic_robot_is_built_when_the_caller_allows_it() -> None:
+    """0.9.3 moved the Essentials to Classic; a caller with one set up over
+    the cloud, where it worked, needs a way to keep it (0.9.4)."""
+    from unittest.mock import MagicMock
+
+    account = _account()
+    built = MagicMock()
+    create = AsyncMock(return_value=built)
+    with patch.object(account_module.PrimeFactory, "create_prime_robot", create):
+        assert await account.prime_robot(_CLASSIC_BLID, allow_classic=True) is built
+
+    assert create.await_args.kwargs["blid"] == _CLASSIC_BLID
+
+
+@pytest.mark.asyncio
 async def test_a_403_relogs_through_the_account_once() -> None:
     session = _Session(expired={"t1"})
     account = _account(session=session)
