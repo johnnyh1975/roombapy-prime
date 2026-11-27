@@ -467,11 +467,86 @@ class TestARepeatReadDoesNotResubscribe:
     def test_a_disconnect_forgets_everything(self) -> None:
         """A NEW SESSION GRANTS NOTHING."""
         client, _fake = _connected_client()
-        client._subscribed_topics.update(["a/get/accepted", "b/get/rejected"])
+        client._subscribed_topics.update(dict.fromkeys(["a/get/accepted", "b/get/rejected"]))
 
         client._connection_lost("session ended")
 
-        assert client._subscribed_topics == set()
+        assert client._subscribed_topics == {}
+
+
+class TestGetSubscriptionsAreBounded:
+    """@levidus: three Prime robots on one account share one connection
+    (0.9.0). Every GET kept its two answer topics subscribed for good:
+    nine shadows per robot made 54 on one connection, over AWS IoT's 50.
+    The broker refused the rest with "Unspecified error", the status
+    watch among them, and every robot's refresh failed."""
+
+    @staticmethod
+    def _active(fake: _FakeAioClient) -> set[str]:
+        active: set[str] = set()
+        for topic in fake.subscribed:
+            active.add(topic)
+        for topic in fake.unsubscribed:
+            active.discard(topic)
+        return active
+
+    @pytest.mark.asyncio
+    async def test_three_robots_with_nine_shadows_stay_under_the_limit(self) -> None:
+        client, fake = _connected_client(blid="A")
+        fake.on_publish_react = _react_with(client, "get", "accepted", {})
+        most = 0
+
+        for blid in ("A", "B", "C"):
+            for n in range(9):
+                await client.get_shadow(named=f"shadow-{n}", timeout=1.0, blid=blid)
+                most = max(most, len(self._active(fake)))
+
+        assert most <= PrimeMqttClient.GET_SUBSCRIPTION_CACHE + 2
+        assert len(client._subscribed_topics) <= PrimeMqttClient.GET_SUBSCRIPTION_CACHE
+
+    @pytest.mark.asyncio
+    async def test_a_shadow_read_again_is_kept_and_not_resubscribed(self) -> None:
+        """The @DaRealGuGu rule stands for what is read often."""
+        client, fake = _connected_client(blid="A")
+        fake.on_publish_react = _react_with(client, "get", "accepted", {})
+
+        await client.get_shadow(named="ro-currentstate", timeout=1.0)
+        for n in range(20):
+            await client.get_shadow(named=f"other-{n}", timeout=1.0)
+            await client.get_shadow(named="ro-currentstate", timeout=1.0)
+
+        hot = "$aws/things/A/shadow/name/ro-currentstate/get/accepted"
+        assert fake.subscribed.count(hot) == 1
+        assert hot not in fake.unsubscribed
+
+    @pytest.mark.asyncio
+    async def test_a_persistent_subscription_is_never_released(self) -> None:
+        client, fake = _connected_client(blid="A")
+        fake.on_publish_react = _react_with(client, "get", "accepted", {})
+        watched = "$aws/things/A/shadow/name/shadow-0/get/accepted"
+
+        await client.get_shadow(named="shadow-0", timeout=1.0)
+        await client.subscribe(watched, lambda _r: None)
+        for n in range(1, 20):
+            await client.get_shadow(named=f"shadow-{n}", timeout=1.0)
+
+        assert watched not in fake.unsubscribed
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmed_release_stays_recorded(self) -> None:
+        """It may not have happened; re-subscribing a granted topic is
+        what left @DaRealGuGu's second read without an answer."""
+        client, fake = _connected_client(blid="A")
+        fake.on_publish_react = _react_with(client, "get", "accepted", {})
+
+        async def unconfirmed(topic: str, timeout: float | None = None) -> None:
+            raise MqttError("Operation timed out")
+
+        fake.unsubscribe = unconfirmed  # type: ignore[method-assign]
+        for n in range(12):
+            await client.get_shadow(named=f"shadow-{n}", timeout=1.0)
+
+        assert "$aws/things/A/shadow/name/shadow-0/get/accepted" in client._subscribed_topics
 
 
 # --- persistent subscribe / unsubscribe / dispatch -----------------------
@@ -1247,7 +1322,7 @@ async def test_a_dropped_connection_is_reported_with_the_brokers_reason(
 ) -> None:
     fake = _LiveFake()
     client = await _live_client(monkeypatch, fake)
-    client._subscribed_topics.add("a/get/accepted")
+    client._subscribed_topics["a/get/accepted"] = None
     waiting = asyncio.ensure_future(client.wait_for_disconnect())
     await asyncio.sleep(0.01)
     assert not waiting.done()
@@ -1258,7 +1333,7 @@ async def test_a_dropped_connection_is_reported_with_the_brokers_reason(
     assert "[code:7]" in reason
     assert client._connected is False
     assert client.last_disconnect_was_deliberate is False
-    assert client._subscribed_topics == set()
+    assert client._subscribed_topics == {}
 
 
 @pytest.mark.asyncio
@@ -1515,7 +1590,7 @@ async def test_a_read_that_lost_its_connection_is_subscribed_again_next_time() -
     client.reconnect = AsyncMock(side_effect=revive)  # type: ignore[method-assign]
     with pytest.raises(ShadowError):
         await client.get_shadow(timeout=0.05)
-    assert client._subscribed_topics == set()
+    assert client._subscribed_topics == {}
 
     fake.suback = lambda _t: [1]
     fake.subscribed.clear()
@@ -1528,12 +1603,12 @@ async def test_a_read_that_lost_its_connection_is_subscribed_again_next_time() -
 @pytest.mark.asyncio
 async def test_connect_starts_with_nothing_subscribed(monkeypatch: pytest.MonkeyPatch) -> None:
     client = PrimeMqttClient(token=_dummy_token(), endpoint="e", blid="B")
-    client._subscribed_topics.add("stale/get/accepted")
+    client._subscribed_topics["stale/get/accepted"] = None
     monkeypatch.setattr(client, "_build_client", lambda timeout: _LiveFake())
 
     await client.connect(timeout=1.0)
 
-    assert client._subscribed_topics == set()
+    assert client._subscribed_topics == {}
     await client.disconnect()
 
 

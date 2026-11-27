@@ -469,11 +469,13 @@ class PrimeMqttClient:
         # multiple callbacks per topic can coexist (reference-counted at
         # the broker-subscribe level, see unsubscribe()).
         self._persistent: dict[str, list[Callable[[ShadowResponse], None]]] = {}
-        #: Topics this client has subscribed to and not released, so a
-        #: repeat read does not re-subscribe to what the broker already
-        #: granted. Cleared on disconnect, because a new session starts
-        #: with none of them.
-        self._subscribed_topics: set[str] = set()
+        #: GET answer topics this client has subscribed to and not
+        #: released, so a repeat read does not re-subscribe to what the
+        #: broker already granted. Oldest first: at most
+        #: GET_SUBSCRIPTION_CACHE are kept, see _release_oldest_answers().
+        #: Cleared on disconnect, because a new session starts with none
+        #: of them.
+        self._subscribed_topics: dict[str, None] = {}
         #: SUBSCRIBEs still waiting for their SUBACK, by topic. A SUBACK
         #: arriving after `_subscribe_and_wait()` stopped waiting still
         #: counts -- see resubscribe_still_unconfirmed(). Cancelled on
@@ -981,6 +983,16 @@ class PrimeMqttClient:
             await self._subscribe_and_wait(list(self._persistent), revive=False)
 
     SUBACK_TIMEOUT_SECONDS = 3.0
+
+    #: GET answer topics kept subscribed between reads, the oldest
+    #: released beyond that (0.9.5, @levidus). AWS IoT allows 50
+    #: subscriptions per connection, and since 0.9.0 one connection
+    #: serves every robot of a token, up to five. Kept for good, the GET
+    #: topics alone reached 54 for three robots with nine shadows each:
+    #: the broker then refused further subscriptions with "Unspecified
+    #: error", the status watch among them. 16 is eight shadows, which
+    #: leaves room for each robot's watches and update topics.
+    GET_SUBSCRIPTION_CACHE = 16
     """How long a subscribe waits for its SUBACK before carrying on
     unconfirmed (see _subscribe_and_wait())."""
 
@@ -1812,12 +1824,16 @@ class PrimeMqttClient:
                 # got no SUBACK, and then no answer -- while the first read
                 # had worked. Deleting the redundant step, not retrying it.
                 fresh = [t for t in topics if t not in self._subscribed_topics]
+                for topic in topics:
+                    # Most recently read last: released last.
+                    if topic in self._subscribed_topics:
+                        self._subscribed_topics[topic] = self._subscribed_topics.pop(topic)
                 if fresh:
                     session = self._client
                     await self._subscribe_and_wait(fresh)
                     # Only for the connection that granted them.
                     if self._client is session and self._connected:
-                        self._subscribed_topics.update(fresh)
+                        self._subscribed_topics.update(dict.fromkeys(fresh))
             # THE PUBLISH IS CONFIRMED, not fired and forgotten: a request
             # that never left and a robot with no such shadow otherwise
             # look the same. An answer that arrived anyway wins.
@@ -1842,6 +1858,49 @@ class PrimeMqttClient:
                     waiters.remove(_capture)
                     if not waiters:
                         self._pending.pop(topic, None)
+            task = asyncio.current_task()
+            if not subscribe_every_time and (task is None or not task.cancelling()):
+                await self._release_oldest_answers()
+
+    async def _release_oldest_answers(self) -> None:
+        """Unsubscribe the oldest GET answer topics beyond
+        GET_SUBSCRIPTION_CACHE (0.9.5, @levidus).
+
+        A topic that is still in use stays: a reader waiting on it, a
+        persistent subscription on it, or a SUBSCRIBE still waiting for
+        its SUBACK. One whose UNSUBSCRIBE is not confirmed stays recorded
+        as subscribed: re-subscribing to a granted topic is what left
+        @DaRealGuGu's second read without an answer, and an unconfirmed
+        release may not have happened. Runs under the caller's lock, so
+        the next read's SUBSCRIBE cannot overtake the UNSUBSCRIBE."""
+        excess = len(self._subscribed_topics) - self.GET_SUBSCRIPTION_CACHE
+        if excess <= 0:
+            return
+        client = self._client
+        if client is None or not self._connected:
+            return
+        for topic in list(self._subscribed_topics):
+            if excess <= 0:
+                break
+            if self._pending.get(topic) or topic in self._persistent:
+                continue
+            inflight = self._subscribe_tasks.get(topic)
+            if inflight is not None and not inflight.done():
+                continue
+            try:
+                await client.unsubscribe(topic, timeout=3.0)
+            except MqttError as exc:
+                _LOGGER.debug(
+                    "roombapy-prime: releasing %s not confirmed -- %s",
+                    redact_topic(topic), exc,
+                )
+                continue
+            if self._client is not client:
+                return
+            self._subscribed_topics.pop(topic, None)
+            if self._subscribe_tasks.get(topic) is inflight:
+                self._subscribe_tasks.pop(topic, None)
+            excess -= 1
 
     async def get_shadow(
         self, named: str | None = None, timeout: float = 8.0, *, blid: str | None = None
