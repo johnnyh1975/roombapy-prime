@@ -6,6 +6,26 @@ any of this (what was tried, what's still uncertain, why), see
 [`docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md`](docs/internal/PRIME_APP_GAP_ANALYSIS_2026-07-11.md).
 This file only tracks what changed from a user's point of view.
 
+## [0.9.5] - 2026-11-27
+
+Bounded GET subscriptions on a shared connection. Summary for
+upgraders: `release-notes/v0.9.5.md`.
+
+### Fixed
+
+- **At most 16 GET answer subscriptions per connection** (@levidus).
+  Every `get_shadow()` kept its two answer topics subscribed until the
+  connection ended. Since 0.9.0 one connection serves every robot of a
+  token, and three robots with nine shadows each needed 54, over AWS
+  IoT's 50 per connection: the broker refused the rest with
+  "Unspecified error", the status watch among them. The cache is now
+  ordered by last read and bounded (`GET_SUBSCRIPTION_CACHE`); the
+  oldest beyond it are unsubscribed. A shadow read often stays
+  subscribed, so a repeat read still does not re-subscribe. Never
+  released: a topic with a waiting reader, a persistent subscription,
+  or a SUBSCRIBE awaiting its SUBACK; an unconfirmed release stays
+  recorded. UPDATE topics are unchanged.
+
 ## [0.9.4] - 2026-11-26
 
 A Classic robot over the cloud, when the caller asks. Summary for
